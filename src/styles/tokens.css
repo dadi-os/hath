@@ -1,0 +1,38 @@
+:root {
+  /* Ground */
+  --bone: #fafaf7;
+  --bone-raised: #f7f9f4;
+
+  /* Sage */
+  --sage: #8fa382;
+  --sage-text: #7e9270;
+  --sage-deep: #5c6b52;
+  --sage-line: #b9c9ab;
+  --sage-faint: rgba(143, 163, 130, 0.13);
+  --sage-fill: rgba(143, 163, 130, 0.1);
+  --sage-active: rgba(143, 163, 130, 0.16);
+
+  /* Ink */
+  --ink: #2c302a;
+  --ink-muted: #6e7568;
+  --ink-faint: #a8af9f;
+  --ink-ghost: #b0b8a6;
+
+  /* Structure */
+  --rule: #e4ebdc;
+  --radius: 9px;
+  --shadow: 0 2px 7px rgba(92, 107, 82, 0.07);
+
+  /* Motion — nothing under 1s */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --slow: 1200ms;
+  --slower: 2400ms;
+  --breath: 4000ms;
+}
+
+.widget-surface {
+  background: var(--sage-faint);
+  border: 1px dashed var(--sage-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}

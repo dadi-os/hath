@@ -1,0 +1,34 @@
+import { useSyncExternalStore } from "react";
+import type { ConnectionState } from "../api/transport";
+import {
+  connectTransport,
+  disconnectTransport,
+  getConnectionState,
+  subscribeConnection,
+} from "../store/connection";
+
+export function useConnection(): {
+  state: ConnectionState;
+  connect: () => Promise<void>;
+  disconnect: () => Promise<void>;
+  toggle: () => Promise<void>;
+} {
+  const state = useSyncExternalStore(
+    subscribeConnection,
+    getConnectionState,
+    getConnectionState,
+  );
+
+  return {
+    state,
+    connect: connectTransport,
+    disconnect: disconnectTransport,
+    toggle: async () => {
+      if (state === "disconnected") {
+        await connectTransport();
+      } else {
+        await disconnectTransport();
+      }
+    },
+  };
+}

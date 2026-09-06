@@ -1,0 +1,69 @@
+@import "./fonts.css";
+@import "./tokens.css";
+@import "tailwindcss";
+
+@theme {
+  --color-bone: var(--bone);
+  --color-bone-raised: var(--bone-raised);
+
+  --color-sage: var(--sage);
+  --color-sage-text: var(--sage-text);
+  --color-sage-deep: var(--sage-deep);
+  --color-sage-line: var(--sage-line);
+  --color-sage-faint: var(--sage-faint);
+  --color-sage-fill: var(--sage-fill);
+  --color-sage-active: var(--sage-active);
+
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-ink-ghost: var(--ink-ghost);
+
+  --color-rule: var(--rule);
+
+  --radius-widget: var(--radius);
+  --shadow-widget: var(--shadow);
+
+  --ease-hath: var(--ease);
+  --duration-slow: var(--slow);
+  --duration-slower: var(--slower);
+  --duration-breath: var(--breath);
+
+  --font-sans: "Inter", sans-serif;
+  --font-gujarati: "Noto Sans Gujarati", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bone);
+  color: var(--ink);
+  font-family: "Inter", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+@keyframes breath {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-breath {
+  animation: breath var(--breath) var(--ease) infinite;
+}
