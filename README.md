@@ -2,8 +2,6 @@
 
 The single client for Dadi. One codebase, three targets — kiosk, desktop, and iOS. Future modules ship as pages inside Hath; nothing else in the system gets a UI.
 
-This scaffold is the **frame only**: design tokens, persistent chrome, routing, and the API/transport layer. Chat rendering, the agent tree, widgets, auth, and tsnet land in later prompts.
-
 ## Targets
 
 Set `HATH_TARGET` at build/dev time. Do not detect by viewport width.
@@ -12,7 +10,7 @@ Set `HATH_TARGET` at build/dev time. Do not detect by viewport width.
 | --- | --- | --- |
 | `kiosk` (default on the box under `cage`) | Fixed chat rail, all routes, no window chrome | Trusted by physical presence |
 | `desktop` (default) | Fixed chat rail, all routes, normal window | Auth comes later |
-| `mobile` | Chat is a pull-out drawer; `/agents` is not registered | Chat-first |
+| `mobile` | Chat is a pull-out drawer; `/agents` is not registered | Chat-first; always uses embedded tsnet |
 
 ```sh
 HATH_TARGET=kiosk npm run tauri dev
@@ -27,29 +25,60 @@ Widget surfaces use dashed sage borders and a faint sage fill (`.widget-surface`
 
 Fonts are bundled under `src/assets/fonts/` (Inter + Noto Sans Gujarati). No CDN.
 
-## Transport seam
+## Transport
 
-Every network call goes through `Transport` (`src/api/transport.ts`). The current implementation is `HttpTransport` over `@tauri-apps/plugin-http` (Rust-side HTTP, bypassing browser CORS — Dimaag sends none on purpose).
+Every network call goes through `Transport` (`src/api/transport.ts`).
 
-The next prompt swaps in an embedded tsnet node behind the same interface. Components talk to `dimaag` / `yaad` clients only.
+- **HttpTransport** (desktop/kiosk default) — plain HTTP via `@tauri-apps/plugin-http` to local Docker URLs.
+- **TsnetTransport** (mobile, or `HATH_TSNET=1`) — embedded Tailscale node via Go `tsnet`. The Go side runs a local proxy on `127.0.0.1`; the app sends `X-Hath-Upstream` and Go forwards over the mesh.
 
-Connection UX is wired now: power icon in the header toggles `connect()` / `disconnect()`, breathes while connecting, and the main region shows a calm empty state when disconnected.
+Connection UX: power icon toggles `connect()` / `disconnect()`, breathes while connecting. On first tsnet join with no stored key, the disconnected view asks for a Headscale pre-auth key (paste once).
+
+### Accepted tsnet limits
+
+- Only Hath gets the tunnel. SSH, curl, and browsers still need a system Tailscale client.
+- Each install is its own tailnet node. Reinstall means re-authenticating.
+- The tunnel dies when the app is killed. Nothing syncs in the background.
+
+## Embedded tsnet (build)
+
+Prerequisites: Go toolchain (`go` on `PATH`). Xcode + iOS SDK only when building `ios-arm64`.
+
+```sh
+cd net
+./build.sh              # darwin-arm64 (default)
+./build.sh ios-arm64
+./build.sh linux-amd64
+./build.sh all
+```
+
+This writes `src-tauri/lib/<target>/libhathnet.a` (+ `.h`). Those archives are gitignored — run `build.sh` before `cargo` / `npm run tauri dev`.
+
+### Headscale pre-auth key
+
+```sh
+headscale preauthkeys create --user <user> --reusable --expiration 24h
+```
+
+Paste the key into Hath on first connect. Control URL is fixed infra via `HATH_CONTROL_URL` (not user input).
+
+### tsnet env
+
+```sh
+HATH_TSNET=1
+HATH_CONTROL_URL=https://headscale.example.com
+DIMAAG_URL=http://dimaag:8080
+YAAD_URL=http://yaad:8080
+```
 
 ## API clients
 
 - `src/api/dimaag.ts` — messages, agents, logs, events stream
 - `src/api/yaad.ts` — query, recall, nodes, history
 
-Base URLs from env (MacBook Docker defaults shown):
-
-```sh
-DIMAAG_URL=http://localhost:8091
-YAAD_URL=http://localhost:8090
-```
-
 Root Dadi id: `00000000-0000-4000-8000-000000000001`.
 
-HTTP allowlists for those origins live in `src-tauri/capabilities/default.json` (Tauri v2 permission scopes).
+HTTP allowlists live in `src-tauri/capabilities/default.json` (includes `127.0.0.1:*` for the local tsnet proxy).
 
 ## Chrome and routes
 
@@ -59,10 +88,11 @@ Routes: `/`, `/agents`, `/memory`, `/calendar`, `/system` (placeholders).
 
 ## Develop against local Docker
 
-With Dwar, Yaad, and Dimaag up on the usual ports:
+With Dwar, Yaad, and Dimaag up on the usual ports (no tsnet needed):
 
 ```sh
 cd hath
+cd net && ./build.sh && cd ..
 npm install
 npm run tauri dev
 ```
@@ -73,13 +103,14 @@ On launch Hath auto-connects. The header should show **ONLINE**, and:
 curl -s http://localhost:8091/agents | jq '.agents[] | select(.id=="00000000-0000-4000-8000-000000000001")'
 ```
 
-should return root Dadi. The same `GET /agents` path is what Hath uses through the transport.
+should return root Dadi.
 
 ### Scripts
 
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | Vite only (browser; HTTP plugin needs Tauri) |
-| `npm run tauri dev` | Full app |
+| `npm run tauri dev` | Full app (requires `net/build.sh` first) |
 | `npm run build` | Frontend production build |
 | `npm run tauri build` | Native bundle |
+| `cd net && ./build.sh` | Build libhathnet for linking |

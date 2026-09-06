@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { DIMAAG_URL, dimaag, transport } from "../api";
-import { HttpTransport } from "../api/http-transport";
 import type { DimaagEvent } from "../api/types";
 import { subscribeConnection } from "../store/connection";
 import { seedRunningFromAgents, setLaneRunning } from "../store/running";
@@ -25,13 +24,6 @@ function isDimaagEvent(data: unknown): data is DimaagEvent {
 async function refetchAgents(): Promise<void> {
   const { agents } = await dimaag.listAgents();
   seedRunningFromAgents(agents);
-}
-
-function httpTransport(): HttpTransport {
-  if (!(transport instanceof HttpTransport)) {
-    throw new Error("useEvents expects HttpTransport until tsnet lands");
-  }
-  return transport;
 }
 
 /**
@@ -77,7 +69,7 @@ export function useEvents(): void {
       const delay = backoff;
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       timer = setTimeout(() => {
-        if (gen !== generation || !httpTransport().isActive()) {
+        if (gen !== generation || !transport.isActive()) {
           return;
         }
         void open(gen);
@@ -85,7 +77,7 @@ export function useEvents(): void {
     };
 
     const open = async (gen: number) => {
-      if (gen !== generation || !httpTransport().isActive()) {
+      if (gen !== generation || !transport.isActive()) {
         return;
       }
 
@@ -111,7 +103,7 @@ export function useEvents(): void {
         if (gen !== generation) {
           return;
         }
-        if (state === "disconnected" && httpTransport().isActive()) {
+        if (state === "disconnected" && transport.isActive()) {
           teardownStream();
           scheduleReconnect(gen);
         }
@@ -119,7 +111,7 @@ export function useEvents(): void {
     };
 
     const onConnection = () => {
-      const active = httpTransport().isActive();
+      const active = transport.isActive();
       if (active && !wasActive) {
         wasActive = true;
         generation += 1;

@@ -14,6 +14,8 @@ export interface Transport {
     onEvent: (data: unknown) => void;
   }): () => void;
 
+  /** True after connect() until disconnect() — drives event-stream reconnect. */
+  isActive(): boolean;
   connectionState(): ConnectionState;
   onConnectionChange(listener: (state: ConnectionState) => void): () => void;
   connect(): Promise<void>;
