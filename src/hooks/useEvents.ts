@@ -1,7 +1,13 @@
 import { useEffect } from "react";
 import { DIMAAG_URL, dimaag, transport } from "../api";
 import type { DimaagEvent } from "../api/types";
+import { ROOT_DADI_ID } from "../api/types";
 import { subscribeConnection } from "../store/connection";
+import {
+  ingestLiveMessage,
+  isUserThreadMessage,
+  setThinking,
+} from "../store/chat";
 import { seedRunningFromAgents, setLaneRunning } from "../store/running";
 
 const INITIAL_BACKOFF_MS = 1000;
@@ -57,10 +63,41 @@ export function useEvents(): void {
       if (!isDimaagEvent(data)) {
         return;
       }
+
+      if (data.type === "message") {
+        if (
+          data.agent_id === ROOT_DADI_ID &&
+          isUserThreadMessage(data.from_agent_id, data.to_agent_id)
+        ) {
+          ingestLiveMessage({
+            seq: data.seq,
+            from_user: data.from_agent_id === null,
+            content: data.content,
+            at: data.at,
+          });
+        }
+        return;
+      }
+
       if (data.type === "lane_started") {
         setLaneRunning(data.agent_id, data.lane, true);
-      } else if (data.type === "lane_finished") {
+        if (
+          data.agent_id === ROOT_DADI_ID &&
+          data.lane === "conversation"
+        ) {
+          setThinking(true);
+        }
+        return;
+      }
+
+      if (data.type === "lane_finished") {
         setLaneRunning(data.agent_id, data.lane, false);
+        if (
+          data.agent_id === ROOT_DADI_ID &&
+          data.lane === "conversation"
+        ) {
+          setThinking(false);
+        }
       }
     };
 

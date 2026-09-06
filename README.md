@@ -86,6 +86,16 @@ Header + chat sidebar are persistent — they mount once. Only `<Outlet />` swap
 
 Routes: `/`, `/agents`, `/memory`, `/calendar`, `/system` (placeholders).
 
+## Chat
+
+Chat always targets root Dadi (`00000000-0000-4000-8000-000000000001`). There is no thread spawning from the client — `spawn_agent` is a tool Dadi can call, not an HTTP route Hath can hit. One continuous conversation.
+
+History is seeded from `GET /agents/:id/logs?event=message` (newest-first from Dimaag; reversed before render) and filtered to the user thread: messages where `from_agent_id` or `to_agent_id` is null. Live updates arrive over SSE `message` events; optimistic sends reconcile on matching content + seq.
+
+`agent_logs` survives Dimaag restarts; the in-process transcript does not. After a restart Hath can show durable history that Dimaag no longer has in working context. That divergence is intentional — the audit trail is durable, the live context is not. Hath does not try to reconcile them.
+
+Replies are plain text with preserved whitespace (`white-space: pre-wrap`). No markdown renderer yet — Dadi may emit markdown, but rendering it (code blocks, links, tables) is a deliberate later decision.
+
 ## Develop against local Docker
 
 With Dwar, Yaad, and Dimaag up on the usual ports (no tsnet needed):

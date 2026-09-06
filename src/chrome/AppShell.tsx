@@ -27,6 +27,7 @@ export function AppShell() {
   }, []);
 
   const openChat = () => {
+    // sessionKey bumps so ChatSidebar scrolls to bottom; history is not cleared.
     setSessionKey((k) => k + 1);
     setDrawerOpen(true);
   };
