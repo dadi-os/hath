@@ -6,7 +6,7 @@ import { CalendarPage } from "./pages/CalendarPage";
 import { MemoryPage } from "./pages/MemoryPage";
 import { SystemPage } from "./pages/SystemPage";
 import { WidgetGridPage } from "./pages/WidgetGridPage";
-import { HATH_TARGET } from "./target";
+import { useTarget } from "./hooks/useTarget";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,7 +18,8 @@ const queryClient = new QueryClient({
 });
 
 function AppRoutes() {
-  const allowAgents = HATH_TARGET !== "mobile";
+  const target = useTarget();
+  const allowAgents = target !== "mobile";
 
   return (
     <Routes>

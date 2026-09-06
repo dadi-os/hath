@@ -1,34 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fetch } from "@tauri-apps/plugin-http";
+import {
+  loadCredentials,
+  type Credentials,
+} from "./credentials";
 import type { ConnectionState, Transport } from "./transport";
 import { consumeSseBuffer } from "./sse";
 
-export class AuthKeyRequiredError extends Error {
-  constructor(message = "Headscale pre-auth key required") {
+export class NotProvisionedError extends Error {
+  constructor(message = "Provisioning required") {
     super(message);
-    this.name = "AuthKeyRequiredError";
+    this.name = "NotProvisionedError";
   }
 }
 
-function looksLikeAuthError(message: string): boolean {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("auth key required") ||
-    lower.includes("auth") ||
-    lower.includes("unauthorized") ||
-    lower.includes("preauth") ||
-    lower.includes("pre-auth") ||
-    lower.includes("login")
-  );
-}
-
-async function loadStoredAuthKey(): Promise<string | null> {
-  return invoke<string | null>("net_load_auth_key");
-}
-
-export async function saveAuthKey(authKey: string): Promise<void> {
-  await invoke("net_save_auth_key", { authKey });
-}
+const RETRY_MS = 3000;
 
 /**
  * Transport that dials Dimaag/Yaad through an embedded tsnet node.
@@ -40,21 +26,22 @@ export class TsnetTransport implements Transport {
   private active = false;
   private readonly listeners = new Set<(state: ConnectionState) => void>();
   private streamAbort: AbortController | null = null;
-  private needsAuthKey = false;
-  private readonly authListeners = new Set<(needed: boolean) => void>();
+  private needsProvisioning = false;
+  private readonly provisioningListeners = new Set<(needed: boolean) => void>();
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   isActive(): boolean {
     return this.active;
   }
 
-  authKeyNeeded(): boolean {
-    return this.needsAuthKey;
+  needsProvisioningKey(): boolean {
+    return this.needsProvisioning;
   }
 
-  onAuthKeyNeeded(listener: (needed: boolean) => void): () => void {
-    this.authListeners.add(listener);
+  onProvisioningNeeded(listener: (needed: boolean) => void): () => void {
+    this.provisioningListeners.add(listener);
     return () => {
-      this.authListeners.delete(listener);
+      this.provisioningListeners.delete(listener);
     };
   }
 
@@ -69,39 +56,45 @@ export class TsnetTransport implements Transport {
     };
   }
 
-  async connect(): Promise<void> {
-    const controlUrl = import.meta.env.HATH_CONTROL_URL;
-    if (!controlUrl) {
-      throw new Error("HATH_CONTROL_URL is required when using tsnet");
+  /**
+   * Start the mesh. Pass `override` during first-run provisioning so a bad
+   * key is not persisted and does not start the unreachable retry loop.
+   */
+  async connect(override?: Credentials): Promise<void> {
+    this.clearRetry();
+
+    const credentials = override ?? (await loadCredentials());
+    if (!credentials) {
+      this.active = false;
+      this.port = null;
+      this.setProvisioningNeeded(true);
+      this.setState("disconnected");
+      throw new NotProvisionedError();
     }
 
     this.active = true;
-    this.setAuthNeeded(false);
+    this.setProvisioningNeeded(false);
     this.setState("connecting");
 
     try {
-      const authKey = (await loadStoredAuthKey()) ?? "";
-      this.port = await invoke<number>("net_start", {
-        controlUrl,
-        authKey,
-      });
+      this.port = await this.startNode(credentials);
       this.setState("connected");
     } catch (err) {
-      this.active = false;
       this.port = null;
       this.setState("disconnected");
-      const message = err instanceof Error ? err.message : String(err);
-      const stored = await loadStoredAuthKey();
-      if (!stored && looksLikeAuthError(message)) {
-        this.setAuthNeeded(true);
-        throw new AuthKeyRequiredError(message);
+      if (override) {
+        this.active = false;
+        this.setProvisioningNeeded(true);
+      } else {
+        this.scheduleRetry();
       }
-      throw err instanceof Error ? err : new Error(message);
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
   async disconnect(): Promise<void> {
     this.active = false;
+    this.clearRetry();
     this.streamAbort?.abort();
     this.streamAbort = null;
     try {
@@ -175,6 +168,36 @@ export class TsnetTransport implements Transport {
     };
   }
 
+  private async startNode(credentials: Credentials): Promise<number> {
+    return invoke<number>("net_start", {
+      controlUrl: credentials.control_url,
+      authKey: credentials.auth_key,
+      nodeName: credentials.node_name,
+    });
+  }
+
+  private scheduleRetry(): void {
+    if (!this.active || this.retryTimer !== null) {
+      return;
+    }
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (!this.active) {
+        return;
+      }
+      void this.connect().catch(() => {
+        // Unreachable: UI stays calm; retry continues while active.
+      });
+    }, RETRY_MS);
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
   private async readSse(
     baseUrl: string,
     path: string,
@@ -240,12 +263,12 @@ export class TsnetTransport implements Transport {
     this.setState("disconnected");
   }
 
-  private setAuthNeeded(needed: boolean): void {
-    if (this.needsAuthKey === needed) {
+  private setProvisioningNeeded(needed: boolean): void {
+    if (this.needsProvisioning === needed) {
       return;
     }
-    this.needsAuthKey = needed;
-    for (const listener of this.authListeners) {
+    this.needsProvisioning = needed;
+    for (const listener of this.provisioningListeners) {
       listener(needed);
     }
   }

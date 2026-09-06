@@ -1,5 +1,5 @@
 /**
- * Shared SSE chunk parsing for HttpTransport and TsnetTransport.
+ * Shared SSE chunk parsing for TsnetTransport.
  * Splits on blank lines, extracts `data:` payloads, skips [DONE]/malformed JSON.
  */
 export function consumeSseBuffer(

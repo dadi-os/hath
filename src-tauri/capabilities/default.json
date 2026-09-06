@@ -6,18 +6,13 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "os:default",
     "allow-net",
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "http://localhost:8090" },
-        { "url": "http://localhost:8090/**" },
-        { "url": "http://localhost:8091" },
-        { "url": "http://localhost:8091/**" },
-        { "url": "http://127.0.0.1:8090" },
-        { "url": "http://127.0.0.1:8090/**" },
-        { "url": "http://127.0.0.1:8091" },
-        { "url": "http://127.0.0.1:8091/**" },
+        { "url": "http://*.dadi" },
+        { "url": "http://*.dadi/**" },
         { "url": "http://127.0.0.1:*" },
         { "url": "http://127.0.0.1:*/**" },
         { "url": "http://localhost:*" },

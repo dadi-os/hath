@@ -1,15 +1,9 @@
-export type HathTarget = "kiosk" | "desktop" | "mobile";
+import { platform } from "@tauri-apps/plugin-os";
 
-const raw = import.meta.env.HATH_TARGET ?? "desktop";
+export type Target = "desktop" | "mobile";
 
-function parseTarget(value: string): HathTarget {
-  if (value === "kiosk" || value === "desktop" || value === "mobile") {
-    return value;
-  }
-  throw new Error(
-    `Invalid HATH_TARGET "${value}". Expected kiosk, desktop, or mobile.`,
-  );
+/** Runtime form factor. Do not infer from viewport width. */
+export function detectTarget(): Target {
+  const p = platform();
+  return p === "ios" || p === "android" ? "mobile" : "desktop";
 }
-
-/** Build-time target. Do not infer from viewport width. */
-export const HATH_TARGET: HathTarget = parseTarget(raw);

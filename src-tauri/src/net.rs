@@ -2,8 +2,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 extern "C" {
@@ -30,6 +30,13 @@ impl Default for NetState {
             port: Mutex::new(None),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Credentials {
+    pub control_url: String,
+    pub auth_key: String,
+    pub node_name: String,
 }
 
 fn last_error_string() -> String {
@@ -62,7 +69,7 @@ fn start_node(
     Ok(code as u16)
 }
 
-fn stop_node() {
+pub fn stop_node() {
     unsafe { hathnet_stop() };
 }
 
@@ -80,33 +87,13 @@ fn tsnet_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn auth_key_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn credentials_path(app: &AppHandle) -> Result<PathBuf, String> {
     let data = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("app_data_dir: {e}"))?;
     std::fs::create_dir_all(&data).map_err(|e| format!("create app data dir: {e}"))?;
-    Ok(data.join("headscale-auth-key"))
-}
-
-fn load_or_create_hostname(state_dir: &Path) -> Result<String, String> {
-    let path = state_dir.join("hostname");
-    if path.exists() {
-        let existing = std::fs::read_to_string(&path).map_err(|e| format!("read hostname: {e}"))?;
-        let trimmed = existing.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let suffix = format!("{:x}", (nanos % 0xffff_ffff) as u32);
-    let hostname = format!("hath-{}-{}", std::env::consts::OS, suffix);
-    std::fs::write(&path, &hostname).map_err(|e| format!("write hostname: {e}"))?;
-    Ok(hostname)
+    Ok(data.join("credentials.json"))
 }
 
 /// Bring up the embedded tsnet node and local proxy. Blocks until Up completes.
@@ -116,6 +103,7 @@ pub async fn net_start(
     state: State<'_, NetState>,
     control_url: String,
     auth_key: String,
+    node_name: String,
 ) -> Result<u16, String> {
     {
         let guard = state.port.lock().map_err(|e| e.to_string())?;
@@ -124,8 +112,13 @@ pub async fn net_start(
         }
     }
 
+    let trimmed_name = node_name.trim();
+    if trimmed_name.is_empty() {
+        return Err("node_name is empty".into());
+    }
+
     let state_dir = tsnet_dir(&app)?;
-    let hostname = load_or_create_hostname(&state_dir)?;
+    let hostname = trimmed_name.to_string();
 
     let port = tauri::async_runtime::spawn_blocking(move || {
         start_node(&control_url, &auth_key, &hostname, &state_dir)
@@ -154,25 +147,36 @@ pub fn net_status() -> u8 {
 }
 
 #[tauri::command]
-pub fn net_load_auth_key(app: AppHandle) -> Result<Option<String>, String> {
-    let path = auth_key_path(&app)?;
+pub fn net_load_credentials(app: AppHandle) -> Result<Option<Credentials>, String> {
+    let path = credentials_path(&app)?;
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read auth key: {e}"))?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read credentials: {e}"))?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
-    Ok(Some(trimmed.to_string()))
+    let credentials: Credentials =
+        serde_json::from_str(trimmed).map_err(|e| format!("parse credentials: {e}"))?;
+    if credentials.control_url.trim().is_empty()
+        || credentials.auth_key.trim().is_empty()
+        || credentials.node_name.trim().is_empty()
+    {
+        return Ok(None);
+    }
+    Ok(Some(credentials))
 }
 
 #[tauri::command]
-pub fn net_save_auth_key(app: AppHandle, auth_key: String) -> Result<(), String> {
-    let path = auth_key_path(&app)?;
-    let trimmed = auth_key.trim();
-    if trimmed.is_empty() {
-        return Err("auth key is empty".into());
+pub fn net_save_credentials(app: AppHandle, credentials: Credentials) -> Result<(), String> {
+    if credentials.control_url.trim().is_empty()
+        || credentials.auth_key.trim().is_empty()
+        || credentials.node_name.trim().is_empty()
+    {
+        return Err("credentials are incomplete".into());
     }
-    std::fs::write(&path, trimmed).map_err(|e| format!("write auth key: {e}"))
+    let path = credentials_path(&app)?;
+    let json = serde_json::to_string_pretty(&credentials).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("write credentials: {e}"))
 }

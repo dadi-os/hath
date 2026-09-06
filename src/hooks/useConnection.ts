@@ -11,7 +11,6 @@ export function useConnection(): {
   state: ConnectionState;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
-  toggle: () => Promise<void>;
 } {
   const state = useSyncExternalStore(
     subscribeConnection,
@@ -23,12 +22,5 @@ export function useConnection(): {
     state,
     connect: connectTransport,
     disconnect: disconnectTransport,
-    toggle: async () => {
-      if (state === "disconnected") {
-        await connectTransport();
-      } else {
-        await disconnectTransport();
-      }
-    },
   };
 }

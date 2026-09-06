@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { DIMAAG_URL, dimaag, transport } from "../api";
 import type { DimaagEvent } from "../api/types";
 import { ROOT_DADI_ID } from "../api/types";
@@ -12,6 +13,9 @@ import { seedRunningFromAgents, setLaneRunning } from "../store/running";
 
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
+
+/** React Query key for GET /agents. */
+export const AGENTS_QUERY_KEY = ["agents"] as const;
 
 function isDimaagEvent(data: unknown): data is DimaagEvent {
   if (!data || typeof data !== "object") {
@@ -27,9 +31,10 @@ function isDimaagEvent(data: unknown): data is DimaagEvent {
   );
 }
 
-async function refetchAgents(): Promise<void> {
+async function refetchAgents(queryClient: QueryClient): Promise<void> {
   const { agents } = await dimaag.listAgents();
   seedRunningFromAgents(agents);
+  queryClient.setQueryData(AGENTS_QUERY_KEY, agents);
 }
 
 /**
@@ -37,6 +42,8 @@ async function refetchAgents(): Promise<void> {
  * GET /agents on reconnect (the stream has no replay).
  */
 export function useEvents(): void {
+  const queryClient = useQueryClient();
+
   useEffect(() => {
     let generation = 0;
     let backoff = INITIAL_BACKOFF_MS;
@@ -98,6 +105,19 @@ export function useEvents(): void {
         ) {
           setThinking(false);
         }
+        return;
+      }
+
+      if (data.type === "agent_spawned" || data.type === "agent_modified") {
+        void queryClient.invalidateQueries({ queryKey: AGENTS_QUERY_KEY });
+        void queryClient.invalidateQueries({
+          queryKey: ["agent", data.agent_id],
+        });
+        if (data.type === "agent_spawned") {
+          void queryClient.invalidateQueries({
+            queryKey: ["agent", data.parent_agent_id],
+          });
+        }
       }
     };
 
@@ -119,7 +139,7 @@ export function useEvents(): void {
       }
 
       try {
-        await refetchAgents();
+        await refetchAgents(queryClient);
         if (gen !== generation) {
           return;
         }
@@ -173,5 +193,5 @@ export function useEvents(): void {
       clearTimer();
       teardownStream();
     };
-  }, []);
+  }, [queryClient]);
 }

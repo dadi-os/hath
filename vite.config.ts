@@ -9,8 +9,6 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
-  envPrefix: ["VITE_", "HATH_", "DIMAAG_", "YAAD_"],
-
   clearScreen: false,
   server: {
     port: 1420,

@@ -4,7 +4,9 @@ import { motion, AnimatePresence } from "motion/react";
 import { ChatSidebar } from "./ChatSidebar";
 import { DisconnectedState } from "./DisconnectedState";
 import { Header } from "./Header";
-import { connectTransport } from "../store/connection";
+import {
+  connectTransport,
+} from "../store/connection";
 import { useConnection } from "../hooks/useConnection";
 import { useEvents } from "../hooks/useEvents";
 import { useTarget } from "../hooks/useTarget";
@@ -25,6 +27,10 @@ export function AppShell() {
   useEffect(() => {
     void connectTransport();
   }, []);
+
+  useEffect(() => {
+    setDrawerOpen(isMobile);
+  }, [isMobile]);
 
   const openChat = () => {
     // sessionKey bumps so ChatSidebar scrolls to bottom; history is not cleared.

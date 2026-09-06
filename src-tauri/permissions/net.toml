@@ -1,10 +1,10 @@
 [[permission]]
 identifier = "allow-net"
-description = "Allows controlling the embedded tsnet node and storing the Headscale pre-auth key."
+description = "Allows controlling the embedded tsnet node and storing provisioning credentials."
 commands.allow = [
   "net_start",
   "net_stop",
   "net_status",
-  "net_load_auth_key",
-  "net_save_auth_key"
+  "net_load_credentials",
+  "net_save_credentials"
 ]

@@ -1,5 +1,5 @@
 import type { ConnectionState } from "../api/transport";
-import { AuthKeyRequiredError } from "../api/tsnet-transport";
+import { NotProvisionedError } from "../api/tsnet-transport";
 import { transport } from "../api";
 
 type Listener = (state: ConnectionState) => void;
@@ -29,12 +29,11 @@ export async function connectTransport(): Promise<void> {
   try {
     await transport.connect();
   } catch (err) {
-    // Auth-key prompt is shown via DisconnectedState; swallow so auto-connect
-    // on launch does not surface an unhandled rejection.
-    if (err instanceof AuthKeyRequiredError) {
+    // Not provisioned → DisconnectedState shows the setup form.
+    // Unreachable → TsnetTransport retries while active; calm UI, not an error.
+    if (err instanceof NotProvisionedError) {
       return;
     }
-    throw err;
   }
 }
 
