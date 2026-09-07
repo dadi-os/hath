@@ -1,3 +1,7 @@
+import type { MessageAttachment } from "../api/types";
+
+export type { MessageAttachment };
+
 export type ChatMessage = {
   /** Server sequence; optimistic messages use negative values. */
   seq: number;
@@ -14,6 +18,13 @@ export type ChatMessage = {
    * Rendered after settled messages as a draft (reasoning-busy does not queue).
    */
   queued?: boolean;
+  /** Kept only while queued/pending so retry can re-POST; cleared once server content lands. */
+  attachments?: MessageAttachment[];
+  /**
+   * Original user text for POST when `content` is a local display string
+   * (e.g. with `[Image: …]` placeholders before describe-patch).
+   */
+  outboundText?: string;
 };
 
 export type Conversation = {
@@ -37,6 +48,8 @@ export type PendingNewChatMessage = {
   failed?: boolean;
   /** Local-only while Dadi is busy; not POSTed until flush. */
   queued?: boolean;
+  attachments?: MessageAttachment[];
+  outboundText?: string;
 };
 
 /** Queued user→Dadi messages awaiting route_message onto a thread. */
@@ -182,11 +195,36 @@ export function appendMessage(agentId: string, msg: ChatMessage): void {
   emit();
 }
 
+/** Local bubble text before Dimaag patches image descriptions into content. */
+export function formatOutboundContent(
+  text: string,
+  attachments?: MessageAttachment[],
+): string {
+  const trimmed = text.trim();
+  const parts: string[] = [];
+  if (trimmed) {
+    parts.push(trimmed);
+  }
+  for (const att of attachments ?? []) {
+    const name = att.filename?.trim();
+    if (att.media_type.startsWith("image/")) {
+      parts.push(name ? `[Image: ${name}]` : "[Image]");
+    } else {
+      parts.push(name ? `[File: ${name}]` : "[File]");
+    }
+  }
+  return parts.join("\n");
+}
+
 /** Insert an optimistic user message; returns its temporary (negative) seq. */
 export function addOptimistic(
   agentId: string,
   content: string,
-  opts?: { queued?: boolean },
+  opts?: {
+    queued?: boolean;
+    attachments?: MessageAttachment[];
+    outboundText?: string;
+  },
 ): number {
   const seq = nextTempSeq;
   nextTempSeq -= 1;
@@ -198,6 +236,8 @@ export function addOptimistic(
     at: new Date().toISOString(),
     pending: true,
     queued: queued || undefined,
+    attachments: opts?.attachments,
+    outboundText: opts?.outboundText,
   };
   setThread(agentId, sortMessages([...threadOf(agentId), msg]));
   emit();
@@ -209,6 +249,7 @@ export function resolveOptimistic(
   agentId: string,
   tempSeq: number,
   realSeq: number,
+  content?: string,
 ): void {
   const current = threadOf(agentId);
   if (current.some((m) => m.seq === realSeq)) {
@@ -224,7 +265,15 @@ export function resolveOptimistic(
     sortMessages(
       current.map((m) =>
         m.seq === tempSeq
-          ? { ...m, seq: realSeq, pending: false, failed: false }
+          ? {
+              ...m,
+              seq: realSeq,
+              pending: false,
+              failed: false,
+              content: content ?? m.content,
+              attachments: undefined,
+              outboundText: undefined,
+            }
           : m,
       ),
     ),
@@ -271,7 +320,11 @@ export function listQueuedThread(agentId: string): ChatMessage[] {
 /** Append a message to Dadi; `queued` stays local-only until flush. */
 export function enqueuePendingNewChat(
   content: string,
-  opts?: { queued?: boolean },
+  opts?: {
+    queued?: boolean;
+    attachments?: MessageAttachment[];
+    outboundText?: string;
+  },
 ): number {
   const queued = Boolean(opts?.queued);
   const msg: PendingNewChatMessage = {
@@ -280,6 +333,8 @@ export function enqueuePendingNewChat(
     at: new Date().toISOString(),
     pending: true,
     queued: queued || undefined,
+    attachments: opts?.attachments,
+    outboundText: opts?.outboundText,
   };
   const existing = state.pendingNewChat;
   state = {
@@ -414,6 +469,8 @@ export function tryBindPendingNewChat(agentId: string): boolean {
       at: m.at,
       pending: true,
       queued: true,
+      attachments: m.attachments,
+      outboundText: m.outboundText,
     }));
     setThread(agentId, sortMessages([...threadOf(agentId), ...extras]));
   }
@@ -434,7 +491,8 @@ export function isUserThreadMessage(
 
 /**
  * If a pending optimistic row has the same content, resolve it to realSeq.
- * Otherwise append. Used by the SSE message handler.
+ * Otherwise, if exactly one in-flight (non-queued) user pending exists — typical
+ * after image describe rewrites content — resolve that. Else append.
  */
 export function ingestLiveMessage(agentId: string, msg: ChatMessage): void {
   const current = threadOf(agentId);
@@ -442,11 +500,19 @@ export function ingestLiveMessage(agentId: string, msg: ChatMessage): void {
     return;
   }
   if (msg.from_user) {
-    const pending = current.find(
-      (m) => m.pending && m.from_user && m.content === msg.content,
+    const exact = current.find(
+      (m) =>
+        m.pending && m.from_user && !m.queued && m.content === msg.content,
     );
-    if (pending) {
-      resolveOptimistic(agentId, pending.seq, msg.seq);
+    if (exact) {
+      resolveOptimistic(agentId, exact.seq, msg.seq, msg.content);
+      return;
+    }
+    const inFlight = current.filter(
+      (m) => m.pending && m.from_user && !m.queued,
+    );
+    if (inFlight.length === 1) {
+      resolveOptimistic(agentId, inFlight[0]!.seq, msg.seq, msg.content);
       return;
     }
   }

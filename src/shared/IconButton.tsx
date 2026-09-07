@@ -107,6 +107,40 @@ export function IconSend() {
   );
 }
 
+export function IconAttach() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M15.2 8.4 9.1 14.5a3.6 3.6 0 0 1-5.1-5.1l6.5-6.5a2.4 2.4 0 0 1 3.4 3.4L7.4 12.8a1.2 1.2 0 1 1-1.7-1.7l5.4-5.4"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function IconCamera() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M3.2 6.2h2.1l1.1-1.6h5.2l1.1 1.6h2.1A1.5 1.5 0 0 1 16.3 7.7v6.1a1.5 1.5 0 0 1-1.5 1.5H3.2A1.5 1.5 0 0 1 1.7 13.8V7.7a1.5 1.5 0 0 1 1.5-1.5Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <circle
+        cx="9"
+        cy="10.4"
+        r="2.35"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
 export function IconRetry() {
   return (
     <svg viewBox="0 0 15 15" fill="none" aria-hidden className="size-[15px]">

@@ -4,11 +4,17 @@ import type {
   AgentRecord,
   LogEvent,
   LogRecord,
+  MessageAttachment,
+  PostMessageResponse,
 } from "./types";
 
 export function createDimaagClient(transport: Transport, baseUrl: string) {
   return {
-    postMessage(body: { to_agent_id: string; content: string }): Promise<{ ok: true }> {
+    postMessage(body: {
+      to_agent_id: string;
+      content: string;
+      attachments?: MessageAttachment[];
+    }): Promise<PostMessageResponse> {
       return transport.request({
         baseUrl,
         path: "/messages",

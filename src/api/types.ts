@@ -2,6 +2,20 @@ export type Lane = "reasoning" | "conversation";
 
 export type LogEvent = "thought" | "tool_call" | "tool_result" | "message";
 
+/** Outbound file on POST /messages — base64 payload, no data-URL prefix. */
+export type MessageAttachment = {
+  media_type: string;
+  data: string;
+  filename?: string;
+};
+
+export type PostMessageResponse = {
+  to_agent_id: string;
+  content: string;
+  seq: number;
+  created_at: string;
+};
+
 export type AgentRecord = {
   id: string;
   name: string;

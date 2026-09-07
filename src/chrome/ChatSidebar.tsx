@@ -20,6 +20,7 @@ import {
   addOptimistic,
   clearLiveChat,
   enqueuePendingNewChat,
+  formatOutboundContent,
   getChatState,
   listQueuedPendingNewChat,
   listQueuedThread,
@@ -33,13 +34,24 @@ import {
   openProvisional,
   removeMessage,
   removePendingNewChatMessage,
+  resolveOptimistic,
   subscribeChat,
   type ChatMessage,
+  type MessageAttachment,
 } from "../store/chat";
 import { getRunning, subscribeRunning } from "../store/running";
 import {
+  filesToDraftAttachments,
+  MAX_ATTACHMENTS,
+  revokeDraftPreviews,
+  toMessageAttachments,
+  type DraftAttachment,
+} from "../shared/attachments";
+import {
+  IconAttach,
   IconBack,
   IconButton,
+  IconCamera,
   IconDismiss,
   IconRetry,
   IconSend,
@@ -57,6 +69,7 @@ const NEAR_BOTTOM_PX = 80;
 const TEXTAREA_MAX_PX = 88;
 const NEW_CHAT_TIMEOUT_MS = 90_000;
 const COMPOSER_PAD = 72;
+const COMPOSER_PAD_WITH_ATTACH = 128;
 
 function truncateOneLine(text: string, max = 72): string {
   const one = text.replace(/\s+/g, " ").trim();
@@ -100,8 +113,13 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   );
 
   const [draft, setDraft] = useState("");
+  const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>(
+    [],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const stickToBottomRef = useRef(true);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const newChatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -150,6 +168,8 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
           pending: m.pending,
           failed: m.failed,
           queued: m.queued,
+          attachments: m.attachments,
+          outboundText: m.outboundText,
         }))
       : [];
 
@@ -240,6 +260,14 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     };
   }, []);
 
+  const draftAttachmentsRef = useRef(draftAttachments);
+  draftAttachmentsRef.current = draftAttachments;
+  useEffect(() => {
+    return () => {
+      revokeDraftPreviews(draftAttachmentsRef.current);
+    };
+  }, []);
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) {
@@ -266,19 +294,34 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
   }, [chat.pendingNewChat]);
 
+  const clearDraftAttachments = () => {
+    setDraftAttachments((prev) => {
+      revokeDraftPreviews(prev);
+      return [];
+    });
+  };
+
   const sendNewChat = async (opts?: {
     content?: string;
+    attachments?: MessageAttachment[];
     existingSeq?: number;
     force?: boolean;
   }) => {
+    const attachments = opts?.attachments;
     const trimmed = (opts?.content ?? draft).trim();
-    if (!trimmed || !connected || !rootId) {
+    const display = formatOutboundContent(trimmed, attachments);
+    if (
+      (!trimmed && (!attachments || attachments.length === 0)) ||
+      !connected ||
+      !rootId
+    ) {
       return;
     }
 
     const queueLocally = conversationBusy && !opts?.force;
     if (opts?.existingSeq === undefined && opts?.content === undefined) {
       setDraft("");
+      clearDraftAttachments();
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
         const el = textareaRef.current;
@@ -293,7 +336,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       markPendingNewChatMessagePending(opts.existingSeq);
       tempSeq = opts.existingSeq;
     } else {
-      tempSeq = enqueuePendingNewChat(trimmed, { queued: queueLocally });
+      tempSeq = enqueuePendingNewChat(display, {
+        queued: queueLocally,
+        attachments,
+        outboundText: trimmed,
+      });
     }
 
     if (queueLocally) {
@@ -313,6 +360,8 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       await dimaag.postMessage({
         to_agent_id: rootId,
         content: trimmed,
+        attachments:
+          attachments && attachments.length > 0 ? attachments : undefined,
       });
     } catch {
       markPendingNewChatMessageFailed(tempSeq);
@@ -326,24 +375,36 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
   };
 
-  const sendThread = async (content: string, existingTempSeq?: number) => {
+  const sendThread = async (
+    content: string,
+    existingTempSeq?: number,
+    attachments?: MessageAttachment[],
+  ) => {
     const trimmed = content.trim();
-    if (!trimmed || !connected || !openAgentId) {
+    const display = formatOutboundContent(trimmed, attachments);
+    if (
+      (!trimmed && (!attachments || attachments.length === 0)) ||
+      !connected ||
+      !openAgentId
+    ) {
       return;
     }
 
-    const conversationHeld =
-      running[openAgentId]?.conversation === true;
-    const queueLocally =
-      existingTempSeq === undefined && conversationHeld;
+    const conversationHeld = running[openAgentId]?.conversation === true;
+    const queueLocally = existingTempSeq === undefined && conversationHeld;
 
     let tempSeq: number;
     if (existingTempSeq !== undefined) {
       markPending(openAgentId, existingTempSeq);
       tempSeq = existingTempSeq;
     } else {
-      tempSeq = addOptimistic(openAgentId, trimmed, { queued: queueLocally });
+      tempSeq = addOptimistic(openAgentId, display, {
+        queued: queueLocally,
+        attachments,
+        outboundText: trimmed,
+      });
       setDraft("");
+      clearDraftAttachments();
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
         const el = textareaRef.current;
@@ -361,10 +422,13 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
 
     try {
-      await dimaag.postMessage({
+      const res = await dimaag.postMessage({
         to_agent_id: openAgentId,
         content: trimmed,
+        attachments:
+          attachments && attachments.length > 0 ? attachments : undefined,
       });
+      resolveOptimistic(openAgentId, tempSeq, res.seq, res.content);
     } catch {
       markFailed(openAgentId, tempSeq);
     }
@@ -375,23 +439,26 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       return;
     }
 
-    // Provisional → root
     if (rootId) {
       const queued = listQueuedPendingNewChat();
       for (const msg of queued) {
         await sendNewChat({
-          content: msg.content,
+          content: msg.outboundText ?? msg.content,
+          attachments: msg.attachments,
           existingSeq: msg.seq,
           force: true,
         });
       }
     }
 
-    // Bound thread
     if (openAgentId) {
       const queued = listQueuedThread(openAgentId);
       for (const msg of queued) {
-        await sendThread(msg.content, msg.seq);
+        await sendThread(
+          msg.outboundText ?? msg.content,
+          msg.seq,
+          msg.attachments,
+        );
       }
     }
   });
@@ -414,7 +481,12 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     if (!msg || !connected || !rootId) {
       return;
     }
-    await sendNewChat({ content: msg.content, existingSeq: seq, force: true });
+    await sendNewChat({
+      content: msg.outboundText ?? msg.content,
+      attachments: msg.attachments,
+      existingSeq: seq,
+      force: true,
+    });
   };
 
   const cancelQueued = (seq: number) => {
@@ -427,13 +499,48 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
   };
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (openAgentId) {
-      void sendThread(draft);
+  const onPickFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) {
       return;
     }
-    void sendNewChat();
+    try {
+      const next = await filesToDraftAttachments(files);
+      setDraftAttachments((prev) => {
+        const room = MAX_ATTACHMENTS - prev.length;
+        if (room <= 0) {
+          revokeDraftPreviews(next);
+          return prev;
+        }
+        const keep = next.slice(0, room);
+        revokeDraftPreviews(next.slice(room));
+        return [...prev, ...keep];
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const removeDraftAttachment = (index: number) => {
+    setDraftAttachments((prev) => {
+      const target = prev[index];
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const attachments =
+      draftAttachments.length > 0
+        ? toMessageAttachments(draftAttachments)
+        : undefined;
+    if (openAgentId) {
+      void sendThread(draft, undefined, attachments);
+      return;
+    }
+    void sendNewChat({ attachments });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -446,6 +553,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   const backToList = () => {
     openList();
     setDraft("");
+    clearDraftAttachments();
   };
 
   const headerTitle = viewingProvisional
@@ -465,7 +573,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     ? `Held for ${talkTargetName}…`
     : `Talk to ${talkTargetName}`;
 
-  const canSubmit = connected && draft.trim().length > 0;
+  const canSubmit =
+    connected &&
+    (draft.trim().length > 0 || draftAttachments.length > 0);
+  const composerPad =
+    draftAttachments.length > 0 ? COMPOSER_PAD_WITH_ATTACH : COMPOSER_PAD;
 
   const settledMessages = (
     viewingProvisional ? provisionalMessages : threadMessages
@@ -534,7 +646,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
               onScroll={onScroll}
               onClick={dismissKeyboard}
               className="absolute inset-0 overflow-y-auto px-4 py-4"
-              style={{ paddingBottom: COMPOSER_PAD }}
+              style={{ paddingBottom: composerPad }}
               initial={{ opacity: 0, x: 18 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -14 }}
@@ -548,7 +660,12 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
                       message={msg}
                       onRetry={
                         openAgentId
-                          ? () => void sendThread(msg.content, msg.seq)
+                          ? () =>
+                              void sendThread(
+                                msg.outboundText ?? msg.content,
+                                msg.seq,
+                                msg.attachments,
+                              )
                           : viewingProvisional
                             ? () => void retryNewChat(msg.seq)
                             : undefined
@@ -579,7 +696,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
               key="list"
               onClick={dismissKeyboard}
               className="absolute inset-0 overflow-y-auto px-2 py-2"
-              style={{ paddingBottom: COMPOSER_PAD }}
+              style={{ paddingBottom: composerPad }}
               initial={{ opacity: 0, x: -18 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 14 }}
@@ -681,6 +798,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
           holdMode={conversationBusy}
           workingMode={reasoningBusy && !conversationBusy}
           textareaRef={textareaRef}
+          fileInputRef={fileInputRef}
+          cameraInputRef={cameraInputRef}
+          attachments={draftAttachments}
+          onRemoveAttachment={removeDraftAttachment}
+          onPickFiles={onPickFiles}
           onSubmit={onSubmit}
           onKeyDown={onKeyDown}
         />
@@ -728,6 +850,11 @@ function FloatingComposer({
   holdMode,
   workingMode,
   textareaRef,
+  fileInputRef,
+  cameraInputRef,
+  attachments,
+  onRemoveAttachment,
+  onPickFiles,
   onSubmit,
   onKeyDown,
 }: {
@@ -741,6 +868,11 @@ function FloatingComposer({
   /** Reasoning working; conversation free — send is live. */
   workingMode: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
+  fileInputRef: RefObject<HTMLInputElement | null>;
+  cameraInputRef: RefObject<HTMLInputElement | null>;
+  attachments: DraftAttachment[];
+  onRemoveAttachment: (index: number) => void;
+  onPickFiles: (files: FileList | null) => void;
   onSubmit: (e: FormEvent) => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
 }) {
@@ -757,7 +889,7 @@ function FloatingComposer({
       {connected ? (
         <form
           onSubmit={onSubmit}
-          className={`pointer-events-auto flex items-end gap-1.5 rounded-[var(--radius)] border border-dashed px-2 py-1.5 shadow-[var(--shadow)] backdrop-blur-md transition-[border-color,background-color] duration-slow ease-hath ${
+          className={`pointer-events-auto flex flex-col gap-1.5 rounded-[var(--radius)] border border-dashed px-2 py-1.5 shadow-[var(--shadow)] backdrop-blur-md transition-[border-color,background-color] duration-slow ease-hath ${
             holdMode
               ? "border-sage-line/70 bg-sage-fill/35"
               : workingMode
@@ -765,29 +897,102 @@ function FloatingComposer({
                 : "border-sage-line bg-bone/92"
           }`}
         >
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-            rows={1}
-            placeholder={placeholder}
-            className={`block max-h-[88px] min-h-[32px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-1.5 text-[13px] leading-snug outline-none placeholder:text-ink-ghost ${
-              holdMode ? "text-ink/70" : "text-ink"
-            }`}
-            style={{ maxHeight: TEXTAREA_MAX_PX }}
-          />
-          <IconButton
-            type="submit"
-            label={holdMode ? "Queue message" : "Send"}
-            disabled={!canSubmit}
-            size="lg"
-            className={`mb-px border-sage-line bg-sage-fill ${
-              workingMode && !holdMode ? "shadow-[0_0_0_1px_rgba(143,163,130,0.35)]" : ""
-            }`}
-          >
-            <IconSend />
-          </IconButton>
+          {attachments.length > 0 ? (
+            <div className="flex gap-1.5 overflow-x-auto px-0.5 pt-0.5">
+              {attachments.map((att, index) => (
+                <div
+                  key={`${att.filename ?? att.media_type}-${index}`}
+                  className="relative shrink-0"
+                >
+                  {att.previewUrl ? (
+                    <img
+                      src={att.previewUrl}
+                      alt={att.filename ?? "attachment"}
+                      className="h-12 w-12 rounded-[6px] object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-12 max-w-[7rem] items-center rounded-[6px] border border-dashed border-sage-line bg-sage-fill/30 px-2 text-[10px] leading-tight text-ink-muted">
+                      <span className="truncate">{att.filename ?? "file"}</span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Remove attachment"
+                    onClick={() => onRemoveAttachment(index)}
+                    className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full bg-bone text-ink-muted shadow-[var(--shadow)]"
+                  >
+                    <IconDismiss />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="flex items-end gap-1">
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              multiple
+              onChange={(e) => {
+                onPickFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => {
+                onPickFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <IconButton
+              type="button"
+              label="Attach file"
+              size="md"
+              className="mb-px border-transparent bg-transparent shadow-none"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <IconAttach />
+            </IconButton>
+            <IconButton
+              type="button"
+              label="Take photo"
+              size="md"
+              className="mb-px border-transparent bg-transparent shadow-none"
+              onClick={() => cameraInputRef.current?.click()}
+            >
+              <IconCamera />
+            </IconButton>
+            <textarea
+              ref={textareaRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKeyDown}
+              rows={1}
+              placeholder={placeholder}
+              className={`block max-h-[88px] min-h-[32px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-1.5 text-[13px] leading-snug outline-none placeholder:text-ink-ghost ${
+                holdMode ? "text-ink/70" : "text-ink"
+              }`}
+              style={{ maxHeight: TEXTAREA_MAX_PX }}
+            />
+            <IconButton
+              type="submit"
+              label={holdMode ? "Queue message" : "Send"}
+              disabled={!canSubmit}
+              size="lg"
+              className={`mb-px border-sage-line bg-sage-fill ${
+                workingMode && !holdMode
+                  ? "shadow-[0_0_0_1px_rgba(143,163,130,0.35)]"
+                  : ""
+              }`}
+            >
+              <IconSend />
+            </IconButton>
+          </div>
         </form>
       ) : (
         <div className="pointer-events-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-3 py-2 text-[13px] text-ink-ghost shadow-[var(--shadow)] backdrop-blur-md">
