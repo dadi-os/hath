@@ -6,6 +6,7 @@ import { useConnection } from "../../hooks/useConnection";
 import { Popover } from "../../shared/Popover";
 import { Tooltip } from "../../shared/Tooltip";
 import { getRunning } from "../../store/running";
+import { AgentActivity } from "./AgentActivity";
 import {
   formatAbsolute,
   formatRelative,
@@ -52,6 +53,28 @@ export function AgentPopover({
     enabled: connected && !!agentId && open,
   });
 
+  // Same cache as AgentActivity — last active is last log, not agents.updated_at
+  // (that column only moves on modify_agent).
+  const activityQuery = useQuery({
+    queryKey: ["agent-logs", agentId, "activity"],
+    queryFn: async () => {
+      if (!agentId) {
+        throw new Error("agentId required");
+      }
+      const { logs } = await dimaag.getAgentLogs(agentId, { limit: 48 });
+      return logs;
+    },
+    enabled: connected && !!agentId && open,
+    refetchInterval: () => {
+      if (!agentId) {
+        return false;
+      }
+      const lanes =
+        runningMap[agentId] ?? detailQuery.data?.running ?? { reasoning: false, conversation: false };
+      return lanes.reasoning || lanes.conversation ? 2_000 : 8_000;
+    },
+  });
+
   useEffect(() => {
     setPromptOpen(false);
   }, [agentId]);
@@ -70,6 +93,8 @@ export function AgentPopover({
   const name = detail?.name ?? listAgent?.name ?? "…";
   const createdAt = detail?.created_at ?? listAgent?.created_at;
   const updatedAt = detail?.updated_at ?? listAgent?.updated_at;
+  const lastActiveAt =
+    activityQuery.data?.[0]?.created_at ?? updatedAt ?? null;
   const visual = visualState(
     {
       id: agentId,
@@ -79,13 +104,14 @@ export function AgentPopover({
       active,
       running,
       created_at: createdAt ?? new Date(0).toISOString(),
-      updated_at: updatedAt ?? new Date(0).toISOString(),
+      updated_at: lastActiveAt ?? updatedAt ?? new Date(0).toISOString(),
     },
     running,
   );
   const status = statusLabel(visual, running);
   const parentId = detail?.parent_agent_id ?? listAgent?.parent_agent_id ?? null;
   const parent = parentId ? agentsById.get(parentId) : undefined;
+  const live = running.reasoning || running.conversation;
 
   return (
     <Popover
@@ -94,7 +120,8 @@ export function AgentPopover({
       anchor={anchor}
       containerRef={containerRef}
       aria-label={`${name} details`}
-      className="max-h-[min(70%,520px)]"
+      className="max-h-[min(78%,580px)]"
+      widthPx={380}
       caret
     >
       <div className="shrink-0 border-b border-rule/60 px-4 py-2.5">
@@ -119,9 +146,13 @@ export function AgentPopover({
             </span>
           </Tooltip>
           <span className="text-ink-ghost">Last active</span>
-          <Tooltip content={updatedAt ? formatAbsolute(updatedAt) : "—"}>
+          <Tooltip content={lastActiveAt ? formatAbsolute(lastActiveAt) : "—"}>
             <span className="text-ink-muted">
-              {updatedAt ? formatRelative(updatedAt) : "—"}
+              {live
+                ? "Now"
+                : lastActiveAt
+                  ? formatRelative(lastActiveAt)
+                  : "—"}
             </span>
           </Tooltip>
           <span className="text-ink-ghost">Status</span>
@@ -143,7 +174,9 @@ export function AgentPopover({
         </section>
 
         {detailQuery.isError && (
-          <p className="text-[13px] text-ink-muted">Could not load agent detail.</p>
+          <p className="mb-4 text-[13px] text-ink-muted">
+            Could not load agent detail.
+          </p>
         )}
 
         {detail && (
@@ -170,7 +203,7 @@ export function AgentPopover({
               )}
             </section>
 
-            <section>
+            <section className="mb-5">
               <h3 className="mb-1.5 text-[11px] font-medium tracking-[2px] text-ink-faint">
                 TOOLS
               </h3>
@@ -180,7 +213,9 @@ export function AgentPopover({
                 <ul className="space-y-2">
                   {detail.tools.map((t) => (
                     <li key={t.name}>
-                      <div className="text-[13px] font-medium text-ink">{t.name}</div>
+                      <div className="text-[13px] font-medium text-ink">
+                        {t.name}
+                      </div>
                       <div className="text-[12px] leading-snug text-ink-muted">
                         {t.usage}
                       </div>
@@ -192,8 +227,15 @@ export function AgentPopover({
           </>
         )}
 
+        <AgentActivity
+          agentId={agentId}
+          open={open}
+          connected={connected}
+          live={live}
+        />
+
         {detailQuery.isLoading && (
-          <p className="text-[13px] text-ink-muted">Loading…</p>
+          <p className="mt-3 text-[13px] text-ink-muted">Loading…</p>
         )}
       </div>
     </Popover>

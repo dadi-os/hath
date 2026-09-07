@@ -151,47 +151,13 @@ export function openAgent(agentId: string): void {
   emit();
 }
 
-/**
- * Replace the confirmed thread. Pending/failed optimistic rows are kept.
- * Live rows whose seq is absent from the seed are preserved (race with fetch).
- */
-export function seedThread(agentId: string, list: ChatMessage[]): void {
-  const bySeq = new Map<number, ChatMessage>();
-  for (const msg of list) {
-    bySeq.set(msg.seq, msg);
-  }
-  for (const msg of threadOf(agentId)) {
-    if (msg.seq < 0) {
-      continue;
-    }
-    if (!bySeq.has(msg.seq)) {
-      bySeq.set(msg.seq, msg);
-    }
-  }
-  const pending = threadOf(agentId).filter((m) => m.seq < 0);
-  setThread(agentId, sortMessages([...bySeq.values(), ...pending]));
-  emit();
-}
-
-/**
- * Replace the conversation list from GET /logs. Keeps any live entry whose
- * last_at is newer than the seed (SSE race).
- */
-export function seedConversations(list: Conversation[]): void {
-  const byId = new Map(list.map((c) => [c.agent_id, c]));
-  for (const existing of state.conversations) {
-    const seeded = byId.get(existing.agent_id);
-    if (!seeded) {
-      byId.set(existing.agent_id, existing);
-      continue;
-    }
-    if (existing.last_at > seeded.last_at) {
-      byId.set(existing.agent_id, existing);
-    }
-  }
+/** Drop live chat when the mesh drops — transcript dies with Dimaag; don't ghost it. */
+export function clearLiveChat(): void {
   state = {
-    ...state,
-    conversations: sortConversations([...byId.values()]),
+    threads: {},
+    conversations: [],
+    pendingNewChat: null,
+    open: { kind: "list" },
   };
   emit();
 }

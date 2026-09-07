@@ -11,7 +11,6 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { dimaag } from "../api";
-import type { AgentRecord, LogRecord } from "../api/types";
 import { useConnection } from "../hooks/useConnection";
 import {
   AGENTS_QUERY_KEY,
@@ -19,9 +18,9 @@ import {
 } from "../hooks/useEvents";
 import {
   addOptimistic,
+  clearLiveChat,
   enqueuePendingNewChat,
   getChatState,
-  isUserThreadMessage,
   listQueuedPendingNewChat,
   listQueuedThread,
   markFailed,
@@ -34,11 +33,8 @@ import {
   openProvisional,
   removeMessage,
   removePendingNewChatMessage,
-  seedConversations,
-  seedThread,
   subscribeChat,
   type ChatMessage,
-  type Conversation,
 } from "../store/chat";
 import { getRunning, subscribeRunning } from "../store/running";
 import {
@@ -56,107 +52,10 @@ type ChatSidebarProps = {
   className?: string;
 };
 
-type MessagePayload = {
-  from_agent_id: string | null;
-  to_agent_id: string | null;
-  content: string;
-  seq: number;
-};
-
 const NEAR_BOTTOM_PX = 80;
 const TEXTAREA_MAX_PX = 88;
 const NEW_CHAT_TIMEOUT_MS = 90_000;
 const COMPOSER_PAD = 72;
-
-function parseMessagePayload(
-  payload: Record<string, unknown>,
-): MessagePayload | null {
-  const seq = payload.seq;
-  const content = payload.content;
-  if (typeof seq !== "number" || typeof content !== "string") {
-    return null;
-  }
-  const from =
-    payload.from_agent_id === null || typeof payload.from_agent_id === "string"
-      ? payload.from_agent_id
-      : undefined;
-  const to =
-    payload.to_agent_id === null || typeof payload.to_agent_id === "string"
-      ? payload.to_agent_id
-      : undefined;
-  if (from === undefined || to === undefined) {
-    return null;
-  }
-  return { from_agent_id: from, to_agent_id: to, content, seq };
-}
-
-function logsToMessages(logs: LogRecord[]): ChatMessage[] {
-  // Dimaag returns newest-first; reverse so the thread reads oldest → newest.
-  //
-  // agent_logs survives restarts but the in-process transcript does not. After
-  // Dimaag restarts the client can show history Dimaag no longer has in context.
-  // That divergence is correct for this architecture — do not reconcile.
-  const chronological = [...logs].reverse();
-  const out: ChatMessage[] = [];
-  for (const log of chronological) {
-    const payload = parseMessagePayload(log.payload);
-    if (!payload) {
-      continue;
-    }
-    if (!isUserThreadMessage(payload.from_agent_id, payload.to_agent_id)) {
-      continue;
-    }
-    out.push({
-      seq: payload.seq,
-      from_user: payload.from_agent_id === null,
-      content: payload.content,
-      at: log.created_at,
-    });
-  }
-  return out;
-}
-
-/**
- * Build conversation summaries from one cross-agent log page.
- *
- * Covers conversations that appear in the last 200 message events — for a
- * personal system that is effectively "all recent conversations," ordered by
- * recency. Completeness beyond that window is a Dimaag query change, not a
- * client N+1 over GET /agents/:id/logs.
- */
-function buildConversations(
-  logs: LogRecord[],
-  agents: AgentRecord[],
-  rootId: string,
-): Conversation[] {
-  const names = new Map(agents.map((a) => [a.id, a.name]));
-  const byAgent = new Map<string, Conversation>();
-  // logs are newest-first; first hit per agent is the latest.
-  for (const log of logs) {
-    if (log.agent_id === rootId || byAgent.has(log.agent_id)) {
-      continue;
-    }
-    const payload = parseMessagePayload(log.payload);
-    if (!payload) {
-      continue;
-    }
-    if (!isUserThreadMessage(payload.from_agent_id, payload.to_agent_id)) {
-      continue;
-    }
-    const name = names.get(log.agent_id);
-    if (!name) {
-      continue;
-    }
-    byAgent.set(log.agent_id, {
-      agent_id: log.agent_id,
-      agent_name: name,
-      last_message: payload.content,
-      last_at: log.created_at,
-      from_user: payload.from_agent_id === null,
-    });
-  }
-  return [...byAgent.values()];
-}
 
 function truncateOneLine(text: string, max = 72): string {
   const one = text.replace(/\s+/g, " ").trim();
@@ -185,9 +84,9 @@ function formatRelative(iso: string, now = Date.now()): string {
 }
 
 /**
- * Conversation list + thread views. New-chat posts to root Dadi and opens a
- * provisional thread; route_message binds it to a child. Thread replies go to
- * that agent directly. Sidebar chrome stays mounted.
+ * Conversation list + thread views. Messages arrive only via SSE (and local
+ * optimistic/queued rows). No history fetch — Dimaag's transcript is in-memory
+ * and dies with the process; agent_logs are not a chat store.
  */
 export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   const { state: connection } = useConnection();
@@ -223,57 +122,16 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     enabled: connected,
   });
 
-  const logsQuery = useQuery({
-    queryKey: ["logs", "message", 200],
-    queryFn: async () => {
-      const { logs } = await dimaag.getLogs({ event: "message", limit: 200 });
-      return logs;
-    },
-    enabled: connected && !!rootId,
-  });
+  useEffect(() => {
+    if (connection === "disconnected") {
+      clearLiveChat();
+    }
+  }, [connection]);
 
   const openAgentId =
     chat.open.kind === "agent" ? chat.open.agentId : null;
   const viewingProvisional = chat.open.kind === "provisional";
   const viewingThread = openAgentId !== null || viewingProvisional;
-
-  const historyQuery = useQuery({
-    queryKey: ["agent-logs", openAgentId, "message"],
-    queryFn: async () => {
-      if (!openAgentId) {
-        throw new Error("openAgentId required");
-      }
-      const { logs } = await dimaag.getAgentLogs(openAgentId, {
-        event: "message",
-        limit: 100,
-      });
-      return logs;
-    },
-    enabled: connected && openAgentId !== null,
-  });
-
-  const onConversations = useEffectEvent(
-    (logs: LogRecord[], agents: AgentRecord[], root: string) => {
-      seedConversations(buildConversations(logs, agents, root));
-    },
-  );
-
-  useEffect(() => {
-    if (logsQuery.data && agentsQuery.data && rootId) {
-      onConversations(logsQuery.data, agentsQuery.data, rootId);
-    }
-  }, [logsQuery.data, agentsQuery.data, rootId]);
-
-  const onHistory = useEffectEvent((agentId: string, logs: LogRecord[]) => {
-    seedThread(agentId, logsToMessages(logs));
-  });
-
-  useEffect(() => {
-    if (openAgentId && historyQuery.data) {
-      onHistory(openAgentId, historyQuery.data);
-    }
-  }, [openAgentId, historyQuery.data]);
-
   const openConversation = chat.conversations.find(
     (c) => c.agent_id === openAgentId,
   );

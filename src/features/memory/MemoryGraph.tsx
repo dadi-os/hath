@@ -4,7 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   type WheelEvent as ReactWheelEvent,
@@ -43,8 +42,6 @@ export type MemoryGraphProps = {
   mode: "full" | "preview";
   entranceKey: string;
   className?: string;
-  /** When set, parent owns search (full page). */
-  searchQuery?: string;
 };
 
 function clientToSvg(
@@ -136,13 +133,12 @@ async function seedAmbient(preview: boolean): Promise<GraphData> {
 }
 
 /**
- * Yaad knowledge graph: force layout, recall search, expand via getNode.
+ * Yaad knowledge graph: force layout, expand via getNode.
  */
 export function MemoryGraph({
   mode,
   entranceKey,
   className,
-  searchQuery = "",
 }: MemoryGraphProps) {
   const { state: connection } = useConnection();
   const connected = connection === "connected";
@@ -170,46 +166,17 @@ export function MemoryGraph({
     null,
   );
 
-  const trimmedSearch = searchQuery.trim();
-
   const ambientQuery = useQuery({
     queryKey: ["yaad", "memory-ambient", preview ? "preview" : "full", entranceKey],
     queryFn: () => seedAmbient(preview),
-    enabled: connected && trimmedSearch.length === 0,
-  });
-
-  const recallQuery = useQuery({
-    queryKey: ["yaad", "memory-recall", trimmedSearch],
-    queryFn: async () => {
-      const res = await yaad.recall({ query: trimmedSearch, limit: cap });
-      return mergeGraph(
-        { nodes: [], edges: [] },
-        {
-          nodes: res.nodes.map((n) => ({
-            ...n,
-            detail: n.detail,
-            score: n.score,
-            hops: n.hops,
-          })),
-          edges: res.edges,
-        },
-        cap,
-      );
-    },
-    enabled: connected && trimmedSearch.length > 0,
+    enabled: connected,
   });
 
   useEffect(() => {
-    if (trimmedSearch.length > 0) {
-      if (recallQuery.data) {
-        setGraph(recallQuery.data);
-      }
-      return;
-    }
     if (ambientQuery.data) {
       setGraph(ambientQuery.data);
     }
-  }, [trimmedSearch, recallQuery.data, ambientQuery.data]);
+  }, [ambientQuery.data]);
 
   useEffect(() => {
     setView({ x: 0, y: 0, k: 1 });
@@ -423,10 +390,8 @@ export function MemoryGraph({
     }
   }, [selectedId, graph.nodes, cap]);
 
-  const loading =
-    trimmedSearch.length > 0 ? recallQuery.isLoading : ambientQuery.isLoading;
-  const errored =
-    trimmedSearch.length > 0 ? recallQuery.isError : ambientQuery.isError;
+  const loading = ambientQuery.isLoading;
+  const errored = ambientQuery.isError;
 
   if (!connected) {
     return (
@@ -456,9 +421,7 @@ export function MemoryGraph({
     return (
       <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
         <p className="px-4 text-center text-[13px] text-ink-ghost">
-          {trimmedSearch
-            ? "Nothing matched that recall"
-            : "No people, places, or memories yet"}
+          No people, places, or memories yet
         </p>
       </div>
     );
@@ -598,31 +561,5 @@ export function MemoryGraph({
         ) : null}
       </Popover>
     </div>
-  );
-}
-
-/** Search field for the full Memory page. */
-export function MemorySearch({
-  value,
-  onChange,
-  onSubmit,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
-}) {
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    onSubmit();
-  };
-  return (
-    <form onSubmit={submit} className="flex items-center gap-2">
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Recall…"
-        className="w-[min(280px,40vw)] rounded-[var(--radius)] border border-dashed border-sage-line bg-bone px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-ghost focus:border-sage"
-      />
-    </form>
   );
 }

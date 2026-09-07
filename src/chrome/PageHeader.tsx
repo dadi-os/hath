@@ -6,14 +6,14 @@ import { Tooltip } from "../shared/Tooltip";
 export type PageHeaderProps = {
   title: string;
   hint: string;
-  /** Optional control on the right (e.g. Memory search) — same row height as other pages. */
+  /** Optional control on the right — same row height as other pages. */
   trailing?: ReactNode;
 };
 
 /**
  * Shared sub-header for full pages under AppShell. Same back control, type,
- * hint, and padding on every route — keep search/actions in `trailing`, not
- * stacked under the title.
+ * hint, and padding on every route — keep actions in `trailing`, not stacked
+ * under the title.
  */
 export function PageHeader({ title, hint, trailing }: PageHeaderProps) {
   const navigate = useNavigate();
