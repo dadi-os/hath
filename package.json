@@ -15,6 +15,7 @@
     "@tauri-apps/plugin-http": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-os": "^2.3.2",
+    "d3-force": "^3.0.0",
     "d3-hierarchy": "^3.1.2",
     "motion": "^13.2.0",
     "react": "^19.1.0",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
+    "@types/d3-force": "^3.0.10",
     "@types/d3-hierarchy": "^3.1.7",
     "@types/node": "^26.4.1",
     "@types/react": "^19.1.8",

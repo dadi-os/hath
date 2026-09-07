@@ -114,18 +114,9 @@ export function AppShell() {
             {state === "disconnected" ? (
               <DisconnectedState />
             ) : (
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={location.pathname}
-                  className="h-full min-h-0"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: SLOW_S, ease: EASE }}
-                >
-                  <Outlet />
-                </motion.div>
-              </AnimatePresence>
+              <div key={location.pathname} className="h-full min-h-0">
+                <Outlet />
+              </div>
             )}
           </div>
         </motion.main>

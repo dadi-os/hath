@@ -1,9 +1,16 @@
+import type { KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { useTarget } from "../hooks/useTarget";
 import { AgentTree } from "../features/agents/AgentTree";
+import { MemoryGraph } from "../features/memory/MemoryGraph";
+import { SystemMap } from "../features/system/SystemMap";
+import { TimelineCalendar } from "../features/timeline/TimelineCalendar";
 import { EASE, SLOW_S } from "../shared/motion";
 import { WidgetFrame } from "../shared/WidgetFrame";
+
+const widgetClass =
+  "h-[min(280px,38vh)] min-h-[200px] w-full cursor-pointer transition-[box-shadow] duration-slow ease-hath hover:shadow-[0_4px_16px_rgba(92,107,82,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage";
 
 /**
  * Home widget grid. Widgets are clickable surfaces that open their page;
@@ -14,16 +21,20 @@ export function WidgetGridPage() {
   const target = useTarget();
   const allowAgents = target !== "mobile";
 
-  const openAgents = () => {
-    navigate("/agents");
-  };
+  const open = (path: string) => () => navigate(path);
+  const onActivate =
+    (path: string) => (e: KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        navigate(path);
+      }
+    };
 
   return (
     <motion.div
       className="grid h-full min-h-0 grid-cols-1 gap-5 p-2 md:grid-cols-2 xl:grid-cols-3"
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
       {allowAgents ? (
@@ -31,14 +42,9 @@ export function WidgetGridPage() {
           title="AGENTS"
           role="link"
           tabIndex={0}
-          onClick={openAgents}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              openAgents();
-            }
-          }}
-          className="h-[min(280px,38vh)] min-h-[200px] w-full cursor-pointer transition-[box-shadow] duration-slow ease-hath hover:shadow-[0_4px_16px_rgba(92,107,82,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage"
+          onClick={open("/agents")}
+          onKeyDown={onActivate("/agents")}
+          className={widgetClass}
         >
           <AgentTree mode="preview" entranceKey="home-agents" hideLabels />
         </WidgetFrame>
@@ -52,6 +58,39 @@ export function WidgetGridPage() {
           </p>
         </WidgetFrame>
       )}
+
+      <WidgetFrame
+        title="MEMORY"
+        role="link"
+        tabIndex={0}
+        onClick={open("/memory")}
+        onKeyDown={onActivate("/memory")}
+        className={widgetClass}
+      >
+        <MemoryGraph mode="preview" entranceKey="home-memory" />
+      </WidgetFrame>
+
+      <WidgetFrame
+        title="TIMELINE"
+        role="link"
+        tabIndex={0}
+        onClick={open("/timeline")}
+        onKeyDown={onActivate("/timeline")}
+        className={widgetClass}
+      >
+        <TimelineCalendar mode="preview" hideIdeas />
+      </WidgetFrame>
+
+      <WidgetFrame
+        title="SYSTEM"
+        role="link"
+        tabIndex={0}
+        onClick={open("/system")}
+        onKeyDown={onActivate("/system")}
+        className={widgetClass}
+      >
+        <SystemMap mode="preview" />
+      </WidgetFrame>
     </motion.div>
   );
 }

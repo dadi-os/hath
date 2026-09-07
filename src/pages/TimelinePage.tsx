@@ -1,29 +1,26 @@
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
-import { AgentTree } from "../features/agents/AgentTree";
+import { TimelineCalendar } from "../features/timeline/TimelineCalendar";
 import { IconBack, IconButton } from "../shared/IconButton";
 import { EASE, SLOW_S } from "../shared/motion";
 import { Tooltip } from "../shared/Tooltip";
 
 /**
- * Full-canvas agent tree: pan, zoom, pinch, node popovers.
- * Blow-up entrance remounts when arriving from home (or elsewhere).
+ * Full Timeline page: week / month plan calendar with a Someday ideas rail.
  */
-export function AgentsPage() {
+export function TimelinePage() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const entranceKey = `agents:${location.key}`;
 
   return (
     <motion.div
-      className="relative h-full min-h-0 w-full overflow-hidden"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden"
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
-      <div className="pointer-events-none absolute left-4 top-3 z-10 flex items-start gap-3">
+      <div className="mb-3 flex shrink-0 items-start gap-3 px-1">
         <Tooltip content="Back home">
-          <span className="pointer-events-auto inline-flex">
+          <span className="inline-flex">
             <IconButton
               label="Back home"
               size="sm"
@@ -35,14 +32,16 @@ export function AgentsPage() {
         </Tooltip>
         <div>
           <span className="text-[11px] font-medium tracking-[2.5px] text-sage-deep">
-            AGENTS
+            TIMELINE
           </span>
           <p className="mt-1 text-[11px] text-ink-ghost">
-            Scroll to zoom · drag to pan · double-click to reset
+            Plans by week and month · ideas live in Someday
           </p>
         </div>
       </div>
-      <AgentTree mode="full" entranceKey={entranceKey} />
+      <div className="min-h-0 flex-1 px-1 pb-1">
+        <TimelineCalendar mode="full" />
+      </div>
     </motion.div>
   );
 }

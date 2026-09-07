@@ -118,7 +118,7 @@ export function AgentTree({
         x: minX - viewPad,
         y: minY - viewPad,
         w: Math.max(maxX - minX + viewPad * 2, viewPad * 2),
-        h: Math.max(maxY - minY + viewPad * 2 + (hideLabels ? 8 : 22), viewPad * 2),
+        h: Math.max(maxY - minY + viewPad * 2 + (hideLabels ? 8 : 30), viewPad * 2),
       },
     };
   }, [agents, spacingX, spacingY, viewPad, hideLabels]);
@@ -425,11 +425,11 @@ export function AgentTree({
 
                 {visual === "running" ? (
                   <>
-                    <circle className="agent-node__glow" r={r * 2.4} />
-                    <circle className="agent-node__halo" r={r * 2.6} />
+                    <circle className="agent-node__glow" r={r * 1.55} />
+                    <circle className="agent-node__halo" r={r * 1.65} />
                     <circle
                       className="agent-node__halo agent-node__halo--delay"
-                      r={r * 2.6}
+                      r={r * 1.65}
                     />
                   </>
                 ) : null}
@@ -450,7 +450,7 @@ export function AgentTree({
                     ]
                       .filter(Boolean)
                       .join(" ")}
-                    y={r + (preview ? 11 : 14)}
+                    y={r + (preview ? 16 : 22)}
                     textAnchor="middle"
                     fontSize={preview ? (isRoot ? 8 : 7) : isRoot ? 11 : 9.5}
                     initial={{ opacity: 0 }}

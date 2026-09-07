@@ -28,9 +28,20 @@ export type PopoverProps = {
   "aria-label"?: string;
   /** Element that owns the coordinate space for `anchor`. */
   containerRef?: RefObject<HTMLElement | null>;
+  /** Small arrow pointing toward the anchor. */
+  caret?: boolean;
 };
 
 const PAD = 12;
+const GAP = 14;
+const CARET = 7;
+
+type Placement = {
+  left: number;
+  top: number;
+  caretSide: "left" | "right";
+  caretOffset: number;
+};
 
 /**
  * Anchored floating panel portaled to document.body.
@@ -46,9 +57,15 @@ export function Popover({
   widthPx = 340,
   "aria-label": ariaLabel,
   containerRef,
+  caret = false,
 }: PopoverProps) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ left: 0, top: 0 });
+  const [pos, setPos] = useState<Placement>({
+    left: 0,
+    top: 0,
+    caretSide: "left",
+    caretOffset: 24,
+  });
 
   useLayoutEffect(() => {
     if (!open) {
@@ -64,27 +81,36 @@ export function Popover({
       const originX = (rect?.left ?? 0) + anchor.x;
       const originY = (rect?.top ?? 0) + anchor.y;
 
-      let left = originX + 16;
-      let top = originY + 12;
+      let caretSide: Placement["caretSide"] = "left";
+      let left = originX + GAP;
+      let top = originY - 20;
 
-      // Prefer opening to the right/below; flip when near edges.
+      // Prefer opening to the right; flip when near the edge.
       if (left + w > window.innerWidth - PAD) {
-        left = originX - w - 12;
+        left = originX - w - GAP;
+        caretSide = "right";
       }
       if (left < PAD) {
         left = PAD;
       }
       if (top + h > window.innerHeight - PAD) {
-        top = originY - h - 12;
+        top = originY - h + 20;
       }
       if (top < PAD) {
         top = PAD;
       }
-      // Final clamp after flips.
-      left = Math.max(PAD, Math.min(left, window.innerWidth - w - PAD));
-      top = Math.max(PAD, Math.min(top, window.innerHeight - Math.min(h, window.innerHeight - PAD * 2) - PAD));
 
-      setPos({ left, top });
+      left = Math.max(PAD, Math.min(left, window.innerWidth - w - PAD));
+      top = Math.max(
+        PAD,
+        Math.min(
+          top,
+          window.innerHeight - Math.min(h, window.innerHeight - PAD * 2) - PAD,
+        ),
+      );
+
+      const caretOffset = Math.max(16, Math.min(originY - top, h - 16));
+      setPos({ left, top, caretSide, caretOffset });
     };
 
     place();
@@ -129,6 +155,38 @@ export function Popover({
     };
   }, [open, onClose]);
 
+  const caretStyle = ((): CSSProperties | undefined => {
+    if (!caret) {
+      return undefined;
+    }
+    const base: CSSProperties = {
+      position: "absolute",
+      width: CARET * 2,
+      height: CARET * 2,
+      background: "var(--bone)",
+      border: "1px dashed var(--sage-line)",
+      transform: "rotate(45deg)",
+      pointerEvents: "none",
+      zIndex: 1,
+    };
+    if (pos.caretSide === "left") {
+      return {
+        ...base,
+        left: -CARET,
+        top: pos.caretOffset - CARET,
+        borderRight: "none",
+        borderTop: "none",
+      };
+    }
+    return {
+      ...base,
+      right: -CARET,
+      top: pos.caretOffset - CARET,
+      borderLeft: "none",
+      borderBottom: "none",
+    };
+  })();
+
   return createPortal(
     <AnimatePresence>
       {open ? (
@@ -136,11 +194,12 @@ export function Popover({
           ref={panelRef}
           role="dialog"
           aria-label={ariaLabel}
-          className={`widget-surface fixed z-[60] flex max-h-[min(70vh,520px)] flex-col overflow-hidden ${className ?? ""}`}
+          className={`fixed z-[60] flex max-h-[min(70vh,520px)] flex-col overflow-visible border border-dashed border-sage-line bg-bone shadow-[var(--shadow)] ${className ?? ""}`}
           style={{
             left: pos.left,
             top: pos.top,
             width: `min(${widthPx}px, calc(100vw - 24px))`,
+            borderRadius: "var(--radius)",
             ...style,
           }}
           initial={{ opacity: 0, y: 4 }}
@@ -148,7 +207,10 @@ export function Popover({
           exit={{ opacity: 0, y: 2 }}
           transition={{ duration: SLOW_S, ease: EASE }}
         >
-          {children}
+          {caret ? <span aria-hidden style={caretStyle} /> : null}
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[inherit]">
+            {children}
+          </div>
         </motion.div>
       ) : null}
     </AnimatePresence>,
