@@ -126,20 +126,20 @@ export function AgentPopover({
           </Tooltip>
           <span className="text-ink-ghost">Status</span>
           <span className="text-ink-muted">{status}</span>
-          <span className="text-ink-ghost">Parent</span>
-          <span className="text-ink-muted">
-            {parent ? (
-              <button
-                type="button"
-                className="text-sage-deep"
-                onClick={() => onSelectParent(parent.id)}
-              >
-                {parent.name}
-              </button>
-            ) : (
-              "—"
-            )}
-          </span>
+          {parent ? (
+            <>
+              <span className="text-ink-ghost">Parent</span>
+              <span className="text-ink-muted">
+                <button
+                  type="button"
+                  className="text-sage-deep"
+                  onClick={() => onSelectParent(parent.id)}
+                >
+                  {parent.name}
+                </button>
+              </span>
+            </>
+          ) : null}
         </section>
 
         {detailQuery.isError && (

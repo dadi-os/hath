@@ -9,12 +9,12 @@ import { TimelineCalendar } from "../features/timeline/TimelineCalendar";
 import { EASE, SLOW_S } from "../shared/motion";
 import { WidgetFrame } from "../shared/WidgetFrame";
 
-const widgetClass =
-  "h-[min(280px,38vh)] min-h-[200px] w-full cursor-pointer transition-[box-shadow] duration-slow ease-hath hover:shadow-[0_4px_16px_rgba(92,107,82,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage";
+const tile =
+  "min-h-0 w-full cursor-pointer transition-[box-shadow] duration-slow ease-hath hover:shadow-[0_4px_16px_rgba(92,107,82,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage";
 
 /**
- * Home widget grid. Widgets are clickable surfaces that open their page;
- * interactive bits inside (e.g. agent nodes) stop propagation for popovers.
+ * Home widget grid — hardcoded 4×4 on desktop with per-widget spans.
+ * Interactive bits inside (e.g. agent nodes) stop propagation for popovers.
  */
 export function WidgetGridPage() {
   const navigate = useNavigate();
@@ -32,7 +32,7 @@ export function WidgetGridPage() {
 
   return (
     <motion.div
-      className="grid h-full min-h-0 grid-cols-1 gap-5 p-2 md:grid-cols-2 xl:grid-cols-3"
+      className="grid h-full min-h-0 grid-cols-1 gap-5 px-2 pb-2 pt-5 auto-rows-[minmax(200px,1fr)] md:grid-cols-4 md:grid-rows-4 md:auto-rows-fr"
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
@@ -44,14 +44,14 @@ export function WidgetGridPage() {
           tabIndex={0}
           onClick={open("/agents")}
           onKeyDown={onActivate("/agents")}
-          className={widgetClass}
+          className={`${tile} md:col-span-2 md:row-span-2`}
         >
           <AgentTree mode="preview" entranceKey="home-agents" hideLabels />
         </WidgetFrame>
       ) : (
         <WidgetFrame
           title="AGENTS"
-          className="flex h-[min(200px,32vh)] items-center justify-center px-6"
+          className={`flex items-center justify-center px-6 md:col-span-2 md:row-span-2`}
         >
           <p className="px-4 py-8 text-center text-[13px] text-ink-ghost">
             Agent tree is available on desktop.
@@ -65,7 +65,7 @@ export function WidgetGridPage() {
         tabIndex={0}
         onClick={open("/memory")}
         onKeyDown={onActivate("/memory")}
-        className={widgetClass}
+        className={`${tile} md:col-span-2 md:row-span-2`}
       >
         <MemoryGraph mode="preview" entranceKey="home-memory" />
       </WidgetFrame>
@@ -76,7 +76,7 @@ export function WidgetGridPage() {
         tabIndex={0}
         onClick={open("/timeline")}
         onKeyDown={onActivate("/timeline")}
-        className={widgetClass}
+        className={`${tile} md:col-span-2 md:row-span-2`}
       >
         <TimelineCalendar mode="preview" hideIdeas />
       </WidgetFrame>
@@ -87,7 +87,7 @@ export function WidgetGridPage() {
         tabIndex={0}
         onClick={open("/system")}
         onKeyDown={onActivate("/system")}
-        className={widgetClass}
+        className={`${tile} md:col-span-2 md:row-span-2`}
       >
         <SystemMap mode="preview" />
       </WidgetFrame>

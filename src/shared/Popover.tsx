@@ -33,8 +33,11 @@ export type PopoverProps = {
 };
 
 const PAD = 12;
-const GAP = 14;
+/** Clear the node itself — panel sits beside, not over. */
+const GAP = 28;
 const CARET = 7;
+/** Pin caret near the panel header instead of mid-body. */
+const CARET_FROM_TOP = 22;
 
 type Placement = {
   left: number;
@@ -83,7 +86,8 @@ export function Popover({
 
       let caretSide: Placement["caretSide"] = "left";
       let left = originX + GAP;
-      let top = originY - 20;
+      // Hang the panel so the caret sits near the header, not mid-panel.
+      let top = originY - CARET_FROM_TOP;
 
       // Prefer opening to the right; flip when near the edge.
       if (left + w > window.innerWidth - PAD) {
@@ -94,7 +98,7 @@ export function Popover({
         left = PAD;
       }
       if (top + h > window.innerHeight - PAD) {
-        top = originY - h + 20;
+        top = window.innerHeight - h - PAD;
       }
       if (top < PAD) {
         top = PAD;

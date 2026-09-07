@@ -68,10 +68,13 @@ export function AgentTree({
 
   const spacingX = preview ? 72 : 120;
   const spacingY = preview ? 64 : 96;
-  const viewPad = preview ? 28 : 48;
-  const rIdle = preview ? 4 : 5.5;
-  const rRoot = preview ? 5 : 7;
-  const rDormant = preview ? 2.75 : 3.5;
+  const viewPad = preview ? 36 : 48;
+  const rIdle = preview ? 3.25 : 4.5;
+  const rRoot = preview ? 4 : 5.5;
+  const rDormant = preview ? 2.25 : 3;
+  // Keep sparse trees from ballooning to fill the widget.
+  const minViewW = preview ? 200 : 320;
+  const minViewH = preview ? 150 : 240;
 
   const agentsQuery = useQuery({
     queryKey: AGENTS_QUERY_KEY,
@@ -111,17 +114,22 @@ export function AgentTree({
       minY = Math.min(minY, n.y);
       maxY = Math.max(maxY, n.y);
     }
+    const contentW = Math.max(maxX - minX, 0);
+    const contentH = Math.max(maxY - minY, 0);
+    const labelPad = hideLabels ? 8 : 30;
+    const w = Math.max(contentW + viewPad * 2, minViewW);
+    const h = Math.max(contentH + viewPad * 2 + labelPad, minViewH);
     return {
       nodes,
       links: positioned.links(),
       viewBox: {
-        x: minX - viewPad,
-        y: minY - viewPad,
-        w: Math.max(maxX - minX + viewPad * 2, viewPad * 2),
-        h: Math.max(maxY - minY + viewPad * 2 + (hideLabels ? 8 : 30), viewPad * 2),
+        x: minX - (w - contentW) / 2,
+        y: minY - (h - contentH) / 2,
+        w,
+        h,
       },
     };
-  }, [agents, spacingX, spacingY, viewPad, hideLabels]);
+  }, [agents, spacingX, spacingY, viewPad, hideLabels, minViewW, minViewH]);
 
   const knownIdsRef = useRef<Set<string>>(new Set());
   const bootstrappedRef = useRef(false);
@@ -296,39 +304,42 @@ export function AgentTree({
     pinchRef.current = null;
   };
 
-  const openNode = (
-    node: HierarchyPointNode<AgentTreeNode>,
-    clientX: number,
-    clientY: number,
-  ) => {
-    setSelectedId(node.data.id);
-    const root = rootRef.current;
-    if (!root) {
-      setAnchor({ x: clientX, y: clientY });
-      return;
-    }
-    const rect = root.getBoundingClientRect();
-    setAnchor({ x: clientX - rect.left, y: clientY - rect.top });
-  };
-
-  const movePopoverToAgent = (agentId: string) => {
-    setSelectedId(agentId);
-    const node = layout?.nodes.find((n) => n.data.id === agentId);
+  const nodeScreenAnchor = (node: HierarchyPointNode<AgentTreeNode>) => {
     const svg = svgRef.current;
     const root = rootRef.current;
-    if (!node || !svg || !root) {
-      return;
+    if (!svg || !root) {
+      return null;
     }
     const pt = svg.createSVGPoint();
     pt.x = node.x * view.k + view.x;
     pt.y = node.y * view.k + view.y;
     const ctm = svg.getScreenCTM();
     if (!ctm) {
-      return;
+      return null;
     }
     const screen = pt.matrixTransform(ctm);
     const rect = root.getBoundingClientRect();
-    setAnchor({ x: screen.x - rect.left, y: screen.y - rect.top });
+    return { x: screen.x - rect.left, y: screen.y - rect.top };
+  };
+
+  const openNode = (node: HierarchyPointNode<AgentTreeNode>) => {
+    setSelectedId(node.data.id);
+    const anchorPt = nodeScreenAnchor(node);
+    if (anchorPt) {
+      setAnchor(anchorPt);
+    }
+  };
+
+  const movePopoverToAgent = (agentId: string) => {
+    setSelectedId(agentId);
+    const node = layout?.nodes.find((n) => n.data.id === agentId);
+    if (!node) {
+      return;
+    }
+    const anchorPt = nodeScreenAnchor(node);
+    if (anchorPt) {
+      setAnchor(anchorPt);
+    }
   };
 
   if (agentsQuery.isError) {
@@ -418,7 +429,7 @@ export function AgentTree({
                   if (interactive && dragRef.current.moved) {
                     return;
                   }
-                  openNode(node, e.clientX, e.clientY);
+                  openNode(node);
                 }}
               >
                 <circle className="agent-node__hit" r={r + 10} />
