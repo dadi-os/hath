@@ -23,11 +23,11 @@
   --radius: 9px;
   --shadow: 0 2px 7px rgba(92, 107, 82, 0.07);
 
-  /* Motion — interactive UI stays under a second; breath stays slow */
+  /* Motion — snappy but readable; breath stays slower */
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --slow: 450ms;
-  --slower: 850ms;
-  --breath: 2800ms;
+  --slow: 320ms;
+  --slower: 550ms;
+  --breath: 2400ms;
 }
 
 .widget-surface {
@@ -35,4 +35,79 @@
   border: 1px dashed var(--sage-line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+}
+
+/* Complete dashed case; crest sits on the rim as a solid nameplate. */
+.widget-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--sage-faint);
+  border: 1px dashed var(--sage-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.widget-frame__crest {
+  pointer-events: none;
+  position: absolute;
+  left: 50%;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  translate: -50% -50%;
+  align-items: center;
+  gap: 0.55rem;
+  /* Soft bone bloom so the dashed stroke dissolves under the plate,
+     instead of ending in a hard rectangular chop. */
+  padding: 0.35rem 0.85rem;
+  background: radial-gradient(
+    ellipse 68% 70% at 50% 50%,
+    var(--bone) 0%,
+    var(--bone) 42%,
+    transparent 74%
+  );
+}
+
+.widget-frame__title {
+  display: inline-block;
+  padding: 0.22rem 0.78rem 0.2rem;
+  border: 1px solid color-mix(in srgb, var(--sage-line) 88%, var(--sage-deep));
+  border-radius: 3px;
+  background: linear-gradient(
+    180deg,
+    #fffef9 0%,
+    var(--bone) 48%,
+    var(--bone-raised) 100%
+  );
+  box-shadow:
+    0 1px 2px rgba(92, 107, 82, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  color: var(--sage-deep);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3em;
+  line-height: 1.2;
+  text-indent: 0.3em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.widget-frame__ornament {
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  rotate: 45deg;
+  border: 1px solid var(--sage-line);
+  background: color-mix(in srgb, var(--sage-faint) 55%, var(--bone));
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--sage) 25%, transparent);
+}
+
+.widget-frame__body {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  /* Clearance so content clears the crest that hangs into the frame. */
+  padding-top: 0.85rem;
 }

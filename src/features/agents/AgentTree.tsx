@@ -25,12 +25,6 @@ import {
   type AgentTreeNode,
 } from "./tree";
 
-const NODE_SPACING_X = 140;
-const NODE_SPACING_Y = 110;
-const VIEW_PAD = 56;
-const R_ACTIVE = 10;
-const R_DORMANT = 6;
-
 type ViewTransform = { x: number; y: number; k: number };
 
 function clientToSvg(
@@ -50,21 +44,15 @@ function clientToSvg(
 }
 
 export type AgentTreeProps = {
-  /** preview: fitted, no pan/zoom. full: interactive canvas. */
   mode: "preview" | "full";
-  /**
-   * Remount key for the blow-up entrance (e.g. route pathname).
-   * Changing this replays the dots-expanding-in animation.
-   */
   entranceKey: string;
   className?: string;
-  /** Hide agent name labels (tight preview widgets). */
   hideLabels?: boolean;
 };
 
 /**
- * Live agent tree. All agents stay visible including dormant; pruning is manual.
- * Nodes blow up / fade in on mount. Running agents pulse; dormant agents fade.
+ * Live agent tree. Positions use SVG transforms (not CSS on <g>) so nodes
+ * cannot vanish while remaining clickable. Preview uses a tighter layout.
  */
 export function AgentTree({
   mode,
@@ -76,7 +64,14 @@ export function AgentTree({
   const connected = connection === "connected";
   const runningMap = useSyncExternalStore(subscribeRunning, getRunning, getRunning);
   const interactive = mode === "full";
-  const nodesInteractive = true; // popovers on both preview and full
+  const preview = mode === "preview";
+
+  const spacingX = preview ? 72 : 120;
+  const spacingY = preview ? 64 : 96;
+  const viewPad = preview ? 28 : 48;
+  const rIdle = preview ? 4 : 5.5;
+  const rRoot = preview ? 5 : 7;
+  const rDormant = preview ? 2.75 : 3.5;
 
   const agentsQuery = useQuery({
     queryKey: AGENTS_QUERY_KEY,
@@ -104,10 +99,7 @@ export function AgentTree({
       return null;
     }
     const root = hierarchy(buildTree(agents));
-    const positioned = tree<AgentTreeNode>().nodeSize([
-      NODE_SPACING_X,
-      NODE_SPACING_Y,
-    ])(root);
+    const positioned = tree<AgentTreeNode>().nodeSize([spacingX, spacingY])(root);
     const nodes = positioned.descendants();
     let minX = Infinity;
     let maxX = -Infinity;
@@ -123,19 +115,18 @@ export function AgentTree({
       nodes,
       links: positioned.links(),
       viewBox: {
-        x: minX - VIEW_PAD,
-        y: minY - VIEW_PAD,
-        w: Math.max(maxX - minX + VIEW_PAD * 2, VIEW_PAD * 2),
-        h: Math.max(maxY - minY + VIEW_PAD * 2 + 28, VIEW_PAD * 2),
+        x: minX - viewPad,
+        y: minY - viewPad,
+        w: Math.max(maxX - minX + viewPad * 2, viewPad * 2),
+        h: Math.max(maxY - minY + viewPad * 2 + (hideLabels ? 8 : 22), viewPad * 2),
       },
     };
-  }, [agents]);
+  }, [agents, spacingX, spacingY, viewPad, hideLabels]);
 
   const knownIdsRef = useRef<Set<string>>(new Set());
   const bootstrappedRef = useRef(false);
 
   useEffect(() => {
-    // Reset spawn tracking when the entrance remounts.
     knownIdsRef.current = new Set();
     bootstrappedRef.current = false;
   }, [entranceKey]);
@@ -380,16 +371,15 @@ export function AgentTree({
           {layout.links.map((link, i) => (
             <motion.path
               key={`${link.source.data.id}-${link.target.data.id}`}
+              className="agent-tree__link"
               d={linkPath(link)}
-              fill="none"
-              stroke="var(--sage-line)"
-              strokeWidth={0.7}
+              strokeWidth={preview ? 0.9 : 1.05}
               initial={{ opacity: 0 }}
-              animate={{ opacity: 0.9 }}
+              animate={{ opacity: 0.55 }}
               transition={{
                 duration: SLOW_S,
                 ease: EASE,
-                delay: Math.min(i * 0.02, 0.2),
+                delay: Math.min(i * 0.015, 0.12),
               }}
             />
           ))}
@@ -401,42 +391,25 @@ export function AgentTree({
             }
             const visual = visualState(agent, runningMap[agent.id]);
             const isRoot = agent.parent_agent_id === null;
-            const r = visual === "dormant" ? R_DORMANT : R_ACTIVE;
-            const fill =
-              visual === "dormant" ? "var(--sage-line)" : "var(--sage)";
-            const fillOpacity = visual === "dormant" ? 0.45 : 1;
+            const selected = selectedId === agent.id;
+            const r =
+              visual === "dormant" ? rDormant : isRoot ? rRoot : rIdle;
             const depth = node.depth;
-            const isSpawn =
-              bootstrappedRef.current && !knownIdsRef.current.has(agent.id);
-            const parent = node.parent;
-
-            // Position via SVG transform attribute — avoid CSS scale on <g>,
-            // which can leave hit-targets without a visible circle.
-            const fromX = isSpawn && parent ? parent.x : node.x;
-            const fromY = isSpawn && parent ? parent.y : node.y;
+            const delay = Math.min(depth * 0.03, 0.18);
+            const coreClass = [
+              "agent-node__core",
+              `agent-node__core--${visual}`,
+              isRoot ? "is-root" : "",
+              selected ? "is-selected" : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
 
             return (
-              <motion.g
-                key={`${entranceKey}:${agent.id}`}
-                initial={{
-                  opacity: 0,
-                  x: fromX,
-                  y: fromY,
-                }}
-                animate={{
-                  opacity: 1,
-                  x: node.x,
-                  y: node.y,
-                }}
-                transition={{
-                  duration: SLOW_S,
-                  ease: EASE,
-                  delay: isSpawn ? 0 : Math.min(depth * 0.05, 0.3),
-                }}
-                style={{
-                  cursor: "pointer",
-                  pointerEvents: nodesInteractive ? "auto" : "none",
-                }}
+              <g
+                key={agent.id}
+                className="agent-node"
+                transform={`translate(${node.x},${node.y})`}
                 onPointerDown={(e) => {
                   e.stopPropagation();
                 }}
@@ -448,49 +421,50 @@ export function AgentTree({
                   openNode(node, e.clientX, e.clientY);
                 }}
               >
-                {visual === "running" && (
-                  <circle
-                    r={r + 7}
-                    fill="none"
-                    stroke="var(--sage)"
-                    strokeWidth={1.25}
-                    className="animate-breath"
-                  />
-                )}
+                <circle className="agent-node__hit" r={r + 10} />
+
+                {visual === "running" ? (
+                  <>
+                    <circle className="agent-node__glow" r={r * 2.4} />
+                    <circle className="agent-node__halo" r={r * 2.6} />
+                    <circle
+                      className="agent-node__halo agent-node__halo--delay"
+                      r={r * 2.6}
+                    />
+                  </>
+                ) : null}
+
                 <motion.circle
-                  fill={fill}
-                  fillOpacity={fillOpacity}
-                  stroke={
-                    selectedId === agent.id ? "var(--sage-deep)" : "none"
-                  }
-                  strokeWidth={selectedId === agent.id ? 1.5 : 0}
-                  initial={{ r: 0 }}
-                  animate={{ r }}
-                  transition={{
-                    duration: SLOW_S,
-                    ease: EASE,
-                    delay: isSpawn ? 0 : Math.min(depth * 0.05, 0.3),
-                  }}
+                  className={coreClass}
+                  initial={{ r: 0, opacity: 0 }}
+                  animate={{ r, opacity: 1 }}
+                  transition={{ duration: SLOW_S, ease: EASE, delay }}
                 />
-                {!hideLabels && (
+
+                {!hideLabels ? (
                   <motion.text
-                    y={r + 14}
+                    className={[
+                      "agent-node__label",
+                      isRoot ? "is-root" : "",
+                      visual === "dormant" ? "is-dormant" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    y={r + (preview ? 11 : 14)}
                     textAnchor="middle"
-                    fill="var(--ink-muted)"
-                    fontSize={isRoot ? 12 : 10}
-                    style={{ userSelect: "none" }}
+                    fontSize={preview ? (isRoot ? 8 : 7) : isRoot ? 11 : 9.5}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{
                       duration: SLOW_S,
                       ease: EASE,
-                      delay: isSpawn ? 0.1 : Math.min(0.1 + depth * 0.05, 0.35),
+                      delay: delay + 0.04,
                     }}
                   >
                     {agent.name}
                   </motion.text>
-                )}
-              </motion.g>
+                ) : null}
+              </g>
             );
           })}
         </g>

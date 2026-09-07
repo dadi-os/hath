@@ -20,13 +20,21 @@ export type Conversation = {
 };
 
 /**
- * Unbound new-chat while root is routing. Survives back-navigation to the list.
- * Cleared when the routed copy lands on a thread agent (or on dismiss / timeout).
+ * One optimistic outbound to root while routing. Survives list back-nav.
+ * Cleared when any routed copy lands on a thread agent (or dismiss / timeout).
  */
-export type PendingNewChat = {
+export type PendingNewChatMessage = {
+  /** Negative temp id, same space as thread optimistic seqs. */
+  seq: number;
   content: string;
   at: string;
+  pending?: boolean;
   failed?: boolean;
+};
+
+/** Queued user→Dadi messages awaiting route_message onto a thread. */
+export type PendingNewChat = {
+  messages: PendingNewChatMessage[];
 };
 
 export type ChatOpen =
@@ -265,14 +273,30 @@ export function markPending(agentId: string, tempSeq: number): void {
   emit();
 }
 
-/** Start a new-chat provisional and open its thread view. */
-export function beginPendingNewChat(pending: PendingNewChat): void {
+function nextPendingSeq(): number {
+  const seq = nextTempSeq;
+  nextTempSeq -= 1;
+  return seq;
+}
+
+/** Append a queued message to Dadi and open the provisional thread. */
+export function enqueuePendingNewChat(content: string): number {
+  const msg: PendingNewChatMessage = {
+    seq: nextPendingSeq(),
+    content,
+    at: new Date().toISOString(),
+    pending: true,
+  };
+  const existing = state.pendingNewChat;
   state = {
     ...state,
-    pendingNewChat: pending,
+    pendingNewChat: {
+      messages: existing ? [...existing.messages, msg] : [msg],
+    },
     open: { kind: "provisional" },
   };
   emit();
+  return msg.seq;
 }
 
 export function clearPendingNewChat(): void {
@@ -285,13 +309,50 @@ export function clearPendingNewChat(): void {
   emit();
 }
 
+/** Mark every still-pending provisional message failed (timeout / hard fail). */
 export function markPendingNewChatFailed(): void {
-  if (!state.pendingNewChat || state.pendingNewChat.failed) {
+  const pending = state.pendingNewChat;
+  if (!pending) {
+    return;
+  }
+  const messages = pending.messages.map((m) =>
+    m.failed ? m : { ...m, pending: false, failed: true },
+  );
+  if (messages.every((m, i) => m === pending.messages[i])) {
+    return;
+  }
+  state = { ...state, pendingNewChat: { messages } };
+  emit();
+}
+
+export function markPendingNewChatMessageFailed(seq: number): void {
+  const pending = state.pendingNewChat;
+  if (!pending) {
     return;
   }
   state = {
     ...state,
-    pendingNewChat: { ...state.pendingNewChat, failed: true },
+    pendingNewChat: {
+      messages: pending.messages.map((m) =>
+        m.seq === seq ? { ...m, pending: false, failed: true } : m,
+      ),
+    },
+  };
+  emit();
+}
+
+export function markPendingNewChatMessagePending(seq: number): void {
+  const pending = state.pendingNewChat;
+  if (!pending) {
+    return;
+  }
+  state = {
+    ...state,
+    pendingNewChat: {
+      messages: pending.messages.map((m) =>
+        m.seq === seq ? { ...m, pending: true, failed: false } : m,
+      ),
+    },
   };
   emit();
 }
@@ -303,7 +364,10 @@ export function markPendingNewChatFailed(): void {
  */
 export function tryBindPendingNewChat(agentId: string): boolean {
   const pending = state.pendingNewChat;
-  if (!pending || pending.failed) {
+  if (!pending) {
+    return false;
+  }
+  if (pending.messages.every((m) => m.failed)) {
     return false;
   }
   const open: ChatOpen =

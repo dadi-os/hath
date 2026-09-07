@@ -25,7 +25,11 @@ export function AgentsPage() {
       <div className="pointer-events-none absolute left-4 top-3 z-10 flex items-start gap-3">
         <Tooltip content="Back home">
           <span className="pointer-events-auto inline-flex">
-            <IconButton label="Back home" onClick={() => navigate("/")}>
+            <IconButton
+              label="Back home"
+              size="sm"
+              onClick={() => navigate("/")}
+            >
               <IconBack />
             </IconButton>
           </span>

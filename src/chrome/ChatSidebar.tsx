@@ -19,17 +19,17 @@ import {
 } from "../hooks/useEvents";
 import {
   addOptimistic,
-  beginPendingNewChat,
-  clearPendingNewChat,
+  enqueuePendingNewChat,
   getChatState,
   isUserThreadMessage,
   markFailed,
   markPending,
   markPendingNewChatFailed,
+  markPendingNewChatMessageFailed,
+  markPendingNewChatMessagePending,
   openAgent,
   openList,
   openProvisional,
-  removeMessage,
   seedConversations,
   seedThread,
   subscribeChat,
@@ -37,7 +37,7 @@ import {
   type Conversation,
 } from "../store/chat";
 import { getRunning, subscribeRunning } from "../store/running";
-import { IconBack, IconButton, IconSend } from "../shared/IconButton";
+import { IconBack, IconButton, IconRetry, IconSend } from "../shared/IconButton";
 import { EASE, SLOW_S } from "../shared/motion";
 
 type ChatSidebarProps = {
@@ -54,9 +54,9 @@ type MessagePayload = {
 };
 
 const NEAR_BOTTOM_PX = 80;
-const TEXTAREA_MAX_PX = 120;
+const TEXTAREA_MAX_PX = 88;
 const NEW_CHAT_TIMEOUT_MS = 90_000;
-const COMPOSER_PAD = 96;
+const COMPOSER_PAD = 72;
 
 function parseMessagePayload(
   payload: Record<string, unknown>,
@@ -272,20 +272,24 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     : [];
   const provisionalMessages: ChatMessage[] =
     viewingProvisional && chat.pendingNewChat
-      ? [
-          {
-            seq: -1,
-            from_user: true,
-            content: chat.pendingNewChat.content,
-            at: chat.pendingNewChat.at,
-            pending: !chat.pendingNewChat.failed,
-            failed: chat.pendingNewChat.failed,
-          },
-        ]
+      ? chat.pendingNewChat.messages.map((m) => ({
+          seq: m.seq,
+          from_user: true,
+          content: m.content,
+          at: m.at,
+          pending: m.pending,
+          failed: m.failed,
+        }))
       : [];
 
   const awaitingRoute =
-    !!chat.pendingNewChat && !chat.pendingNewChat.failed;
+    !!chat.pendingNewChat &&
+    chat.pendingNewChat.messages.some((m) => !m.failed);
+  const talkTargetName = openAgentId
+    ? (openConversation?.agent_name ??
+      agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
+      "agent")
+    : (rootQuery.data?.name ?? "Dadi");
   const thinkingAgentId =
     viewingProvisional && awaitingRoute
       ? (rootId ?? null)
@@ -296,6 +300,13 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     (viewingProvisional && awaitingRoute) ||
     (thinkingAgentId !== null &&
       running[thinkingAgentId]?.conversation === true);
+  const recipientBusy =
+    awaitingRoute ||
+    (thinkingAgentId !== null &&
+      running[thinkingAgentId]?.conversation === true) ||
+    (!viewingThread &&
+      !!rootId &&
+      running[rootId]?.conversation === true);
 
   const scrollToBottom = useEffectEvent((behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current;
@@ -379,7 +390,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
 
   const sendNewChat = async () => {
     const trimmed = draft.trim();
-    if (!trimmed || !connected || !rootId || chat.pendingNewChat) {
+    if (!trimmed || !connected || !rootId) {
       return;
     }
 
@@ -392,7 +403,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       }
     });
 
-    beginPendingNewChat({ content: trimmed, at: new Date().toISOString() });
+    const tempSeq = enqueuePendingNewChat(trimmed);
     clearNewChatTimer();
     newChatTimerRef.current = setTimeout(() => {
       markPendingNewChatFailed();
@@ -407,8 +418,12 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
         content: trimmed,
       });
     } catch {
-      clearNewChatTimer();
-      markPendingNewChatFailed();
+      markPendingNewChatMessageFailed(tempSeq);
+      if (
+        getChatState().pendingNewChat?.messages.every((m) => m.failed)
+      ) {
+        clearNewChatTimer();
+      }
     }
   };
 
@@ -447,43 +462,36 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
   };
 
-  const retryNewChat = async () => {
-    const content = chat.pendingNewChat?.content;
-    if (!content || !connected || !rootId) {
+  const retryNewChat = async (seq: number) => {
+    const msg = chat.pendingNewChat?.messages.find((m) => m.seq === seq);
+    if (!msg || !connected || !rootId) {
       return;
     }
-    clearNewChatTimer();
-    beginPendingNewChat({ content, at: new Date().toISOString() });
+    markPendingNewChatMessagePending(seq);
     clearNewChatTimer();
     newChatTimerRef.current = setTimeout(() => {
       markPendingNewChatFailed();
       newChatTimerRef.current = null;
     }, NEW_CHAT_TIMEOUT_MS);
     try {
-      await dimaag.postMessage({ to_agent_id: rootId, content });
+      await dimaag.postMessage({ to_agent_id: rootId, content: msg.content });
     } catch {
-      clearNewChatTimer();
-      markPendingNewChatFailed();
+      markPendingNewChatMessageFailed(seq);
+      if (
+        getChatState().pendingNewChat?.messages.every((m) => m.failed)
+      ) {
+        clearNewChatTimer();
+      }
     }
   };
 
-  const composerLocked =
-    !!chat.pendingNewChat &&
-    !chat.pendingNewChat.failed &&
-    (viewingProvisional || chat.open.kind === "list");
-
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (composerLocked) {
-      return;
-    }
     if (openAgentId) {
       void sendThread(draft);
-    } else if (viewingProvisional && chat.pendingNewChat?.failed) {
-      void retryNewChat();
-    } else if (!viewingThread) {
-      void sendNewChat();
+      return;
     }
+    void sendNewChat();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -511,22 +519,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
         ? "provisional"
         : chat.open.agentId;
 
-  const placeholder = composerLocked
-    ? "Routing…"
-    : openAgentId
-      ? "Message…"
-      : viewingProvisional
-        ? "Message…"
-        : "New chat…";
+  const placeholder = recipientBusy
+    ? `${talkTargetName} is busy`
+    : `Talk to ${talkTargetName}`;
 
-  const canSubmit =
-    connected &&
-    !composerLocked &&
-    (openAgentId
-      ? draft.trim().length > 0
-      : viewingProvisional && chat.pendingNewChat?.failed
-        ? true
-        : !viewingThread && draft.trim().length > 0);
+  const canSubmit = connected && draft.trim().length > 0;
 
   return (
     <aside
@@ -546,7 +543,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
             className="flex items-center gap-2.5"
           >
             {viewingThread ? (
-              <IconButton label="Back to conversations" onClick={backToList}>
+              <IconButton
+                label="Back to conversations"
+                size="sm"
+                onClick={backToList}
+              >
                 <IconBack />
               </IconButton>
             ) : null}
@@ -584,48 +585,13 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
                       onRetry={
                         openAgentId
                           ? () => void sendThread(msg.content, msg.seq)
-                          : undefined
-                      }
-                      onDismiss={
-                        openAgentId
-                          ? () => removeMessage(openAgentId, msg.seq)
                           : viewingProvisional
-                            ? () => {
-                                clearNewChatTimer();
-                                clearPendingNewChat();
-                              }
+                            ? () => void retryNewChat(msg.seq)
                             : undefined
                       }
                     />
                   ))}
                 </AnimatePresence>
-                {viewingProvisional && chat.pendingNewChat?.failed ? (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: SLOW_S, ease: EASE }}
-                    className="flex items-center gap-2 text-[11px] text-sage-text"
-                  >
-                    <span>No reply yet</span>
-                    <button
-                      type="button"
-                      onClick={() => void retryNewChat()}
-                      className="underline decoration-dashed underline-offset-2"
-                    >
-                      Retry
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        clearNewChatTimer();
-                        clearPendingNewChat();
-                      }}
-                      className="underline decoration-dashed underline-offset-2"
-                    >
-                      Dismiss
-                    </button>
-                  </motion.div>
-                ) : null}
                 {thinking ? <ThinkingIndicator /> : null}
               </div>
             </motion.div>
@@ -653,18 +619,28 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="text-[13px] text-ink">New chat</span>
                     <span className="shrink-0 text-[11px] text-ink-ghost">
-                      {formatRelative(chat.pendingNewChat.at)}
+                      {formatRelative(
+                        chat.pendingNewChat.messages[
+                          chat.pendingNewChat.messages.length - 1
+                        ]!.at,
+                      )}
                     </span>
                   </div>
                   <p
                     className="truncate text-[12px] text-ink-ghost"
                     style={{
-                      opacity: chat.pendingNewChat.failed ? 0.7 : 1,
+                      opacity: chat.pendingNewChat.messages.every((m) => m.failed)
+                        ? 0.7
+                        : 1,
                     }}
                   >
-                    {truncateOneLine(chat.pendingNewChat.content)}
+                    {truncateOneLine(
+                      chat.pendingNewChat.messages[
+                        chat.pendingNewChat.messages.length - 1
+                      ]!.content,
+                    )}
                   </p>
-                  {!chat.pendingNewChat.failed ? (
+                  {awaitingRoute ? (
                     <div className="mt-1.5">
                       <ThinkingIndicator compact />
                     </div>
@@ -721,7 +697,6 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
           draft={draft}
           setDraft={setDraft}
           placeholder={placeholder}
-          locked={composerLocked}
           canSubmit={canSubmit}
           textareaRef={textareaRef}
           onSubmit={onSubmit}
@@ -737,7 +712,6 @@ function FloatingComposer({
   draft,
   setDraft,
   placeholder,
-  locked,
   canSubmit,
   textareaRef,
   onSubmit,
@@ -747,7 +721,6 @@ function FloatingComposer({
   draft: string;
   setDraft: (v: string) => void;
   placeholder: string;
-  locked: boolean;
   canSubmit: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onSubmit: (e: FormEvent) => void;
@@ -757,16 +730,16 @@ function FloatingComposer({
     <motion.div
       className="pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3"
       style={{
-        paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))",
+        paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))",
       }}
-      initial={{ opacity: 0, y: 16 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
       {connected ? (
         <form
           onSubmit={onSubmit}
-          className="pointer-events-auto flex items-end gap-2 rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-2.5 py-2 shadow-[var(--shadow)] backdrop-blur-md"
+          className="pointer-events-auto flex items-end gap-1.5 rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-2 py-1.5 shadow-[var(--shadow)] backdrop-blur-md"
         >
           <textarea
             ref={textareaRef}
@@ -774,9 +747,8 @@ function FloatingComposer({
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
             rows={1}
-            disabled={locked}
             placeholder={placeholder}
-            className="block max-h-[120px] min-h-[40px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-[13px] leading-relaxed text-ink outline-none placeholder:text-ink-ghost disabled:cursor-default disabled:opacity-55"
+            className="block max-h-[88px] min-h-[32px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-1.5 text-[13px] leading-snug text-ink outline-none placeholder:text-ink-ghost"
             style={{ maxHeight: TEXTAREA_MAX_PX }}
           />
           <IconButton
@@ -784,13 +756,13 @@ function FloatingComposer({
             label="Send"
             disabled={!canSubmit}
             size="lg"
-            className="mb-0.5 border-sage-line bg-sage-fill"
+            className="mb-px border-sage-line bg-sage-fill"
           >
             <IconSend />
           </IconButton>
         </form>
       ) : (
-        <div className="pointer-events-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-3 py-2.5 text-[13px] text-ink-ghost shadow-[var(--shadow)] backdrop-blur-md">
+        <div className="pointer-events-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-3 py-2 text-[13px] text-ink-ghost shadow-[var(--shadow)] backdrop-blur-md">
           Connect to message Dadi
         </div>
       )}
@@ -801,47 +773,42 @@ function FloatingComposer({
 function MessageBubble({
   message,
   onRetry,
-  onDismiss,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
-  onDismiss?: () => void;
 }) {
   if (message.from_user) {
+    const failed = Boolean(message.failed);
     return (
       <motion.div
         layout
-        initial={{ opacity: 0, y: 10, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: -6 }}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -4 }}
         transition={{ duration: SLOW_S, ease: EASE }}
-        className="flex flex-col items-end gap-1"
+        className="flex items-end justify-end gap-1.5"
       >
+        {failed && onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            aria-label="Retry send"
+            title="Retry"
+            className="mb-0.5 inline-flex size-7 shrink-0 items-center justify-center text-[#b56b5c] transition-opacity duration-slow ease-hath hover:opacity-70"
+          >
+            <IconRetry />
+          </button>
+        ) : null}
         <div
-          className="max-w-[90%] rounded-[var(--radius)] bg-sage-active px-3 py-2 text-[13px] leading-relaxed text-ink whitespace-pre-wrap"
+          className={`max-w-[90%] rounded-[var(--radius)] px-3 py-1.5 text-[13px] leading-relaxed text-ink whitespace-pre-wrap ${
+            failed
+              ? "border border-[#c47868] bg-[#c47868]/12"
+              : "bg-sage-active"
+          }`}
           style={{ opacity: message.pending ? 0.55 : 1 }}
         >
           {message.content}
         </div>
-        {message.failed && onRetry && onDismiss ? (
-          <div className="flex items-center gap-2 text-[11px] text-sage-text">
-            <span>Couldn&apos;t send</span>
-            <button
-              type="button"
-              onClick={onRetry}
-              className="underline decoration-dashed underline-offset-2"
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="underline decoration-dashed underline-offset-2"
-            >
-              Dismiss
-            </button>
-          </div>
-        ) : null}
       </motion.div>
     );
   }
@@ -849,9 +816,9 @@ function MessageBubble({
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -6 }}
+      exit={{ opacity: 0, y: -4 }}
       transition={{ duration: SLOW_S, ease: EASE }}
       className="max-w-[95%] text-[13px] leading-[1.65] text-ink whitespace-pre-wrap"
     >

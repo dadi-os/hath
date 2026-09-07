@@ -23,7 +23,7 @@ export function Header() {
   const navigate = useNavigate();
   const { state } = useConnection();
   const location = useLocation();
-  const showHome = location.pathname !== "/";
+  const atHome = location.pathname === "/";
   const statusLabel = state === "connected" ? "ONLINE" : "OFFLINE";
   const statusClass =
     state === "connected"
@@ -47,15 +47,20 @@ export function Header() {
         : "—";
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-rule px-4 sm:px-6">
+    <header className="flex shrink-0 items-center justify-between border-b border-rule px-4 pb-3.5 pt-4 sm:px-6">
       <div className="flex items-center gap-3">
-        {showHome ? (
-          <Tooltip content="Home">
-            <IconButton label="Home" onClick={() => navigate("/")}>
+        <Tooltip content={atHome ? "Home" : "Back home"}>
+          <span className="inline-flex">
+            <IconButton
+              label="Home"
+              size="sm"
+              disabled={atHome}
+              onClick={() => navigate("/")}
+            >
               <IconHome />
             </IconButton>
-          </Tooltip>
-        ) : null}
+          </span>
+        </Tooltip>
         <button
           type="button"
           onClick={() => navigate("/")}

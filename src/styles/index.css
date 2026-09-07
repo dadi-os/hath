@@ -67,3 +67,156 @@ body {
 .animate-breath {
   animation: breath var(--breath) var(--ease) infinite;
 }
+
+/* ── Agent tree nodes ─────────────────────────────────────────── */
+
+.agent-tree__link {
+  fill: none;
+  stroke: var(--sage-line);
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+
+.agent-node {
+  cursor: pointer;
+}
+
+.agent-node__hit {
+  fill: transparent;
+}
+
+/* Soft sage bloom under a live node */
+.agent-node__glow {
+  fill: rgb(143 163 130 / 0.28);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: agent-glow-flow var(--breath) ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes agent-glow-flow {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.08);
+  }
+}
+
+/* Expanding ring — staggered for a flowing pulse */
+.agent-node__halo {
+  fill: none;
+  stroke: var(--sage);
+  stroke-linecap: round;
+  transform-box: fill-box;
+  transform-origin: center;
+  pointer-events: none;
+  animation: agent-halo-flow 2.8s var(--ease) infinite;
+}
+
+.agent-node__halo--delay {
+  animation-delay: 1.4s;
+}
+
+@keyframes agent-halo-flow {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.5);
+    stroke-width: 1.35;
+  }
+  65% {
+    opacity: 0;
+    transform: scale(1.45);
+    stroke-width: 0.35;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.45);
+    stroke-width: 0.35;
+  }
+}
+
+.agent-node__core {
+  transition:
+    fill var(--slow) var(--ease),
+    stroke var(--slow) var(--ease),
+    stroke-width var(--slow) var(--ease);
+}
+
+.agent-node__core--idle {
+  fill: var(--bone);
+  stroke: color-mix(in srgb, var(--sage) 70%, var(--sage-line));
+  stroke-width: 1.15;
+  filter: drop-shadow(0 1px 1.5px rgb(92 107 82 / 0.1));
+}
+
+.agent-node__core--idle.is-root {
+  fill: color-mix(in srgb, var(--sage-faint) 80%, var(--bone));
+  stroke: var(--sage);
+  stroke-width: 1.35;
+}
+
+.agent-node__core--dormant {
+  fill: transparent;
+  stroke: var(--sage-line);
+  stroke-width: 1;
+  stroke-opacity: 0.55;
+}
+
+.agent-node__core--running {
+  fill: var(--sage);
+  stroke: color-mix(in srgb, var(--sage-deep) 35%, var(--sage));
+  stroke-width: 0.75;
+  filter:
+    drop-shadow(0 0 2px rgb(143 163 130 / 0.95))
+    drop-shadow(0 0 7px rgb(143 163 130 / 0.55))
+    drop-shadow(0 0 14px rgb(143 163 130 / 0.28));
+  animation: agent-core-glow var(--breath) ease-in-out infinite;
+}
+
+@keyframes agent-core-glow {
+  0%,
+  100% {
+    filter:
+      drop-shadow(0 0 2px rgb(143 163 130 / 0.75))
+      drop-shadow(0 0 6px rgb(143 163 130 / 0.4))
+      drop-shadow(0 0 12px rgb(143 163 130 / 0.18));
+  }
+  50% {
+    filter:
+      drop-shadow(0 0 4px rgb(143 163 130 / 1))
+      drop-shadow(0 0 11px rgb(143 163 130 / 0.65))
+      drop-shadow(0 0 22px rgb(143 163 130 / 0.32));
+  }
+}
+
+.agent-node__core.is-selected {
+  stroke: var(--sage-deep);
+  stroke-width: 1.75;
+}
+
+.agent-node__core--running.is-selected {
+  stroke: var(--sage-deep);
+  stroke-width: 1.35;
+}
+
+.agent-node__label {
+  fill: var(--ink-muted);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  user-select: none;
+  pointer-events: none;
+}
+
+.agent-node__label.is-root {
+  fill: var(--sage-deep);
+  font-weight: 600;
+}
+
+.agent-node__label.is-dormant {
+  fill: var(--ink-ghost);
+}

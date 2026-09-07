@@ -30,9 +30,11 @@ export type PopoverProps = {
   containerRef?: RefObject<HTMLElement | null>;
 };
 
+const PAD = 12;
+
 /**
- * Anchored floating panel portaled to document.body (avoids overflow clipping).
- * Escape and outside click dismiss.
+ * Anchored floating panel portaled to document.body.
+ * Flips / clamps to stay in the viewport — never clipped by widgets.
  */
 export function Popover({
   open,
@@ -52,17 +54,48 @@ export function Popover({
     if (!open) {
       return;
     }
-    const container = containerRef?.current;
-    const rect = container?.getBoundingClientRect();
-    const rawLeft = (rect?.left ?? 0) + anchor.x + 16;
-    const rawTop = (rect?.top ?? 0) + anchor.y + 12;
-    const maxLeft = window.innerWidth - widthPx - 12;
-    const maxTop = window.innerHeight - 120;
-    setPos({
-      left: Math.max(12, Math.min(rawLeft, maxLeft)),
-      top: Math.max(12, Math.min(rawTop, maxTop)),
-    });
-  }, [open, anchor.x, anchor.y, containerRef, widthPx]);
+    const place = () => {
+      const container = containerRef?.current;
+      const rect = container?.getBoundingClientRect();
+      const panel = panelRef.current?.getBoundingClientRect();
+      const w = Math.min(widthPx, window.innerWidth - PAD * 2);
+      const h = panel?.height ?? 280;
+
+      const originX = (rect?.left ?? 0) + anchor.x;
+      const originY = (rect?.top ?? 0) + anchor.y;
+
+      let left = originX + 16;
+      let top = originY + 12;
+
+      // Prefer opening to the right/below; flip when near edges.
+      if (left + w > window.innerWidth - PAD) {
+        left = originX - w - 12;
+      }
+      if (left < PAD) {
+        left = PAD;
+      }
+      if (top + h > window.innerHeight - PAD) {
+        top = originY - h - 12;
+      }
+      if (top < PAD) {
+        top = PAD;
+      }
+      // Final clamp after flips.
+      left = Math.max(PAD, Math.min(left, window.innerWidth - w - PAD));
+      top = Math.max(PAD, Math.min(top, window.innerHeight - Math.min(h, window.innerHeight - PAD * 2) - PAD));
+
+      setPos({ left, top });
+    };
+
+    place();
+    // Re-measure after paint once content height is known.
+    const raf = requestAnimationFrame(place);
+    window.addEventListener("resize", place);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, anchor.x, anchor.y, containerRef, widthPx, children]);
 
   useEffect(() => {
     if (!open) {
@@ -87,7 +120,6 @@ export function Popover({
         onClose();
       }
     };
-    // Defer so the opening click does not immediately close.
     const t = window.setTimeout(() => {
       document.addEventListener("mousedown", onDown);
     }, 0);
@@ -104,16 +136,16 @@ export function Popover({
           ref={panelRef}
           role="dialog"
           aria-label={ariaLabel}
-          className={`widget-surface fixed z-50 flex flex-col overflow-hidden ${className ?? ""}`}
+          className={`widget-surface fixed z-[60] flex max-h-[min(70vh,520px)] flex-col overflow-hidden ${className ?? ""}`}
           style={{
             left: pos.left,
             top: pos.top,
             width: `min(${widthPx}px, calc(100vw - 24px))`,
             ...style,
           }}
-          initial={{ opacity: 0, scale: 0.94, y: 6 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 4 }}
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 2 }}
           transition={{ duration: SLOW_S, ease: EASE }}
         >
           {children}
