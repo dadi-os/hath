@@ -115,9 +115,15 @@ Routes: `/`, `/agents`, `/memory`, `/calendar`, `/system`. Memory, calendar, and
 
 ## Agents tree
 
-`/agents` (desktop only) is a live `d3-hierarchy` tree of every agent row, including dormant ones. Root Dadi is always present — there is no empty state. Running agents pulse with the `--breath` ring; idle agents are solid sage; dormant agents render smaller and lower-contrast. Pruning is manual and deliberate — Hath does not auto-hide, archive, or clean up finished workers.
+`/agents` (desktop only) is a live `d3-hierarchy` tree of every agent row, including dormant ones. Root Dadi is always present — there is no empty state. Running agents pulse with the `--breath` ring; idle agents are solid sage; dormant (inactive) agents render smaller and lower-contrast. Pruning is manual and deliberate — Hath does not auto-hide, archive, or clean up finished workers.
 
-Structural changes (`agent_spawned`, `agent_modified`) invalidate the agents query; lane running state comes from the shared event store (seeded from `GET /agents` so a mid-run load already pulses). Node positions animate with motion (`--slow`); links redraw instantly on reflow. Node click opens a widget-surface popover (prompt, tool grants with `usage`, parent/children, recent logs). Browser session screens are a noted future addition for that popover — no browser tools exist yet.
+The home grid shows the same tree as a preview widget. Clicking the widget opens `/agents`; clicking a node opens a shared `Popover` with created time, last active (newest log, else `updated_at`), status, prompt, tools, relations, and recent logs. Absolute timestamps live in shared `Tooltip`s on those fields.
+
+Structural changes (`agent_spawned`, `agent_modified`) invalidate the agents query; lane running state comes from the shared event store (seeded from `GET /agents` so a mid-run load already pulses). Nodes blow up / fade in on mount when entering home or `/agents`; live spawns still grow from their parent. Full page: pan, wheel zoom, pinch, double-click reset. Shared primitives live in `src/shared/` (`Popover`, `Tooltip`, motion tokens); tree logic in `src/features/agents/`.
+
+Chrome (header + chat sidebar) animates in once on launch; route changes fade the main outlet only.
+
+Browser session screens are a noted future addition for the agent popover — no browser tools exist yet.
 
 ## Chat
 
