@@ -173,7 +173,9 @@ Dev mobile layout: `npm run tauri dev` then open with `?target=mobile`, or press
 
 ## CD
 
-Push to `main` builds a Linux x86_64 release and attaches `hath-linux-x86_64.tar.gz` to a GitHub release tagged `hath-<short-sha>` (marked latest). The asset name is stable so consumers can download without parsing the release body. Pull requests run CI only and never create a release.
+Push to `main` builds a Linux x86_64 release and attaches `hath-linux-x86_64.tar.gz` to a GitHub release tagged `vX.Y.Z` from `package.json` (marked latest). Re-pushing the same version updates that release's asset; bump the version to cut a new rollback point. The asset name is stable so consumers can download without parsing the release body. Pull requests run CI only and never create a release.
+
+Only the Linux kiosk tarball is published today. macOS `.dmg`, Windows installers, and iOS/TestFlight are not in this workflow.
 
 > Hath is the one component that updates outside `bootc upgrade` and
 > `podman-auto-update`. It is a native binary, so neither mechanism fits, and
@@ -181,4 +183,4 @@ Push to `main` builds a Linux x86_64 release and attaches `hath-linux-x86_64.tar
 > third update path; it is accepted deliberately because Hath changes far more
 > often than the OS or the services.
 
-Rollback is re-pointing the consumer at an older release tag — releases are per-SHA rather than a single rolling `latest` tag.
+Rollback is re-pointing the consumer at an older `vX.Y.Z` release tag.

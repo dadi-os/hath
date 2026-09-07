@@ -87,14 +87,17 @@ jobs:
           cp src-tauri/target/release/hath stage/
           tar -C stage -czf hath-linux-x86_64.tar.gz hath
 
-      - name: Short SHA
+      - name: App version
         id: meta
-        run: echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: hath-${{ steps.meta.outputs.short_sha }}
-          name: hath-${{ steps.meta.outputs.short_sha }}
+          tag_name: v${{ steps.meta.outputs.version }}
+          name: Hath v${{ steps.meta.outputs.version }}
           make_latest: true
+          overwrite_files: true
           files: hath-linux-x86_64.tar.gz
