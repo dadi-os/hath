@@ -1,3 +1,5 @@
+use crate::logutil;
+
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
@@ -64,12 +66,16 @@ fn start_node(
 
     let code = unsafe { hathnet_start(control.as_ptr(), key.as_ptr(), host.as_ptr(), dir.as_ptr()) };
     if code < 0 {
-        return Err(last_error_string());
+        let err = last_error_string();
+        logutil::emit("error", format!("tsnet start failed: {err}"));
+        return Err(err);
     }
+    logutil::emit("info", format!("tsnet connected proxy_port={code}"));
     Ok(code as u16)
 }
 
 pub fn stop_node() {
+    logutil::emit("info", "tsnet stopping");
     unsafe { hathnet_stop() };
 }
 

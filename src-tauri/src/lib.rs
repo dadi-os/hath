@@ -1,9 +1,11 @@
+mod logutil;
 mod net;
 
 use net::NetState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    logutil::emit("info", "hath starting");
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
@@ -20,6 +22,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
+                logutil::emit("info", "hath exiting");
                 net::stop_node();
             }
         });
