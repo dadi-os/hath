@@ -170,3 +170,15 @@ Dev mobile layout: `npm run tauri dev` then open with `?target=mobile`, or press
 | `npm run build` | Frontend production build |
 | `npm run tauri build` | Native bundle |
 | `cd net && ./build.sh` | Build libhathnet for linking |
+
+## CD
+
+Push to `main` builds a Linux x86_64 release and attaches `hath-linux-x86_64.tar.gz` to a GitHub release tagged `hath-<short-sha>` (marked latest). The asset name is stable so consumers can download without parsing the release body. Pull requests run CI only and never create a release.
+
+> Hath is the one component that updates outside `bootc upgrade` and
+> `podman-auto-update`. It is a native binary, so neither mechanism fits, and
+> baking it into the OS image would make every UI change a reboot. The cost is a
+> third update path; it is accepted deliberately because Hath changes far more
+> often than the OS or the services.
+
+Rollback is re-pointing the consumer at an older release tag — releases are per-SHA rather than a single rolling `latest` tag.
