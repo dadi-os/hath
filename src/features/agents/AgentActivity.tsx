@@ -4,13 +4,12 @@ import { dimaag } from "../../api";
 import type { Lane, LogRecord } from "../../api/types";
 import { formatAbsolute, formatRelative } from "./tree";
 import { Tooltip } from "../../shared/Tooltip";
+import { POLL_MS } from "../../shared/poll";
 
 export type AgentActivityProps = {
   agentId: string;
   open: boolean;
   connected: boolean;
-  /** Poll faster while a lane is running. */
-  live?: boolean;
 };
 
 type ThoughtItem = {
@@ -311,7 +310,6 @@ export function AgentActivity({
   agentId,
   open,
   connected,
-  live = false,
 }: AgentActivityProps) {
   const logsQuery = useQuery({
     queryKey: ["agent-logs", agentId, "activity"],
@@ -320,7 +318,7 @@ export function AgentActivity({
       return logs;
     },
     enabled: connected && open,
-    refetchInterval: live ? 2_000 : 8_000,
+    refetchInterval: POLL_MS,
   });
 
   const items = useMemo(

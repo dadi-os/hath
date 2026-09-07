@@ -5,6 +5,7 @@ import { yaad } from "../../api";
 import type { NodeKind } from "../../api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/motion";
+import { POLL_MS } from "../../shared/poll";
 
 const KINDS: Array<{ kind: NodeKind; label: string; icon: ReactNode }> = [
   { kind: "person", label: "People", icon: <IconPerson /> },
@@ -123,6 +124,7 @@ export function MemoryCounters({ className }: MemoryCountersProps) {
       return Object.fromEntries(entries) as Record<NodeKind, number>;
     },
     enabled: connected,
+    refetchInterval: POLL_MS,
   });
 
   if (!connected) {

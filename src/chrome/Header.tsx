@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { nas } from "../api";
 import { useConnection } from "../hooks/useConnection";
 import { IconButton, IconHome } from "../shared/IconButton";
+import { POLL_MS } from "../shared/poll";
 import { Tooltip } from "../shared/Tooltip";
 
 function formatUptime(seconds: number): string {
@@ -36,7 +37,7 @@ export function Header() {
     queryKey: ["nas", "status"],
     queryFn: () => nas.getStatus(),
     enabled: state === "connected",
-    refetchInterval: 5_000,
+    refetchInterval: POLL_MS,
   });
 
   const uptime =

@@ -9,6 +9,7 @@ import {
 } from "../logs/LogExplorer";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/motion";
+import { POLL_MS } from "../../shared/poll";
 
 export type SystemMapProps = {
   mode: "full" | "preview";
@@ -120,7 +121,7 @@ export function SystemMap({ mode, className }: SystemMapProps) {
     queryKey: ["nas", "status"],
     queryFn: () => nas.getStatus(),
     enabled: connected,
-    refetchInterval: 2_000,
+    refetchInterval: POLL_MS,
   });
 
   const errorsQuery = useQuery({
@@ -135,7 +136,7 @@ export function SystemMap({ mode, className }: SystemMapProps) {
       });
     },
     enabled: connected,
-    refetchInterval: 5_000,
+    refetchInterval: POLL_MS,
   });
 
   if (!connected) {

@@ -24,6 +24,7 @@ import type { EdgeRecord, NodeKind } from "../../api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { Popover } from "../../shared/Popover";
 import { EASE, SLOW_S } from "../../shared/motion";
+import { POLL_MS } from "../../shared/poll";
 import {
   mergeGraph,
   nodeRadius,
@@ -170,6 +171,7 @@ export function MemoryGraph({
     queryKey: ["yaad", "memory-ambient", preview ? "preview" : "full", entranceKey],
     queryFn: () => seedAmbient(preview),
     enabled: connected,
+    refetchInterval: POLL_MS,
   });
 
   useEffect(() => {

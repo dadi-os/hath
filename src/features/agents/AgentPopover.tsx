@@ -7,6 +7,7 @@ import { Popover } from "../../shared/Popover";
 import { Tooltip } from "../../shared/Tooltip";
 import { getRunning } from "../../store/running";
 import { AgentActivity } from "./AgentActivity";
+import { POLL_MS } from "../../shared/poll";
 import {
   formatAbsolute,
   formatRelative,
@@ -65,14 +66,7 @@ export function AgentPopover({
       return logs;
     },
     enabled: connected && !!agentId && open,
-    refetchInterval: () => {
-      if (!agentId) {
-        return false;
-      }
-      const lanes =
-        runningMap[agentId] ?? detailQuery.data?.running ?? { reasoning: false, conversation: false };
-      return lanes.reasoning || lanes.conversation ? 2_000 : 8_000;
-    },
+    refetchInterval: POLL_MS,
   });
 
   useEffect(() => {
@@ -231,7 +225,6 @@ export function AgentPopover({
           agentId={agentId}
           open={open}
           connected={connected}
-          live={live}
         />
 
         {detailQuery.isLoading && (

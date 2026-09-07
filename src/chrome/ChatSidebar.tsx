@@ -45,6 +45,7 @@ import {
   IconSend,
 } from "../shared/IconButton";
 import { EASE, SLOW_S } from "../shared/motion";
+import { POLL_MS } from "../shared/poll";
 
 type ChatSidebarProps = {
   /** Bumps when chat opens; scrolls the thread to the bottom. */
@@ -120,6 +121,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       return agents;
     },
     enabled: connected,
+    refetchInterval: POLL_MS,
   });
 
   useEffect(() => {

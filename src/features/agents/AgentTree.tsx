@@ -16,6 +16,7 @@ import type { AgentRecord } from "../../api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
 import { EASE, SLOW_S } from "../../shared/motion";
+import { POLL_MS } from "../../shared/poll";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
 import { AgentPopover } from "./AgentPopover";
 import {
@@ -84,6 +85,7 @@ export function AgentTree({
       return agents;
     },
     enabled: connected,
+    refetchInterval: POLL_MS,
   });
 
   const agents = agentsQuery.data;

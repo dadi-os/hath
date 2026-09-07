@@ -5,6 +5,7 @@ import { yaad } from "../../api";
 import type { NodeRecord, PlanDetail, PlanStatus } from "../../api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/motion";
+import { POLL_MS } from "../../shared/poll";
 import {
   addDays,
   endOfDay,
@@ -137,6 +138,7 @@ export function TimelineCalendar({
         .filter((n) => statusOf(n) !== "idea");
     },
     enabled: connected,
+    refetchInterval: POLL_MS,
   });
 
   const ideasQuery = useQuery({
@@ -149,6 +151,7 @@ export function TimelineCalendar({
       return nodes.map(asPlan).filter((n): n is PlanNode => n !== null);
     },
     enabled: connected && !hideIdeas,
+    refetchInterval: POLL_MS,
   });
 
   const plans = plansQuery.data ?? [];
