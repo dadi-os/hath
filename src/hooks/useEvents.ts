@@ -4,9 +4,9 @@ import { DIMAAG_URL, dimaag, transport } from "../api";
 import type { AgentRecord, DimaagEvent } from "../api/types";
 import { subscribeConnection } from "../store/connection";
 import {
-  clearPendingNewChat,
   ingestLiveMessage,
   isUserThreadMessage,
+  tryBindPendingNewChat,
   upsertConversation,
 } from "../store/chat";
 import { seedRunningFromAgents, setLaneRunning } from "../store/running";
@@ -118,7 +118,11 @@ export function useEvents(): void {
           last_at: data.at,
           from_user: data.from_agent_id === null,
         });
-        clearPendingNewChat();
+        tryBindPendingNewChat(
+          data.agent_id,
+          data.content,
+          data.from_agent_id === null,
+        );
         return;
       }
 

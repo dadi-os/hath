@@ -6,8 +6,10 @@ import {
   useSyncExternalStore,
   type FormEvent,
   type KeyboardEvent,
+  type RefObject,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "motion/react";
 import { dimaag } from "../api";
 import type { AgentRecord, LogRecord } from "../api/types";
 import { useConnection } from "../hooks/useConnection";
@@ -17,16 +19,19 @@ import {
 } from "../hooks/useEvents";
 import {
   addOptimistic,
+  beginPendingNewChat,
   clearPendingNewChat,
   getChatState,
   isUserThreadMessage,
   markFailed,
   markPending,
   markPendingNewChatFailed,
+  openAgent,
+  openList,
+  openProvisional,
   removeMessage,
   seedConversations,
   seedThread,
-  setPendingNewChat,
   subscribeChat,
   type ChatMessage,
   type Conversation,
@@ -49,6 +54,9 @@ type MessagePayload = {
 const NEAR_BOTTOM_PX = 80;
 const TEXTAREA_MAX_PX = 120;
 const NEW_CHAT_TIMEOUT_MS = 90_000;
+const EASE = [0.22, 0.61, 0.36, 1] as const;
+const SLOW = 1.2;
+const COMPOSER_PAD = 88;
 
 function parseMessagePayload(
   payload: Record<string, unknown>,
@@ -167,8 +175,9 @@ function formatRelative(iso: string, now = Date.now()): string {
 }
 
 /**
- * Conversation list + thread views. New-chat input routes through root Dadi;
- * thread replies go to that agent directly. Sidebar chrome stays mounted.
+ * Conversation list + thread views. New-chat posts to root Dadi and opens a
+ * provisional thread; route_message binds it to a child. Thread replies go to
+ * that agent directly. Sidebar chrome stays mounted.
  */
 export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   const { state: connection } = useConnection();
@@ -180,9 +189,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     getRunning,
   );
 
-  const [openAgentId, setOpenAgentId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  const [listDraft, setListDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
@@ -214,6 +221,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     },
     enabled: connected && !!rootId,
   });
+
+  const openAgentId =
+    chat.open.kind === "agent" ? chat.open.agentId : null;
+  const viewingProvisional = chat.open.kind === "provisional";
+  const viewingThread = openAgentId !== null || viewingProvisional;
 
   const historyQuery = useQuery({
     queryKey: ["agent-logs", openAgentId, "message"],
@@ -258,9 +270,27 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   const threadMessages = openAgentId
     ? (chat.threads[openAgentId] ?? [])
     : [];
+  const provisionalMessages: ChatMessage[] =
+    viewingProvisional && chat.pendingNewChat
+      ? [
+          {
+            seq: -1,
+            from_user: true,
+            content: chat.pendingNewChat.content,
+            at: chat.pendingNewChat.at,
+            pending: !chat.pendingNewChat.failed,
+            failed: chat.pendingNewChat.failed,
+          },
+        ]
+      : [];
+
+  const thinkingAgentId =
+    viewingProvisional && chat.pendingNewChat && !chat.pendingNewChat.failed
+      ? (rootId ?? null)
+      : openAgentId;
   const thinking =
-    openAgentId !== null &&
-    running[openAgentId]?.conversation === true;
+    thinkingAgentId !== null &&
+    running[thinkingAgentId]?.conversation === true;
 
   const scrollToBottom = useEffectEvent((behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current;
@@ -273,13 +303,13 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   useEffect(() => {
     stickToBottomRef.current = true;
     scrollToBottom("auto");
-  }, [sessionKey, openAgentId]);
+  }, [sessionKey, chat.open]);
 
   useEffect(() => {
-    if (openAgentId && stickToBottomRef.current) {
+    if (viewingThread && stickToBottomRef.current) {
       scrollToBottom("smooth");
     }
-  }, [threadMessages, thinking, openAgentId]);
+  }, [threadMessages, provisionalMessages, thinking, viewingThread]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -306,7 +336,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_PX)}px`;
-  }, [draft, listDraft, openAgentId]);
+  }, [draft, chat.open]);
 
   useEffect(() => {
     return () => {
@@ -343,12 +373,12 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   }, [chat.pendingNewChat]);
 
   const sendNewChat = async () => {
-    const trimmed = listDraft.trim();
-    if (!trimmed || !connected || !rootId) {
+    const trimmed = draft.trim();
+    if (!trimmed || !connected || !rootId || chat.pendingNewChat) {
       return;
     }
 
-    setListDraft("");
+    setDraft("");
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
       const el = textareaRef.current;
@@ -357,12 +387,14 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       }
     });
 
-    setPendingNewChat({ content: trimmed, at: new Date().toISOString() });
+    beginPendingNewChat({ content: trimmed, at: new Date().toISOString() });
     clearNewChatTimer();
     newChatTimerRef.current = setTimeout(() => {
       markPendingNewChatFailed();
       newChatTimerRef.current = null;
     }, NEW_CHAT_TIMEOUT_MS);
+
+    stickToBottomRef.current = true;
 
     try {
       await dimaag.postMessage({
@@ -410,11 +442,41 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
   };
 
+  const retryNewChat = async () => {
+    const content = chat.pendingNewChat?.content;
+    if (!content || !connected || !rootId) {
+      return;
+    }
+    clearNewChatTimer();
+    beginPendingNewChat({ content, at: new Date().toISOString() });
+    clearNewChatTimer();
+    newChatTimerRef.current = setTimeout(() => {
+      markPendingNewChatFailed();
+      newChatTimerRef.current = null;
+    }, NEW_CHAT_TIMEOUT_MS);
+    try {
+      await dimaag.postMessage({ to_agent_id: rootId, content });
+    } catch {
+      clearNewChatTimer();
+      markPendingNewChatFailed();
+    }
+  };
+
+  const composerLocked =
+    !!chat.pendingNewChat &&
+    !chat.pendingNewChat.failed &&
+    (viewingProvisional || chat.open.kind === "list");
+
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (composerLocked) {
+      return;
+    }
     if (openAgentId) {
       void sendThread(draft);
-    } else {
+    } else if (viewingProvisional && chat.pendingNewChat?.failed) {
+      void retryNewChat();
+    } else if (!viewingThread) {
       void sendNewChat();
     }
   };
@@ -422,169 +484,337 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (openAgentId) {
-        void sendThread(draft);
-      } else {
-        void sendNewChat();
-      }
+      onSubmit(e as unknown as FormEvent);
     }
   };
 
   const backToList = () => {
-    setOpenAgentId(null);
+    openList();
     setDraft("");
   };
 
+  const headerTitle = viewingProvisional
+    ? "NEW CHAT"
+    : openAgentId
+      ? (openConversation?.agent_name ?? "CHAT").toUpperCase()
+      : "CHAT";
+
+  const viewKey =
+    chat.open.kind === "list"
+      ? "list"
+      : chat.open.kind === "provisional"
+        ? "provisional"
+        : chat.open.agentId;
+
+  const placeholder = composerLocked
+    ? "Routing…"
+    : openAgentId
+      ? "Message…"
+      : viewingProvisional
+        ? "Message…"
+        : "New chat…";
+
+  const canSubmit =
+    connected &&
+    !composerLocked &&
+    (openAgentId
+      ? draft.trim().length > 0
+      : viewingProvisional && chat.pendingNewChat?.failed
+        ? true
+        : !viewingThread && draft.trim().length > 0);
+
   return (
     <aside
-      className={`widget-surface flex h-full min-h-0 flex-col overflow-hidden ${className ?? ""}`}
+      className={`widget-surface relative flex h-full min-h-0 flex-col overflow-hidden ${className ?? ""}`}
       data-agent-id={openAgentId ?? rootId ?? undefined}
       data-session-key={sessionKey}
       style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : undefined }}
     >
-      <div className="border-b border-dashed border-sage-line px-4 py-3">
-        {openAgentId ? (
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={backToList}
-              className="text-[11px] font-medium tracking-[2.5px] text-sage-deep"
-            >
-              ←
-            </button>
+      <div className="relative z-10 border-b border-dashed border-sage-line px-4 py-3">
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={viewingThread ? "thread-head" : "list-head"}
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={{ duration: SLOW, ease: EASE }}
+            className="flex items-center gap-3"
+          >
+            {viewingThread ? (
+              <button
+                type="button"
+                onClick={backToList}
+                className="text-[11px] font-medium tracking-[2.5px] text-sage-deep transition-opacity duration-slow ease-hath hover:opacity-70"
+              >
+                ←
+              </button>
+            ) : null}
             <span className="truncate text-[11px] font-medium tracking-[2.5px] text-sage-deep">
-              {(openConversation?.agent_name ?? "CHAT").toUpperCase()}
+              {headerTitle}
             </span>
-          </div>
-        ) : (
-          <span className="text-[11px] font-medium tracking-[2.5px] text-sage-deep">
-            CHAT
-          </span>
-        )}
+          </motion.div>
+        </AnimatePresence>
       </div>
 
-      {openAgentId ? (
-        <div
-          ref={scrollRef}
-          onScroll={onScroll}
-          onClick={dismissKeyboard}
-          className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
-        >
-          <div className="flex flex-col gap-3">
-            {threadMessages.map((msg) => (
-              <MessageBubble
-                key={msg.seq}
-                message={msg}
-                onRetry={() => void sendThread(msg.content, msg.seq)}
-                onDismiss={() => removeMessage(openAgentId, msg.seq)}
-              />
-            ))}
-            {thinking && <ThinkingIndicator />}
-          </div>
-        </div>
-      ) : (
-        <div
-          onClick={dismissKeyboard}
-          className="min-h-0 flex-1 overflow-y-auto px-2 py-2"
-        >
-          {chat.pendingNewChat && (
-            <div className="rounded-[var(--radius)] px-3 py-2.5">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-[13px] text-ink">New chat</span>
-                <span className="shrink-0 text-[11px] text-ink-ghost">
-                  {formatRelative(chat.pendingNewChat.at)}
-                </span>
-              </div>
-              <p
-                className="mt-0.5 truncate text-[12px] text-ink-ghost"
-                style={{ opacity: chat.pendingNewChat.failed ? 0.7 : 1 }}
-              >
-                {truncateOneLine(chat.pendingNewChat.content)}
-              </p>
-              {chat.pendingNewChat.failed ? (
-                <div className="mt-1.5 flex items-center gap-2 text-[11px] text-sage-text">
-                  <span>No reply yet</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      clearNewChatTimer();
-                      clearPendingNewChat();
-                    }}
-                    className="underline decoration-dashed underline-offset-2"
+      <div className="relative min-h-0 flex-1">
+        <AnimatePresence mode="wait" initial={false}>
+          {viewingThread ? (
+            <motion.div
+              key={viewKey}
+              ref={scrollRef}
+              onScroll={onScroll}
+              onClick={dismissKeyboard}
+              className="absolute inset-0 overflow-y-auto px-4 py-4"
+              style={{ paddingBottom: COMPOSER_PAD }}
+              initial={{ opacity: 0, x: 18 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -14 }}
+              transition={{ duration: SLOW, ease: EASE }}
+            >
+              <div className="flex flex-col gap-3">
+                <AnimatePresence initial={false}>
+                  {(viewingProvisional
+                    ? provisionalMessages
+                    : threadMessages
+                  ).map((msg) => (
+                    <MessageBubble
+                      key={msg.seq}
+                      message={msg}
+                      onRetry={
+                        openAgentId
+                          ? () => void sendThread(msg.content, msg.seq)
+                          : undefined
+                      }
+                      onDismiss={
+                        openAgentId
+                          ? () => removeMessage(openAgentId, msg.seq)
+                          : viewingProvisional
+                            ? () => {
+                                clearNewChatTimer();
+                                clearPendingNewChat();
+                              }
+                            : undefined
+                      }
+                    />
+                  ))}
+                </AnimatePresence>
+                {viewingProvisional && chat.pendingNewChat?.failed ? (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: SLOW, ease: EASE }}
+                    className="flex items-center gap-2 text-[11px] text-sage-text"
                   >
-                    Dismiss
-                  </button>
-                </div>
+                    <span>No reply yet</span>
+                    <button
+                      type="button"
+                      onClick={() => void retryNewChat()}
+                      className="underline decoration-dashed underline-offset-2"
+                    >
+                      Retry
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearNewChatTimer();
+                        clearPendingNewChat();
+                      }}
+                      className="underline decoration-dashed underline-offset-2"
+                    >
+                      Dismiss
+                    </button>
+                  </motion.div>
+                ) : null}
+                {thinking ? <ThinkingIndicator /> : null}
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="list"
+              onClick={dismissKeyboard}
+              className="absolute inset-0 overflow-y-auto px-2 py-2"
+              style={{ paddingBottom: COMPOSER_PAD }}
+              initial={{ opacity: 0, x: -18 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 14 }}
+              transition={{ duration: SLOW, ease: EASE }}
+            >
+              {chat.pendingNewChat ? (
+                <motion.button
+                  type="button"
+                  layout
+                  onClick={() => openProvisional()}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: SLOW, ease: EASE }}
+                  className="mb-1 flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[13px] text-ink">New chat</span>
+                    <span className="shrink-0 text-[11px] text-ink-ghost">
+                      {formatRelative(chat.pendingNewChat.at)}
+                    </span>
+                  </div>
+                  <p
+                    className="truncate text-[12px] text-ink-ghost"
+                    style={{
+                      opacity: chat.pendingNewChat.failed ? 0.7 : 1,
+                    }}
+                  >
+                    {truncateOneLine(chat.pendingNewChat.content)}
+                  </p>
+                  {!chat.pendingNewChat.failed ? (
+                    <div className="mt-1.5">
+                      <ThinkingIndicator compact />
+                    </div>
+                  ) : (
+                    <span className="mt-1 text-[11px] text-sage-text">
+                      No reply yet
+                    </span>
+                  )}
+                </motion.button>
+              ) : null}
+
+              {chat.conversations.length === 0 && !chat.pendingNewChat ? (
+                <p className="px-3 py-6 text-[13px] text-ink-ghost">
+                  No conversations yet
+                </p>
               ) : (
-                <div className="mt-2">
-                  <ThinkingIndicator />
+                <div className="flex flex-col">
+                  {chat.conversations.map((conv, i) => (
+                    <motion.button
+                      key={conv.agent_id}
+                      type="button"
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{
+                        duration: SLOW,
+                        ease: EASE,
+                        delay: Math.min(i * 0.04, 0.24),
+                      }}
+                      onClick={() => openAgent(conv.agent_id)}
+                      className="flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-[13px] text-ink">
+                          {conv.agent_name}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-ink-ghost">
+                          {formatRelative(conv.last_at)}
+                        </span>
+                      </div>
+                      <p className="truncate text-[12px] text-ink-ghost">
+                        {conv.from_user ? "You: " : ""}
+                        {truncateOneLine(conv.last_message)}
+                      </p>
+                    </motion.button>
+                  ))}
                 </div>
               )}
-            </div>
+            </motion.div>
           )}
+        </AnimatePresence>
 
-          {chat.conversations.length === 0 && !chat.pendingNewChat ? (
-            <p className="px-3 py-6 text-[13px] text-ink-ghost">
-              No conversations yet
-            </p>
-          ) : (
-            chat.conversations.map((conv) => (
-              <button
-                key={conv.agent_id}
-                type="button"
-                onClick={() => setOpenAgentId(conv.agent_id)}
-                className="flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-[13px] text-ink">
-                    {conv.agent_name}
-                  </span>
-                  <span className="shrink-0 text-[11px] text-ink-ghost">
-                    {formatRelative(conv.last_at)}
-                  </span>
-                </div>
-                <p className="truncate text-[12px] text-ink-ghost">
-                  {conv.from_user ? "You: " : ""}
-                  {truncateOneLine(conv.last_message)}
-                </p>
-              </button>
-            ))
-          )}
-        </div>
-      )}
-
-      <div
-        className="border-t border-dashed border-sage-line px-3 pt-3"
-        style={{
-          paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))",
-        }}
-      >
-        {connected ? (
-          <form onSubmit={onSubmit}>
-            <textarea
-              ref={textareaRef}
-              value={openAgentId ? draft : listDraft}
-              onChange={(e) =>
-                openAgentId
-                  ? setDraft(e.target.value)
-                  : setListDraft(e.target.value)
-              }
-              onKeyDown={onKeyDown}
-              rows={1}
-              placeholder={
-                openAgentId ? "Message…" : "New chat…"
-              }
-              className="block w-full resize-none overflow-y-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone px-3 py-2.5 text-[13px] leading-relaxed text-ink outline-none placeholder:text-ink-ghost focus:border-sage-line"
-              style={{ maxHeight: TEXTAREA_MAX_PX }}
-            />
-          </form>
-        ) : (
-          <div className="rounded-[var(--radius)] border border-dashed border-sage-line bg-bone px-3 py-2.5 text-[13px] text-ink-ghost">
-            Connect to message Dadi
-          </div>
-        )}
+        <FloatingComposer
+          connected={connected}
+          draft={draft}
+          setDraft={setDraft}
+          placeholder={placeholder}
+          locked={composerLocked}
+          canSubmit={canSubmit}
+          textareaRef={textareaRef}
+          onSubmit={onSubmit}
+          onKeyDown={onKeyDown}
+        />
       </div>
     </aside>
+  );
+}
+
+function FloatingComposer({
+  connected,
+  draft,
+  setDraft,
+  placeholder,
+  locked,
+  canSubmit,
+  textareaRef,
+  onSubmit,
+  onKeyDown,
+}: {
+  connected: boolean;
+  draft: string;
+  setDraft: (v: string) => void;
+  placeholder: string;
+  locked: boolean;
+  canSubmit: boolean;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  onSubmit: (e: FormEvent) => void;
+  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+}) {
+  return (
+    <motion.div
+      className="pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3"
+      style={{
+        paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))",
+      }}
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: SLOW, ease: EASE }}
+    >
+      {connected ? (
+        <form
+          onSubmit={onSubmit}
+          className="pointer-events-auto flex items-end gap-2 rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-2.5 py-2 shadow-[var(--shadow)] backdrop-blur-md"
+        >
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKeyDown}
+            rows={1}
+            disabled={locked}
+            placeholder={placeholder}
+            className="block max-h-[120px] min-h-[40px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-[13px] leading-relaxed text-ink outline-none placeholder:text-ink-ghost disabled:cursor-default disabled:opacity-55"
+            style={{ maxHeight: TEXTAREA_MAX_PX }}
+          />
+          <motion.button
+            type="submit"
+            disabled={!canSubmit}
+            aria-label="Send"
+            whileTap={canSubmit ? { scale: 0.94 } : undefined}
+            transition={{ duration: 0.35, ease: EASE }}
+            className="mb-0.5 flex size-9 shrink-0 items-center justify-center rounded-[var(--radius)] bg-sage-fill text-sage-deep transition-colors duration-slow ease-hath enabled:hover:bg-sage-active disabled:opacity-35"
+          >
+            <SendGlyph />
+          </motion.button>
+        </form>
+      ) : (
+        <div className="pointer-events-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-3 py-2.5 text-[13px] text-ink-ghost shadow-[var(--shadow)] backdrop-blur-md">
+          Connect to message Dadi
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+function SendGlyph() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M2.2 7h9.2M7.8 3.2 11.4 7 7.8 10.8"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -594,19 +824,26 @@ function MessageBubble({
   onDismiss,
 }: {
   message: ChatMessage;
-  onRetry: () => void;
-  onDismiss: () => void;
+  onRetry?: () => void;
+  onDismiss?: () => void;
 }) {
   if (message.from_user) {
     return (
-      <div className="flex flex-col items-end gap-1">
+      <motion.div
+        layout
+        initial={{ opacity: 0, y: 10, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -6 }}
+        transition={{ duration: SLOW, ease: EASE }}
+        className="flex flex-col items-end gap-1"
+      >
         <div
-          className="max-w-[90%] rounded-[var(--radius)] bg-sage-active px-3 py-2 text-[13px] leading-relaxed text-ink whitespace-pre-wrap transition-opacity duration-slow ease-hath"
+          className="max-w-[90%] rounded-[var(--radius)] bg-sage-active px-3 py-2 text-[13px] leading-relaxed text-ink whitespace-pre-wrap"
           style={{ opacity: message.pending ? 0.55 : 1 }}
         >
           {message.content}
         </div>
-        {message.failed && (
+        {message.failed && onRetry && onDismiss ? (
           <div className="flex items-center gap-2 text-[11px] text-sage-text">
             <span>Couldn&apos;t send</span>
             <button
@@ -624,30 +861,68 @@ function MessageBubble({
               Dismiss
             </button>
           </div>
-        )}
-      </div>
+        ) : null}
+      </motion.div>
     );
   }
 
   return (
-    <div className="max-w-[95%] text-[13px] leading-[1.65] text-ink whitespace-pre-wrap">
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -6 }}
+      transition={{ duration: SLOW, ease: EASE }}
+      className="max-w-[95%] text-[13px] leading-[1.65] text-ink whitespace-pre-wrap"
+    >
       {message.content}
-    </div>
+    </motion.div>
   );
 }
 
-function ThinkingIndicator() {
+function ThinkingIndicator({ compact = false }: { compact?: boolean }) {
   return (
-    <div className="flex items-center gap-1 py-1" aria-label="Thinking">
-      <span className="size-1.5 rounded-full bg-sage animate-breath" />
-      <span
-        className="size-1.5 rounded-full bg-sage animate-breath"
-        style={{ animationDelay: "0.4s" }}
-      />
-      <span
-        className="size-1.5 rounded-full bg-sage animate-breath"
-        style={{ animationDelay: "0.8s" }}
-      />
-    </div>
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: SLOW, ease: EASE }}
+      className={`flex items-center gap-2.5 ${compact ? "py-0.5" : "py-1.5"}`}
+      aria-label="Thinking"
+    >
+      <div className="relative flex items-center gap-1">
+        {[0, 1, 2].map((i) => (
+          <motion.span
+            key={i}
+            className="block size-1.5 rounded-full bg-sage"
+            animate={{
+              opacity: [0.25, 1, 0.25],
+              y: [0, -3, 0],
+              scale: [0.92, 1.08, 0.92],
+            }}
+            transition={{
+              duration: 1.8,
+              repeat: Infinity,
+              delay: i * 0.22,
+              ease: EASE,
+            }}
+          />
+        ))}
+        <motion.span
+          className="pointer-events-none absolute -inset-x-2 -inset-y-1 rounded-[var(--radius)] bg-sage-fill"
+          animate={{ opacity: [0.15, 0.4, 0.15] }}
+          transition={{ duration: 2.8, repeat: Infinity, ease: EASE }}
+        />
+      </div>
+      {!compact ? (
+        <motion.span
+          className="text-[10px] font-medium tracking-[2.5px] text-sage-text"
+          animate={{ opacity: [0.45, 1, 0.45] }}
+          transition={{ duration: 2.4, repeat: Infinity, ease: EASE }}
+        >
+          THINKING
+        </motion.span>
+      ) : null}
+    </motion.div>
   );
 }

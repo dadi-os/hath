@@ -123,13 +123,11 @@ Structural changes (`agent_spawned`, `agent_modified`) invalidate the agents que
 
 The sidebar is a conversation list, not a single thread. A **conversation** is any agent that has exchanged messages with the user (`from_agent_id` or `to_agent_id` is null). Root Dadi is excluded — messages to it are routing requests, and including it would create a permanent dump of every "new chat" you ever sent.
 
-**New chat** (list view, input pinned at the bottom) posts to root Dadi. Root routes: it spawns or picks a thread agent and instructs that agent to reply to you with `to_agent_id: null`. After send, the list stays open; a provisional row with a thinking indicator waits until a non-root agent replies (or times out quietly). No conversation is created optimistically — the client does not know which agent will handle it.
+**New chat** (list view, floating composer) posts to root Dadi and immediately opens a **provisional** thread with the user's message and a thinking indicator driven by root's conversation lane. Root routes: it spawns or picks a thread agent and calls `route_message` to copy the user's words onto that agent (`from_agent_id: null`). Hath binds the provisional chat to that agent when the copy arrives over SSE. Backing out to the list keeps the provisional row until bind, dismiss, or timeout. Thread replies post to that agent directly. Thinking in an open thread follows that agent's `lane_started` / `lane_finished`.
 
-**Thread view** opens from a list row. Messages are filtered to the user thread for that agent; the input posts to that agent directly, never through root. Thinking follows `lane_started` / `lane_finished` for the open agent.
+Root's own message history is never shown in the sidebar — only thread agents appear, so each chat looks like a normal send/receive with one agent.
 
-A thread that starts with the agent's message is expected: your original words live in root Dadi's log, not the thread's. That is fine and is not worked around.
-
-The conversation list is built from one `GET /logs?event=message&limit=200` call, joined to agent names from `GET /agents`. That covers conversations appearing in the last 200 message events — effectively all recent ones for a personal system. Live `message` events upsert summaries and create new list rows when a newly routed thread first replies.
+The conversation list is built from one `GET /logs?event=message&limit=200` call, joined to agent names from `GET /agents`. That covers conversations appearing in the last 200 message events — effectively all recent ones for a personal system. Live `message` events upsert summaries and create new list rows when a newly routed thread first receives the copied user message.
 
 History for an open thread is seeded from `GET /agents/:id/logs?event=message` (newest-first from Dimaag; reversed before render). Optimistic thread sends reconcile on matching content + seq.
 

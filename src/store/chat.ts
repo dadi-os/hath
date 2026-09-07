@@ -19,18 +19,27 @@ export type Conversation = {
   from_user: boolean;
 };
 
-/** Provisional new-chat row — not yet attached to any thread. */
+/**
+ * Unbound new-chat while root is routing. Survives back-navigation to the list.
+ * Cleared when the routed copy lands on a thread agent (or on dismiss / timeout).
+ */
 export type PendingNewChat = {
   content: string;
   at: string;
   failed?: boolean;
 };
 
+export type ChatOpen =
+  | { kind: "list" }
+  | { kind: "provisional" }
+  | { kind: "agent"; agentId: string };
+
 type ChatState = {
   /** User-thread messages keyed by agent id. */
   threads: Record<string, ChatMessage[]>;
   conversations: Conversation[];
   pendingNewChat: PendingNewChat | null;
+  open: ChatOpen;
 };
 
 type Listener = (state: ChatState) => void;
@@ -39,6 +48,7 @@ let state: ChatState = {
   threads: {},
   conversations: [],
   pendingNewChat: null,
+  open: { kind: "list" },
 };
 const listeners = new Set<Listener>();
 let nextTempSeq = -1;
@@ -88,6 +98,33 @@ export function subscribeChat(listener: Listener): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+export function openList(): void {
+  if (state.open.kind === "list") {
+    return;
+  }
+  state = { ...state, open: { kind: "list" } };
+  emit();
+}
+
+export function openProvisional(): void {
+  if (!state.pendingNewChat) {
+    return;
+  }
+  if (state.open.kind === "provisional") {
+    return;
+  }
+  state = { ...state, open: { kind: "provisional" } };
+  emit();
+}
+
+export function openAgent(agentId: string): void {
+  if (state.open.kind === "agent" && state.open.agentId === agentId) {
+    return;
+  }
+  state = { ...state, open: { kind: "agent", agentId } };
+  emit();
 }
 
 /**
@@ -228,8 +265,13 @@ export function markPending(agentId: string, tempSeq: number): void {
   emit();
 }
 
-export function setPendingNewChat(pending: PendingNewChat): void {
-  state = { ...state, pendingNewChat: pending };
+/** Start a new-chat provisional and open its thread view. */
+export function beginPendingNewChat(pending: PendingNewChat): void {
+  state = {
+    ...state,
+    pendingNewChat: pending,
+    open: { kind: "provisional" },
+  };
   emit();
 }
 
@@ -237,7 +279,9 @@ export function clearPendingNewChat(): void {
   if (state.pendingNewChat === null) {
     return;
   }
-  state = { ...state, pendingNewChat: null };
+  const open: ChatOpen =
+    state.open.kind === "provisional" ? { kind: "list" } : state.open;
+  state = { ...state, pendingNewChat: null, open };
   emit();
 }
 
@@ -250,6 +294,31 @@ export function markPendingNewChatFailed(): void {
     pendingNewChat: { ...state.pendingNewChat, failed: true },
   };
   emit();
+}
+
+/**
+ * When root's route_message copy lands on a thread, attach the provisional chat.
+ * Opens that agent if the user is still in the provisional thread.
+ */
+export function tryBindPendingNewChat(
+  agentId: string,
+  content: string,
+  fromUser: boolean,
+): boolean {
+  const pending = state.pendingNewChat;
+  if (!pending || pending.failed || !fromUser) {
+    return false;
+  }
+  if (pending.content.trim() !== content.trim()) {
+    return false;
+  }
+  const open: ChatOpen =
+    state.open.kind === "provisional"
+      ? { kind: "agent", agentId }
+      : state.open;
+  state = { ...state, pendingNewChat: null, open };
+  emit();
+  return true;
 }
 
 /**
