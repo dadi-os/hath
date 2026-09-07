@@ -109,7 +109,7 @@ function resourceRows(status: NasStatus): ResourceRow[] {
 }
 
 /**
- * Dadi health + recent errors. Preview is dynamic: quiet pulse when clear,
+ * Dadi health + recent errors. Preview shows module reachability when quiet,
  * latest error when something failed. Full mode is the left health column.
  */
 export function SystemMap({ mode, className }: SystemMapProps) {
@@ -167,7 +167,6 @@ export function SystemMap({ mode, className }: SystemMapProps) {
   const services = serviceHealth(status);
   const resources = resourceRows(status);
   const errors = errorsQuery.data?.entries ?? [];
-  const downCount = services.filter((s) => !s.ok).length;
 
   if (preview) {
     return (
@@ -177,7 +176,6 @@ export function SystemMap({ mode, className }: SystemMapProps) {
         resources={resources}
         errors={errors}
         errorsLoading={errorsQuery.isLoading}
-        downCount={downCount}
       />
     );
   }
@@ -199,44 +197,47 @@ function SystemPreview({
   resources,
   errors,
   errorsLoading,
-  downCount,
 }: {
   className?: string;
   services: Array<{ name: string; ok: boolean }>;
   resources: ResourceRow[];
   errors: NasLogEntry[];
   errorsLoading: boolean;
-  downCount: number;
 }) {
   const hasErrors = errors.length > 0;
   const latest = hasErrors ? errors[0] : null;
   const copy = latest ? errorCardCopy(latest) : null;
   const compactResources = resources.filter((r) => r.pct != null).slice(0, 3);
+  const showServiceChips = errorsLoading || hasErrors;
 
   return (
     <div
       className={`flex h-full min-h-0 flex-col overflow-hidden px-3.5 pb-2.5 pt-1 ${className ?? ""}`}
     >
-      <div className="flex flex-wrap gap-1.5">
-        {services.map((s) => (
-          <span
-            key={s.name}
-            className={`inline-flex items-center gap-1.5 rounded-[5px] px-1.5 py-0.5 text-[10px] tracking-wide ${
-              s.ok ? "text-ink-ghost" : "bg-[#f7f0ed] text-[#9a5a4e]"
-            }`}
-          >
+      {showServiceChips ? (
+        <div className="flex flex-wrap gap-1.5">
+          {services.map((s) => (
             <span
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                s.ok ? "bg-sage" : "bg-[#9a5a4e]"
+              key={s.name}
+              className={`inline-flex items-center gap-1.5 rounded-[5px] px-1.5 py-0.5 text-[10px] tracking-wide ${
+                s.ok ? "text-ink-ghost" : "bg-[#f7f0ed] text-[#9a5a4e]"
               }`}
-              aria-hidden
-            />
-            {s.name}
-          </span>
-        ))}
-      </div>
+            >
+              <span
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                  s.ok ? "bg-sage" : "bg-[#9a5a4e]"
+                }`}
+                aria-hidden
+              />
+              {s.name}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
-      <div className="relative mt-3 min-h-0 flex-1 overflow-hidden">
+      <div
+        className={`relative min-h-0 flex-1 overflow-hidden ${showServiceChips ? "mt-3" : ""}`}
+      >
         <AnimatePresence mode="wait" initial={false}>
           {errorsLoading ? (
             <motion.p
@@ -284,16 +285,9 @@ function SystemPreview({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: SLOW_S, ease: EASE }}
-              className="flex h-full flex-col justify-center"
+              className="flex h-full min-h-0 flex-col overflow-y-auto"
             >
-              <p className="text-[15px] text-ink">
-                {downCount > 0 ? "Degraded" : "All clear"}
-              </p>
-              <p className="mt-1 text-[12px] text-ink-ghost">
-                {downCount > 0
-                  ? `${downCount} service${downCount === 1 ? "" : "s"} unreachable`
-                  : "No errors in the last hour"}
-              </p>
+              <ServiceRows services={services} />
             </motion.div>
           )}
         </AnimatePresence>
