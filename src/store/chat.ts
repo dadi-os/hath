@@ -9,6 +9,11 @@ export type ChatMessage = {
   pending?: boolean;
   /** Send failed; eligible for retry or dismiss. */
   failed?: boolean;
+  /**
+   * Waiting locally because the conversation lane is busy. Not POSTed yet — can cancel.
+   * Rendered after settled messages as a draft (reasoning-busy does not queue).
+   */
+  queued?: boolean;
 };
 
 export type Conversation = {
@@ -30,6 +35,8 @@ export type PendingNewChatMessage = {
   at: string;
   pending?: boolean;
   failed?: boolean;
+  /** Local-only while Dadi is busy; not POSTed until flush. */
+  queued?: boolean;
 };
 
 /** Queued user→Dadi messages awaiting route_message onto a thread. */
@@ -67,15 +74,24 @@ function emit(): void {
   }
 }
 
-/** Confirmed by seq ascending; pending/failed after, oldest temp first. */
+/** Confirmed first; then in-flight pending; queued drafts last (oldest first). */
 function sortMessages(list: ChatMessage[]): ChatMessage[] {
   return [...list].sort((a, b) => {
-    const aTemp = a.seq < 0;
-    const bTemp = b.seq < 0;
-    if (aTemp !== bTemp) {
-      return aTemp ? 1 : -1;
+    const rank = (m: ChatMessage) => {
+      if (m.queued) {
+        return 2;
+      }
+      if (m.seq < 0) {
+        return 1;
+      }
+      return 0;
+    };
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) {
+      return ra - rb;
     }
-    if (aTemp) {
+    if (a.seq < 0 && b.seq < 0) {
       return b.seq - a.seq;
     }
     return a.seq - b.seq;
@@ -201,15 +217,21 @@ export function appendMessage(agentId: string, msg: ChatMessage): void {
 }
 
 /** Insert an optimistic user message; returns its temporary (negative) seq. */
-export function addOptimistic(agentId: string, content: string): number {
+export function addOptimistic(
+  agentId: string,
+  content: string,
+  opts?: { queued?: boolean },
+): number {
   const seq = nextTempSeq;
   nextTempSeq -= 1;
+  const queued = Boolean(opts?.queued);
   const msg: ChatMessage = {
     seq,
     from_user: true,
     content,
     at: new Date().toISOString(),
     pending: true,
+    queued: queued || undefined,
   };
   setThread(agentId, sortMessages([...threadOf(agentId), msg]));
   emit();
@@ -262,30 +284,36 @@ export function removeMessage(agentId: string, seq: number): void {
   emit();
 }
 
-/** Clear failed and set pending again before a retry POST. */
+/** Clear failed/queued and set pending again before a retry POST. */
 export function markPending(agentId: string, tempSeq: number): void {
   setThread(
     agentId,
     threadOf(agentId).map((m) =>
-      m.seq === tempSeq ? { ...m, pending: true, failed: false } : m,
+      m.seq === tempSeq
+        ? { ...m, pending: true, failed: false, queued: undefined }
+        : m,
     ),
   );
   emit();
 }
 
-function nextPendingSeq(): number {
-  const seq = nextTempSeq;
-  nextTempSeq -= 1;
-  return seq;
+/** Queued (not yet POSTed) messages for an agent, oldest first. */
+export function listQueuedThread(agentId: string): ChatMessage[] {
+  return threadOf(agentId).filter((m) => m.queued && m.from_user);
 }
 
-/** Append a queued message to Dadi and open the provisional thread. */
-export function enqueuePendingNewChat(content: string): number {
+/** Append a message to Dadi; `queued` stays local-only until flush. */
+export function enqueuePendingNewChat(
+  content: string,
+  opts?: { queued?: boolean },
+): number {
+  const queued = Boolean(opts?.queued);
   const msg: PendingNewChatMessage = {
     seq: nextPendingSeq(),
     content,
     at: new Date().toISOString(),
     pending: true,
+    queued: queued || undefined,
   };
   const existing = state.pendingNewChat;
   state = {
@@ -315,8 +343,9 @@ export function markPendingNewChatFailed(): void {
   if (!pending) {
     return;
   }
+  // Local queue drafts were never POSTed — leave them alone.
   const messages = pending.messages.map((m) =>
-    m.failed ? m : { ...m, pending: false, failed: true },
+    m.failed || m.queued ? m : { ...m, pending: false, failed: true },
   );
   if (messages.every((m, i) => m === pending.messages[i])) {
     return;
@@ -350,17 +379,52 @@ export function markPendingNewChatMessagePending(seq: number): void {
     ...state,
     pendingNewChat: {
       messages: pending.messages.map((m) =>
-        m.seq === seq ? { ...m, pending: true, failed: false } : m,
+        m.seq === seq
+          ? { ...m, pending: true, failed: false, queued: undefined }
+          : m,
       ),
     },
   };
   emit();
 }
 
+/** Drop one provisional message (cancel a local queue draft). */
+export function removePendingNewChatMessage(seq: number): void {
+  const pending = state.pendingNewChat;
+  if (!pending) {
+    return;
+  }
+  const messages = pending.messages.filter((m) => m.seq !== seq);
+  if (messages.length === pending.messages.length) {
+    return;
+  }
+  if (messages.length === 0) {
+    const open: ChatOpen =
+      state.open.kind === "provisional" ? { kind: "list" } : state.open;
+    state = { ...state, pendingNewChat: null, open };
+    emit();
+    return;
+  }
+  state = { ...state, pendingNewChat: { messages } };
+  emit();
+}
+
+/** Queued provisional messages, oldest first. */
+export function listQueuedPendingNewChat(): PendingNewChatMessage[] {
+  return (state.pendingNewChat?.messages ?? []).filter((m) => m.queued);
+}
+
+function nextPendingSeq(): number {
+  const seq = nextTempSeq;
+  nextTempSeq -= 1;
+  return seq;
+}
+
 /**
  * When any user-thread activity lands on a non-root agent while a provisional
  * chat is open, attach it. Exact content match is preferred by callers but not
  * required — root may paraphrase, or the first signal may be the thread's reply.
+ * Local queue drafts move onto that agent so they can still be cancelled or flushed.
  */
 export function tryBindPendingNewChat(agentId: string): boolean {
   const pending = state.pendingNewChat;
@@ -370,11 +434,23 @@ export function tryBindPendingNewChat(agentId: string): boolean {
   if (pending.messages.every((m) => m.failed)) {
     return false;
   }
+  const carry = pending.messages.filter((m) => m.queued && !m.failed);
   const open: ChatOpen =
     state.open.kind === "provisional"
       ? { kind: "agent", agentId }
       : state.open;
   state = { ...state, pendingNewChat: null, open };
+  if (carry.length > 0) {
+    const extras: ChatMessage[] = carry.map((m) => ({
+      seq: m.seq,
+      from_user: true,
+      content: m.content,
+      at: m.at,
+      pending: true,
+      queued: true,
+    }));
+    setThread(agentId, sortMessages([...threadOf(agentId), ...extras]));
+  }
   emit();
   return true;
 }

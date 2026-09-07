@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "motion/react";
 import { nas } from "../../api";
@@ -109,33 +108,34 @@ function resourceRows(status: NasStatus): ResourceRow[] {
 }
 
 /**
- * Box health + recent errors. Preview is dynamic: quiet pulse when clear,
+ * Dadi health + recent errors. Preview is dynamic: quiet pulse when clear,
  * latest error when something failed. Full mode is the left health column.
  */
 export function SystemMap({ mode, className }: SystemMapProps) {
   const { state: connection } = useConnection();
   const connected = connection === "connected";
   const preview = mode === "preview";
-  const errorBounds = useMemo(() => rangeBounds("1h"), []);
 
   const statusQuery = useQuery({
     queryKey: ["nas", "status"],
     queryFn: () => nas.getStatus(),
     enabled: connected,
-    refetchInterval: 5_000,
+    refetchInterval: 2_000,
   });
 
   const errorsQuery = useQuery({
-    queryKey: ["nas", "logs", "errors-preview", errorBounds.from],
-    queryFn: () =>
-      nas.getLogs({
+    queryKey: ["nas", "logs", "errors-preview", preview ? 8 : 4],
+    queryFn: () => {
+      const { from, to } = rangeBounds("1h");
+      return nas.getLogs({
         level: "error",
-        from: errorBounds.from,
-        to: errorBounds.to,
+        from,
+        to,
         limit: preview ? 8 : 4,
-      }),
+      });
+    },
     enabled: connected,
-    refetchInterval: 20_000,
+    refetchInterval: 5_000,
   });
 
   if (!connected) {

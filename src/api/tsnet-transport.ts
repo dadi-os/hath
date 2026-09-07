@@ -123,32 +123,37 @@ export class TsnetTransport implements Transport {
       headers["Content-Type"] = "application/json";
     }
 
+    let response: Response;
     try {
-      const response = await fetch(url, {
+      response = await fetch(url, {
         method: opts.method,
         headers,
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       });
-
-      if (!response.ok) {
-        const text = await response.text();
-        this.markFailure();
-        throw new Error(`HTTP ${response.status} ${opts.method} ${url}: ${text}`);
-      }
-
-      const data = (await response.json()) as T;
-      this.markSuccess();
-      return data;
     } catch (err) {
+      // Dial / proxy unreachable — mesh is down.
       this.markFailure();
-      throw err;
+      throw err instanceof Error ? err : new Error(String(err));
     }
+
+    // Any HTTP response from the local proxy means the mesh is up. Upstream
+    // app errors (Yaad 502 on recall, etc.) must not flip the shell to
+    // "Dadi is unreachable".
+    this.markSuccess();
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`HTTP ${response.status} ${opts.method} ${url}: ${text}`);
+    }
+
+    return (await response.json()) as T;
   }
 
   stream(opts: {
     baseUrl: string;
     path: string;
     onEvent: (data: unknown) => void;
+    onClose?: () => void;
   }): () => void {
     if (this.port === null || !this.active) {
       return () => {};
@@ -158,7 +163,13 @@ export class TsnetTransport implements Transport {
     const abort = new AbortController();
     this.streamAbort = abort;
 
-    void this.readSse(opts.baseUrl, opts.path, opts.onEvent, abort.signal);
+    void this.readSse(
+      opts.baseUrl,
+      opts.path,
+      opts.onEvent,
+      abort.signal,
+      opts.onClose,
+    );
 
     return () => {
       abort.abort();
@@ -203,12 +214,19 @@ export class TsnetTransport implements Transport {
     path: string,
     onEvent: (data: unknown) => void,
     signal: AbortSignal,
+    onClose?: () => void,
   ): Promise<void> {
     if (this.port === null) {
       return;
     }
 
     const url = `http://127.0.0.1:${this.port}${path.startsWith("/") ? path : `/${path}`}`;
+    const closed = () => {
+      if (!signal.aborted) {
+        onClose?.();
+      }
+    };
+
     try {
       const response = await fetch(url, {
         method: "GET",
@@ -220,7 +238,9 @@ export class TsnetTransport implements Transport {
       });
 
       if (!response.ok || !response.body) {
-        this.markFailure();
+        // Proxy answered — mesh is up; stream open failed (caller reconnects).
+        this.markSuccess();
+        closed();
         return;
       }
 
@@ -239,12 +259,12 @@ export class TsnetTransport implements Transport {
         buffer = consumeSseBuffer(buffer, onEvent);
       }
 
-      if (!signal.aborted) {
-        this.markFailure();
-      }
+      closed();
     } catch {
       if (!signal.aborted) {
+        // Fetch threw — likely dial/proxy down.
         this.markFailure();
+        onClose?.();
       }
     }
   }

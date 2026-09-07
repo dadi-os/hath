@@ -29,7 +29,7 @@ export async function saveCredentials(credentials: Credentials): Promise<void> {
 export function decodeProvisioningBundle(raw: string): Credentials {
   const trimmed = raw.trim();
   if (!trimmed) {
-    throw new BundleDecodeError("Paste a setup code from the box.");
+    throw new BundleDecodeError("Paste a setup code from Dadi.");
   }
 
   let jsonText: string;

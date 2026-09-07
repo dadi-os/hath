@@ -92,7 +92,7 @@ export function DisconnectedState() {
             </span>
           </div>
           <p className="text-center text-[15px] leading-relaxed text-ink-muted">
-            Paste a setup code from the box to join the mesh. Needed once per
+            Paste a setup code from Dadi to join the mesh. Needed once per
             install.
           </p>
           <input
@@ -123,7 +123,7 @@ export function DisconnectedState() {
   return (
     <div className="flex h-full items-center justify-center px-8">
       <p className="max-w-sm text-center text-[15px] leading-relaxed text-ink-muted">
-        The box is unreachable. Retrying…
+        Dadi is unreachable. Retrying…
       </p>
     </div>
   );

@@ -126,3 +126,16 @@ export function IconRetry() {
     </svg>
   );
 }
+
+export function IconDismiss() {
+  return (
+    <svg viewBox="0 0 15 15" fill="none" aria-hidden className="size-[15px]">
+      <path
+        d="M4 4l7 7M11 4l-7 7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

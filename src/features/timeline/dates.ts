@@ -84,11 +84,17 @@ export function formatWeekTitle(d: Date): string {
   const days = weekDays(d);
   const start = days[0]!;
   const end = days[6]!;
-  const sameMonth = start.getMonth() === end.getMonth();
+  const month = new Intl.DateTimeFormat(undefined, { month: "short" });
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const sameMonth = sameYear && start.getMonth() === end.getMonth();
   if (sameMonth) {
-    return `${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(start)} – ${new Intl.DateTimeFormat(undefined, { day: "numeric", year: "numeric" }).format(end)}`;
+    // Avoid day+year without month — ICU renders that as "2026 (day: 13)".
+    return `${month.format(start)} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`;
   }
-  return `${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(start)} – ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(end)}`;
+  if (sameYear) {
+    return `${month.format(start)} ${start.getDate()} – ${month.format(end)} ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  return `${month.format(start)} ${start.getDate()}, ${start.getFullYear()} – ${month.format(end)} ${end.getDate()}, ${end.getFullYear()}`;
 }
 
 export function formatDayHeader(d: Date): string {

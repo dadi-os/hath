@@ -178,6 +178,13 @@ export function useEvents(): void {
         baseUrl: DIMAAG_URL,
         path: "/events",
         onEvent: handleEvent,
+        onClose: () => {
+          if (gen !== generation || !transport.isActive()) {
+            return;
+          }
+          teardownStream();
+          scheduleReconnect(gen);
+        },
       });
 
       unwatchStream = transport.onConnectionChange((state) => {

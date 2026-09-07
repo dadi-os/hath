@@ -616,12 +616,12 @@ export function MemorySearch({
     onSubmit();
   };
   return (
-    <form onSubmit={submit} className="pointer-events-auto flex items-center gap-2">
+    <form onSubmit={submit} className="flex items-center gap-2">
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Recall…"
-        className="w-[min(280px,50vw)] rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/90 px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-ghost focus:border-sage"
+        className="w-[min(280px,40vw)] rounded-[var(--radius)] border border-dashed border-sage-line bg-bone px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-ghost focus:border-sage"
       />
     </form>
   );

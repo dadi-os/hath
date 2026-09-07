@@ -43,7 +43,7 @@ export function AppShell() {
   };
 
   return (
-    <div className="flex h-full flex-col bg-bone">
+    <div className="flex h-full flex-col overflow-hidden bg-bone">
       <motion.div
         initial={{ opacity: 0, y: -14 }}
         animate={{ opacity: 1, y: 0 }}
@@ -105,16 +105,16 @@ export function AppShell() {
         )}
 
         <motion.main
-          className="min-h-0 min-w-0 flex-1 p-4 pl-2"
+          className="min-h-0 min-w-0 flex-1 overflow-hidden p-4 pl-2"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: SLOW_S, ease: EASE, delay: 0.2 }}
         >
-          <div className="h-full min-h-0 overflow-auto">
+          <div className="h-full min-h-0 overflow-hidden">
             {state === "disconnected" ? (
               <DisconnectedState />
             ) : (
-              <div key={location.pathname} className="h-full min-h-0">
+              <div key={location.pathname} className="h-full min-h-0 overflow-hidden">
                 <Outlet />
               </div>
             )}

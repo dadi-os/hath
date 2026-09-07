@@ -12,6 +12,7 @@ export interface Transport {
     baseUrl: string;
     path: string;
     onEvent: (data: unknown) => void;
+    onClose?: () => void;
   }): () => void;
 
   /** True after connect() until disconnect() — drives event-stream reconnect. */

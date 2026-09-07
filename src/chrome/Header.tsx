@@ -36,7 +36,7 @@ export function Header() {
     queryKey: ["nas", "status"],
     queryFn: () => nas.getStatus(),
     enabled: state === "connected",
-    refetchInterval: 30_000,
+    refetchInterval: 5_000,
   });
 
   const uptime =
@@ -85,8 +85,8 @@ export function Header() {
         <Tooltip
           content={
             statusQuery.data
-              ? `Box uptime · ${statusQuery.data.uptime_seconds}s`
-              : "Box uptime"
+              ? `Dadi uptime · ${statusQuery.data.uptime_seconds}s`
+              : "Dadi uptime"
           }
         >
           <span className="text-[11px] tracking-wide text-ink-ghost">
