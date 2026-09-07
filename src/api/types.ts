@@ -1,6 +1,3 @@
-/** Well-known id of root Dadi. */
-export const ROOT_DADI_ID = "00000000-0000-4000-8000-000000000001";
-
 export type Lane = "reasoning" | "conversation";
 
 export type LogEvent = "thought" | "tool_call" | "tool_result" | "message";

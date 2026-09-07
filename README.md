@@ -103,7 +103,7 @@ This writes `src-tauri/lib/<target>/libhathnet.a` (+ `.h`). Those archives are g
 - `src/api/dimaag.ts` — messages, agents, logs, events stream
 - `src/api/yaad.ts` — query, recall, nodes, history
 
-Root Dadi id: `00000000-0000-4000-8000-000000000001`.
+Root Dadi is resolved at runtime via `GET /agents/root` (the sole agent with `parent_agent_id` null), cached under `["agents", "root"]`.
 
 HTTP allowlists live in `src-tauri/capabilities/default.json` (`http://*.dadi/*` plus `127.0.0.1:*` for the local tsnet proxy).
 
@@ -121,13 +121,23 @@ Structural changes (`agent_spawned`, `agent_modified`) invalidate the agents que
 
 ## Chat
 
-Chat always targets root Dadi (`00000000-0000-4000-8000-000000000001`). There is no thread spawning from the client — `spawn_agent` is a tool Dadi can call, not an HTTP route Hath can hit. One continuous conversation.
+The sidebar is a conversation list, not a single thread. A **conversation** is any agent that has exchanged messages with the user (`from_agent_id` or `to_agent_id` is null). Root Dadi is excluded — messages to it are routing requests, and including it would create a permanent dump of every "new chat" you ever sent.
 
-History is seeded from `GET /agents/:id/logs?event=message` (newest-first from Dimaag; reversed before render) and filtered to the user thread: messages where `from_agent_id` or `to_agent_id` is null. Live updates arrive over SSE `message` events; optimistic sends reconcile on matching content + seq.
+**New chat** (list view, input pinned at the bottom) posts to root Dadi. Root routes: it spawns or picks a thread agent and instructs that agent to reply to you with `to_agent_id: null`. After send, the list stays open; a provisional row with a thinking indicator waits until a non-root agent replies (or times out quietly). No conversation is created optimistically — the client does not know which agent will handle it.
+
+**Thread view** opens from a list row. Messages are filtered to the user thread for that agent; the input posts to that agent directly, never through root. Thinking follows `lane_started` / `lane_finished` for the open agent.
+
+A thread that starts with the agent's message is expected: your original words live in root Dadi's log, not the thread's. That is fine and is not worked around.
+
+The conversation list is built from one `GET /logs?event=message&limit=200` call, joined to agent names from `GET /agents`. That covers conversations appearing in the last 200 message events — effectively all recent ones for a personal system. Live `message` events upsert summaries and create new list rows when a newly routed thread first replies.
+
+History for an open thread is seeded from `GET /agents/:id/logs?event=message` (newest-first from Dimaag; reversed before render). Optimistic thread sends reconcile on matching content + seq.
 
 `agent_logs` survives Dimaag restarts; the in-process transcript does not. After a restart Hath can show durable history that Dimaag no longer has in working context. That divergence is intentional — the audit trail is durable, the live context is not. Hath does not try to reconcile them.
 
 Replies are plain text with preserved whitespace (`white-space: pre-wrap`). No markdown renderer yet — Dadi may emit markdown, but rendering it (code blocks, links, tables) is a deliberate later decision.
+
+On mobile the same sidebar is the whole chat surface: list by default, thread when opened, drawer chrome unchanged.
 
 ## Develop
 

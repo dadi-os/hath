@@ -33,6 +33,15 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** Sole null-parent agent. Stable; cache under ["agents", "root"]. */
+    getRootAgent(): Promise<AgentDetail> {
+      return transport.request({
+        baseUrl,
+        path: "/agents/root",
+        method: "GET",
+      });
+    },
+
     getAgentLogs(
       id: string,
       query?: { event?: LogEvent; limit?: number },

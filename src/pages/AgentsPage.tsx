@@ -12,7 +12,6 @@ import { hierarchy, tree, type HierarchyPointLink, type HierarchyPointNode } fro
 import { motion } from "motion/react";
 import { dimaag } from "../api";
 import type { AgentRecord, LogRecord } from "../api/types";
-import { ROOT_DADI_ID } from "../api/types";
 import { useConnection } from "../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../hooks/useEvents";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../store/running";
@@ -46,8 +45,7 @@ function buildTree(agents: AgentRecord[]): AgentTreeNode {
   }
 
   const byId = new Map(agents.map((a) => [a.id, a]));
-  const rootAgent =
-    agents.find((a) => a.parent_agent_id === null) ?? byId.get(ROOT_DADI_ID);
+  const rootAgent = agents.find((a) => a.parent_agent_id === null);
   if (!rootAgent) {
     throw new Error("GET /agents has no root agent");
   }
@@ -515,7 +513,7 @@ export function AgentsPage() {
               return null;
             }
             const visual = visualState(agent, runningMap[agent.id]);
-            const isRoot = agent.id === ROOT_DADI_ID || agent.parent_agent_id === null;
+            const isRoot = agent.parent_agent_id === null;
             const r = visual === "dormant" ? R_DORMANT : R_ACTIVE;
             const fill =
               visual === "dormant" ? "var(--sage-line)" : "var(--sage)";

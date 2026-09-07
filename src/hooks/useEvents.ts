@@ -1,13 +1,13 @@
 import { useEffect } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { DIMAAG_URL, dimaag, transport } from "../api";
-import type { DimaagEvent } from "../api/types";
-import { ROOT_DADI_ID } from "../api/types";
+import type { AgentRecord, DimaagEvent } from "../api/types";
 import { subscribeConnection } from "../store/connection";
 import {
+  clearPendingNewChat,
   ingestLiveMessage,
   isUserThreadMessage,
-  setThinking,
+  upsertConversation,
 } from "../store/chat";
 import { seedRunningFromAgents, setLaneRunning } from "../store/running";
 
@@ -16,6 +16,9 @@ const MAX_BACKOFF_MS = 30_000;
 
 /** React Query key for GET /agents. */
 export const AGENTS_QUERY_KEY = ["agents"] as const;
+
+/** React Query key for GET /agents/root — does not change. */
+export const ROOT_AGENT_QUERY_KEY = ["agents", "root"] as const;
 
 function isDimaagEvent(data: unknown): data is DimaagEvent {
   if (!data || typeof data !== "object") {
@@ -29,6 +32,27 @@ function isDimaagEvent(data: unknown): data is DimaagEvent {
     type === "agent_spawned" ||
     type === "agent_modified"
   );
+}
+
+function rootIdFromCache(queryClient: QueryClient): string | null {
+  const root = queryClient.getQueryData<{ id: string }>(ROOT_AGENT_QUERY_KEY);
+  if (root?.id) {
+    return root.id;
+  }
+  const agents = queryClient.getQueryData<AgentRecord[]>(AGENTS_QUERY_KEY);
+  if (!agents) {
+    return null;
+  }
+  const roots = agents.filter((a) => a.parent_agent_id === null);
+  return roots.length === 1 ? roots[0].id : null;
+}
+
+function agentNameFromCache(
+  queryClient: QueryClient,
+  agentId: string,
+): string {
+  const agents = queryClient.getQueryData<AgentRecord[]>(AGENTS_QUERY_KEY);
+  return agents?.find((a) => a.id === agentId)?.name ?? agentId;
 }
 
 async function refetchAgents(queryClient: QueryClient): Promise<void> {
@@ -72,39 +96,39 @@ export function useEvents(): void {
       }
 
       if (data.type === "message") {
+        const rootId = rootIdFromCache(queryClient);
         if (
-          data.agent_id === ROOT_DADI_ID &&
-          isUserThreadMessage(data.from_agent_id, data.to_agent_id)
+          !isUserThreadMessage(data.from_agent_id, data.to_agent_id) ||
+          (rootId !== null && data.agent_id === rootId)
         ) {
-          ingestLiveMessage({
-            seq: data.seq,
-            from_user: data.from_agent_id === null,
-            content: data.content,
-            at: data.at,
-          });
+          // Root traffic is routing, not conversation.
+          return;
         }
+
+        ingestLiveMessage(data.agent_id, {
+          seq: data.seq,
+          from_user: data.from_agent_id === null,
+          content: data.content,
+          at: data.at,
+        });
+        upsertConversation({
+          agent_id: data.agent_id,
+          agent_name: agentNameFromCache(queryClient, data.agent_id),
+          last_message: data.content,
+          last_at: data.at,
+          from_user: data.from_agent_id === null,
+        });
+        clearPendingNewChat();
         return;
       }
 
       if (data.type === "lane_started") {
         setLaneRunning(data.agent_id, data.lane, true);
-        if (
-          data.agent_id === ROOT_DADI_ID &&
-          data.lane === "conversation"
-        ) {
-          setThinking(true);
-        }
         return;
       }
 
       if (data.type === "lane_finished") {
         setLaneRunning(data.agent_id, data.lane, false);
-        if (
-          data.agent_id === ROOT_DADI_ID &&
-          data.lane === "conversation"
-        ) {
-          setThinking(false);
-        }
         return;
       }
 
