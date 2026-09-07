@@ -297,19 +297,13 @@ export function markPendingNewChatFailed(): void {
 }
 
 /**
- * When root's route_message copy lands on a thread, attach the provisional chat.
- * Opens that agent if the user is still in the provisional thread.
+ * When any user-thread activity lands on a non-root agent while a provisional
+ * chat is open, attach it. Exact content match is preferred by callers but not
+ * required — root may paraphrase, or the first signal may be the thread's reply.
  */
-export function tryBindPendingNewChat(
-  agentId: string,
-  content: string,
-  fromUser: boolean,
-): boolean {
+export function tryBindPendingNewChat(agentId: string): boolean {
   const pending = state.pendingNewChat;
-  if (!pending || pending.failed || !fromUser) {
-    return false;
-  }
-  if (pending.content.trim() !== content.trim()) {
+  if (!pending || pending.failed) {
     return false;
   }
   const open: ChatOpen =

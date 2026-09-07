@@ -37,6 +37,8 @@ import {
   type Conversation,
 } from "../store/chat";
 import { getRunning, subscribeRunning } from "../store/running";
+import { IconBack, IconButton, IconSend } from "../shared/IconButton";
+import { EASE, SLOW_S } from "../shared/motion";
 
 type ChatSidebarProps = {
   /** Bumps when chat opens; scrolls the thread to the bottom. */
@@ -54,9 +56,7 @@ type MessagePayload = {
 const NEAR_BOTTOM_PX = 80;
 const TEXTAREA_MAX_PX = 120;
 const NEW_CHAT_TIMEOUT_MS = 90_000;
-const EASE = [0.22, 0.61, 0.36, 1] as const;
-const SLOW = 1.2;
-const COMPOSER_PAD = 88;
+const COMPOSER_PAD = 96;
 
 function parseMessagePayload(
   payload: Record<string, unknown>,
@@ -284,13 +284,18 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
         ]
       : [];
 
+  const awaitingRoute =
+    !!chat.pendingNewChat && !chat.pendingNewChat.failed;
   const thinkingAgentId =
-    viewingProvisional && chat.pendingNewChat && !chat.pendingNewChat.failed
+    viewingProvisional && awaitingRoute
       ? (rootId ?? null)
       : openAgentId;
+  // Provisional: keep the indicator up for the whole wait (not only while root's
+  // lane lock is held). Bound threads follow the selected agent's conversation lane.
   const thinking =
-    thinkingAgentId !== null &&
-    running[thinkingAgentId]?.conversation === true;
+    (viewingProvisional && awaitingRoute) ||
+    (thinkingAgentId !== null &&
+      running[thinkingAgentId]?.conversation === true);
 
   const scrollToBottom = useEffectEvent((behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current;
@@ -537,17 +542,13 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
-            transition={{ duration: SLOW, ease: EASE }}
-            className="flex items-center gap-3"
+            transition={{ duration: SLOW_S, ease: EASE }}
+            className="flex items-center gap-2.5"
           >
             {viewingThread ? (
-              <button
-                type="button"
-                onClick={backToList}
-                className="text-[11px] font-medium tracking-[2.5px] text-sage-deep transition-opacity duration-slow ease-hath hover:opacity-70"
-              >
-                ←
-              </button>
+              <IconButton label="Back to conversations" onClick={backToList}>
+                <IconBack />
+              </IconButton>
             ) : null}
             <span className="truncate text-[11px] font-medium tracking-[2.5px] text-sage-deep">
               {headerTitle}
@@ -569,7 +570,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
               initial={{ opacity: 0, x: 18 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -14 }}
-              transition={{ duration: SLOW, ease: EASE }}
+              transition={{ duration: SLOW_S, ease: EASE }}
             >
               <div className="flex flex-col gap-3">
                 <AnimatePresence initial={false}>
@@ -602,7 +603,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    transition={{ duration: SLOW, ease: EASE }}
+                    transition={{ duration: SLOW_S, ease: EASE }}
                     className="flex items-center gap-2 text-[11px] text-sage-text"
                   >
                     <span>No reply yet</span>
@@ -637,7 +638,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
               initial={{ opacity: 0, x: -18 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 14 }}
-              transition={{ duration: SLOW, ease: EASE }}
+              transition={{ duration: SLOW_S, ease: EASE }}
             >
               {chat.pendingNewChat ? (
                 <motion.button
@@ -646,7 +647,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
                   onClick={() => openProvisional()}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: SLOW, ease: EASE }}
+                  transition={{ duration: SLOW_S, ease: EASE }}
                   className="mb-1 flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
                 >
                   <div className="flex items-baseline justify-between gap-2">
@@ -688,7 +689,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
                       initial={{ opacity: 0, y: 6 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{
-                        duration: SLOW,
+                        duration: SLOW_S,
                         ease: EASE,
                         delay: Math.min(i * 0.04, 0.24),
                       }}
@@ -760,7 +761,7 @@ function FloatingComposer({
       }}
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: SLOW, ease: EASE }}
+      transition={{ duration: SLOW_S, ease: EASE }}
     >
       {connected ? (
         <form
@@ -778,16 +779,15 @@ function FloatingComposer({
             className="block max-h-[120px] min-h-[40px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-[13px] leading-relaxed text-ink outline-none placeholder:text-ink-ghost disabled:cursor-default disabled:opacity-55"
             style={{ maxHeight: TEXTAREA_MAX_PX }}
           />
-          <motion.button
+          <IconButton
             type="submit"
+            label="Send"
             disabled={!canSubmit}
-            aria-label="Send"
-            whileTap={canSubmit ? { scale: 0.94 } : undefined}
-            transition={{ duration: 0.35, ease: EASE }}
-            className="mb-0.5 flex size-9 shrink-0 items-center justify-center rounded-[var(--radius)] bg-sage-fill text-sage-deep transition-colors duration-slow ease-hath enabled:hover:bg-sage-active disabled:opacity-35"
+            size="lg"
+            className="mb-0.5 border-sage-line bg-sage-fill"
           >
-            <SendGlyph />
-          </motion.button>
+            <IconSend />
+          </IconButton>
         </form>
       ) : (
         <div className="pointer-events-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-3 py-2.5 text-[13px] text-ink-ghost shadow-[var(--shadow)] backdrop-blur-md">
@@ -795,26 +795,6 @@ function FloatingComposer({
         </div>
       )}
     </motion.div>
-  );
-}
-
-function SendGlyph() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 14 14"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M2.2 7h9.2M7.8 3.2 11.4 7 7.8 10.8"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 
@@ -834,7 +814,7 @@ function MessageBubble({
         initial={{ opacity: 0, y: 10, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: -6 }}
-        transition={{ duration: SLOW, ease: EASE }}
+        transition={{ duration: SLOW_S, ease: EASE }}
         className="flex flex-col items-end gap-1"
       >
         <div
@@ -872,7 +852,7 @@ function MessageBubble({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -6 }}
-      transition={{ duration: SLOW, ease: EASE }}
+      transition={{ duration: SLOW_S, ease: EASE }}
       className="max-w-[95%] text-[13px] leading-[1.65] text-ink whitespace-pre-wrap"
     >
       {message.content}
@@ -886,7 +866,7 @@ function ThinkingIndicator({ compact = false }: { compact?: boolean }) {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: SLOW, ease: EASE }}
+      transition={{ duration: SLOW_S, ease: EASE }}
       className={`flex items-center gap-2.5 ${compact ? "py-0.5" : "py-1.5"}`}
       aria-label="Thinking"
     >
@@ -901,9 +881,9 @@ function ThinkingIndicator({ compact = false }: { compact?: boolean }) {
               scale: [0.92, 1.08, 0.92],
             }}
             transition={{
-              duration: 1.8,
+              duration: 1.1,
               repeat: Infinity,
-              delay: i * 0.22,
+              delay: i * 0.15,
               ease: EASE,
             }}
           />
@@ -911,14 +891,14 @@ function ThinkingIndicator({ compact = false }: { compact?: boolean }) {
         <motion.span
           className="pointer-events-none absolute -inset-x-2 -inset-y-1 rounded-[var(--radius)] bg-sage-fill"
           animate={{ opacity: [0.15, 0.4, 0.15] }}
-          transition={{ duration: 2.8, repeat: Infinity, ease: EASE }}
+          transition={{ duration: 1.6, repeat: Infinity, ease: EASE }}
         />
       </div>
       {!compact ? (
         <motion.span
           className="text-[10px] font-medium tracking-[2.5px] text-sage-text"
           animate={{ opacity: [0.45, 1, 0.45] }}
-          transition={{ duration: 2.4, repeat: Infinity, ease: EASE }}
+          transition={{ duration: 1.4, repeat: Infinity, ease: EASE }}
         >
           THINKING
         </motion.span>

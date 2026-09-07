@@ -10,7 +10,7 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { hierarchy, tree, type HierarchyPointNode } from "d3-hierarchy";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import { dimaag } from "../../api";
 import type { AgentRecord } from "../../api/types";
 import { useConnection } from "../../hooks/useConnection";
@@ -360,133 +360,141 @@ export function AgentTree({
 
   return (
     <div ref={rootRef} className={`relative h-full min-h-0 w-full ${className ?? ""}`}>
-      <AnimatePresence mode="wait">
-        <motion.svg
-          key={entranceKey}
-          ref={svgRef}
-          className={`h-full w-full ${interactive ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
-          viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
-          preserveAspectRatio="xMidYMid meet"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: SLOW_S, ease: EASE }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-          onWheel={interactive ? onWheel : undefined}
-          onDoubleClick={interactive ? resetView : undefined}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-        >
-          <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-            {layout.links.map((link, i) => (
-              <motion.path
-                key={`${link.source.data.id}-${link.target.data.id}`}
-                d={linkPath(link)}
-                fill="none"
-                stroke="var(--sage-line)"
-                strokeWidth={0.7}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.9 }}
+      <svg
+        key={entranceKey}
+        ref={svgRef}
+        className={`h-full w-full ${interactive ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
+        viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+        preserveAspectRatio="xMidYMid meet"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onWheel={interactive ? onWheel : undefined}
+        onDoubleClick={interactive ? resetView : undefined}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
+        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+          {layout.links.map((link, i) => (
+            <motion.path
+              key={`${link.source.data.id}-${link.target.data.id}`}
+              d={linkPath(link)}
+              fill="none"
+              stroke="var(--sage-line)"
+              strokeWidth={0.7}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.9 }}
+              transition={{
+                duration: SLOW_S,
+                ease: EASE,
+                delay: Math.min(i * 0.02, 0.2),
+              }}
+            />
+          ))}
+
+          {layout.nodes.map((node) => {
+            const agent = agentsById.get(node.data.id);
+            if (!agent) {
+              return null;
+            }
+            const visual = visualState(agent, runningMap[agent.id]);
+            const isRoot = agent.parent_agent_id === null;
+            const r = visual === "dormant" ? R_DORMANT : R_ACTIVE;
+            const fill =
+              visual === "dormant" ? "var(--sage-line)" : "var(--sage)";
+            const fillOpacity = visual === "dormant" ? 0.45 : 1;
+            const depth = node.depth;
+            const isSpawn =
+              bootstrappedRef.current && !knownIdsRef.current.has(agent.id);
+            const parent = node.parent;
+
+            // Position via SVG transform attribute — avoid CSS scale on <g>,
+            // which can leave hit-targets without a visible circle.
+            const fromX = isSpawn && parent ? parent.x : node.x;
+            const fromY = isSpawn && parent ? parent.y : node.y;
+
+            return (
+              <motion.g
+                key={`${entranceKey}:${agent.id}`}
+                initial={{
+                  opacity: 0,
+                  x: fromX,
+                  y: fromY,
+                }}
+                animate={{
+                  opacity: 1,
+                  x: node.x,
+                  y: node.y,
+                }}
                 transition={{
                   duration: SLOW_S,
                   ease: EASE,
-                  delay: 0.15 + Math.min(i * 0.03, 0.35),
+                  delay: isSpawn ? 0 : Math.min(depth * 0.05, 0.3),
                 }}
-              />
-            ))}
-
-            {layout.nodes.map((node) => {
-              const agent = agentsById.get(node.data.id);
-              if (!agent) {
-                return null;
-              }
-              const visual = visualState(agent, runningMap[agent.id]);
-              const isRoot = agent.parent_agent_id === null;
-              const r = visual === "dormant" ? R_DORMANT : R_ACTIVE;
-              const fill =
-                visual === "dormant" ? "var(--sage-line)" : "var(--sage)";
-              const fillOpacity = visual === "dormant" ? 0.45 : 1;
-              const depth = node.depth;
-              const isSpawn =
-                bootstrappedRef.current && !knownIdsRef.current.has(agent.id);
-              const parent = node.parent;
-
-              // Live spawn: grow from parent. Route entrance: blow up from a point.
-              const initial =
-                isSpawn && parent
-                  ? { x: parent.x, y: parent.y, opacity: 0, scale: 0 }
-                  : {
-                      x: node.x,
-                      y: node.y,
-                      opacity: 0,
-                      scale: 0,
-                    };
-
-              return (
-                <motion.g
-                  key={agent.id}
-                  initial={initial}
-                  animate={{ x: node.x, y: node.y, opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0 }}
+                style={{
+                  cursor: "pointer",
+                  pointerEvents: nodesInteractive ? "auto" : "none",
+                }}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (interactive && dragRef.current.moved) {
+                    return;
+                  }
+                  openNode(node, e.clientX, e.clientY);
+                }}
+              >
+                {visual === "running" && (
+                  <circle
+                    r={r + 7}
+                    fill="none"
+                    stroke="var(--sage)"
+                    strokeWidth={1.25}
+                    className="animate-breath"
+                  />
+                )}
+                <motion.circle
+                  fill={fill}
+                  fillOpacity={fillOpacity}
+                  stroke={
+                    selectedId === agent.id ? "var(--sage-deep)" : "none"
+                  }
+                  strokeWidth={selectedId === agent.id ? 1.5 : 0}
+                  initial={{ r: 0 }}
+                  animate={{ r }}
                   transition={{
                     duration: SLOW_S,
                     ease: EASE,
-                    delay: isSpawn ? 0 : Math.min(depth * 0.08, 0.48),
+                    delay: isSpawn ? 0 : Math.min(depth * 0.05, 0.3),
                   }}
-                  style={{
-                    cursor: "pointer",
-                    pointerEvents: nodesInteractive ? "auto" : "none",
-                  }}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (interactive && dragRef.current.moved) {
-                      return;
-                    }
-                    openNode(node, e.clientX, e.clientY);
-                  }}
-                >
-                  {visual === "running" && (
-                    <circle
-                      r={r + 7}
-                      fill="none"
-                      stroke="var(--sage)"
-                      strokeWidth={1.25}
-                      className="animate-breath"
-                    />
-                  )}
-                  <circle
-                    r={r}
-                    fill={fill}
-                    fillOpacity={fillOpacity}
-                    stroke={
-                      selectedId === agent.id ? "var(--sage-deep)" : "none"
-                    }
-                    strokeWidth={selectedId === agent.id ? 1.5 : 0}
-                  />
-                  {!hideLabels && (
-                    <text
-                      y={r + 14}
-                      textAnchor="middle"
-                      fill="var(--ink-muted)"
-                      fontSize={isRoot ? 12 : 10}
-                      style={{ userSelect: "none" }}
-                    >
-                      {agent.name}
-                    </text>
-                  )}
-                </motion.g>
-              );
-            })}
-          </g>
-        </motion.svg>
-      </AnimatePresence>
+                />
+                {!hideLabels && (
+                  <motion.text
+                    y={r + 14}
+                    textAnchor="middle"
+                    fill="var(--ink-muted)"
+                    fontSize={isRoot ? 12 : 10}
+                    style={{ userSelect: "none" }}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{
+                      duration: SLOW_S,
+                      ease: EASE,
+                      delay: isSpawn ? 0.1 : Math.min(0.1 + depth * 0.05, 0.35),
+                    }}
+                  >
+                    {agent.name}
+                  </motion.text>
+                )}
+              </motion.g>
+            );
+          })}
+        </g>
+      </svg>
 
       <AgentPopover
         open={selectedId !== null && anchor !== null}

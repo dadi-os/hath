@@ -118,11 +118,7 @@ export function useEvents(): void {
           last_at: data.at,
           from_user: data.from_agent_id === null,
         });
-        tryBindPendingNewChat(
-          data.agent_id,
-          data.content,
-          data.from_agent_id === null,
-        );
+        tryBindPendingNewChat(data.agent_id);
         return;
       }
 

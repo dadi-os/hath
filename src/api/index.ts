@@ -1,5 +1,6 @@
 import { createDimaagClient } from "./dimaag";
-import { DIMAAG, YAAD } from "./constants";
+import { createNasClient } from "./nas";
+import { DIMAAG, NAS, YAAD } from "./constants";
 import { TsnetTransport } from "./tsnet-transport";
 import { createYaadClient } from "./yaad";
 
@@ -13,3 +14,4 @@ export const usingTsnet = true;
 
 export const dimaag = createDimaagClient(transport, DIMAAG);
 export const yaad = createYaadClient(transport, YAAD);
+export const nas = createNasClient(transport, NAS);

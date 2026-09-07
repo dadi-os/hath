@@ -23,11 +23,11 @@
   --radius: 9px;
   --shadow: 0 2px 7px rgba(92, 107, 82, 0.07);
 
-  /* Motion — nothing under 1s */
+  /* Motion — interactive UI stays under a second; breath stays slow */
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --slow: 1200ms;
-  --slower: 2400ms;
-  --breath: 4000ms;
+  --slow: 450ms;
+  --slower: 850ms;
+  --breath: 2800ms;
 }
 
 .widget-surface {
