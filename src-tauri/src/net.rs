@@ -152,13 +152,20 @@ pub fn net_load_credentials(app: AppHandle) -> Result<Option<Credentials>, Strin
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read credentials: {e}"))?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
-    let credentials: Credentials =
-        serde_json::from_str(trimmed).map_err(|e| format!("parse credentials: {e}"))?;
+    // Malformed or incomplete files → treat as unprovisioned (setup screen),
+    // including credentials.json written by something other than Hath.
+    let credentials: Credentials = match serde_json::from_str(trimmed) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
     if credentials.control_url.trim().is_empty()
         || credentials.auth_key.trim().is_empty()
         || credentials.node_name.trim().is_empty()

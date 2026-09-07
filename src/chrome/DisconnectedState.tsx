@@ -28,11 +28,18 @@ export function DisconnectedState() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadCredentials().then((creds) => {
-      if (!cancelled) {
-        setProvisioned(creds !== null);
-      }
-    });
+    void loadCredentials()
+      .then((creds) => {
+        if (!cancelled) {
+          setProvisioned(creds !== null);
+        }
+      })
+      .catch(() => {
+        // Unreadable credentials → setup screen, not a blank/crash state.
+        if (!cancelled) {
+          setProvisioned(false);
+        }
+      });
     return () => {
       cancelled = true;
     };
