@@ -8,6 +8,22 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+#[cfg(windows)]
+#[link(name = "hathnet", kind = "raw-dylib")]
+extern "C" {
+    fn hathnet_start(
+        control_url: *const c_char,
+        auth_key: *const c_char,
+        hostname: *const c_char,
+        state_dir: *const c_char,
+    ) -> c_int;
+    fn hathnet_stop();
+    fn hathnet_status() -> c_int;
+    fn hathnet_last_error() -> *mut c_char;
+    fn hathnet_free(p: *mut c_char);
+}
+
+#[cfg(not(windows))]
 extern "C" {
     fn hathnet_start(
         control_url: *const c_char,

@@ -29,8 +29,7 @@ fn main() {
             );
         }
         println!("cargo:rerun-if-changed={}", dll.display());
-        // raw-dylib: no MSVC import lib required; DLL must sit next to the exe at runtime.
-        println!("cargo:rustc-link-lib=raw-dylib=hathnet");
+        // Linkage is #[link(..., kind = "raw-dylib")] in net.rs — no import lib.
         // Ensure the DLL is beside the built binary for `tauri build` / local runs.
         let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
         let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
