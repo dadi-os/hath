@@ -77,6 +77,10 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.rust_targets == ''
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.rust_targets != ''
         with:
           targets: ${{ matrix.rust_targets }}
 
@@ -131,12 +135,16 @@ jobs:
         shell: bash
 
       - name: Write App Store Connect API key (macOS notarization)
-        if: runner.os == 'macOS' && secrets.APPLE_API_PRIVATE_KEY != ''
+        if: runner.os == 'macOS'
         env:
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
         run: |
           set -euo pipefail
+          if [ -z "${APPLE_API_PRIVATE_KEY}" ] || [ -z "${APPLE_API_KEY_ID}" ]; then
+            echo "No App Store Connect API key — skipping notarization key file."
+            exit 0
+          fi
           KEY_DIR="$HOME/private_keys"
           mkdir -p "$KEY_DIR"
           printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_DIR/AuthKey_${APPLE_API_KEY_ID}.p8"
@@ -180,39 +188,64 @@ jobs:
           overwrite_files: true
           files: dist/${{ matrix.asset_name }}
 
-  # Signed IPA + TestFlight. Skipped until Apple iOS secrets are set (.env.github).
+  # Signed IPA + TestFlight when Apple iOS secrets from .env.github are set.
+  # Job always schedules on main; exits early if secrets are missing (secrets
+  # cannot be used safely in job-level `if:`).
   release-ios:
     needs: ci
-    if: github.ref == 'refs/heads/main' && secrets.APPLE_IOS_CERTIFICATE != '' && secrets.APPLE_IOS_PROVISIONING_PROFILE != '' && secrets.APPLE_API_PRIVATE_KEY != ''
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
     permissions:
       contents: write
     steps:
+      - name: Check Apple iOS secrets
+        id: apple
+        env:
+          APPLE_IOS_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE }}
+          APPLE_IOS_PROVISIONING_PROFILE: ${{ secrets.APPLE_IOS_PROVISIONING_PROFILE }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APPLE_IOS_CERTIFICATE" ] && [ -n "$APPLE_IOS_PROVISIONING_PROFILE" ] && [ -n "$APPLE_API_PRIVATE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Apple iOS secrets not set — skipping TestFlight. See .env.github."
+          fi
+
       - uses: actions/checkout@v6
+        if: steps.apple.outputs.configured == 'true'
 
       - uses: actions/setup-go@v5
+        if: steps.apple.outputs.configured == 'true'
         with:
           go-version-file: net/go.mod
 
       - uses: actions/setup-node@v4
+        if: steps.apple.outputs.configured == 'true'
         with:
           node-version: 22
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.apple.outputs.configured == 'true'
         with:
           targets: aarch64-apple-ios
 
       - name: Build tsnet archive
+        if: steps.apple.outputs.configured == 'true'
         run: cd net && ./build.sh ios-arm64
 
-      - run: npm ci
+      - name: npm ci
+        if: steps.apple.outputs.configured == 'true'
+        run: npm ci
 
       - name: Init iOS Xcode project
+        if: steps.apple.outputs.configured == 'true'
         run: npm run tauri ios init -- --ci
 
       # Plain HTTP to *.dadi on the mesh; iOS ATS blocks it without this.
       - name: Allow local/mesh HTTP in Info.plist
+        if: steps.apple.outputs.configured == 'true'
         run: |
           set -euo pipefail
           for plist in $(find src-tauri/gen/apple -name 'Info.plist'); do
@@ -226,6 +259,7 @@ jobs:
           done
 
       - name: Import iOS signing materials
+        if: steps.apple.outputs.configured == 'true'
         env:
           APPLE_IOS_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE }}
           APPLE_IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
@@ -254,6 +288,7 @@ jobs:
           echo "Installed provisioning profile $PROFILE_UUID"
 
       - name: Build iOS IPA for TestFlight
+        if: steps.apple.outputs.configured == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
@@ -266,6 +301,7 @@ jobs:
             --build-number "${{ github.run_number }}"
 
       - name: Upload to TestFlight
+        if: steps.apple.outputs.configured == 'true'
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -285,10 +321,12 @@ jobs:
             --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER"
 
       - name: App version
+        if: steps.apple.outputs.configured == 'true'
         id: meta
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Stage IPA
+        if: steps.apple.outputs.configured == 'true'
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -296,6 +334,7 @@ jobs:
           cp "$IPA" dist/hath-ios.ipa
 
       - name: Attach IPA to GitHub Release
+        if: steps.apple.outputs.configured == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.meta.outputs.version }}
