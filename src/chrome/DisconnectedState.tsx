@@ -63,7 +63,6 @@ export function DisconnectedState() {
       if (err instanceof BundleDecodeError) {
         setError(err.message);
       } else {
-        // Surface Go / tsnet text (used or expired key, etc.)
         setError(err instanceof Error ? err.message : String(err));
       }
       setScanning(false);

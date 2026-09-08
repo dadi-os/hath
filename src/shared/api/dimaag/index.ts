@@ -1,4 +1,4 @@
-import type { Transport } from "./transport";
+import type { Transport } from "../transport";
 import type {
   AgentDetail,
   AgentRecord,
@@ -6,10 +6,15 @@ import type {
   LogRecord,
   MessageAttachment,
   PostMessageResponse,
-} from "./types";
+} from "../types";
 
+/**
+ * Dimaag HTTP client — agents, messages, and logs over the given transport.
+ * Paths live here; callers pass only domain args.
+ */
 export function createDimaagClient(transport: Transport, baseUrl: string) {
   return {
+    /** POST /messages — human or agent outbound. */
     postMessage(body: {
       to_agent_id: string;
       content: string;
@@ -23,6 +28,7 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /agents — flat roster including root. */
     listAgents(): Promise<{ agents: AgentRecord[] }> {
       return transport.request({
         baseUrl,
@@ -31,6 +37,7 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /agents/:id — detail with children and tools. */
     getAgent(id: string): Promise<AgentDetail> {
       return transport.request({
         baseUrl,
@@ -48,6 +55,7 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /agents/:id/logs — optional event filter and limit. */
     getAgentLogs(
       id: string,
       query?: { event?: LogEvent; limit?: number },
@@ -59,6 +67,7 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /logs — cross-agent log query. */
     getLogs(query?: {
       event?: LogEvent;
       limit?: number;
@@ -72,6 +81,7 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
   };
 }
 
+/** Dimaag client shape returned by {@link createDimaagClient}. */
 export type DimaagClient = ReturnType<typeof createDimaagClient>;
 
 function toQuery(query?: { event?: LogEvent; limit?: number }): string {

@@ -18,8 +18,16 @@ hath/
     pages/                 route construction sites
     features/<domain>/     agents, memory, timeline, system, logs
     chrome/                AppShell, Header, chatSidebar/
+      chatSidebar/         portable unit (index = construction site)
+        list/ thread/ composer/ message/
+        format.ts lanes.ts constants.ts ActivityPulse.tsx
     shared/
-      api/                 transport, dimaag/yaad/nas clients, constants
+      api/                 transport + domain clients (dimaag/, yaad/, nas/)
+        constants.ts       mesh URLs (no env fallbacks)
+        transport.ts       Transport + ConnectionState
+        tsnet-transport.ts embedded tsnet implementation
+        sse.ts / credentials.ts / types.ts
+        dimaag/ yaad/ nas/ portable client modules
       lib/
         platform/          logging helpers
         content/           attachments
@@ -94,7 +102,7 @@ Header + chat sidebar mount once; `<Outlet />` swaps. Routes: `/`, `/agents`, `/
 
 ## Agents / chat / memory
 
-`/agents` is a live d3 hierarchy (desktop). Chat sidebar is conversation list + thread; dual-lane busy rules and provisional new-chat routing are documented in code under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api/yaad`.
+`/agents` is a live d3 hierarchy (desktop). Chat sidebar is conversation list + thread; dual-lane busy rules and provisional new-chat routing are documented in code under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api` (`yaad` client; paths live in `shared/api/yaad`).
 
 ## Design tokens
 

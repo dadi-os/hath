@@ -73,7 +73,7 @@ export function AgentTree({
   const rIdle = preview ? 3.25 : 4.5;
   const rRoot = preview ? 4 : 5.5;
   const rDormant = preview ? 2.25 : 3;
-  // Keep sparse trees from ballooning to fill the widget.
+  /** Floor so sparse trees do not balloon to fill the widget. */
   const minViewW = preview ? 200 : 320;
   const minViewH = preview ? 150 : 240;
 

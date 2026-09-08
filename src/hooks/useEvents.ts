@@ -64,6 +64,7 @@ async function refetchAgents(queryClient: QueryClient): Promise<void> {
 /**
  * Subscribe to Dimaag SSE. Reconnects with backoff on drop and refetches
  * GET /agents on reconnect (the stream has no replay).
+ * Root agent_id messages are routing noise and stay out of the chat store.
  */
 export function useEvents(): void {
   const queryClient = useQueryClient();
@@ -101,7 +102,6 @@ export function useEvents(): void {
           !isUserThreadMessage(data.from_agent_id, data.to_agent_id) ||
           (rootId !== null && data.agent_id === rootId)
         ) {
-          // Root traffic is routing, not conversation.
           return;
         }
 

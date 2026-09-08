@@ -1,11 +1,13 @@
 import type { EdgeRecord, NodeKind, NodeRecord, NodeDetail } from "../../shared/api/types";
 
+/** Yaad node with optional recall score/hops for the memory graph. */
 export type GraphNode = NodeRecord & {
   detail: NodeDetail;
   score?: number;
   hops?: number;
 };
 
+/** Undirected-render edge for the force layout (source/target = node ids). */
 export type GraphEdge = {
   id: string;
   source: string;
@@ -14,6 +16,7 @@ export type GraphEdge = {
   confidence: number;
 };
 
+/** Nodes + edges held by the memory graph view. */
 export type GraphData = {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -21,6 +24,7 @@ export type GraphData = {
 
 const MEMORY_KINDS = new Set<NodeKind>(["person", "memory", "place", "plan"]);
 
+/** Circle radius by kind; `preview` shrinks for widget tiles. */
 export function nodeRadius(kind: NodeKind, preview: boolean): number {
   const scale = preview ? 0.85 : 1;
   if (kind === "person") {
@@ -35,6 +39,10 @@ export function nodeRadius(kind: NodeKind, preview: boolean): number {
   return 5.5 * scale;
 }
 
+/**
+ * Merge incoming recall/query nodes and edges into the current graph.
+ * Caps node count by access_count then score; drops edges to pruned nodes.
+ */
 export function mergeGraph(
   current: GraphData,
   incoming: {
@@ -86,6 +94,7 @@ export function mergeGraph(
   return { nodes, edges };
 }
 
+/** Collapse whitespace and ellipsize for graph labels. */
 export function truncate(text: string, max = 120): string {
   const one = text.replace(/\s+/g, " ").trim();
   if (one.length <= max) {

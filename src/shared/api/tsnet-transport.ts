@@ -7,6 +7,7 @@ import {
 import type { ConnectionState, Transport } from "./transport";
 import { consumeSseBuffer } from "./sse";
 
+/** Thrown when no provisioning credentials are stored (or override missing). */
 export class NotProvisionedError extends Error {
   constructor(message = "Provisioning required") {
     super(message);
@@ -17,8 +18,12 @@ export class NotProvisionedError extends Error {
 const RETRY_MS = 3000;
 
 /**
- * Transport that dials Dimaag/Yaad through an embedded tsnet node.
+ * Transport that dials Dimaag/Yaad/Nas through an embedded tsnet node.
  * React talks to 127.0.0.1:PORT; Go proxies over the tailnet using X-Hath-Upstream.
+ *
+ * Connection state: any HTTP response from the local proxy means the mesh is up.
+ * Upstream app errors (e.g. Yaad 502) must not flip the shell to unreachable.
+ * Dial/fetch failures mark disconnected and schedule retry when auto-connected.
  */
 export class TsnetTransport implements Transport {
   private port: number | null = null;
@@ -34,10 +39,12 @@ export class TsnetTransport implements Transport {
     return this.active;
   }
 
+  /** True when connect failed for missing credentials (setup screen). */
   needsProvisioningKey(): boolean {
     return this.needsProvisioning;
   }
 
+  /** Subscribe to provisioning-needed flips; returns unsubscribe. */
   onProvisioningNeeded(listener: (needed: boolean) => void): () => void {
     this.provisioningListeners.add(listener);
     return () => {
@@ -104,6 +111,10 @@ export class TsnetTransport implements Transport {
     }
   }
 
+  /**
+   * Proxy one request through the local tsnet listener.
+   * Marks connected on any HTTP response; marks disconnected on dial failure.
+   */
   async request<T>(opts: {
     baseUrl: string;
     path: string;
@@ -137,14 +148,10 @@ export class TsnetTransport implements Transport {
         body,
       });
     } catch (err) {
-      // Dial / proxy unreachable — mesh is down.
       this.markFailure();
       throw err instanceof Error ? err : new Error(String(err));
     }
 
-    // Any HTTP response from the local proxy means the mesh is up. Upstream
-    // app errors (Yaad 502 on recall, etc.) must not flip the shell to
-    // "Dadi is unreachable".
     this.markSuccess();
 
     if (!response.ok) {
@@ -158,6 +165,10 @@ export class TsnetTransport implements Transport {
     return (await response.json()) as T;
   }
 
+  /**
+   * Open SSE via the local proxy. Returns a no-op when not connected.
+   * Marks connected when the proxy answers; dial failures mark disconnected.
+   */
   stream(opts: {
     baseUrl: string;
     path: string;
@@ -245,7 +256,6 @@ export class TsnetTransport implements Transport {
       });
 
       if (!response.ok || !response.body) {
-        // Proxy answered — mesh is up; stream open failed (caller reconnects).
         this.markSuccess();
         closed();
         return;
@@ -269,7 +279,6 @@ export class TsnetTransport implements Transport {
       closed();
     } catch {
       if (!signal.aborted) {
-        // Fetch threw — likely dial/proxy down.
         this.markFailure();
         onClose?.();
       }

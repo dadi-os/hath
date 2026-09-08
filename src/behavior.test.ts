@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { formatRelative, truncateOneLine } from "./chrome/chatSidebar/format";
+import {
+  pendingToChatMessages,
+  partitionByQueued,
+} from "./chrome/chatSidebar/lanes";
 import { formatOutboundContent } from "./store/chat";
+import type { ChatMessage } from "./store/chat";
 import { buildTree, visualState } from "./features/agents/tree";
 import {
   addDays,
@@ -37,6 +42,44 @@ describe("formatOutboundContent", () => {
   });
 });
 
+describe("chatSidebar lanes", () => {
+  it("maps pending rows to chat messages", () => {
+    const mapped = pendingToChatMessages([
+      {
+        seq: -1,
+        content: "hello",
+        at: "2026-01-01T00:00:00Z",
+        pending: true,
+        queued: true,
+      },
+    ]);
+    expect(mapped).toHaveLength(1);
+    expect(mapped[0]!.from_user).toBe(true);
+    expect(mapped[0]!.queued).toBe(true);
+  });
+
+  it("partitions queued vs settled", () => {
+    const messages: ChatMessage[] = [
+      {
+        seq: 1,
+        from_user: true,
+        content: "a",
+        at: "2026-01-01T00:00:00Z",
+      },
+      {
+        seq: -2,
+        from_user: true,
+        content: "b",
+        at: "2026-01-01T00:00:01Z",
+        queued: true,
+      },
+    ];
+    const { settled, queued } = partitionByQueued(messages);
+    expect(settled.map((m) => m.seq)).toEqual([1]);
+    expect(queued.map((m) => m.seq)).toEqual([-2]);
+  });
+});
+
 describe("agent tree", () => {
   const root: AgentRecord = {
     id: "root",
@@ -67,6 +110,10 @@ describe("agent tree", () => {
     );
     expect(visualState({ ...root, active: false }, undefined)).toBe("dormant");
   });
+
+  it("fails loudly when agents list is empty", () => {
+    expect(() => buildTree([])).toThrow(/no agents/);
+  });
 });
 
 describe("timeline dates", () => {
@@ -95,6 +142,16 @@ describe("sse helpers", () => {
     );
     expect(events).toEqual([{ type: "message" }]);
     expect(rest).toBe('data: {"type":"x"');
+  });
+
+  it("skips malformed JSON without breaking the stream", () => {
+    const events: unknown[] = [];
+    const rest = consumeSseBuffer(
+      'data: not-json\n\ndata: {"ok":true}\n\n',
+      (data: unknown) => events.push(data),
+    );
+    expect(events).toEqual([{ ok: true }]);
+    expect(rest).toBe("");
   });
 
   it("joins urls", () => {

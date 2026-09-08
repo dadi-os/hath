@@ -1,10 +1,12 @@
-import type { Transport } from "./transport";
+import type { Transport } from "../transport";
 
+/** Per-CPU sample from Nas GET /status. */
 export type NasCpuStatus = {
   name: string;
   used_percent: number;
 };
 
+/** Memory sample from Nas GET /status. */
 export type NasMemoryStatus = {
   name?: string;
   used_bytes: number;
@@ -12,11 +14,13 @@ export type NasMemoryStatus = {
   used_percent: number;
 };
 
+/** GPU sample from Nas GET /status. */
 export type NasGpuStatus = {
   name: string;
   used_percent?: number;
 };
 
+/** Aggregate host + service health from Nas GET /status. */
 export type NasStatus = {
   uptime_seconds: number;
   services: Array<{ name: string; healthy: boolean }>;
@@ -27,8 +31,10 @@ export type NasStatus = {
   errors: string[];
 };
 
+/** Log severity filter for Nas GET /logs. */
 export type NasLogLevel = "debug" | "info" | "warn" | "error";
 
+/** One Loki-backed log row from Nas GET /logs. */
 export type NasLogEntry = {
   time: string;
   service: string;
@@ -37,6 +43,7 @@ export type NasLogEntry = {
   raw?: string;
 };
 
+/** Query params for Nas GET /logs. */
 export type NasLogsParams = {
   services?: string;
   level?: NasLogLevel;
@@ -46,8 +53,13 @@ export type NasLogsParams = {
   limit?: number;
 };
 
+/**
+ * Nas HTTP client — status, logs, module env/config, stack, provision.
+ * Paths live here; callers pass only domain args.
+ */
 export function createNasClient(transport: Transport, baseUrl: string) {
   return {
+    /** GET /status — host + service health. */
     getStatus(): Promise<NasStatus> {
       return transport.request({
         baseUrl,
@@ -56,6 +68,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /logs — Loki query via Nas. */
     getLogs(params?: NasLogsParams): Promise<{ entries: NasLogEntry[] }> {
       const qs = new URLSearchParams();
       if (params?.services) {
@@ -84,6 +97,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /modules/:name/env — raw .env text. */
     getModuleEnv(name: "dwar" | "yaad" | "dimaag"): Promise<string> {
       return transport.request({
         baseUrl,
@@ -93,6 +107,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** PUT /modules/:name/env — replace .env text. */
     putModuleEnv(
       name: "dwar" | "yaad" | "dimaag",
       text: string,
@@ -105,6 +120,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /modules/dwar/config — raw config.toml. */
     getDwarConfig(): Promise<string> {
       return transport.request({
         baseUrl,
@@ -114,6 +130,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** PUT /modules/dwar/config — replace config.toml. */
     putDwarConfig(text: string): Promise<{ status: string }> {
       return transport.request({
         baseUrl,
@@ -123,6 +140,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /modules/:name/restart. */
     restartModule(name: string): Promise<{ status: string }> {
       return transport.request({
         baseUrl,
@@ -131,6 +149,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /stack/up — bring compose stack up. */
     stackUp(): Promise<{ status: string }> {
       return transport.request({
         baseUrl,
@@ -139,6 +158,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /stack/down — take compose stack down. */
     stackDown(): Promise<{ status: string }> {
       return transport.request({
         baseUrl,
@@ -147,6 +167,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /cloudflared/token — tunnel token text. */
     getCloudflaredToken(): Promise<string> {
       return transport.request({
         baseUrl,
@@ -156,6 +177,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** PUT /cloudflared/token — replace tunnel token. */
     putCloudflaredToken(token: string): Promise<{ status: string }> {
       return transport.request({
         baseUrl,
@@ -165,6 +187,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /provision — mint a device setup bundle. */
     provision(nodeName: string): Promise<{ bundle: string }> {
       return transport.request({
         baseUrl,
@@ -176,4 +199,5 @@ export function createNasClient(transport: Transport, baseUrl: string) {
   };
 }
 
+/** Nas client shape returned by {@link createNasClient}. */
 export type NasClient = ReturnType<typeof createNasClient>;

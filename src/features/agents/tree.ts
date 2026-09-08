@@ -1,6 +1,7 @@
 import type { HierarchyPointLink } from "d3-hierarchy";
 import type { AgentRecord } from "../../shared/api/types";
 
+/** Hierarchy node for the agent tree SVG. */
 export type AgentTreeNode = {
   id: string;
   name: string;
@@ -8,6 +9,7 @@ export type AgentTreeNode = {
   children?: AgentTreeNode[];
 };
 
+/** Visual lane for a tree node: running glow, idle, or dormant. */
 export type NodeVisual = "running" | "idle" | "dormant";
 
 /**
@@ -52,12 +54,17 @@ export function buildTree(agents: AgentRecord[]): AgentTreeNode {
   return toNode(rootAgent);
 }
 
+/** Cubic path from parent to child in the tree layout. */
 export function linkPath(link: HierarchyPointLink<AgentTreeNode>): string {
   const { source, target } = link;
   const midY = (source.y + target.y) / 2;
   return `M${source.x},${source.y} C${source.x},${midY} ${target.x},${midY} ${target.x},${target.y}`;
 }
 
+/**
+ * Map agent active + lane occupancy to a tree visual.
+ * Prefers live `running` overrides when provided.
+ */
 export function visualState(
   agent: AgentRecord,
   running: { reasoning: boolean; conversation: boolean } | undefined,
@@ -72,6 +79,7 @@ export function visualState(
   return "idle";
 }
 
+/** Human-readable status for the agent popover / legend. */
 export function statusLabel(
   visual: NodeVisual,
   running: { reasoning: boolean; conversation: boolean },
@@ -94,6 +102,7 @@ export function statusLabel(
   return "Idle";
 }
 
+/** Relative time label (e.g. "3 minutes ago"). */
 export function formatRelative(iso: string, now = Date.now()): string {
   const diffSec = Math.round((new Date(iso).getTime() - now) / 1000);
   const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
@@ -112,6 +121,7 @@ export function formatRelative(iso: string, now = Date.now()): string {
   return rtf.format(Math.round(diffHour / 24), "day");
 }
 
+/** Absolute local date+time for tooltips. */
 export function formatAbsolute(iso: string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",

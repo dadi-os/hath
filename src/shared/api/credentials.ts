@@ -7,6 +7,7 @@ export type Credentials = {
   node_name: string;
 };
 
+/** Thrown when a pasted setup code cannot be decoded into credentials. */
 export class BundleDecodeError extends Error {
   constructor(message: string) {
     super(message);
@@ -14,10 +15,12 @@ export class BundleDecodeError extends Error {
   }
 }
 
+/** Load persisted mesh credentials from the Tauri app data store. */
 export async function loadCredentials(): Promise<Credentials | null> {
   return invoke<Credentials | null>("net_load_credentials");
 }
 
+/** Persist mesh credentials to the Tauri app data store. */
 export async function saveCredentials(credentials: Credentials): Promise<void> {
   await invoke("net_save_credentials", { credentials });
 }

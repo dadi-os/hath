@@ -86,10 +86,8 @@ export function Popover({
 
       let caretSide: Placement["caretSide"] = "left";
       let left = originX + GAP;
-      // Hang the panel so the caret sits near the header, not mid-panel.
       let top = originY - CARET_FROM_TOP;
 
-      // Prefer opening to the right; flip when near the edge.
       if (left + w > window.innerWidth - PAD) {
         left = originX - w - GAP;
         caretSide = "right";
@@ -118,7 +116,6 @@ export function Popover({
     };
 
     place();
-    // Re-measure after paint once content height is known.
     const raf = requestAnimationFrame(place);
     window.addEventListener("resize", place);
     return () => {

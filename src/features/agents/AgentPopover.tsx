@@ -54,8 +54,10 @@ export function AgentPopover({
     enabled: connected && !!agentId && open,
   });
 
-  // Same cache as AgentActivity — last active is last log, not agents.updated_at
-  // (that column only moves on modify_agent).
+  /**
+   * Same cache as AgentActivity — last active is last log, not agents.updated_at
+   * (that column only moves on modify_agent).
+   */
   const activityQuery = useQuery({
     queryKey: ["agent-logs", agentId, "activity"],
     queryFn: async () => {

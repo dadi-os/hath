@@ -1,6 +1,7 @@
 /**
  * Shared SSE chunk parsing for TsnetTransport.
  * Splits on blank lines, extracts `data:` payloads, skips [DONE]/malformed JSON.
+ * Returns the unconsumed trailing buffer fragment.
  */
 export function consumeSseBuffer(
   buffer: string,
@@ -20,12 +21,12 @@ export function consumeSseBuffer(
     try {
       onEvent(JSON.parse(raw) as unknown);
     } catch {
-      // Malformed SSE payload — skip; stream stays open.
-    }
-  }
+      continue;
+    }  }
   return rest;
 }
 
+/** Join mesh base URL and path without double slashes. */
 export function joinUrl(baseUrl: string, path: string): string {
   const base = baseUrl.replace(/\/$/, "");
   const suffix = path.startsWith("/") ? path : `/${path}`;

@@ -2,6 +2,7 @@ import type { MessageAttachment } from "../../api/types";
 
 /** Match Dwar/Dimaag image.describe max. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** Max files per outbound message. */
 export const MAX_ATTACHMENTS = 8;
 
 const EXT_MEDIA: Record<string, string> = {
@@ -17,6 +18,7 @@ export type DraftAttachment = MessageAttachment & {
   previewUrl?: string;
 };
 
+/** Read files into draft attachments (base64 + optional image preview URL). */
 export async function filesToDraftAttachments(
   files: FileList | File[],
 ): Promise<DraftAttachment[]> {
@@ -41,6 +43,7 @@ export async function filesToDraftAttachments(
   return out;
 }
 
+/** Revoke object URLs created for image preview chips. */
 export function revokeDraftPreviews(attachments: DraftAttachment[]): void {
   for (const att of attachments) {
     if (att.previewUrl) {
@@ -49,6 +52,7 @@ export function revokeDraftPreviews(attachments: DraftAttachment[]): void {
   }
 }
 
+/** Strip preview URLs for the wire MessageAttachment payload. */
 export function toMessageAttachments(
   drafts: DraftAttachment[],
 ): MessageAttachment[] {

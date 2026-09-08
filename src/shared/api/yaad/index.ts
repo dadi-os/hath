@@ -1,4 +1,4 @@
-import type { Transport } from "./transport";
+import type { Transport } from "../transport";
 import type {
   NodeHistoryRecord,
   NodeResponse,
@@ -6,10 +6,15 @@ import type {
   QueryResponse,
   RecallRequest,
   RecallResponse,
-} from "./types";
+} from "../types";
 
+/**
+ * Yaad HTTP client — memory query, recall, and node history.
+ * Paths live here; callers pass only domain args.
+ */
 export function createYaadClient(transport: Transport, baseUrl: string) {
   return {
+    /** POST /query — structured node listing. */
     query(body: QueryRequest): Promise<QueryResponse> {
       return transport.request({
         baseUrl,
@@ -19,6 +24,7 @@ export function createYaadClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /recall — graph-hop semantic recall. */
     recall(body: RecallRequest): Promise<RecallResponse> {
       return transport.request({
         baseUrl,
@@ -28,6 +34,7 @@ export function createYaadClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /nodes/:id — node with detail and edges. */
     getNode(id: string): Promise<NodeResponse> {
       return transport.request({
         baseUrl,
@@ -36,6 +43,7 @@ export function createYaadClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /nodes/:id/history — field-level change log. */
     getNodeHistory(id: string): Promise<{ history: NodeHistoryRecord[] }> {
       return transport.request({
         baseUrl,
@@ -44,6 +52,7 @@ export function createYaadClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /history/search — free-text history search. */
     searchHistory(body: {
       query: string;
       limit?: number;
@@ -58,4 +67,5 @@ export function createYaadClient(transport: Transport, baseUrl: string) {
   };
 }
 
+/** Yaad client shape returned by {@link createYaadClient}. */
 export type YaadClient = ReturnType<typeof createYaadClient>;

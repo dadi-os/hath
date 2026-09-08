@@ -115,7 +115,7 @@ async function seedAmbient(preview: boolean): Promise<GraphData> {
             neighborNodes.push(n);
           }
         } catch {
-          // Skip missing / failed neighbors.
+          continue;
         }
       }
       const edges: EdgeRecord[] = [
@@ -186,7 +186,6 @@ export function MemoryGraph({
     setAnchor(null);
   }, [entranceKey]);
 
-  // Force simulation
   useEffect(() => {
     simRef.current?.stop();
     if (graph.nodes.length === 0) {
@@ -374,7 +373,7 @@ export function MemoryGraph({
           const n = await yaad.getNode(id);
           neighborNodes.push(n);
         } catch {
-          // skip
+          continue;
         }
       }
       setGraph((prev) =>

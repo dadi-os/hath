@@ -6,7 +6,6 @@ import {
   useSyncExternalStore,
   type FormEvent,
   type KeyboardEvent,
-  type RefObject,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
@@ -47,31 +46,27 @@ import {
   toMessageAttachments,
   type DraftAttachment,
 } from "../../shared/lib/content/attachments";
-import {
-  IconAttach,
-  IconBack,
-  IconButton,
-  IconCamera,
-  IconDismiss,
-  IconRetry,
-  IconSend,
-} from "../../shared/components/IconButton";
+import { IconBack, IconButton } from "../../shared/components/IconButton";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import { logLine } from "../../shared/lib/platform/log";
-import { formatRelative, truncateOneLine } from "./format";
+import { FloatingComposer } from "./composer";
+import {
+  COMPOSER_PAD,
+  COMPOSER_PAD_WITH_ATTACH,
+  NEAR_BOTTOM_PX,
+  NEW_CHAT_TIMEOUT_MS,
+  TEXTAREA_MAX_PX,
+} from "./constants";
+import { pendingToChatMessages, partitionByQueued } from "./lanes";
+import { ConversationList } from "./list";
+import { ThreadView } from "./thread";
 
-type ChatSidebarProps = {
+export interface ChatSidebarProps {
   /** Bumps when chat opens; scrolls the thread to the bottom. */
   sessionKey: number;
   className?: string;
-};
-
-const NEAR_BOTTOM_PX = 80;
-const TEXTAREA_MAX_PX = 88;
-const NEW_CHAT_TIMEOUT_MS = 90_000;
-const COMPOSER_PAD = 72;
-const COMPOSER_PAD_WITH_ATTACH = 128;
+}
 
 /**
  * Conversation list + thread views. Messages arrive only via SSE (and local
@@ -136,17 +131,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     : [];
   const provisionalMessages: ChatMessage[] =
     viewingProvisional && chat.pendingNewChat
-      ? chat.pendingNewChat.messages.map((m) => ({
-          seq: m.seq,
-          from_user: true,
-          content: m.content,
-          at: m.at,
-          pending: m.pending,
-          failed: m.failed,
-          queued: m.queued,
-          attachments: m.attachments,
-          outboundText: m.outboundText,
-        }))
+      ? pendingToChatMessages(chat.pendingNewChat.messages)
       : [];
 
   const awaitingRoute =
@@ -158,7 +143,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       "agent")
     : (rootQuery.data?.name ?? "Dadi");
 
-  // Dual-lane: only conversation occupancy blocks/queues. Reasoning-busy still allows send.
+  /** Dual-lane: only conversation occupancy blocks/queues; reasoning-busy still allows send. */
   const laneAgentId =
     viewingProvisional && awaitingRoute
       ? (rootId ?? null)
@@ -559,15 +544,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   const composerPad =
     draftAttachments.length > 0 ? COMPOSER_PAD_WITH_ATTACH : COMPOSER_PAD;
 
-  const settledMessages = (
-    viewingProvisional ? provisionalMessages : threadMessages
-  ).filter((msg) => !msg.queued);
-  const queuedMessages = (
-    viewingProvisional ? provisionalMessages : threadMessages
-  ).filter((msg) => msg.queued);
+  const { settled: settledMessages, queued: queuedMessages } = partitionByQueued(
+    viewingProvisional ? provisionalMessages : threadMessages,
+  );
 
-  // Placement encodes lane state: pulse before drafts = conversation held;
-  // pulse at thread end with open composer = reasoning working in the background.
+  /** Hold pulse before drafts; working pulse at thread end when only reasoning is busy. */
   const showHoldPulse = conversationBusy || queuedMessages.length > 0;
   const showWorkingPulse =
     reasoningBusy && !conversationBusy && queuedMessages.length === 0;
@@ -620,152 +601,41 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
       <div className="relative min-h-0 flex-1">
         <AnimatePresence mode="wait" initial={false}>
           {viewingThread ? (
-            <motion.div
-              key={viewKey}
-              ref={scrollRef}
+            <ThreadView
+              viewKey={viewKey}
+              scrollRef={scrollRef}
               onScroll={onScroll}
-              onClick={dismissKeyboard}
-              className="absolute inset-0 overflow-y-auto px-4 py-4"
-              style={{ paddingBottom: composerPad }}
-              initial={{ opacity: 0, x: 18 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -14 }}
-              transition={{ duration: SLOW_S, ease: EASE }}
-            >
-              <div className="flex flex-col gap-3">
-                <AnimatePresence initial={false}>
-                  {settledMessages.map((msg) => (
-                    <MessageBubble
-                      key={msg.seq}
-                      message={msg}
-                      onRetry={
-                        openAgentId
-                          ? () =>
-                              void sendThread(
-                                msg.outboundText ?? msg.content,
-                                msg.seq,
-                                msg.attachments,
-                              )
-                          : viewingProvisional
-                            ? () => void retryNewChat(msg.seq)
-                            : undefined
-                      }
-                      onCancel={
-                        msg.failed
-                          ? () => cancelQueued(msg.seq)
-                          : undefined
-                      }
-                    />
-                  ))}
-                </AnimatePresence>
-                {showHoldPulse ? <ActivityPulse /> : null}
-                <AnimatePresence initial={false}>
-                  {queuedMessages.map((msg) => (
-                    <MessageBubble
-                      key={msg.seq}
-                      message={msg}
-                      onCancel={() => cancelQueued(msg.seq)}
-                    />
-                  ))}
-                </AnimatePresence>
-                {showWorkingPulse ? <ActivityPulse /> : null}
-              </div>
-            </motion.div>
+              onDismissKeyboard={dismissKeyboard}
+              composerPad={composerPad}
+              settledMessages={settledMessages}
+              queuedMessages={queuedMessages}
+              showHoldPulse={showHoldPulse}
+              showWorkingPulse={showWorkingPulse}
+              onRetry={(msg) => {
+                if (openAgentId) {
+                  void sendThread(
+                    msg.outboundText ?? msg.content,
+                    msg.seq,
+                    msg.attachments,
+                  );
+                  return;
+                }
+                if (viewingProvisional) {
+                  void retryNewChat(msg.seq);
+                }
+              }}
+              onCancel={cancelQueued}
+            />
           ) : (
-            <motion.div
-              key="list"
-              onClick={dismissKeyboard}
-              className="absolute inset-0 overflow-y-auto px-2 py-2"
-              style={{ paddingBottom: composerPad }}
-              initial={{ opacity: 0, x: -18 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 14 }}
-              transition={{ duration: SLOW_S, ease: EASE }}
-            >
-              {chat.pendingNewChat ? (
-                <motion.button
-                  type="button"
-                  layout
-                  onClick={() => openProvisional()}
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: SLOW_S, ease: EASE }}
-                  className="mb-1 flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
-                >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-[13px] text-ink">New chat</span>
-                    <span className="shrink-0 text-[11px] text-ink-ghost">
-                      {formatRelative(
-                        chat.pendingNewChat.messages[
-                          chat.pendingNewChat.messages.length - 1
-                        ]!.at,
-                      )}
-                    </span>
-                  </div>
-                  <p
-                    className="truncate text-[12px] text-ink-ghost"
-                    style={{
-                      opacity: chat.pendingNewChat.messages.every((m) => m.failed)
-                        ? 0.7
-                        : 1,
-                    }}
-                  >
-                    {truncateOneLine(
-                      chat.pendingNewChat.messages[
-                        chat.pendingNewChat.messages.length - 1
-                      ]!.content,
-                    )}
-                  </p>
-                  {awaitingRoute ||
-                  chat.pendingNewChat.messages.some((m) => m.queued) ? (
-                    <div className="mt-1.5">
-                      <ActivityPulse />
-                    </div>
-                  ) : (
-                    <span className="mt-1 text-[11px] text-sage-text">
-                      No reply yet
-                    </span>
-                  )}
-                </motion.button>
-              ) : null}
-
-              {chat.conversations.length === 0 && !chat.pendingNewChat ? (
-                <p className="px-3 py-6 text-[13px] text-ink-ghost">
-                  No conversations yet
-                </p>
-              ) : (
-                <div className="flex flex-col">
-                  {chat.conversations.map((conv, i) => (
-                    <motion.button
-                      key={conv.agent_id}
-                      type="button"
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{
-                        duration: SLOW_S,
-                        ease: EASE,
-                        delay: Math.min(i * 0.04, 0.24),
-                      }}
-                      onClick={() => openAgent(conv.agent_id)}
-                      className="flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
-                    >
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-[13px] text-ink">
-                          {conv.agent_name}
-                        </span>
-                        <span className="shrink-0 text-[11px] text-ink-ghost">
-                          {formatRelative(conv.last_at)}
-                        </span>
-                      </div>
-                      <p className="truncate text-[12px] text-ink-ghost">
-                        {conv.from_user ? "You: " : ""}
-                        {truncateOneLine(conv.last_message)}
-                      </p>
-                    </motion.button>
-                  ))}
-                </div>
-              )}
-            </motion.div>
+            <ConversationList
+              conversations={chat.conversations}
+              pendingNewChat={chat.pendingNewChat}
+              awaitingRoute={awaitingRoute}
+              onOpenProvisional={openProvisional}
+              onOpenAgent={openAgent}
+              onDismissKeyboard={dismissKeyboard}
+              composerPad={composerPad}
+            />
           )}
         </AnimatePresence>
 
@@ -788,274 +658,5 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
         />
       </div>
     </aside>
-  );
-}
-
-function ActivityPulse() {
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
-      className="flex items-center gap-1 py-1"
-      aria-hidden
-    >
-      {[0, 1, 2].map((i) => (
-        <motion.span
-          key={i}
-          className="block size-1 rounded-full bg-sage/70"
-          animate={{
-            opacity: [0.2, 0.85, 0.2],
-            scale: [0.85, 1.05, 0.85],
-          }}
-          transition={{
-            duration: 1.25,
-            repeat: Infinity,
-            delay: i * 0.16,
-            ease: EASE,
-          }}
-        />
-      ))}
-    </motion.div>
-  );
-}
-
-function FloatingComposer({
-  connected,
-  draft,
-  setDraft,
-  placeholder,
-  canSubmit,
-  holdMode,
-  workingMode,
-  textareaRef,
-  fileInputRef,
-  cameraInputRef,
-  attachments,
-  onRemoveAttachment,
-  onPickFiles,
-  onSubmit,
-  onKeyDown,
-}: {
-  connected: boolean;
-  draft: string;
-  setDraft: (v: string) => void;
-  placeholder: string;
-  canSubmit: boolean;
-  /** Conversation lane held — sends go to the local draft queue. */
-  holdMode: boolean;
-  /** Reasoning working; conversation free — send is live. */
-  workingMode: boolean;
-  textareaRef: RefObject<HTMLTextAreaElement | null>;
-  fileInputRef: RefObject<HTMLInputElement | null>;
-  cameraInputRef: RefObject<HTMLInputElement | null>;
-  attachments: DraftAttachment[];
-  onRemoveAttachment: (index: number) => void;
-  onPickFiles: (files: FileList | null) => void;
-  onSubmit: (e: FormEvent) => void;
-  onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
-}) {
-  return (
-    <motion.div
-      className="pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3"
-      style={{
-        paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))",
-      }}
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
-    >
-      {connected ? (
-        <form
-          onSubmit={onSubmit}
-          className={`pointer-events-auto flex flex-col gap-1.5 rounded-[var(--radius)] border border-dashed px-2 py-1.5 shadow-[var(--shadow)] backdrop-blur-md transition-[border-color,background-color] duration-slow ease-hath ${
-            holdMode
-              ? "border-sage-line/70 bg-sage-fill/35"
-              : workingMode
-                ? "border-sage/50 bg-bone/92"
-                : "border-sage-line bg-bone/92"
-          }`}
-        >
-          {attachments.length > 0 ? (
-            <div className="flex gap-1.5 overflow-x-auto px-0.5 pt-0.5">
-              {attachments.map((att, index) => (
-                <div
-                  key={`${att.filename ?? att.media_type}-${index}`}
-                  className="relative shrink-0"
-                >
-                  {att.previewUrl ? (
-                    <img
-                      src={att.previewUrl}
-                      alt={att.filename ?? "attachment"}
-                      className="h-12 w-12 rounded-[6px] object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-12 max-w-[7rem] items-center rounded-[6px] border border-dashed border-sage-line bg-sage-fill/30 px-2 text-[10px] leading-tight text-ink-muted">
-                      <span className="truncate">{att.filename ?? "file"}</span>
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    aria-label="Remove attachment"
-                    onClick={() => onRemoveAttachment(index)}
-                    className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full bg-bone text-ink-muted shadow-[var(--shadow)]"
-                  >
-                    <IconDismiss />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <div className="flex items-end gap-1">
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              multiple
-              onChange={(e) => {
-                onPickFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <input
-              ref={cameraInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                onPickFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <IconButton
-              type="button"
-              label="Attach file"
-              size="md"
-              className="mb-px border-transparent bg-transparent shadow-none"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <IconAttach />
-            </IconButton>
-            <IconButton
-              type="button"
-              label="Take photo"
-              size="md"
-              className="mb-px border-transparent bg-transparent shadow-none"
-              onClick={() => cameraInputRef.current?.click()}
-            >
-              <IconCamera />
-            </IconButton>
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={onKeyDown}
-              rows={1}
-              placeholder={placeholder}
-              className={`block max-h-[88px] min-h-[32px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-1.5 text-[13px] leading-snug outline-none placeholder:text-ink-ghost ${
-                holdMode ? "text-ink/70" : "text-ink"
-              }`}
-              style={{ maxHeight: TEXTAREA_MAX_PX }}
-            />
-            <IconButton
-              type="submit"
-              label={holdMode ? "Queue message" : "Send"}
-              disabled={!canSubmit}
-              size="lg"
-              className={`mb-px border-sage-line bg-sage-fill ${
-                workingMode && !holdMode
-                  ? "shadow-[0_0_0_1px_rgba(143,163,130,0.35)]"
-                  : ""
-              }`}
-            >
-              <IconSend />
-            </IconButton>
-          </div>
-        </form>
-      ) : (
-        <div className="pointer-events-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-3 py-2 text-[13px] text-ink-ghost shadow-[var(--shadow)] backdrop-blur-md">
-          Connect to message Dadi
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-function MessageBubble({
-  message,
-  onRetry,
-  onCancel,
-}: {
-  message: ChatMessage;
-  onRetry?: () => void;
-  onCancel?: () => void;
-}) {
-  if (message.from_user) {
-    const failed = Boolean(message.failed);
-    const queued = Boolean(message.queued);
-    return (
-      <motion.div
-        layout
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -4 }}
-        transition={{ duration: SLOW_S, ease: EASE }}
-        className={`flex justify-end gap-1.5 ${
-          queued || failed ? "items-center" : "items-end"
-        }`}
-      >
-        {failed && onRetry ? (
-          <button
-            type="button"
-            onClick={onRetry}
-            aria-label="Retry send"
-            title="Retry"
-            className="inline-flex size-7 shrink-0 items-center justify-center text-[#b56b5c] transition-opacity duration-slow ease-hath hover:opacity-70"
-          >
-            <IconRetry />
-          </button>
-        ) : null}
-        {(queued || failed) && onCancel ? (
-          <button
-            type="button"
-            onClick={onCancel}
-            aria-label="Remove message"
-            title="Remove"
-            className="inline-flex size-7 shrink-0 items-center justify-center text-ink-ghost transition-opacity duration-slow ease-hath hover:text-ink-muted"
-          >
-            <IconDismiss />
-          </button>
-        ) : null}
-        <div
-          className={`max-w-[90%] rounded-[var(--radius)] px-3 py-1.5 text-[13px] leading-relaxed whitespace-pre-wrap ${
-            failed
-              ? "border border-[#c47868] bg-[#c47868]/12 text-ink"
-              : queued
-                ? "border border-dashed border-sage-line/55 bg-sage-fill/20 text-ink/55"
-                : "bg-sage-active text-ink"
-          }`}
-          style={{
-            opacity: message.pending && !queued && !failed ? 0.55 : 1,
-          }}
-        >
-          {message.content}
-        </div>
-      </motion.div>
-    );
-  }
-
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -4 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
-      className="max-w-[95%] text-[13px] leading-[1.65] text-ink whitespace-pre-wrap"
-    >
-      {message.content}
-    </motion.div>
   );
 }

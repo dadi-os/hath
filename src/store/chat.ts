@@ -126,10 +126,12 @@ function setThread(agentId: string, messages: ChatMessage[]): void {
   };
 }
 
+/** Snapshot of chat store state (threads, list, provisional, open view). */
 export function getChatState(): ChatState {
   return state;
 }
 
+/** Subscribe to chat store updates; returns unsubscribe. */
 export function subscribeChat(listener: Listener): () => void {
   listeners.add(listener);
   return () => {
@@ -137,6 +139,7 @@ export function subscribeChat(listener: Listener): () => void {
   };
 }
 
+/** Show the conversation list. */
 export function openList(): void {
   if (state.open.kind === "list") {
     return;
@@ -145,6 +148,7 @@ export function openList(): void {
   emit();
 }
 
+/** Show the provisional new-chat view when one exists. */
 export function openProvisional(): void {
   if (!state.pendingNewChat) {
     return;
@@ -156,6 +160,7 @@ export function openProvisional(): void {
   emit();
 }
 
+/** Open a user-thread for the given agent. */
 export function openAgent(agentId: string): void {
   if (state.open.kind === "agent" && state.open.agentId === agentId) {
     return;
@@ -281,6 +286,7 @@ export function resolveOptimistic(
   emit();
 }
 
+/** Mark an optimistic message as failed (eligible for retry/dismiss). */
 export function markFailed(agentId: string, tempSeq: number): void {
   setThread(
     agentId,
@@ -291,6 +297,7 @@ export function markFailed(agentId: string, tempSeq: number): void {
   emit();
 }
 
+/** Remove a message from a thread by seq (cancel draft or dismiss failed). */
 export function removeMessage(agentId: string, seq: number): void {
   setThread(
     agentId,
@@ -348,6 +355,7 @@ export function enqueuePendingNewChat(
   return msg.seq;
 }
 
+/** Drop the provisional new-chat session; return to list if it was open. */
 export function clearPendingNewChat(): void {
   if (state.pendingNewChat === null) {
     return;
@@ -358,13 +366,15 @@ export function clearPendingNewChat(): void {
   emit();
 }
 
-/** Mark every still-pending provisional message failed (timeout / hard fail). */
+/**
+ * Mark every still-pending provisional message failed (timeout / hard fail).
+ * Queued drafts were never POSTed and stay queued.
+ */
 export function markPendingNewChatFailed(): void {
   const pending = state.pendingNewChat;
   if (!pending) {
     return;
   }
-  // Local queue drafts were never POSTed — leave them alone.
   const messages = pending.messages.map((m) =>
     m.failed || m.queued ? m : { ...m, pending: false, failed: true },
   );
@@ -375,6 +385,7 @@ export function markPendingNewChatFailed(): void {
   emit();
 }
 
+/** Mark one provisional message failed by seq. */
 export function markPendingNewChatMessageFailed(seq: number): void {
   const pending = state.pendingNewChat;
   if (!pending) {
@@ -391,6 +402,7 @@ export function markPendingNewChatMessageFailed(seq: number): void {
   emit();
 }
 
+/** Clear failed/queued on one provisional message before a retry POST. */
 export function markPendingNewChatMessagePending(seq: number): void {
   const pending = state.pendingNewChat;
   if (!pending) {

@@ -22,6 +22,7 @@ export type LogExplorerProps = {
   className?: string;
 };
 
+/** ISO from/to for a log range preset. Call per fetch so `to` stays current. */
 export function rangeBounds(preset: RangePreset): { from: string; to: string } {
   const to = new Date();
   const hours = preset === "1h" ? 1 : preset === "6h" ? 6 : 24;
@@ -63,6 +64,7 @@ export type ErrorCardCopy = {
 /**
  * Pull the nested human message out of Anthropic/SDK blobs like:
  * `Error code: 400 - {'type': 'error', 'error': {'message': 'Your credit…'}}`
+ * Prefers the innermost quoted `message` value, then embedded JSON, then stripped text.
  */
 function humanizeProviderBlob(text: string): {
   message: string;
@@ -71,7 +73,6 @@ function humanizeProviderBlob(text: string): {
   const codeMatch = text.match(/\b(?:Error code|status(?:Code)?):\s*(\d{3})\b/i);
   const code = codeMatch ? Number(codeMatch[1]) : null;
 
-  // Prefer the innermost quoted message= value (Python dict or JSON-ish).
   const messageMatches = [
     ...text.matchAll(/['"]message['"]\s*:\s*['"]([^'"]+)['"]/g),
   ];
@@ -82,7 +83,6 @@ function humanizeProviderBlob(text: string): {
     }
   }
 
-  // JSON object embedded after the status prefix.
   const jsonStart = text.indexOf("{");
   if (jsonStart >= 0) {
     try {
@@ -100,9 +100,7 @@ function humanizeProviderBlob(text: string): {
       if (nested) {
         return { message: nested, code };
       }
-    } catch {
-      // fall through
-    }
+    } catch {}
   }
 
   const stripped = text.replace(/^Error code:\s*\d+\s*-\s*/i, "").trim();
@@ -284,8 +282,6 @@ export function LogExplorer({ className }: LogExplorerProps) {
   const logsQuery = useQuery({
     queryKey: ["nas", "logs", servicesParam ?? "", level, q, range],
     queryFn: () => {
-      // Bounds must be fresh on every fetch — a memoized window freezes `to`
-      // at mount and silently drops anything newer.
       const { from, to } = rangeBounds(range);
       return nas.getLogs({
         services: servicesParam,
@@ -314,7 +310,6 @@ export function LogExplorer({ className }: LogExplorerProps) {
 
   const entries = useMemo(() => {
     const raw = logsQuery.data?.entries ?? [];
-    // Keep noise if the user is explicitly searching for it.
     if (q && /request completed|incoming request|\/health/i.test(q)) {
       return raw;
     }

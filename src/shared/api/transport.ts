@@ -1,5 +1,11 @@
+/** Mesh reachability for the shell chrome (header ONLINE/OFFLINE). */
 export type ConnectionState = "connected" | "connecting" | "disconnected";
 
+/**
+ * Wire abstraction for domain clients.
+ * `baseUrl` is the mesh host (e.g. `http://dimaag.dadi`); `path` is the route.
+ * Implementations may proxy through a local tsnet listener.
+ */
 export interface Transport {
   request<T>(opts: {
     baseUrl: string;
@@ -12,6 +18,10 @@ export interface Transport {
     responseType?: "json" | "text";
   }): Promise<T>;
 
+  /**
+   * Open an SSE subscription. Returns an abort function.
+   * No-op unsubscribe when not connected.
+   */
   stream(opts: {
     baseUrl: string;
     path: string;
