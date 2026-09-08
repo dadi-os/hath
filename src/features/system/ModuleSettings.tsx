@@ -161,7 +161,7 @@ function CloudflaredEditor() {
   return (
     <FieldBlock
       title="Cloudflare tunnel token"
-      hint="Routes headscale.dadi.ardusa.dev → Headscale on this box."
+      hint="Routes dadi.ardusa.dev → Headscale on this box."
       value={token}
       onChange={setToken}
       onSave={() => save.mutate()}

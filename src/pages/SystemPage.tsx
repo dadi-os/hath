@@ -2,6 +2,7 @@ import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
 import { LogExplorer } from "../features/logs/LogExplorer";
 import { ModuleSettings } from "../features/system/ModuleSettings";
+import { ProvisionDevice } from "../features/system/ProvisionDevice";
 import { SystemMap } from "../features/system/SystemMap";
 import { EASE, SLOW_S } from "../shared/motion";
 
@@ -37,6 +38,14 @@ export function SystemPage() {
             </span>
             <div className="min-h-0 flex-1 overflow-y-auto">
               <ModuleSettings />
+            </div>
+          </div>
+          <div className="flex max-h-[45%] min-h-[200px] shrink-0 flex-col overflow-hidden border-t border-dashed border-sage-line pt-3">
+            <span className="mb-3 shrink-0 text-[11px] font-medium tracking-[2px] text-sage-deep">
+              DEVICES
+            </span>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <ProvisionDevice />
             </div>
           </div>
         </section>

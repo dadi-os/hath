@@ -164,6 +164,15 @@ export function createNasClient(transport: Transport, baseUrl: string) {
         bodyText: token,
       });
     },
+
+    provision(nodeName: string): Promise<{ bundle: string }> {
+      return transport.request({
+        baseUrl,
+        path: "/provision",
+        method: "POST",
+        body: { node_name: nodeName },
+      });
+    },
   };
 }
 

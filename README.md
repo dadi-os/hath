@@ -33,31 +33,25 @@ Nas will reverse-proxy by `Host` header; Headscale serves DNS for these names po
 
 ## Provisioning
 
-First launch with no stored credentials shows a setup screen (chrome still visible): paste a setup code from the box.
+On a **connected** Hath: **System → DEVICES** — enter a node name → **Create setup code**. Nas `POST /provision` mints a single-use Headscale pre-auth key (~1h) and returns a base64 bundle. The UI shows that string as a QR and as selectable text (copy / paste for devices without a camera).
+
+On a **new** install with no stored credentials: setup screen (chrome still visible) — **Scan** the QR or paste the code → **Join**.
 
 The code is base64 of JSON:
 
 ```json
 {
-  "control_url": "https://headscale.example.com",
+  "control_url": "https://dadi.ardusa.dev",
   "auth_key": "hskey-...",
   "node_name": "ankur-phone"
 }
 ```
 
-- `control_url` lives in the bundle because a device that has not joined the tailnet cannot resolve `.dadi` names to find Headscale.
-- `node_name` is chosen during the walkthrough on the already-connected device that generates the bundle, so nodes show meaningful names in `headscale nodes list`. It is passed to tsnet as `Hostname`.
+- `control_url` lives in the bundle because a device that has not joined the tailnet cannot resolve `.dadi` names to find Headscale. Prod uses `https://dadi.ardusa.dev` (Cloudflare tunnel); dev uses `http://localhost:8080`.
+- `node_name` is chosen when minting on the connected device, so nodes show meaningful names in `headscale nodes list`. It is passed to tsnet as `Hostname`.
 - Hostnames and ports for Yaad/Dimaag/Nas are not in the bundle — they are the constants above.
 
-On success the credentials are stored in the app data directory (not `localStorage`) and never prompted again. On decode failure: a quiet inline message. On auth failure: Go's error text is shown (used or expired keys should say so).
-
-QR scanning is a later, client-only change against the same payload — camera swap on the paste field, nothing more.
-
-Generate a pre-auth key on the box:
-
-```sh
-headscale preauthkeys create --user <user> --reusable --expiration 24h
-```
+On success the credentials are stored in the app data directory (not `localStorage`) and never prompted again. On decode failure: a quiet inline message. On auth failure: Go's error text is shown (used or expired keys should say so). Camera denial falls back to paste.
 
 ## Design tokens
 
