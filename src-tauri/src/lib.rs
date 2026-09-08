@@ -3,8 +3,48 @@ mod net;
 
 use net::NetState;
 
+/// hathnet is a raw-dylib on Windows; ensure its folder is on the DLL search path
+/// before any FFI call (exe dir from build.rs copy, or bundled resources/).
+#[cfg(windows)]
+fn prepare_hathnet_dll_search_path() {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetDllDirectoryW(path: *const u16) -> i32;
+    }
+
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+    let candidates = [dir.to_path_buf(), dir.join("resources")];
+    for candidate in candidates {
+        if candidate.join("hathnet.dll").exists() {
+            let wide: Vec<u16> = candidate
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            unsafe {
+                SetDllDirectoryW(wide.as_ptr());
+            }
+            logutil::emit(
+                "info",
+                format!("hathnet DLL search path → {}", candidate.display()),
+            );
+            return;
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    prepare_hathnet_dll_search_path();
+
     logutil::emit("info", "hath starting");
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())

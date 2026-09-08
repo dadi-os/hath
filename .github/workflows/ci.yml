@@ -59,9 +59,9 @@ jobs:
             asset_name: hath-macos-aarch64.dmg
           - os: windows-latest
             net_target: windows-amd64
-            rust_targets: x86_64-pc-windows-gnu
-            build_args: "--bundles nsis --target x86_64-pc-windows-gnu"
-            asset_glob: "src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/*setup.exe"
+            rust_targets: ""
+            build_args: "--bundles nsis"
+            asset_glob: "src-tauri/target/release/bundle/nsis/*setup.exe"
             asset_name: hath-windows-x86_64-setup.exe
     runs-on: ${{ matrix.os }}
     steps:

@@ -47,9 +47,10 @@ build_linux_amd64() {
     go build -buildmode=c-archive -o "$LIB_ROOT/linux-amd64/libhathnet.a" .
 }
 
-# Go c-archive on Windows is MinGW-only; pair with Rust target x86_64-pc-windows-gnu.
+# Go c-shared DLL for MSVC Tauri builds (c-archive cannot link with MSVC).
+# Pair with cargo:rustc-link-lib=raw-dylib=hathnet in build.rs.
 build_windows_amd64() {
-  echo "→ windows-amd64"
+  echo "→ windows-amd64 (c-shared DLL)"
   mkdir -p "$LIB_ROOT/windows-amd64"
   local cc="${CC:-}"
   if [[ -z "$cc" ]]; then
@@ -63,7 +64,7 @@ build_windows_amd64() {
     fi
   fi
   CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC="$cc" \
-    go build -buildmode=c-archive -o "$LIB_ROOT/windows-amd64/libhathnet.a" .
+    go build -buildmode=c-shared -o "$LIB_ROOT/windows-amd64/hathnet.dll" .
 }
 
 target="${1:-darwin-arm64}"

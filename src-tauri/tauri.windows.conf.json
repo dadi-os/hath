@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "lib/windows-amd64/hathnet.dll": "hathnet.dll"
+    }
+  }
+}
