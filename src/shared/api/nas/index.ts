@@ -97,8 +97,8 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** GET /modules/:name/env — raw .env text. */
-    getModuleEnv(name: "dwar" | "yaad" | "dimaag"): Promise<string> {
+    /** GET /modules/dwar/env — raw .env text (provider keys only). */
+    getModuleEnv(name: "dwar"): Promise<string> {
       return transport.request({
         baseUrl,
         path: `/modules/${name}/env`,
@@ -107,11 +107,8 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** PUT /modules/:name/env — replace .env text. */
-    putModuleEnv(
-      name: "dwar" | "yaad" | "dimaag",
-      text: string,
-    ): Promise<{ status: string }> {
+    /** PUT /modules/dwar/env — replace .env text. */
+    putModuleEnv(name: "dwar", text: string): Promise<{ status: string }> {
       return transport.request({
         baseUrl,
         path: `/modules/${name}/env`,

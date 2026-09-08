@@ -102,8 +102,8 @@ docker build --target production -t hath .
 | `ci.yml` → `ci` | PR + push to `main` | Build tsnet archive, `npm test`, `npm run build` |
 | `ci.yml` → `container` | PR + push to `main` | `docker build --target production` |
 | `ci.yml` → `publish` | `main` after `container` | `ghcr.io/dadi-os/hath:latest` + sha tag |
-| `ci.yml` → `release-desktop` | `main` after `ci` | AppImage / DMG / NSIS → GitHub Release `v{version}` |
-| `ci.yml` → `release-ios` | `main` after `ci` | TestFlight when Apple secrets present |
+| `ci.yml` → `release-desktop` | `main` after `ci` | AppImage / DMG / NSIS → GitHub Release `hath-<sha>` |
+| `ci.yml` → `release-ios` | `main` after `ci` | TestFlight when Apple secrets present; IPA on same `hath-<sha>` release |
 
 ## Logging / error codes
 

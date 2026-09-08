@@ -3,25 +3,26 @@ import { useEffect, useState } from "react";
 import { nas } from "../../shared/api";
 import { useConnection } from "../../hooks/useConnection";
 
-type ModuleName = "dwar" | "yaad" | "dimaag";
-
-const MODULES: ModuleName[] = ["dwar", "yaad", "dimaag"];
+type ConfigTab = "dwar" | "cloudflared";
 
 /**
- * Nas-owned module .env / dwar config.toml / cloudflared token editors.
+ * Nas-owned dwar .env / config.toml / cloudflared token editors.
+ * Yaad/Dimaag have no editable secrets (Postgres is baked into Nas).
  * Saves restart the affected unit on the box.
  */
 export function ModuleSettings() {
   const { state } = useConnection();
   const connected = state === "connected";
-  const [tab, setTab] = useState<ModuleName | "cloudflared">("dwar");
+  const [tab, setTab] = useState<ConfigTab>("dwar");
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
       <div className="flex flex-wrap gap-2">
-        {MODULES.map((m) => (
-          <TabButton key={m} active={tab === m} onClick={() => setTab(m)} label={m} />
-        ))}
+        <TabButton
+          active={tab === "dwar"}
+          onClick={() => setTab("dwar")}
+          label="dwar"
+        />
         <TabButton
           active={tab === "cloudflared"}
           onClick={() => setTab("cloudflared")}
@@ -34,7 +35,7 @@ export function ModuleSettings() {
       ) : tab === "cloudflared" ? (
         <CloudflaredEditor />
       ) : (
-        <ModuleEditor name={tab} />
+        <ModuleEditor />
       )}
     </div>
   );
@@ -60,16 +61,15 @@ function TabButton(props: {
   );
 }
 
-function ModuleEditor({ name }: { name: ModuleName }) {
+function ModuleEditor() {
   const qc = useQueryClient();
   const envQuery = useQuery({
-    queryKey: ["nas", "env", name],
-    queryFn: () => nas.getModuleEnv(name),
+    queryKey: ["nas", "env", "dwar"],
+    queryFn: () => nas.getModuleEnv("dwar"),
   });
   const configQuery = useQuery({
     queryKey: ["nas", "dwar-config"],
     queryFn: () => nas.getDwarConfig(),
-    enabled: name === "dwar",
   });
 
   const [envText, setEnvText] = useState("");
@@ -88,8 +88,8 @@ function ModuleEditor({ name }: { name: ModuleName }) {
   }, [configQuery.data]);
 
   const saveEnv = useMutation({
-    mutationFn: () => nas.putModuleEnv(name, envText),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["nas", "env", name] }),
+    mutationFn: () => nas.putModuleEnv("dwar", envText),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["nas", "env", "dwar"] }),
   });
 
   const saveConfig = useMutation({
@@ -119,18 +119,16 @@ function ModuleEditor({ name }: { name: ModuleName }) {
         error={saveEnv.error}
         ok={saveEnv.isSuccess}
       />
-      {name === "dwar" ? (
-        <FieldBlock
-          title="config.toml"
-          value={configText}
-          onChange={setConfigText}
-          onSave={() => saveConfig.mutate()}
-          saving={saveConfig.isPending}
-          error={saveConfig.error}
-          ok={saveConfig.isSuccess}
-          rows={14}
-        />
-      ) : null}
+      <FieldBlock
+        title="config.toml"
+        value={configText}
+        onChange={setConfigText}
+        onSave={() => saveConfig.mutate()}
+        saving={saveConfig.isPending}
+        error={saveConfig.error}
+        ok={saveConfig.isSuccess}
+        rows={14}
+      />
     </div>
   );
 }

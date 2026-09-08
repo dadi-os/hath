@@ -226,16 +226,11 @@ jobs:
           cp "$src" "dist/${{ matrix.asset_name }}"
           ls -la dist/
 
-      - name: App version
-        id: meta
-        shell: bash
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.meta.outputs.version }}
-          name: Hath v${{ steps.meta.outputs.version }}
+          tag_name: hath-${{ github.sha }}
+          name: Hath ${{ github.sha }}
           make_latest: true
           overwrite_files: true
           files: dist/${{ matrix.asset_name }}
@@ -374,11 +369,6 @@ jobs:
           xcrun altool --upload-app --type ios --file "$IPA" \
             --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER"
 
-      - name: App version
-        if: steps.apple.outputs.configured == 'true'
-        id: meta
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-
       - name: Stage IPA
         if: steps.apple.outputs.configured == 'true'
         run: |
@@ -391,8 +381,8 @@ jobs:
         if: steps.apple.outputs.configured == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.meta.outputs.version }}
-          name: Hath v${{ steps.meta.outputs.version }}
+          tag_name: hath-${{ github.sha }}
+          name: Hath ${{ github.sha }}
           make_latest: true
           overwrite_files: true
           files: dist/hath-ios.ipa
