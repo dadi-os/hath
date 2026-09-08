@@ -51,25 +51,38 @@ Signing / release secrets live in `.env.github` for CI only — not application 
 
 ## Local run
 
-### Feature work (web client via Nas)
+Prerequisites once: `npm install`, then `cd net && ./build.sh && cd ..` (builds `libhathnet` for the Tauri shell).
+
+### Desktop (Tauri)
 
 ```sh
-cd ../nas && ./up
-# open http://hath.dadi
-```
-
-Nas compose builds the Hath `dev` image (Vite on `0.0.0.0:8080`) and serves it at `http://hath.dadi`. No Go toolchain or `libhathnet` required.
-
-### Transport / provisioning (Tauri + tsnet)
-
-```sh
-cd net && ./build.sh && cd ..
-npm install
-npm test
 npm run tauri dev
 ```
 
-Dev mobile layout: `?target=mobile` or ⌘⇧M when `import.meta.env.DEV`.
+### Web (Vite only)
+
+```sh
+npm run dev
+# → http://localhost:8080 (or http://hath.dadi if that host resolves here)
+```
+
+Browser transport — no tsnet. Mesh services must already be reachable from the machine. Dev mobile layout: `?target=mobile` or ⌘⇧M.
+
+### iOS (Tauri)
+
+Xcode required. First time (generates `src-tauri/gen/apple`):
+
+```sh
+npm run tauri ios init
+```
+
+Then:
+
+```sh
+npm run tauri ios dev
+```
+
+Uses a simulator or connected device per the Tauri iOS CLI prompts.
 
 ## Dockerfile
 
@@ -144,7 +157,9 @@ Bone glass — field bloom, frosted veil panels, sage accent; dark palette via `
 | `npm test` | Vitest behavior suite |
 | `npm run build` | `tsc` + Vite production build (no `libhathnet` required) |
 | `npm run dev` | Vite web client (`0.0.0.0:8080`, `hath.dadi` allowedHosts) |
-| `npm run tauri dev` | Full Tauri app (requires `net/build.sh` first) |
+| `npm run tauri dev` | Desktop Tauri app (requires `net/build.sh` first) |
+| `npm run tauri ios init` | Generate iOS Xcode project under `src-tauri/gen/apple` |
+| `npm run tauri ios dev` | iOS simulator / device (requires `ios init` + Xcode) |
 | `cd net && ./build.sh` | Build libhathnet for linking |
 | `npx tauri icon app-icon.png` | Regenerate desktop / iOS / Android icons from `app-icon.png` (દાદી mark) |
 
