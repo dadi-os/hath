@@ -96,7 +96,7 @@ cd net
 ./build.sh all
 ```
 
-This writes `src-tauri/lib/<target>/libhathnet.a` (+ `.h`). Those archives are gitignored — run `build.sh` before `cargo` / `npm run tauri dev`.
+This writes `src-tauri/lib/<target>/libhathnet.a` (+ `.h`). Those archives are gitignored — run `build.sh` before `cargo` / `npm run tauri dev`. Targets: `darwin-arm64` (default), `darwin-amd64`, `ios-arm64`, `linux-amd64`, `windows-amd64`, `all`.
 
 ## API clients
 
@@ -173,9 +173,23 @@ Dev mobile layout: `npm run tauri dev` then open with `?target=mobile`, or press
 
 ## CD
 
-Push to `main` builds a Linux x86_64 release and attaches `hath-linux-x86_64.tar.gz` to a GitHub release tagged `vX.Y.Z` from `package.json` (marked latest). Re-pushing the same version updates that release's asset; bump the version to cut a new rollback point. The asset name is stable so consumers can download without parsing the release body. Pull requests run CI only and never create a release.
+Push to `main` publishes desktop installers to a GitHub Release tagged `vX.Y.Z`
+(from `package.json`), and uploads an iOS build to TestFlight when Apple secrets
+are configured (see `.env.github`).
 
-Only the Linux kiosk tarball is published today. macOS `.dmg`, Windows installers, and iOS/TestFlight are not in this workflow.
+| Asset | Platform |
+| --- | --- |
+| `hath-linux-x86_64.AppImage` | Linux desktop install (Nas turns this into the Plymouth/cage kiosk) |
+| `hath-macos-aarch64.dmg` | macOS Apple Silicon |
+| `hath-windows-x86_64-setup.exe` | Windows NSIS installer |
+| `hath-ios.ipa` | iOS (also pushed to TestFlight) |
+
+Hath only exports installable builds. Kiosk layout, cage, and auto-update on the
+box are Nas's job — not this workflow.
+
+Re-pushing the same version overwrites those assets; bump `package.json` /
+`tauri.conf.json` version to cut a new rollback tag. Pull requests run the `ci`
+job only and never publish.
 
 > Hath is the one component that updates outside `bootc upgrade` and
 > `podman-auto-update`. It is a native binary, so neither mechanism fits, and

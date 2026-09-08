@@ -29,7 +29,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential
 
-      # Default ./build.sh is darwin-arm64; the Linux runner needs linux-amd64.
       - name: Build tsnet archive
         run: cd net && ./build.sh linux-amd64
 
@@ -37,10 +36,155 @@ jobs:
 
       - run: npm run build
 
-  release:
+  release-desktop:
     needs: ci
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            net_target: linux-amd64
+            rust_targets: ""
+            build_args: "--bundles appimage"
+            asset_glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
+            asset_name: hath-linux-x86_64.AppImage
+          - os: macos-latest
+            net_target: darwin-arm64
+            rust_targets: aarch64-apple-darwin
+            build_args: "--bundles dmg --target aarch64-apple-darwin"
+            asset_glob: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg"
+            asset_name: hath-macos-aarch64.dmg
+          - os: windows-latest
+            net_target: windows-amd64
+            rust_targets: x86_64-pc-windows-gnu
+            build_args: "--bundles nsis --target x86_64-pc-windows-gnu"
+            asset_glob: "src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/*setup.exe"
+            asset_name: hath-windows-x86_64-setup.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: net/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libfuse2
+
+      - name: Install MinGW (Windows + Go c-archive)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          choco install mingw -y --no-progress
+          # Chocolatey layout varies by version; put every likely bin dir on PATH.
+          for d in \
+            /c/ProgramData/mingw64/mingw64/bin \
+            /c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin \
+            /c/tools/mingw64/bin
+          do
+            if [ -x "$d/gcc.exe" ] || [ -x "$d/gcc" ]; then
+              echo "$d" >> "$GITHUB_PATH"
+              echo "Using MinGW at $d"
+            fi
+          done
+          gcc --version
+          # Rust windows-gnu target uses this linker name.
+          if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+            gcc_path=$(command -v gcc)
+            ln -sf "$gcc_path" "$(dirname "$gcc_path")/x86_64-w64-mingw32-gcc"
+            ln -sf "$(dirname "$gcc_path")/g++" "$(dirname "$gcc_path")/x86_64-w64-mingw32-g++" || true
+          fi
+          x86_64-w64-mingw32-gcc --version
+
+      - name: Build tsnet archive
+        shell: bash
+        run: cd net && ./build.sh ${{ matrix.net_target }}
+
+      - run: npm ci
+        shell: bash
+
+      - name: Write App Store Connect API key (macOS notarization)
+        if: runner.os == 'macOS' && secrets.APPLE_API_PRIVATE_KEY != ''
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          KEY_DIR="$HOME/private_keys"
+          mkdir -p "$KEY_DIR"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_DIR/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "APPLE_API_KEY_PATH=$KEY_DIR/AuthKey_${APPLE_API_KEY_ID}.p8" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+
+      # Optional macOS Developer ID + notarization (see .env.github).
+      - name: Build desktop installer
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run tauri build -- ${{ matrix.build_args }}
+
+      - name: Stage release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          src=$(ls ${{ matrix.asset_glob }} | head -1)
+          cp "$src" "dist/${{ matrix.asset_name }}"
+          ls -la dist/
+
+      - name: App version
+        id: meta
+        shell: bash
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.meta.outputs.version }}
+          name: Hath v${{ steps.meta.outputs.version }}
+          make_latest: true
+          overwrite_files: true
+          files: dist/${{ matrix.asset_name }}
+
+  # Signed IPA + TestFlight. Skipped until Apple iOS secrets are set (.env.github).
+  release-ios:
+    needs: ci
+    if: github.ref == 'refs/heads/main' && secrets.APPLE_IOS_CERTIFICATE != '' && secrets.APPLE_IOS_PROVISIONING_PROFILE != '' && secrets.APPLE_API_PRIVATE_KEY != ''
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
@@ -56,48 +200,106 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            libgtk-3-dev
+        with:
+          targets: aarch64-apple-ios
 
       - name: Build tsnet archive
-        run: cd net && ./build.sh linux-amd64
+        run: cd net && ./build.sh ios-arm64
 
       - run: npm ci
 
-      # Relocatable binary for /var unpack — not .deb/.rpm (bootc /usr is read-only).
-      - name: Build Tauri binary
-        run: npm run tauri build -- --no-bundle
+      - name: Init iOS Xcode project
+        run: npm run tauri ios init -- --ci
 
-      - name: Package tarball
+      # Plain HTTP to *.dadi on the mesh; iOS ATS blocks it without this.
+      - name: Allow local/mesh HTTP in Info.plist
         run: |
-          mkdir -p stage
-          cp src-tauri/target/release/hath stage/
-          tar -C stage -czf hath-linux-x86_64.tar.gz hath
+          set -euo pipefail
+          for plist in $(find src-tauri/gen/apple -name 'Info.plist'); do
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$plist"
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$plist"
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$plist"
+            /usr/libexec/PlistBuddy -c "Delete :ITSAppUsesNonExemptEncryption" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$plist"
+            echo "patched $plist"
+          done
+
+      - name: Import iOS signing materials
+        env:
+          APPLE_IOS_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE }}
+          APPLE_IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
+          APPLE_IOS_PROVISIONING_PROFILE: ${{ secrets.APPLE_IOS_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/ios-dist.p12"
+          PROFILE_PATH="$RUNNER_TEMP/hath.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/hath-ios.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          echo -n "$APPLE_IOS_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          echo -n "$APPLE_IOS_PROVISIONING_PROFILE" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_IOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin <<< "$(security cms -D -i "$PROFILE_PATH")")
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
+          echo "Installed provisioning profile $PROFILE_UUID"
+
+      - name: Build iOS IPA for TestFlight
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_IOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          npm run tauri ios build -- \
+            --ci \
+            --export-method release-testing \
+            --build-number "${{ github.run_number }}"
+
+      - name: Upload to TestFlight
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          IPA=$(find src-tauri/gen/apple/build -name '*.ipa' | head -1)
+          if [ -z "$IPA" ]; then
+            echo "::error::No .ipa found under src-tauri/gen/apple/build"
+            exit 1
+          fi
+          KEY_DIR="$HOME/private_keys"
+          mkdir -p "$KEY_DIR"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_DIR/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "Uploading $IPA to TestFlight…"
+          xcrun altool --upload-app --type ios --file "$IPA" \
+            --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER"
 
       - name: App version
         id: meta
-        run: |
-          version=$(node -p "require('./package.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
+      - name: Stage IPA
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          IPA=$(find src-tauri/gen/apple/build -name '*.ipa' | head -1)
+          cp "$IPA" dist/hath-ios.ipa
+
+      - name: Attach IPA to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.meta.outputs.version }}
           name: Hath v${{ steps.meta.outputs.version }}
           make_latest: true
           overwrite_files: true
-          files: hath-linux-x86_64.tar.gz
+          files: dist/hath-ios.ipa
