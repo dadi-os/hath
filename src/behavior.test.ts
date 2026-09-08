@@ -168,3 +168,42 @@ describe("mesh constants", () => {
     expect(NAS).toBe("http://nas.dadi");
   });
 });
+
+describe("runtime outside Tauri", () => {
+  it("selects browser transport", async () => {
+    const { isTauriRuntime, selectTransportKind } = await import(
+      "./shared/api/runtime"
+    );
+    expect(isTauriRuntime()).toBe(false);
+    expect(selectTransportKind()).toBe("browser");
+  });
+
+  it("detectTarget returns desktop", async () => {
+    const { detectTarget } = await import("./target");
+    expect(detectTarget()).toBe("desktop");
+  });
+});
+
+describe("transport selection", () => {
+  it("initApi wires BrowserTransport outside Tauri", async () => {
+    const api = await import("./shared/api");
+    await api.initApi();
+    expect(api.usingTsnet).toBe(false);
+    expect(api.selectTransportKind()).toBe("browser");
+    expect(api.transport.connectionState()).toBe("disconnected");
+  });
+
+  it("selects tsnet when Tauri globals are present", async () => {
+    const g = globalThis as typeof globalThis & { isTauri?: boolean };
+    g.isTauri = true;
+    try {
+      const { selectTransportKind, isTauriRuntime } = await import(
+        "./shared/api/runtime"
+      );
+      expect(isTauriRuntime()).toBe(true);
+      expect(selectTransportKind()).toBe("tsnet");
+    } finally {
+      delete g.isTauri;
+    }
+  });
+});

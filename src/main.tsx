@@ -1,10 +1,17 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
+import { initApi } from "./shared/api";
+import { prepareTarget } from "./target";
 import "./styles/index.css";
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+async function boot(): Promise<void> {
+  await Promise.all([initApi(), prepareTarget()]);
+  const { default: App } = await import("./App");
+  ReactDOM.createRoot(document.getElementById("root")!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}
+
+void boot();

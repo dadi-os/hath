@@ -1,5 +1,5 @@
 /**
- * Shared SSE chunk parsing for TsnetTransport.
+ * Shared SSE chunk parsing for Transport implementations.
  * Splits on blank lines, extracts `data:` payloads, skips [DONE]/malformed JSON.
  * Returns the unconsumed trailing buffer fragment.
  */

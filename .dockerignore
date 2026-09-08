@@ -1,0 +1,10 @@
+node_modules
+dist
+src-tauri
+net
+.git
+.env
+.env.*
+!.env.example
+*.md
+.github

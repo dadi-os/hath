@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-
 /** Contents of a provisioning bundle (base64 JSON). */
 export type Credentials = {
   control_url: string;
@@ -17,11 +15,13 @@ export class BundleDecodeError extends Error {
 
 /** Load persisted mesh credentials from the Tauri app data store. */
 export async function loadCredentials(): Promise<Credentials | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<Credentials | null>("net_load_credentials");
 }
 
 /** Persist mesh credentials to the Tauri app data store. */
 export async function saveCredentials(credentials: Credentials): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
   await invoke("net_save_credentials", { credentials });
 }
 

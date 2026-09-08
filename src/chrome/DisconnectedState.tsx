@@ -1,62 +1,71 @@
-import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useCallback, useState, useSyncExternalStore, type FormEvent } from "react";
 import {
   BundleDecodeError,
   decodeProvisioningBundle,
-  loadCredentials,
   saveCredentials,
+  type Credentials,
 } from "../shared/api/credentials";
 import { transport } from "../shared/api";
 import { QrScanner } from "./QrScanner";
 
+/** Tsnet-only provisioning surface; absent on BrowserTransport. */
+type ProvisioningTransport = {
+  needsProvisioningKey(): boolean;
+  onProvisioningNeeded(listener: (needed: boolean) => void): () => void;
+  connect(override?: Credentials): Promise<void>;
+};
+
+function asProvisioning(t: unknown): ProvisioningTransport | null {
+  if (
+    t &&
+    typeof t === "object" &&
+    "needsProvisioningKey" in t &&
+    typeof (t as ProvisioningTransport).needsProvisioningKey === "function" &&
+    typeof (t as ProvisioningTransport).onProvisioningNeeded === "function"
+  ) {
+    return t as ProvisioningTransport;
+  }
+  return null;
+}
+
 function subscribeProvisioning(onStoreChange: () => void): () => void {
-  return transport.onProvisioningNeeded(() => onStoreChange());
+  const api = asProvisioning(transport);
+  if (!api) {
+    return () => {};
+  }
+  return api.onProvisioningNeeded(() => onStoreChange());
 }
 
 function getNeedsProvisioning(): boolean {
-  return transport.needsProvisioningKey();
+  return asProvisioning(transport)?.needsProvisioningKey() ?? false;
 }
 
+/**
+ * Shown while ConnectionState is disconnected. Setup UI only when the tsnet
+ * transport signals missing credentials — never by reading the credential store.
+ */
 export function DisconnectedState() {
   const needsProvisioning = useSyncExternalStore(
     subscribeProvisioning,
     getNeedsProvisioning,
     getNeedsProvisioning,
   );
-  const [provisioned, setProvisioned] = useState<boolean | null>(null);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    void loadCredentials()
-      .then((creds) => {
-        if (!cancelled) {
-          setProvisioned(creds !== null);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setProvisioned(false);
-          setError(
-            err instanceof Error ? err.message : "Could not read stored credentials",
-          );
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const joinWithCode = useCallback(async (raw: string) => {
+    const api = asProvisioning(transport);
+    if (!api) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const credentials = decodeProvisioningBundle(raw);
-      await transport.connect(credentials);
+      await api.connect(credentials);
       await saveCredentials(credentials);
-      setProvisioned(true);
       setCode("");
       setScanning(false);
     } catch (err) {
@@ -84,14 +93,7 @@ export function DisconnectedState() {
     [joinWithCode],
   );
 
-  const showProvisioning =
-    needsProvisioning || provisioned === false;
-
-  if (provisioned === null && !needsProvisioning) {
-    return null;
-  }
-
-  if (showProvisioning) {
+  if (needsProvisioning) {
     if (scanning) {
       return (
         <div className="flex h-full items-center justify-center px-8">

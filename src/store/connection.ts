@@ -1,24 +1,34 @@
 import type { ConnectionState } from "../shared/api/transport";
-import { NotProvisionedError } from "../shared/api/tsnet-transport";
+import { NotProvisionedError } from "../shared/api/errors";
 import { transport } from "../shared/api";
 
 type Listener = (state: ConnectionState) => void;
 
-let state: ConnectionState = transport.connectionState();
+let state: ConnectionState = "disconnected";
 const listeners = new Set<Listener>();
+let subscribed = false;
 
-transport.onConnectionChange((next) => {
-  state = next;
-  for (const listener of listeners) {
-    listener(state);
+function ensureSubscribed(): void {
+  if (subscribed) {
+    return;
   }
-});
+  subscribed = true;
+  state = transport.connectionState();
+  transport.onConnectionChange((next) => {
+    state = next;
+    for (const listener of listeners) {
+      listener(state);
+    }
+  });
+}
 
 export function getConnectionState(): ConnectionState {
+  ensureSubscribed();
   return state;
 }
 
 export function subscribeConnection(listener: Listener): () => void {
+  ensureSubscribed();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -26,6 +36,7 @@ export function subscribeConnection(listener: Listener): () => void {
 }
 
 export async function connectTransport(): Promise<void> {
+  ensureSubscribed();
   try {
     await transport.connect();
   } catch (err) {
@@ -37,5 +48,6 @@ export async function connectTransport(): Promise<void> {
 }
 
 export async function disconnectTransport(): Promise<void> {
+  ensureSubscribed();
   await transport.disconnect();
 }

@@ -4,16 +4,11 @@ import {
   loadCredentials,
   type Credentials,
 } from "./credentials";
+import { NotProvisionedError } from "./errors";
 import type { ConnectionState, Transport } from "./transport";
 import { consumeSseBuffer } from "./sse";
 
-/** Thrown when no provisioning credentials are stored (or override missing). */
-export class NotProvisionedError extends Error {
-  constructor(message = "Provisioning required") {
-    super(message);
-    this.name = "NotProvisionedError";
-  }
-}
+export { NotProvisionedError } from "./errors";
 
 const RETRY_MS = 3000;
 
