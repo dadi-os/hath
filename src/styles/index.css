@@ -23,10 +23,14 @@
 
   --radius-widget: var(--radius);
   --shadow-widget: var(--shadow);
+  --shadow-deep: var(--shadow-deep);
+  --color-glass-veil: var(--glass-veil);
+  --color-glass-sheet: var(--glass-sheet);
 
   --ease-hath: var(--ease);
   --duration-slow: var(--slow);
   --duration-slower: var(--slower);
+  --duration-fast: var(--fast);
   --duration-breath: var(--breath);
 
   --font-sans: "Inter", sans-serif;
@@ -49,11 +53,13 @@ body,
 }
 
 body {
-  background: var(--bone);
+  background: var(--field-bloom);
+  background-color: var(--bone);
   color: var(--ink);
   font-family: "Inter", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  color-scheme: light dark;
 }
 
 @keyframes breath {

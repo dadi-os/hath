@@ -10,7 +10,7 @@ import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 import { WidgetFrame } from "../shared/components/WidgetFrame";
 
 const tile =
-  "min-h-0 w-full cursor-pointer transition-[box-shadow] duration-slow ease-hath hover:shadow-[0_4px_16px_rgba(92,107,82,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage";
+  "min-h-0 w-full cursor-pointer transition-[box-shadow,transform] duration-slow ease-hath hover:shadow-[var(--shadow-deep)] hover:-translate-y-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage";
 
 /**
  * Home widget grid — hardcoded 4×4 on desktop with per-widget spans.

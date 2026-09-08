@@ -19,17 +19,24 @@ const queryClient = new QueryClient({
 
 function AppRoutes() {
   const target = useTarget();
-  const allowAgents = target !== "mobile";
+  const isMobile = target === "mobile";
+
+  if (isMobile) {
+    return (
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route index element={null} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    );
+  }
 
   return (
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<WidgetGridPage />} />
-        {allowAgents ? (
-          <Route path="agents" element={<AgentsPage />} />
-        ) : (
-          <Route path="agents" element={<Navigate to="/" replace />} />
-        )}
+        <Route path="agents" element={<AgentsPage />} />
         <Route path="memory" element={<MemoryPage />} />
         <Route path="timeline" element={<TimelinePage />} />
         <Route path="calendar" element={<Navigate to="/timeline" replace />} />

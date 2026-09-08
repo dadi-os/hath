@@ -59,7 +59,7 @@ export function IconButton({
       onClick={onClick}
       whileTap={disabled ? undefined : { scale: 0.94 }}
       transition={{ duration: 0.2, ease: EASE }}
-      className={`inline-flex ${s.box} ${s.icon} ${s.radius} shrink-0 items-center justify-center border border-dashed border-sage-line bg-bone text-sage-deep shadow-[var(--shadow)] transition-[color,border-color,background-color,opacity] duration-slow ease-hath hover:border-sage hover:bg-sage-active/50 disabled:cursor-default disabled:border-rule disabled:text-ink-faint disabled:opacity-100 disabled:hover:border-rule disabled:hover:bg-bone ${className ?? ""}`}
+      className={`inline-flex ${s.box} ${s.icon} ${s.radius} shrink-0 items-center justify-center border border-dashed border-sage-line bg-[var(--glass-sheet)] text-sage-deep shadow-[var(--shadow)] backdrop-blur-sm transition-[color,border-color,background-color,opacity] duration-slow ease-hath hover:border-sage hover:bg-sage-active/50 disabled:cursor-default disabled:border-rule disabled:text-ink-faint disabled:opacity-100 disabled:hover:border-rule disabled:hover:bg-[var(--glass-sheet)] ${className ?? ""}`}
     >
       {children}
     </motion.button>
@@ -166,6 +166,32 @@ export function IconDismiss() {
     <svg viewBox="0 0 15 15" fill="none" aria-hidden className="size-[15px]">
       <path
         d="M4 4l7 7M11 4l-7 7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function IconMenu() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M3.5 5h11M3.5 9h11M3.5 13h11"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function IconNewChat() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M9 3.5v11M3.5 9h11"
         stroke="currentColor"
         strokeWidth="1.5"
         strokeLinecap="round"

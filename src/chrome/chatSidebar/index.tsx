@@ -46,7 +46,7 @@ import {
   toMessageAttachments,
   type DraftAttachment,
 } from "../../shared/lib/content/attachments";
-import { IconBack, IconButton } from "../../shared/components/IconButton";
+import { IconBack, IconButton, IconNewChat } from "../../shared/components/IconButton";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import { logLine } from "../../shared/lib/platform/log";
@@ -66,6 +66,17 @@ export interface ChatSidebarProps {
   /** Bumps when chat opens; scrolls the thread to the bottom. */
   sessionKey: number;
   className?: string;
+  /**
+   * `rail` — desktop widget glass panel (list ↔ thread).
+   * `mobile` — ChatGPT-style: main thread + optional list drawer controlled outside.
+   */
+  variant?: "rail" | "mobile";
+  /** Mobile: whether the conversation drawer is open. */
+  drawerOpen?: boolean;
+  /** Mobile: close the conversation drawer. */
+  onDrawerClose?: () => void;
+  /** Mobile: open the conversation drawer (e.g. from empty-state control). */
+  onDrawerOpen?: () => void;
 }
 
 /**
@@ -73,7 +84,14 @@ export interface ChatSidebarProps {
  * optimistic/queued rows). No history fetch — Dimaag's transcript is in-memory
  * and dies with the process; agent_logs are not a chat store.
  */
-export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
+export function ChatSidebar({
+  sessionKey,
+  className,
+  variant = "rail",
+  drawerOpen = false,
+  onDrawerClose,
+  onDrawerOpen,
+}: ChatSidebarProps) {
   const { state: connection } = useConnection();
   const connected = connection === "connected";
   const chat = useSyncExternalStore(subscribeChat, getChatState, getChatState);
@@ -515,17 +533,39 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
     }
   };
 
+  const isMobile = variant === "mobile";
+
   const backToList = () => {
     openList();
     setDraft("");
     clearDraftAttachments();
   };
 
+  const startNewChat = () => {
+    openList();
+    setDraft("");
+    clearDraftAttachments();
+    onDrawerClose?.();
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const selectAgent = (agentId: string) => {
+    openAgent(agentId);
+    onDrawerClose?.();
+  };
+
+  const selectProvisional = () => {
+    openProvisional();
+    onDrawerClose?.();
+  };
+
   const headerTitle = viewingProvisional
     ? "NEW CHAT"
     : openAgentId
       ? (openConversation?.agent_name ?? "CHAT").toUpperCase()
-      : "CHAT";
+      : isMobile
+        ? "દાદી"
+        : "CHAT";
 
   const viewKey =
     chat.open.kind === "list"
@@ -553,80 +593,116 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
   const showWorkingPulse =
     reasoningBusy && !conversationBusy && queuedMessages.length === 0;
 
+  const showThreadMain = isMobile ? true : viewingThread;
+  const showListInDrawer = isMobile;
+  const showListInPanel = !isMobile && !viewingThread;
+
   return (
     <aside
-      className={`widget-surface relative flex h-full min-h-0 flex-col overflow-hidden ${className ?? ""}`}
+      className={`relative flex h-full min-h-0 flex-col overflow-hidden ${
+        isMobile ? "" : "widget-surface"
+      } ${className ?? ""}`}
       data-agent-id={openAgentId ?? rootId ?? undefined}
       data-session-key={sessionKey}
       style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : undefined }}
     >
-      <div className="relative z-10 border-b border-dashed border-sage-line px-4 py-3">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={viewingThread ? "thread-head" : "list-head"}
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            transition={{ duration: SLOW_S, ease: EASE }}
-            className="flex min-w-0 flex-1 items-center gap-2.5"
-          >
-            {viewingThread ? (
-              <IconButton
-                label="Back to conversations"
-                size="sm"
-                onClick={backToList}
-              >
-                <IconBack />
-              </IconButton>
-            ) : null}
-            <motion.span
-              className="truncate text-[11px] font-medium tracking-[2.5px] text-sage-deep"
-              animate={
-                reasoningBusy || conversationBusy
-                  ? { opacity: [0.55, 1, 0.55] }
-                  : { opacity: 1 }
-              }
-              transition={
-                reasoningBusy || conversationBusy
-                  ? { duration: 2.2, repeat: Infinity, ease: EASE }
-                  : { duration: SLOW_S, ease: EASE }
-              }
+      {!isMobile ? (
+        <div className="relative z-10 border-b border-dashed border-sage-line px-4 py-3">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={viewingThread ? "thread-head" : "list-head"}
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: SLOW_S, ease: EASE }}
+              className="flex min-w-0 flex-1 items-center gap-2.5"
             >
-              {headerTitle}
-            </motion.span>
-          </motion.div>
-        </AnimatePresence>
-      </div>
+              {viewingThread ? (
+                <IconButton
+                  label="Back to conversations"
+                  size="sm"
+                  onClick={backToList}
+                >
+                  <IconBack />
+                </IconButton>
+              ) : null}
+              <motion.span
+                className="truncate text-[11px] font-medium tracking-[2.5px] text-sage-deep"
+                animate={
+                  reasoningBusy || conversationBusy
+                    ? { opacity: [0.55, 1, 0.55] }
+                    : { opacity: 1 }
+                }
+                transition={
+                  reasoningBusy || conversationBusy
+                    ? { duration: 2.2, repeat: Infinity, ease: EASE }
+                    : { duration: SLOW_S, ease: EASE }
+                }
+              >
+                {headerTitle}
+              </motion.span>
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      ) : null}
 
       <div className="relative min-h-0 flex-1">
         <AnimatePresence mode="wait" initial={false}>
-          {viewingThread ? (
-            <ThreadView
-              viewKey={viewKey}
-              scrollRef={scrollRef}
-              onScroll={onScroll}
-              onDismissKeyboard={dismissKeyboard}
-              composerPad={composerPad}
-              settledMessages={settledMessages}
-              queuedMessages={queuedMessages}
-              showHoldPulse={showHoldPulse}
-              showWorkingPulse={showWorkingPulse}
-              onRetry={(msg) => {
-                if (openAgentId) {
-                  void sendThread(
-                    msg.outboundText ?? msg.content,
-                    msg.seq,
-                    msg.attachments,
-                  );
-                  return;
-                }
-                if (viewingProvisional) {
-                  void retryNewChat(msg.seq);
-                }
-              }}
-              onCancel={cancelQueued}
-            />
-          ) : (
+          {showThreadMain && (viewingThread || isMobile) ? (
+            viewingThread ? (
+              <ThreadView
+                viewKey={viewKey}
+                scrollRef={scrollRef}
+                onScroll={onScroll}
+                onDismissKeyboard={dismissKeyboard}
+                composerPad={composerPad}
+                settledMessages={settledMessages}
+                queuedMessages={queuedMessages}
+                showHoldPulse={showHoldPulse}
+                showWorkingPulse={showWorkingPulse}
+                onRetry={(msg) => {
+                  if (openAgentId) {
+                    void sendThread(
+                      msg.outboundText ?? msg.content,
+                      msg.seq,
+                      msg.attachments,
+                    );
+                    return;
+                  }
+                  if (viewingProvisional) {
+                    void retryNewChat(msg.seq);
+                  }
+                }}
+                onCancel={cancelQueued}
+              />
+            ) : (
+              <motion.div
+                key="mobile-empty"
+                className="absolute inset-0 flex flex-col items-center justify-center px-8"
+                style={{ paddingBottom: composerPad }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: SLOW_S, ease: EASE }}
+              >
+                <span className="font-gujarati text-[42px] leading-none text-sage-text">
+                  દાદી
+                </span>
+                <p className="mt-4 max-w-[260px] text-center text-[14px] leading-relaxed text-ink-muted">
+                  Ask anything. Your conversations live in the sidebar.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => onDrawerOpen?.()}
+                  className="mt-6 text-[11px] font-medium tracking-[2px] text-sage-deep"
+                >
+                  PREVIOUS CHATS
+                </button>
+              </motion.div>
+            )
+          ) : null}
+
+          {showListInPanel ? (
             <ConversationList
               conversations={chat.conversations}
               pendingNewChat={chat.pendingNewChat}
@@ -636,7 +712,7 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
               onDismissKeyboard={dismissKeyboard}
               composerPad={composerPad}
             />
-          )}
+          ) : null}
         </AnimatePresence>
 
         <FloatingComposer
@@ -657,6 +733,63 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
           onKeyDown={onKeyDown}
         />
       </div>
+
+      {showListInDrawer ? (
+        <AnimatePresence>
+          {drawerOpen ? (
+            <>
+              <motion.button
+                type="button"
+                aria-label="Close sidebar"
+                className="absolute inset-0 z-30 bg-ink/25"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: SLOW_S, ease: EASE }}
+                onClick={() => onDrawerClose?.()}
+              />
+              <motion.div
+                className="glass-sheet absolute inset-y-0 left-0 z-40 flex w-[min(100%,320px)] flex-col overflow-hidden rounded-r-[var(--radius-window)]"
+                initial={{ x: "-100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "-100%" }}
+                transition={{ duration: SLOW_S, ease: EASE }}
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-rule px-3 py-3">
+                  <span className="font-gujarati text-[22px] leading-none text-sage-text">
+                    દાદી
+                  </span>
+                  <IconButton
+                    label="New chat"
+                    size="sm"
+                    onClick={startNewChat}
+                  >
+                    <IconNewChat />
+                  </IconButton>
+                </div>
+                <button
+                  type="button"
+                  onClick={startNewChat}
+                  className="mx-3 mt-3 rounded-[var(--radius)] border border-dashed border-sage-line bg-sage-fill/30 px-3 py-2.5 text-left text-[13px] text-ink transition-colors duration-slow ease-hath hover:bg-sage-active/40"
+                >
+                  New chat
+                </button>
+                <div className="relative min-h-0 flex-1">
+                  <ConversationList
+                    conversations={chat.conversations}
+                    pendingNewChat={chat.pendingNewChat}
+                    awaitingRoute={awaitingRoute}
+                    onOpenProvisional={selectProvisional}
+                    onOpenAgent={selectAgent}
+                    onDismissKeyboard={dismissKeyboard}
+                    composerPad={16}
+                  />
+                </div>
+              </motion.div>
+            </>
+          ) : null}
+        </AnimatePresence>
+      ) : null}
     </aside>
   );
 }

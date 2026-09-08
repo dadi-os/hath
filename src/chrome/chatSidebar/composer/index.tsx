@@ -65,12 +65,12 @@ export function FloatingComposer({
       {connected ? (
         <form
           onSubmit={onSubmit}
-          className={`pointer-events-auto flex flex-col gap-1.5 rounded-[var(--radius)] border border-dashed px-2 py-1.5 shadow-[var(--shadow)] backdrop-blur-md transition-[border-color,background-color] duration-slow ease-hath ${
+          className={`pointer-events-auto flex flex-col gap-1.5 rounded-[var(--radius-window)] border px-2 py-1.5 shadow-[var(--shadow-deep)] backdrop-blur-[var(--glass-blur)] transition-[border-color,background-color] duration-slow ease-hath ${
             holdMode
-              ? "border-sage-line/70 bg-sage-fill/35"
+              ? "border-sage-line/70 bg-sage-fill/40"
               : workingMode
-                ? "border-sage/50 bg-bone/92"
-                : "border-sage-line bg-bone/92"
+                ? "border-sage/45 bg-[var(--glass-sheet)]"
+                : "border-[var(--glass-border)] bg-[var(--glass-sheet)]"
           }`}
         >
           {attachments.length > 0 ? (

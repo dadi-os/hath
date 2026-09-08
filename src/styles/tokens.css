@@ -2,6 +2,17 @@
   /* Ground */
   --bone: #fafaf7;
   --bone-raised: #f7f9f4;
+  --field-bloom: radial-gradient(
+    ellipse 55% 50% at 18% 78%,
+    rgba(143, 163, 130, 0.16) 0%,
+    transparent 58%
+  ),
+    radial-gradient(
+      ellipse 40% 35% at 82% 22%,
+      rgba(185, 201, 171, 0.1) 0%,
+      transparent 55%
+    ),
+    linear-gradient(180deg, #fafaf7 0%, #f7f9f4 100%);
 
   /* Sage */
   --sage: #8fa382;
@@ -21,32 +32,133 @@
   /* Structure */
   --rule: #e4ebdc;
   --radius: 9px;
+  --radius-window: 12px;
+  --radius-dock: 24px;
   --shadow: 0 2px 7px rgba(92, 107, 82, 0.07);
+  --shadow-deep: 0 1px 2px rgba(92, 107, 82, 0.06),
+    0 12px 40px rgba(44, 48, 42, 0.08);
 
-  /* Motion — snappy but readable; breath stays slower */
+  /* Bone glass */
+  --glass-veil: rgba(250, 250, 247, 0.62);
+  --glass-sheet: rgba(250, 250, 247, 0.78);
+  --glass-solid: #fafaf7;
+  --glass-blur: 24px;
+  --glass-rim-top: rgba(255, 255, 255, 0.55);
+  --glass-rim-bottom: rgba(92, 107, 82, 0.06);
+  --glass-border: color-mix(in srgb, var(--sage-line) 70%, transparent);
+
+  /* Motion */
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --slow: 320ms;
   --slower: 550ms;
+  --fast: 180ms;
   --breath: 2400ms;
 }
 
-.widget-surface {
-  background: var(--sage-faint);
-  border: 1px dashed var(--sage-line);
-  border-radius: var(--radius);
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bone: #161814;
+    --bone-raised: #1c1f1a;
+    --field-bloom: radial-gradient(
+      ellipse 55% 50% at 18% 78%,
+      rgba(143, 163, 130, 0.14) 0%,
+      transparent 58%
+    ),
+      radial-gradient(
+        ellipse 40% 35% at 82% 22%,
+        rgba(92, 107, 82, 0.18) 0%,
+        transparent 55%
+      ),
+      linear-gradient(180deg, #161814 0%, #121410 100%);
+
+    --sage: #9aaf8c;
+    --sage-text: #a8b89a;
+    --sage-deep: #c5d4b8;
+    --sage-line: #3d4a38;
+    --sage-faint: rgba(154, 175, 140, 0.12);
+    --sage-fill: rgba(154, 175, 140, 0.1);
+    --sage-active: rgba(154, 175, 140, 0.18);
+
+    --ink: #e6ebe0;
+    --ink-muted: #a3ab98;
+    --ink-faint: #7a8272;
+    --ink-ghost: #5c6456;
+
+    --rule: #2a3026;
+    --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    --shadow-deep: 0 1px 2px rgba(0, 0, 0, 0.25),
+      0 16px 48px rgba(0, 0, 0, 0.45);
+
+    --glass-veil: rgba(22, 24, 20, 0.72);
+    --glass-sheet: rgba(28, 31, 26, 0.86);
+    --glass-solid: #1c1f1a;
+    --glass-rim-top: rgba(255, 255, 255, 0.08);
+    --glass-rim-bottom: rgba(0, 0, 0, 0.35);
+    --glass-border: color-mix(in srgb, var(--sage-line) 80%, transparent);
+  }
+}
+
+/* Bone glass surfaces */
+.glass-veil {
+  background: var(--glass-veil);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
   box-shadow: var(--shadow);
 }
 
-/* Complete dashed case; crest sits on the rim as a solid nameplate. */
+.glass-sheet {
+  background: var(--glass-sheet);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-deep);
+}
+
+.widget-surface {
+  position: relative;
+  background: var(--glass-veil);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px dashed var(--sage-line);
+  border-radius: var(--radius-window);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.widget-surface::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: var(--glass-rim-top);
+  opacity: 0.9;
+  z-index: 1;
+}
+
 .widget-frame {
   position: relative;
   display: flex;
   flex-direction: column;
   overflow: visible;
-  background: var(--sage-faint);
-  border: 1px dashed var(--sage-line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  background: var(--glass-veil);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px dashed color-mix(in srgb, var(--sage-line) 75%, transparent);
+  border-radius: var(--radius-window);
+  box-shadow: var(--shadow-deep);
+}
+
+.widget-frame::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: var(--radius-window) var(--radius-window) 0 0;
+  background: var(--glass-rim-top);
+  z-index: 1;
 }
 
 .widget-frame__crest {
@@ -59,8 +171,6 @@
   translate: -50% -50%;
   align-items: center;
   gap: 0.55rem;
-  /* Soft bone bloom so the dashed stroke dissolves under the plate,
-     instead of ending in a hard rectangular chop. */
   padding: 0.35rem 0.85rem;
   background: radial-gradient(
     ellipse 68% 70% at 50% 50%,
@@ -77,13 +187,13 @@
   border-radius: 3px;
   background: linear-gradient(
     180deg,
-    #fffef9 0%,
+    color-mix(in srgb, var(--bone) 92%, white) 0%,
     var(--bone) 48%,
     var(--bone-raised) 100%
   );
   box-shadow:
-    0 1px 2px rgba(92, 107, 82, 0.07),
-    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    0 1px 2px color-mix(in srgb, var(--sage-deep) 12%, transparent),
+    inset 0 1px 0 var(--glass-rim-top);
   color: var(--sage-deep);
   font-size: 10px;
   font-weight: 500;
@@ -101,7 +211,8 @@
   rotate: 45deg;
   border: 1px solid var(--sage-line);
   background: color-mix(in srgb, var(--sage-faint) 55%, var(--bone));
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--sage) 25%, transparent);
+  box-shadow: inset 0 0 0 0.5px
+    color-mix(in srgb, var(--sage) 25%, transparent);
 }
 
 .widget-frame__body {
@@ -109,6 +220,7 @@
   min-height: 0;
   flex: 1;
   overflow: hidden;
-  /* Clearance so content clears the crest that hangs into the frame. */
   padding-top: 0.85rem;
+  border-radius: 0 0 var(--radius-window) var(--radius-window);
+  background: color-mix(in srgb, var(--glass-solid) 55%, transparent);
 }

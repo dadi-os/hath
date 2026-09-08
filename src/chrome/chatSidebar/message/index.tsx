@@ -63,7 +63,7 @@ export function MessageBubble({
               ? "border border-[#c47868] bg-[#c47868]/12 text-ink"
               : queued
                 ? "border border-dashed border-sage-line/55 bg-sage-fill/20 text-ink/55"
-                : "bg-sage-active text-ink"
+                : "bg-sage-active text-ink shadow-[var(--shadow)]"
           }`}
           style={{
             opacity: message.pending && !queued && !failed ? 0.55 : 1,

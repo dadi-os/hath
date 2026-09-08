@@ -100,10 +100,10 @@ Rust `logutil` emits nas-contract JSON (`time` RFC3339, `level`, `service=hath`,
 
 | Value | Layout |
 | --- | --- |
-| `desktop` | Fixed chat rail, all routes |
-| `mobile` | Chat drawer; `/agents` not registered |
+| `desktop` | Bone-glass header + chat rail + widget home / full pages |
+| `mobile` | Chat-only app (sidebar + thread); no widgets or system routes |
 
-Do not detect by viewport width.
+Do not detect by viewport width. Theme follows `prefers-color-scheme` (system light/dark).
 
 ## Addressing
 
@@ -117,7 +117,7 @@ Plain HTTP on the WireGuard mesh. No localhost fallback.
 
 ## Provisioning
 
-Connected device: System → DEVICES → create setup code (Nas `POST /provision`). New Tauri install: scan/paste bundle → Join. Credentials store in app data directory. The browser path has no provisioning.
+On the box: **Add Device** (or Preferences → Devices) mints a Nas `POST /provision` setup QR. New Tauri Hath: camera scan (or paste) → Join. Credentials store in app data. Browser Hath has no provisioning.
 
 ## Transport
 
@@ -125,7 +125,9 @@ All network calls go through a `Transport` (`shared/api/`). Tauri loads `TsnetTr
 
 ## Chrome and routes
 
-Header + chat sidebar mount once; `<Outlet />` swaps. Routes: `/`, `/agents`, `/memory`, `/calendar`, `/system`.
+**Desktop:** glass header + chat sidebar; `<Outlet />` swaps. Routes: `/`, `/agents`, `/memory`, `/timeline`, `/system`.
+
+**Mobile:** `MobileChatShell` — conversation drawer + thread/composer. All other paths redirect to `/`.
 
 ## Agents / chat / memory
 
@@ -133,7 +135,7 @@ Header + chat sidebar mount once; `<Outlet />` swaps. Routes: `/`, `/agents`, `/
 
 ## Design tokens
 
-Light futurism — bone ground, sage accent. Tokens in `src/styles/tokens.css`. Fonts bundled under `src/assets/fonts/`.
+Bone glass — field bloom, frosted veil panels, sage accent; dark palette via `prefers-color-scheme`. Tokens in `src/styles/tokens.css` (same language as dadiOS). Fonts under `src/assets/fonts/`.
 
 ## Scripts
 
@@ -144,5 +146,6 @@ Light futurism — bone ground, sage accent. Tokens in `src/styles/tokens.css`. 
 | `npm run dev` | Vite web client (`0.0.0.0:8080`, `hath.dadi` allowedHosts) |
 | `npm run tauri dev` | Full Tauri app (requires `net/build.sh` first) |
 | `cd net && ./build.sh` | Build libhathnet for linking |
+| `npx tauri icon app-icon.png` | Regenerate desktop / iOS / Android icons from `app-icon.png` (દાદી mark) |
 
 Hath updates outside `bootc` / `podman-auto-update` as a native binary by design; the web container is for Nas compose / CI only.

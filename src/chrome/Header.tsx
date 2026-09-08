@@ -20,6 +20,7 @@ function formatUptime(seconds: number): string {
   return `${mins}m`;
 }
 
+/** Desktop glass menu bar — brand + mesh status. */
 export function Header() {
   const navigate = useNavigate();
   const { state } = useConnection();
@@ -48,7 +49,7 @@ export function Header() {
         : "—";
 
   return (
-    <header className="flex shrink-0 items-center justify-between border-b border-rule px-4 pb-3.5 pt-4 sm:px-6">
+    <header className="flex shrink-0 items-center justify-between px-4 pb-3.5 pt-4 sm:px-6">
       <div className="flex items-center gap-3">
         <Tooltip content={atHome ? "Home" : "Back home"}>
           <span className="inline-flex">
@@ -70,9 +71,6 @@ export function Header() {
         >
           <span className="font-gujarati text-[28px] leading-none text-sage-text">
             દાદી
-          </span>
-          <span className="text-[11px] font-medium tracking-[2.5px] text-ink-faint">
-            DADI
           </span>
         </button>
       </div>
