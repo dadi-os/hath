@@ -4,8 +4,12 @@ export interface Transport {
   request<T>(opts: {
     baseUrl: string;
     path: string;
-    method: "GET" | "POST";
+    method: "GET" | "POST" | "PUT";
     body?: unknown;
+    /** When set, sent as text/plain instead of JSON.stringify(body). */
+    bodyText?: string;
+    /** Default json. Use text for .env / config.toml payloads. */
+    responseType?: "json" | "text";
   }): Promise<T>;
 
   stream(opts: {

@@ -83,6 +83,87 @@ export function createNasClient(transport: Transport, baseUrl: string) {
         method: "GET",
       });
     },
+
+    getModuleEnv(name: "dwar" | "yaad" | "dimaag"): Promise<string> {
+      return transport.request({
+        baseUrl,
+        path: `/modules/${name}/env`,
+        method: "GET",
+        responseType: "text",
+      });
+    },
+
+    putModuleEnv(
+      name: "dwar" | "yaad" | "dimaag",
+      text: string,
+    ): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: `/modules/${name}/env`,
+        method: "PUT",
+        bodyText: text,
+      });
+    },
+
+    getDwarConfig(): Promise<string> {
+      return transport.request({
+        baseUrl,
+        path: "/modules/dwar/config",
+        method: "GET",
+        responseType: "text",
+      });
+    },
+
+    putDwarConfig(text: string): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: "/modules/dwar/config",
+        method: "PUT",
+        bodyText: text,
+      });
+    },
+
+    restartModule(name: string): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: `/modules/${name}/restart`,
+        method: "POST",
+      });
+    },
+
+    stackUp(): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: "/stack/up",
+        method: "POST",
+      });
+    },
+
+    stackDown(): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: "/stack/down",
+        method: "POST",
+      });
+    },
+
+    getCloudflaredToken(): Promise<string> {
+      return transport.request({
+        baseUrl,
+        path: "/cloudflared/token",
+        method: "GET",
+        responseType: "text",
+      });
+    },
+
+    putCloudflaredToken(token: string): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: "/cloudflared/token",
+        method: "PUT",
+        bodyText: token,
+      });
+    },
   };
 }
 

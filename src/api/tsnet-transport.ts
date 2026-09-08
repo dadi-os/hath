@@ -108,8 +108,10 @@ export class TsnetTransport implements Transport {
   async request<T>(opts: {
     baseUrl: string;
     path: string;
-    method: "GET" | "POST";
+    method: "GET" | "POST" | "PUT";
     body?: unknown;
+    bodyText?: string;
+    responseType?: "json" | "text";
   }): Promise<T> {
     if (this.port === null || !this.active) {
       throw new Error("Not connected");
@@ -119,8 +121,13 @@ export class TsnetTransport implements Transport {
     const headers: Record<string, string> = {
       "X-Hath-Upstream": opts.baseUrl,
     };
-    if (opts.body !== undefined) {
+    let body: string | undefined;
+    if (opts.bodyText !== undefined) {
+      headers["Content-Type"] = "text/plain; charset=utf-8";
+      body = opts.bodyText;
+    } else if (opts.body !== undefined) {
       headers["Content-Type"] = "application/json";
+      body = JSON.stringify(opts.body);
     }
 
     let response: Response;
@@ -128,7 +135,7 @@ export class TsnetTransport implements Transport {
       response = await fetch(url, {
         method: opts.method,
         headers,
-        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        body,
       });
     } catch (err) {
       // Dial / proxy unreachable — mesh is down.
@@ -146,6 +153,9 @@ export class TsnetTransport implements Transport {
       throw new Error(`HTTP ${response.status} ${opts.method} ${url}: ${text}`);
     }
 
+    if (opts.responseType === "text") {
+      return (await response.text()) as T;
+    }
     return (await response.json()) as T;
   }
 
