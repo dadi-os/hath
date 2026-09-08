@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import { nas } from "../../api";
-import type { NasLogEntry, NasLogLevel } from "../../api/nas";
+import { nas } from "../../shared/api";
+import type { NasLogEntry, NasLogLevel } from "../../shared/api/nas";
 import { useConnection } from "../../hooks/useConnection";
-import { EASE, SLOW_S } from "../../shared/motion";
-import { POLL_MS } from "../../shared/poll";
+import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
+import { POLL_MS } from "../../shared/lib/ux/poll";
 
 export const LOG_SERVICES = [
   "dimaag",

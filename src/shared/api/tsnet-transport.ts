@@ -85,10 +85,9 @@ export class TsnetTransport implements Transport {
       if (override) {
         this.active = false;
         this.setProvisioningNeeded(true);
-      } else {
-        this.scheduleRetry();
+        throw err instanceof Error ? err : new Error(String(err));
       }
-      throw err instanceof Error ? err : new Error(String(err));
+      this.scheduleRetry();
     }
   }
 
@@ -206,9 +205,7 @@ export class TsnetTransport implements Transport {
       if (!this.active) {
         return;
       }
-      void this.connect().catch(() => {
-        // Unreachable: UI stays calm; retry continues while active.
-      });
+      void this.connect();
     }, RETRY_MS);
   }
 

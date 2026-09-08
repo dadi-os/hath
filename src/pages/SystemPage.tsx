@@ -4,7 +4,7 @@ import { LogExplorer } from "../features/logs/LogExplorer";
 import { ModuleSettings } from "../features/system/ModuleSettings";
 import { ProvisionDevice } from "../features/system/ProvisionDevice";
 import { SystemMap } from "../features/system/SystemMap";
-import { EASE, SLOW_S } from "../shared/motion";
+import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
  * Split system view: health + settings on one side, log explorer on the other.

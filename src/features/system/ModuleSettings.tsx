@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { nas } from "../../api";
+import { nas } from "../../shared/api";
 import { useConnection } from "../../hooks/useConnection";
 
 type ModuleName = "dwar" | "yaad" | "dimaag";

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { IconBack, IconButton } from "../shared/IconButton";
-import { Tooltip } from "../shared/Tooltip";
+import { IconBack, IconButton } from "../shared/components/IconButton";
+import { Tooltip } from "../shared/components/Tooltip";
 
 export type PageHeaderProps = {
   title: string;

@@ -11,12 +11,12 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { hierarchy, tree, type HierarchyPointNode } from "d3-hierarchy";
 import { motion } from "motion/react";
-import { dimaag } from "../../api";
-import type { AgentRecord } from "../../api/types";
+import { dimaag } from "../../shared/api";
+import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
-import { EASE, SLOW_S } from "../../shared/motion";
-import { POLL_MS } from "../../shared/poll";
+import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
+import { POLL_MS } from "../../shared/lib/ux/poll";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
 import { AgentPopover } from "./AgentPopover";
 import {

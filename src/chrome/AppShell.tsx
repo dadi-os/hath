@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
-import { ChatSidebar } from "./ChatSidebar";
+import { ChatSidebar } from "./chatSidebar";
 import { DisconnectedState } from "./DisconnectedState";
 import { Header } from "./Header";
 import { connectTransport } from "../store/connection";
 import { useConnection } from "../hooks/useConnection";
 import { useEvents } from "../hooks/useEvents";
 import { useTarget } from "../hooks/useTarget";
-import { EASE, SLOW_S } from "../shared/motion";
+import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
  * Persistent chrome. Header and chat sidebar mount once and animate in on
@@ -33,7 +33,6 @@ export function AppShell() {
   }, [isMobile]);
 
   const openChat = () => {
-    // sessionKey bumps so ChatSidebar scrolls to bottom; history is not cleared.
     setSessionKey((k) => k + 1);
     setDrawerOpen(true);
   };

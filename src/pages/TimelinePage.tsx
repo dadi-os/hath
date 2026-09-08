@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
 import { TimelineCalendar } from "../features/timeline/TimelineCalendar";
-import { EASE, SLOW_S } from "../shared/motion";
+import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
  * Full Timeline page: week / month plan calendar with a Someday ideas rail.

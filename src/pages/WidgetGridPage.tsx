@@ -6,8 +6,8 @@ import { AgentTree } from "../features/agents/AgentTree";
 import { MemoryCounters } from "../features/memory/MemoryCounters";
 import { SystemMap } from "../features/system/SystemMap";
 import { TimelineCalendar } from "../features/timeline/TimelineCalendar";
-import { EASE, SLOW_S } from "../shared/motion";
-import { WidgetFrame } from "../shared/WidgetFrame";
+import { EASE, SLOW_S } from "../shared/lib/ux/motion";
+import { WidgetFrame } from "../shared/components/WidgetFrame";
 
 const tile =
   "min-h-0 w-full cursor-pointer transition-[box-shadow] duration-slow ease-hath hover:shadow-[0_4px_16px_rgba(92,107,82,0.12)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage";

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { DIMAAG_URL, dimaag, transport } from "../api";
-import type { AgentRecord, DimaagEvent } from "../api/types";
+import { DIMAAG_URL, dimaag, transport } from "../shared/api";
+import type { AgentRecord, DimaagEvent } from "../shared/api/types";
 import { subscribeConnection } from "../store/connection";
 import {
   ingestLiveMessage,

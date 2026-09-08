@@ -1,13 +1,13 @@
 import { useEffect, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { dimaag } from "../../api";
-import type { AgentRecord } from "../../api/types";
+import { dimaag } from "../../shared/api";
+import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
-import { Popover } from "../../shared/Popover";
-import { Tooltip } from "../../shared/Tooltip";
+import { Popover } from "../../shared/components/Popover";
+import { Tooltip } from "../../shared/components/Tooltip";
 import { getRunning } from "../../store/running";
 import { AgentActivity } from "./AgentActivity";
-import { POLL_MS } from "../../shared/poll";
+import { POLL_MS } from "../../shared/lib/ux/poll";
 import {
   formatAbsolute,
   formatRelative,

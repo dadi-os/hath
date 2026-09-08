@@ -1,7 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import QRCode from "qrcode";
 import { useEffect, useState, type FormEvent } from "react";
-import { nas } from "../../api";
+import { nas } from "../../shared/api";
 import { useConnection } from "../../hooks/useConnection";
 
 /**

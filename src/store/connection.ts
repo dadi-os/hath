@@ -1,6 +1,6 @@
-import type { ConnectionState } from "../api/transport";
-import { NotProvisionedError } from "../api/tsnet-transport";
-import { transport } from "../api";
+import type { ConnectionState } from "../shared/api/transport";
+import { NotProvisionedError } from "../shared/api/tsnet-transport";
+import { transport } from "../shared/api";
 
 type Listener = (state: ConnectionState) => void;
 
@@ -29,11 +29,10 @@ export async function connectTransport(): Promise<void> {
   try {
     await transport.connect();
   } catch (err) {
-    // Not provisioned → DisconnectedState shows the setup form.
-    // Unreachable → TsnetTransport retries while active; calm UI, not an error.
     if (err instanceof NotProvisionedError) {
       return;
     }
+    throw err;
   }
 }
 

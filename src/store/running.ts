@@ -1,4 +1,4 @@
-import type { AgentRecord, Lane } from "../api/types";
+import type { AgentRecord, Lane } from "../shared/api/types";
 
 export type RunningMap = Record<string, { reasoning: boolean; conversation: boolean }>;
 

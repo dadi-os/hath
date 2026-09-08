@@ -1,15 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "motion/react";
-import { nas } from "../../api";
-import type { NasLogEntry, NasStatus } from "../../api/nas";
+import { nas } from "../../shared/api";
+import type { NasLogEntry, NasStatus } from "../../shared/api/nas";
 import {
   errorCardCopy,
   ErrorLogCards,
   rangeBounds,
 } from "../logs/LogExplorer";
 import { useConnection } from "../../hooks/useConnection";
-import { EASE, SLOW_S } from "../../shared/motion";
-import { POLL_MS } from "../../shared/poll";
+import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
+import { POLL_MS } from "../../shared/lib/ux/poll";
 
 export type SystemMapProps = {
   mode: "full" | "preview";

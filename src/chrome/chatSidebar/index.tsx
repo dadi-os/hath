@@ -10,12 +10,12 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { dimaag } from "../api";
-import { useConnection } from "../hooks/useConnection";
+import { dimaag } from "../../shared/api";
+import { useConnection } from "../../hooks/useConnection";
 import {
   AGENTS_QUERY_KEY,
   ROOT_AGENT_QUERY_KEY,
-} from "../hooks/useEvents";
+} from "../../hooks/useEvents";
 import {
   addOptimistic,
   clearLiveChat,
@@ -38,15 +38,15 @@ import {
   subscribeChat,
   type ChatMessage,
   type MessageAttachment,
-} from "../store/chat";
-import { getRunning, subscribeRunning } from "../store/running";
+} from "../../store/chat";
+import { getRunning, subscribeRunning } from "../../store/running";
 import {
   filesToDraftAttachments,
   MAX_ATTACHMENTS,
   revokeDraftPreviews,
   toMessageAttachments,
   type DraftAttachment,
-} from "../shared/attachments";
+} from "../../shared/lib/content/attachments";
 import {
   IconAttach,
   IconBack,
@@ -55,9 +55,11 @@ import {
   IconDismiss,
   IconRetry,
   IconSend,
-} from "../shared/IconButton";
-import { EASE, SLOW_S } from "../shared/motion";
-import { POLL_MS } from "../shared/poll";
+} from "../../shared/components/IconButton";
+import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
+import { POLL_MS } from "../../shared/lib/ux/poll";
+import { logLine } from "../../shared/lib/platform/log";
+import { formatRelative, truncateOneLine } from "./format";
 
 type ChatSidebarProps = {
   /** Bumps when chat opens; scrolls the thread to the bottom. */
@@ -70,32 +72,6 @@ const TEXTAREA_MAX_PX = 88;
 const NEW_CHAT_TIMEOUT_MS = 90_000;
 const COMPOSER_PAD = 72;
 const COMPOSER_PAD_WITH_ATTACH = 128;
-
-function truncateOneLine(text: string, max = 72): string {
-  const one = text.replace(/\s+/g, " ").trim();
-  if (one.length <= max) {
-    return one;
-  }
-  return `${one.slice(0, max - 1)}…`;
-}
-
-function formatRelative(iso: string, now = Date.now()): string {
-  const diffSec = Math.round((new Date(iso).getTime() - now) / 1000);
-  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-  const abs = Math.abs(diffSec);
-  if (abs < 60) {
-    return rtf.format(diffSec, "second");
-  }
-  const diffMin = Math.round(diffSec / 60);
-  if (Math.abs(diffMin) < 60) {
-    return rtf.format(diffMin, "minute");
-  }
-  const diffHour = Math.round(diffMin / 60);
-  if (Math.abs(diffHour) < 24) {
-    return rtf.format(diffHour, "hour");
-  }
-  return rtf.format(Math.round(diffHour / 24), "day");
-}
 
 /**
  * Conversation list + thread views. Messages arrive only via SSE (and local
@@ -516,7 +492,11 @@ export function ChatSidebar({ sessionKey, className }: ChatSidebarProps) {
         return [...prev, ...keep];
       });
     } catch (err) {
-      console.error(err);
+      logLine(
+        "error",
+        err instanceof Error ? err.message : String(err),
+        "invalid_request",
+      );
     }
   };
 

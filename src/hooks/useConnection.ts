@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { ConnectionState } from "../api/transport";
+import type { ConnectionState } from "../shared/api/transport";
 import {
   connectTransport,
   disconnectTransport,

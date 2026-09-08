@@ -4,8 +4,8 @@ import {
   decodeProvisioningBundle,
   loadCredentials,
   saveCredentials,
-} from "../api/credentials";
-import { transport } from "../api";
+} from "../shared/api/credentials";
+import { transport } from "../shared/api";
 import { QrScanner } from "./QrScanner";
 
 function subscribeProvisioning(onStoreChange: () => void): () => void {
@@ -36,10 +36,12 @@ export function DisconnectedState() {
           setProvisioned(creds !== null);
         }
       })
-      .catch(() => {
-        // Unreadable credentials → setup screen, not a blank/crash state.
+      .catch((err: unknown) => {
         if (!cancelled) {
           setProvisioned(false);
+          setError(
+            err instanceof Error ? err.message : "Could not read stored credentials",
+          );
         }
       });
     return () => {

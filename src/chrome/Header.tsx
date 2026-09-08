@@ -1,10 +1,10 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { nas } from "../api";
+import { nas } from "../shared/api";
 import { useConnection } from "../hooks/useConnection";
-import { IconButton, IconHome } from "../shared/IconButton";
-import { POLL_MS } from "../shared/poll";
-import { Tooltip } from "../shared/Tooltip";
+import { IconButton, IconHome } from "../shared/components/IconButton";
+import { POLL_MS } from "../shared/lib/ux/poll";
+import { Tooltip } from "../shared/components/Tooltip";
 
 function formatUptime(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));

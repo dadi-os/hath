@@ -1,5 +1,5 @@
 import type { HierarchyPointLink } from "d3-hierarchy";
-import type { AgentRecord } from "../../api/types";
+import type { AgentRecord } from "../../shared/api/types";
 
 export type AgentTreeNode = {
   id: string;

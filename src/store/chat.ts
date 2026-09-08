@@ -1,4 +1,4 @@
-import type { MessageAttachment } from "../api/types";
+import type { MessageAttachment } from "../shared/api/types";
 
 export type { MessageAttachment };
 

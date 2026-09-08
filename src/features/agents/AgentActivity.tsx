@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { dimaag } from "../../api";
-import type { Lane, LogRecord } from "../../api/types";
+import { dimaag } from "../../shared/api";
+import type { Lane, LogRecord } from "../../shared/api/types";
 import { formatAbsolute, formatRelative } from "./tree";
-import { Tooltip } from "../../shared/Tooltip";
-import { POLL_MS } from "../../shared/poll";
+import { Tooltip } from "../../shared/components/Tooltip";
+import { POLL_MS } from "../../shared/lib/ux/poll";
 
 export type AgentActivityProps = {
   agentId: string;

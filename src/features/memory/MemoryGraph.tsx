@@ -19,12 +19,12 @@ import {
   type SimulationLinkDatum,
 } from "d3-force";
 import { motion } from "motion/react";
-import { yaad } from "../../api";
-import type { EdgeRecord, NodeKind } from "../../api/types";
+import { yaad } from "../../shared/api";
+import type { EdgeRecord, NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
-import { Popover } from "../../shared/Popover";
-import { EASE, SLOW_S } from "../../shared/motion";
-import { POLL_MS } from "../../shared/poll";
+import { Popover } from "../../shared/components/Popover";
+import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
+import { POLL_MS } from "../../shared/lib/ux/poll";
 import {
   mergeGraph,
   nodeRadius,

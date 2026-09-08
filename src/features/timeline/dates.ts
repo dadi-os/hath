@@ -88,7 +88,6 @@ export function formatWeekTitle(d: Date): string {
   const sameYear = start.getFullYear() === end.getFullYear();
   const sameMonth = sameYear && start.getMonth() === end.getMonth();
   if (sameMonth) {
-    // Avoid day+year without month — ICU renders that as "2026 (day: 13)".
     return `${month.format(start)} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`;
   }
   if (sameYear) {
@@ -112,8 +111,7 @@ export function formatTime(iso: string): string {
 }
 
 export function weekdayLabels(): string[] {
-  // Monday-first labels derived from a known Monday.
-  const monday = new Date(2024, 0, 1); // was a Monday
+  const monday = new Date(2024, 0, 1);
   return Array.from({ length: 7 }, (_, i) =>
     new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(
       addDays(monday, i),

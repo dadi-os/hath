@@ -2,7 +2,7 @@ import { useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
 import { AgentTree } from "../features/agents/AgentTree";
-import { EASE, SLOW_S } from "../shared/motion";
+import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
  * Full-canvas agent tree: pan, zoom, pinch, node popovers.

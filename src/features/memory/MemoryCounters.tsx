@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import type { ReactNode } from "react";
-import { yaad } from "../../api";
-import type { NodeKind } from "../../api/types";
+import { yaad } from "../../shared/api";
+import type { NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
-import { EASE, SLOW_S } from "../../shared/motion";
-import { POLL_MS } from "../../shared/poll";
+import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
+import { POLL_MS } from "../../shared/lib/ux/poll";
 
 const KINDS: Array<{ kind: NodeKind; label: string; icon: ReactNode }> = [
   { kind: "person", label: "People", icon: <IconPerson /> },

@@ -1,4 +1,4 @@
-import type { EdgeRecord, NodeKind, NodeRecord, NodeDetail } from "../../api/types";
+import type { EdgeRecord, NodeKind, NodeRecord, NodeDetail } from "../../shared/api/types";
 
 export type GraphNode = NodeRecord & {
   detail: NodeDetail;
