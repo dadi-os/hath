@@ -1,7 +1,13 @@
 [[permission]]
 identifier = "allow-net"
-description = "Allows controlling the embedded tsnet node and storing provisioning credentials."
+description = "Allows controlling dadiMesh and storing provisioning credentials."
 commands.allow = [
+  "mesh_start",
+  "mesh_stop",
+  "mesh_status",
+  "mesh_port",
+  "mesh_load_credentials",
+  "mesh_save_credentials",
   "net_start",
   "net_stop",
   "net_status",

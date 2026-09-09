@@ -4,11 +4,14 @@ import { motion } from "motion/react";
 import { ChatSidebar } from "./chatSidebar";
 import { DisconnectedState } from "./DisconnectedState";
 import { Header } from "./Header";
+import { MeshPowerOverlay } from "./MeshPowerOverlay";
 import { MobileChatShell } from "./MobileChatShell";
-import { connectTransport } from "../store/connection";
+import { bootstrapMesh } from "../store/connection";
 import { useConnection } from "../hooks/useConnection";
 import { useEvents } from "../hooks/useEvents";
+import { useNeedsProvisioning } from "../hooks/useNeedsProvisioning";
 import { useTarget } from "../hooks/useTarget";
+import { usingTsnet } from "../shared/api";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
@@ -21,11 +24,12 @@ export function AppShell() {
   const location = useLocation();
   const isMobile = target === "mobile";
   const [sessionKey, setSessionKey] = useState(0);
+  const needsProvisioning = useNeedsProvisioning();
 
   useEvents();
 
   useEffect(() => {
-    void connectTransport();
+    void bootstrapMesh();
   }, []);
 
   useEffect(() => {
@@ -36,8 +40,13 @@ export function AppShell() {
     return <MobileChatShell />;
   }
 
+  const showOnboarding = usingTsnet && needsProvisioning;
+  const showPower =
+    usingTsnet && !needsProvisioning && state !== "connected" && state !== "connecting";
+  const showConnecting = usingTsnet && state === "connecting" && !needsProvisioning;
+
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-transparent">
+    <div className="relative flex h-full flex-col overflow-hidden bg-transparent">
       <motion.div
         className="glass-veil z-20 border-b-0 shadow-[var(--shadow)]"
         initial={{ opacity: 0, y: -14 }}
@@ -58,13 +67,13 @@ export function AppShell() {
         </motion.div>
 
         <motion.main
-          className="min-h-0 min-w-0 flex-1 overflow-hidden p-4 pl-2"
+          className="relative min-h-0 min-w-0 flex-1 overflow-hidden p-4 pl-2"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: SLOW_S, ease: EASE, delay: 0.2 }}
         >
           <div className="h-full min-h-0 overflow-hidden">
-            {state === "disconnected" ? (
+            {showOnboarding ? (
               <DisconnectedState />
             ) : (
               <div
@@ -75,6 +84,7 @@ export function AppShell() {
               </div>
             )}
           </div>
+          {showPower || showConnecting ? <MeshPowerOverlay /> : null}
         </motion.main>
       </div>
     </div>

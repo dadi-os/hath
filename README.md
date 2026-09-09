@@ -8,7 +8,7 @@ The sole UI client for dadi. One codebase, two form factors — desktop and mobi
 - Dimaag (`http://dimaag.dadi`) — agents, messages, events
 - Yaad (`http://yaad.dadi`) — memory graph
 - Dwar (indirect via Dimaag/Yaad)
-- Embedded tsnet (Go) + Tauri shell for mesh dialing (production)
+- dadiMesh (Go tsnet forward proxy + Tauri shell; iOS Network Extension profile)
 
 ## Layout
 
@@ -26,7 +26,7 @@ hath/
         constants.ts       mesh URLs (no env fallbacks)
         transport.ts       Transport + ConnectionState
         browser-transport.ts  fetch + EventSource (web / nas compose)
-        tsnet-transport.ts    embedded tsnet (Tauri; dynamic import)
+        tsnet-transport.ts    MeshTransport / dadiMesh (Tauri; dynamic import)
         runtime.ts         isTauriRuntime / transport kind
         sse.ts / credentials.ts / types.ts
         dimaag/ yaad/ nas/ portable client modules
@@ -38,8 +38,8 @@ hath/
     store/                 chat, connection, running
     hooks/
     styles/
-  src-tauri/               Rust shell + logutil
-  net/                     Go tsnet archive build
+  src-tauri/               Rust shell + logutil + dadimesh-extension/
+  net/                     Go dadiMesh (tsnet) archive build
   Dockerfile               web container (dev Vite / production static)
 ```
 
@@ -130,11 +130,33 @@ Plain HTTP on the WireGuard mesh. No localhost fallback.
 
 ## Provisioning
 
-On the box: **Add Device** (or Preferences → Devices) mints a Nas `POST /provision` setup QR. New Tauri Hath: camera scan (or paste) → Join. Credentials store in app data. Browser Hath has no provisioning.
+On the box: **Add Device** (or Preferences → Devices) mints a Nas `POST /provision` setup QR. The bundle embeds the **control plane URL** from Preferences → Tunnel (not hardcoded in Hath). New Tauri Hath: camera scan (or paste) → join dadiMesh. Credentials store in app data. Browser Hath has no provisioning.
 
-## Transport
+## Transport / dadiMesh
 
-All network calls go through a `Transport` (`shared/api/`). Tauri loads `TsnetTransport` (dynamic import); the browser loads `BrowserTransport` (fetch + EventSource, Nas `/health` for ONLINE/OFFLINE). Header shows ONLINE/OFFLINE. Not provisioned (Tauri) → setup screen. Provisioned but unreachable → calm retry.
+All network calls go through a `Transport` (`shared/api/`). Tauri loads `MeshTransport` (dynamic import); the browser loads `BrowserTransport` (fetch + EventSource, Nas `/health` for ONLINE/OFFLINE).
+
+Lifecycle (Tauri):
+
+- Unprovisioned → onboarding (scan/paste)
+- Provisioned + mesh down → glassy power overlay (tap to join); no silent auto-start
+- Connected → app UI; chrome power control leaves the mesh
+- Background / other apps → mesh stays up while the process (or iOS Network Extension) is alive
+
+Header shows ONLINE/OFFLINE.
+
+### iOS Network Extension
+
+Sources live under `src-tauri/dadimesh-extension/` (Packet Tunnel Provider). After `npm run tauri ios init`:
+
+1. Open `src-tauri/gen/apple/hath.xcodeproj`.
+2. **File → New → Target → Network Extension → Packet Tunnel Provider** — Product Name `dadimesh`, Bundle ID `com.dadi.hath.dadimesh`.
+3. Replace the generated Swift provider with `PacketTunnelProvider.swift`.
+4. Add `DadiMeshBridge.m` to the **main** Hath app target (not the extension).
+5. Enable on **both** targets: App Groups `group.com.dadi.hath`, Network Extensions → Packet Tunnel, Personal VPN (app).
+6. No On Demand rules — join/leave stays explicit from Hath.
+
+`mesh_start` / `mesh_stop` call into `DadiMeshBridge.m` on iOS after the in-process dialer is up.
 
 ## Chrome and routes
 

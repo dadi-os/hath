@@ -15,7 +15,7 @@ export type { Transport, ConnectionState } from "./transport";
 /** Singleton transport — set by {@link initApi} before the app mounts. */
 export let transport!: Transport;
 
-/** True when the embedded tsnet transport is active. */
+/** True when the dadiMesh (Tauri) transport is active. */
 export let usingTsnet = false;
 
 /** Shared Dimaag client bound to {@link DIMAAG} and {@link transport}. */
@@ -29,13 +29,13 @@ export let nas!: NasClient;
 
 /**
  * Select and wire the Transport + domain clients.
- * Tsnet (and Rust invoke) load only when Tauri is present so they stay out of
+ * MeshTransport (and Rust invoke) load only when Tauri is present so they stay out of
  * the browser entry chunk.
  */
 export async function initApi(): Promise<void> {
   if (selectTransportKind() === "tsnet") {
-    const { TsnetTransport } = await import("./tsnet-transport");
-    transport = new TsnetTransport();
+    const { MeshTransport } = await import("./tsnet-transport");
+    transport = new MeshTransport();
     usingTsnet = true;
   } else {
     transport = new BrowserTransport();

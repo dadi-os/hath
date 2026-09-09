@@ -1,12 +1,12 @@
 import type { ConnectionState } from "../shared/api/transport";
-import { NotProvisionedError } from "../shared/api/errors";
-import { transport } from "../shared/api";
+import { transport, usingTsnet } from "../shared/api";
 
 type Listener = (state: ConnectionState) => void;
 
 let state: ConnectionState = "disconnected";
 const listeners = new Set<Listener>();
 let subscribed = false;
+let bootstrapped = false;
 
 function ensureSubscribed(): void {
   if (subscribed) {
@@ -35,8 +35,31 @@ export function subscribeConnection(listener: Listener): () => void {
   };
 }
 
+/**
+ * On launch: detect provisioning only. Do not auto-start dadiMesh —
+ * join is explicit (onboarding or power overlay).
+ */
+export async function bootstrapMesh(): Promise<void> {
+  ensureSubscribed();
+  if (bootstrapped) {
+    return;
+  }
+  bootstrapped = true;
+  if (!usingTsnet) {
+    await connectTransport();
+    return;
+  }
+  const mesh = transport as {
+    prepareProvisioning?: () => Promise<void>;
+  };
+  if (typeof mesh.prepareProvisioning === "function") {
+    await mesh.prepareProvisioning();
+  }
+}
+
 export async function connectTransport(): Promise<void> {
   ensureSubscribed();
+  const { NotProvisionedError } = await import("../shared/api/errors");
   try {
     await transport.connect();
   } catch (err) {

@@ -10,17 +10,14 @@ import { consumeSseBuffer } from "./sse";
 
 export { NotProvisionedError } from "./errors";
 
-const RETRY_MS = 3000;
-
 /**
- * Transport that dials Dimaag/Yaad/Nas through an embedded tsnet node.
- * React talks to 127.0.0.1:PORT; Go proxies over the tailnet using X-Hath-Upstream.
+ * Transport that dials Dimaag/Yaad/Nas through dadiMesh.
  *
- * Connection state: any HTTP response from the local proxy means the mesh is up.
- * Upstream app errors (e.g. Yaad 502) must not flip the shell to unreachable.
- * Dial/fetch failures mark disconnected and schedule retry when auto-connected.
+ * Mesh hostnames stay in API constants (`http://dimaag.dadi`); the dialer
+ * reaches them via `/@host/path` on the local mesh proxy (no X-Hath-Upstream).
+ * Connection is explicit — no silent reconnect.
  */
-export class TsnetTransport implements Transport {
+export class MeshTransport implements Transport {
   private port: number | null = null;
   private state: ConnectionState = "disconnected";
   private active = false;
@@ -28,18 +25,16 @@ export class TsnetTransport implements Transport {
   private streamAbort: AbortController | null = null;
   private needsProvisioning = false;
   private readonly provisioningListeners = new Set<(needed: boolean) => void>();
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   isActive(): boolean {
     return this.active;
   }
 
-  /** True when connect failed for missing credentials (setup screen). */
+  /** True when credentials are missing (onboarding). */
   needsProvisioningKey(): boolean {
     return this.needsProvisioning;
   }
 
-  /** Subscribe to provisioning-needed flips; returns unsubscribe. */
   onProvisioningNeeded(listener: (needed: boolean) => void): () => void {
     this.provisioningListeners.add(listener);
     return () => {
@@ -59,12 +54,26 @@ export class TsnetTransport implements Transport {
   }
 
   /**
-   * Start the mesh. Pass `override` during first-run provisioning so a bad
-   * key is not persisted and does not start the unreachable retry loop.
+   * Load credentials and flip the onboarding flag without starting the tunnel.
+   */
+  async prepareProvisioning(): Promise<void> {
+    const credentials = await loadCredentials();
+    if (!credentials) {
+      this.active = false;
+      this.port = null;
+      this.setProvisioningNeeded(true);
+      this.setState("disconnected");
+      return;
+    }
+    this.setProvisioningNeeded(false);
+    this.setState("disconnected");
+  }
+
+  /**
+   * Start dadiMesh. Pass `override` during first-run provisioning.
+   * Does not schedule retries — leave/join is explicit (power control).
    */
   async connect(override?: Credentials): Promise<void> {
-    this.clearRetry();
-
     const credentials = override ?? (await loadCredentials());
     if (!credentials) {
       this.active = false;
@@ -83,33 +92,27 @@ export class TsnetTransport implements Transport {
       this.setState("connected");
     } catch (err) {
       this.port = null;
+      this.active = false;
       this.setState("disconnected");
       if (override) {
-        this.active = false;
         this.setProvisioningNeeded(true);
-        throw err instanceof Error ? err : new Error(String(err));
       }
-      this.scheduleRetry();
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
   async disconnect(): Promise<void> {
     this.active = false;
-    this.clearRetry();
     this.streamAbort?.abort();
     this.streamAbort = null;
     try {
-      await invoke("net_stop");
+      await invoke("mesh_stop");
     } finally {
       this.port = null;
       this.setState("disconnected");
     }
   }
 
-  /**
-   * Proxy one request through the local tsnet listener.
-   * Marks connected on any HTTP response; marks disconnected on dial failure.
-   */
   async request<T>(opts: {
     baseUrl: string;
     path: string;
@@ -122,10 +125,10 @@ export class TsnetTransport implements Transport {
       throw new Error("Not connected");
     }
 
-    const url = `http://127.0.0.1:${this.port}${opts.path.startsWith("/") ? opts.path : `/${opts.path}`}`;
-    const headers: Record<string, string> = {
-      "X-Hath-Upstream": opts.baseUrl,
-    };
+    const host = meshHost(opts.baseUrl);
+    const path = opts.path.startsWith("/") ? opts.path : `/${opts.path}`;
+    const url = `http://127.0.0.1:${this.port}/@${host}${path}`;
+    const headers: Record<string, string> = {};
     let body: string | undefined;
     if (opts.bodyText !== undefined) {
       headers["Content-Type"] = "text/plain; charset=utf-8";
@@ -151,7 +154,9 @@ export class TsnetTransport implements Transport {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`HTTP ${response.status} ${opts.method} ${url}: ${text}`);
+      throw new Error(
+        `HTTP ${response.status} ${opts.method} ${opts.baseUrl}${path}: ${text}`,
+      );
     }
 
     if (opts.responseType === "text") {
@@ -160,10 +165,6 @@ export class TsnetTransport implements Transport {
     return (await response.json()) as T;
   }
 
-  /**
-   * Open SSE via the local proxy. Returns a no-op when not connected.
-   * Marks connected when the proxy answers; dial failures mark disconnected.
-   */
   stream(opts: {
     baseUrl: string;
     path: string;
@@ -195,31 +196,11 @@ export class TsnetTransport implements Transport {
   }
 
   private async startNode(credentials: Credentials): Promise<number> {
-    return invoke<number>("net_start", {
+    return invoke<number>("mesh_start", {
       controlUrl: credentials.control_url,
       authKey: credentials.auth_key,
       nodeName: credentials.node_name,
     });
-  }
-
-  private scheduleRetry(): void {
-    if (!this.active || this.retryTimer !== null) {
-      return;
-    }
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      if (!this.active) {
-        return;
-      }
-      void this.connect();
-    }, RETRY_MS);
-  }
-
-  private clearRetry(): void {
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
   }
 
   private async readSse(
@@ -233,7 +214,9 @@ export class TsnetTransport implements Transport {
       return;
     }
 
-    const url = `http://127.0.0.1:${this.port}${path.startsWith("/") ? path : `/${path}`}`;
+    const host = meshHost(baseUrl);
+    const urlPath = path.startsWith("/") ? path : `/${path}`;
+    const url = `http://127.0.0.1:${this.port}/@${host}${urlPath}`;
     const closed = () => {
       if (!signal.aborted) {
         onClose?.();
@@ -245,7 +228,6 @@ export class TsnetTransport implements Transport {
         method: "GET",
         headers: {
           Accept: "text/event-stream",
-          "X-Hath-Upstream": baseUrl,
         },
         signal,
       });
@@ -288,9 +270,8 @@ export class TsnetTransport implements Transport {
   }
 
   private markFailure(): void {
-    if (!this.active) {
-      return;
-    }
+    this.active = false;
+    this.port = null;
     this.setState("disconnected");
   }
 
@@ -313,4 +294,12 @@ export class TsnetTransport implements Transport {
       listener(next);
     }
   }
+}
+
+function meshHost(baseUrl: string): string {
+  const host = new URL(baseUrl).host;
+  if (!host) {
+    throw new Error(`invalid mesh baseUrl: ${baseUrl}`);
+  }
+  return host;
 }

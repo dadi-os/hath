@@ -2,7 +2,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { nas } from "../shared/api";
 import { useConnection } from "../hooks/useConnection";
-import { IconButton, IconHome } from "../shared/components/IconButton";
+import { IconButton, IconHome, IconPower } from "../shared/components/IconButton";
 import { POLL_MS } from "../shared/lib/ux/poll";
 import { Tooltip } from "../shared/components/Tooltip";
 
@@ -20,10 +20,10 @@ function formatUptime(seconds: number): string {
   return `${mins}m`;
 }
 
-/** Desktop glass menu bar — brand + mesh status. */
+/** Desktop glass menu bar — brand + mesh status + leave control. */
 export function Header() {
   const navigate = useNavigate();
-  const { state } = useConnection();
+  const { state, disconnect } = useConnection();
   const location = useLocation();
   const atHome = location.pathname === "/";
   const statusLabel = state === "connected" ? "ONLINE" : "OFFLINE";
@@ -75,24 +75,42 @@ export function Header() {
         </button>
       </div>
 
-      <div className="flex flex-col items-end gap-0.5">
-        <span
-          className={`text-[11px] font-medium tracking-[2.5px] ${statusClass}`}
-        >
-          {statusLabel}
-        </span>
-        <Tooltip
-          content={
-            statusQuery.data
-              ? `Dadi uptime · ${statusQuery.data.uptime_seconds}s`
-              : "Dadi uptime"
-          }
-        >
-          <span className="text-[11px] tracking-wide text-ink-ghost">
-            {uptime}
+      <div className="flex items-center gap-3">
+        {state === "connected" ? (
+          <Tooltip content="Leave dadiMesh">
+            <span className="inline-flex">
+              <IconButton
+                label="Leave dadiMesh"
+                size="sm"
+                onClick={() => {
+                  void disconnect();
+                }}
+              >
+                <IconPower />
+              </IconButton>
+            </span>
+          </Tooltip>
+        ) : null}
+        <div className="flex flex-col items-end gap-0.5">
+          <span
+            className={`text-[11px] font-medium tracking-[2.5px] ${statusClass}`}
+          >
+            {statusLabel}
           </span>
-        </Tooltip>
+          <Tooltip
+            content={
+              statusQuery.data
+                ? `Dadi uptime · ${statusQuery.data.uptime_seconds}s`
+                : "Dadi uptime"
+            }
+          >
+            <span className="text-[11px] tracking-wide text-ink-ghost">
+              {uptime}
+            </span>
+          </Tooltip>
+        </div>
       </div>
     </header>
   );
 }
+

@@ -1,7 +1,8 @@
 mod logutil;
 mod net;
+mod ios_vpn;
 
-use net::NetState;
+use net::MeshState;
 
 /// hathnet is a raw-dylib on Windows; ensure its folder is on the DLL search path
 /// before any FFI call (exe dir from build.rs copy, or bundled resources/).
@@ -33,7 +34,7 @@ fn prepare_hathnet_dll_search_path() {
             }
             logutil::emit(
                 "info",
-                format!("hathnet DLL search path → {}", candidate.display()),
+                format!("dadimesh DLL search path → {}", candidate.display()),
             );
             return;
         }
@@ -50,8 +51,14 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
-        .manage(NetState::default())
+        .manage(MeshState::default())
         .invoke_handler(tauri::generate_handler![
+            net::mesh_start,
+            net::mesh_stop,
+            net::mesh_status,
+            net::mesh_port,
+            net::mesh_load_credentials,
+            net::mesh_save_credentials,
             net::net_start,
             net::net_stop,
             net::net_status,
@@ -63,7 +70,9 @@ pub fn run() {
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
                 logutil::emit("info", "hath exiting");
-                net::stop_node();
+                // Do not stop dadiMesh on desktop exit — tunnel lifetime is
+                // explicit (power control). On process kill the node dies with us;
+                // intentional leave uses mesh_stop.
             }
         });
 }

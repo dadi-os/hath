@@ -199,3 +199,21 @@ export function IconNewChat() {
     </svg>
   );
 }
+
+/** Power / leave-mesh glyph (24 viewBox; sized by parent). */
+export function IconPower() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 2v10" />
+      <path d="M6.2 5.2a8 8 0 1 0 11.6 0" />
+    </svg>
+  );
+}

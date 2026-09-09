@@ -65,5 +65,14 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=SystemConfiguration");
     }
 
+    if target.contains("apple-ios") {
+        println!("cargo:rustc-link-lib=framework=NetworkExtension");
+        let stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("dadimesh-extension")
+            .join("dadimesh_vpn_stub.c");
+        println!("cargo:rerun-if-changed={}", stub.display());
+        cc::Build::new().file(&stub).compile("dadimesh_vpn_stub");
+    }
+
     tauri_build::build()
 }

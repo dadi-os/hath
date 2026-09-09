@@ -135,39 +135,66 @@ function ModuleEditor() {
 
 function CloudflaredEditor() {
   const qc = useQueryClient();
-  const q = useQuery({
+  const tokenQuery = useQuery({
     queryKey: ["nas", "cloudflared-token"],
     queryFn: () => nas.getCloudflaredToken(),
   });
+  const urlQuery = useQuery({
+    queryKey: ["nas", "control-url"],
+    queryFn: () => nas.getControlUrl(),
+  });
   const [token, setToken] = useState("");
+  const [controlUrl, setControlUrl] = useState("");
   useEffect(() => {
-    if (q.data !== undefined) {
-      setToken(q.data.trim());
+    if (tokenQuery.data !== undefined) {
+      setToken(tokenQuery.data.trim());
     }
-  }, [q.data]);
+  }, [tokenQuery.data]);
+  useEffect(() => {
+    if (urlQuery.data !== undefined) {
+      setControlUrl(urlQuery.data.trim());
+    }
+  }, [urlQuery.data]);
 
-  const save = useMutation({
+  const saveToken = useMutation({
     mutationFn: () => nas.putCloudflaredToken(token),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: ["nas", "cloudflared-token"] }),
   });
+  const saveUrl = useMutation({
+    mutationFn: () => nas.putControlUrl(controlUrl),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["nas", "control-url"] }),
+  });
 
-  if (q.isLoading) {
+  if (tokenQuery.isLoading || urlQuery.isLoading) {
     return <p className="text-sm text-ink/60">Loading…</p>;
   }
 
   return (
-    <FieldBlock
-      title="Cloudflare tunnel token"
-      hint="Routes dadi.ardusa.dev → Headscale on this box."
-      value={token}
-      onChange={setToken}
-      onSave={() => save.mutate()}
-      saving={save.isPending}
-      error={save.error}
-      ok={save.isSuccess}
-      rows={4}
-    />
+    <div className="flex min-h-0 flex-col gap-4">
+      <FieldBlock
+        title="Control plane URL"
+        hint="Public Headscale URL embedded in device provision codes (e.g. https://dadi.ardusa.dev)."
+        value={controlUrl}
+        onChange={setControlUrl}
+        onSave={() => saveUrl.mutate()}
+        saving={saveUrl.isPending}
+        error={saveUrl.error}
+        ok={saveUrl.isSuccess}
+        rows={2}
+      />
+      <FieldBlock
+        title="Cloudflare tunnel token"
+        hint="Routes the control plane URL → Headscale on this box."
+        value={token}
+        onChange={setToken}
+        onSave={() => saveToken.mutate()}
+        saving={saveToken.isPending}
+        error={saveToken.error}
+        ok={saveToken.isSuccess}
+        rows={4}
+      />
+    </div>
   );
 }
 

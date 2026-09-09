@@ -184,6 +184,26 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /headscale/control-url — public control plane URL for provision bundles. */
+    getControlUrl(): Promise<string> {
+      return transport.request({
+        baseUrl,
+        path: "/headscale/control-url",
+        method: "GET",
+        responseType: "text",
+      });
+    },
+
+    /** PUT /headscale/control-url — persist control plane URL. */
+    putControlUrl(url: string): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: "/headscale/control-url",
+        method: "PUT",
+        bodyText: url,
+      });
+    },
+
     /** POST /provision — mint a device setup bundle. */
     provision(nodeName: string): Promise<{ bundle: string }> {
       return transport.request({
