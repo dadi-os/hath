@@ -25,6 +25,12 @@ export async function saveCredentials(credentials: Credentials): Promise<void> {
   await invoke("mesh_save_credentials", { credentials });
 }
 
+/** Remove persisted mesh credentials so onboarding runs again. */
+export async function clearCredentials(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("mesh_clear_credentials");
+}
+
 /**
  * Decode a base64 provisioning bundle into credentials.
  * Quiet failure message for paste/decode problems — auth failures surface later from Go.

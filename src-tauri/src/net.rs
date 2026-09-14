@@ -4,9 +4,13 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
+
+/// Bound for dadimesh Up — stale auth keys or a dead control plane must not hang forever.
+const MESH_START_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[cfg(windows)]
 #[link(name = "hathnet", kind = "raw-dylib")]
@@ -178,11 +182,25 @@ pub async fn mesh_start(
     let state_dir = mesh_dir(&app)?;
     let hostname = trimmed_name.to_string();
 
-    let port = tauri::async_runtime::spawn_blocking(move || {
-        start_node(&control_url, &auth_key, &hostname, &state_dir)
-    })
-    .await
-    .map_err(|e| format!("mesh_start join: {e}"))??;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(start_node(&control_url, &auth_key, &hostname, &state_dir));
+    });
+
+    let port = match rx.recv_timeout(MESH_START_TIMEOUT) {
+        Ok(Ok(port)) => port,
+        Ok(Err(err)) => return Err(err),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            logutil::emit("error", "dadimesh start timed out");
+            stop_node();
+            return Err(
+                "dadiMesh join timed out. Check the setup code or network.".into(),
+            );
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("mesh_start worker ended unexpectedly".into());
+        }
+    };
 
     #[cfg(target_os = "ios")]
     {
@@ -248,6 +266,16 @@ pub fn mesh_load_credentials(app: AppHandle) -> Result<Option<Credentials>, Stri
         return Ok(None);
     }
     Ok(Some(credentials))
+}
+
+/// Delete persisted mesh credentials (forces onboarding on next prepare).
+#[tauri::command]
+pub fn mesh_clear_credentials(app: AppHandle) -> Result<(), String> {
+    let path = credentials_path(&app)?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("clear credentials: {e}"))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

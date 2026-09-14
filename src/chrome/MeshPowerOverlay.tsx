@@ -1,8 +1,27 @@
 import { useState } from "react";
 import { motion } from "motion/react";
+import { clearCredentials } from "../shared/api/credentials";
+import { transport } from "../shared/api";
 import { useConnection } from "../hooks/useConnection";
 import { IconPower } from "../shared/components/IconButton";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
+
+/** Mesh transport surface that can re-run first-launch credential detection. */
+type ProvisioningPrepare = {
+  prepareProvisioning(): Promise<void>;
+};
+
+function asPrepare(t: unknown): ProvisioningPrepare | null {
+  if (
+    t &&
+    typeof t === "object" &&
+    "prepareProvisioning" in t &&
+    typeof (t as ProvisioningPrepare).prepareProvisioning === "function"
+  ) {
+    return t as ProvisioningPrepare;
+  }
+  return null;
+}
 
 /**
  * Frosted full-screen power control shown when provisioned but dadiMesh is down.
@@ -22,6 +41,26 @@ export function MeshPowerOverlay() {
     setError(null);
     try {
       await connect();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+
+  const onResetSetup = async () => {
+    if (busy) {
+      return;
+    }
+    setLocalBusy(true);
+    setError(null);
+    try {
+      await clearCredentials();
+      const api = asPrepare(transport);
+      if (!api) {
+        throw new Error("Mesh transport is not available.");
+      }
+      await api.prepareProvisioning();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -49,7 +88,7 @@ export function MeshPowerOverlay() {
       >
         {busy ? (
           <span
-            className="h-10 w-10 animate-breath rounded-full border-2 border-sage/30 border-t-sage"
+            className="h-10 w-10 animate-spin rounded-full border-2 border-sage/30 border-t-sage"
             aria-hidden
           />
         ) : (
@@ -67,9 +106,19 @@ export function MeshPowerOverlay() {
           : "Tap to join the mesh."}
       </p>
       {error ? (
-        <p className="mt-3 max-w-sm text-center text-[13px] text-[#b56b5c]">
-          {error}
-        </p>
+        <div className="mt-3 flex max-w-sm flex-col items-center gap-2">
+          <p className="text-center text-[13px] text-[#b56b5c]">{error}</p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void onResetSetup();
+            }}
+            className="text-[12px] font-medium tracking-[2px] text-sage-deep disabled:opacity-50"
+          >
+            USE NEW SETUP CODE
+          </button>
+        </div>
       ) : null}
     </motion.div>
   );

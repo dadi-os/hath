@@ -120,7 +120,7 @@ export function DisconnectedState() {
                 transition={{ duration: SLOW_S, ease: EASE }}
               >
                 <span
-                  className="h-8 w-8 animate-breath rounded-full border-2 border-sage/30 border-t-sage"
+                  className="h-8 w-8 animate-spin rounded-full border-2 border-sage/30 border-t-sage"
                   aria-hidden
                 />
                 <p className="text-[12px] font-medium tracking-[2px] text-sage-deep">

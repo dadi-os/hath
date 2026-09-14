@@ -33,13 +33,16 @@ export function Header() {
   const update = useDesktopUpdate();
   const location = useLocation();
   const atHome = location.pathname === "/";
-  const statusLabel = state === "connected" ? "ONLINE" : "OFFLINE";
-  const statusClass =
+  const statusLabel =
     state === "connected"
-      ? "text-sage"
+      ? "ONLINE"
       : state === "connecting"
-        ? "text-sage animate-breath"
-        : "text-ink-ghost";
+        ? "JOINING…"
+        : "OFFLINE";
+  const statusClass =
+    state === "connected" || state === "connecting"
+      ? "text-sage"
+      : "text-ink-ghost";
 
   const statusQuery = useQuery({
     queryKey: ["nas", "status"],

@@ -59,6 +59,7 @@ pub fn run() {
             net::mesh_port,
             net::mesh_load_credentials,
             net::mesh_save_credentials,
+            net::mesh_clear_credentials,
             net::net_start,
             net::net_stop,
             net::net_status,

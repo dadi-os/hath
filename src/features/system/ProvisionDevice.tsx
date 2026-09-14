@@ -66,7 +66,7 @@ export function ProvisionDevice() {
             spellCheck={false}
             value={nodeName}
             onChange={(e) => setNodeName(e.target.value)}
-            placeholder="ankur-phone"
+            placeholder="phone"
             className="rounded-[var(--radius)] border border-sage-line bg-[var(--glass-sheet)] px-2 py-1.5 text-sm text-ink outline-none focus:border-sage"
             disabled={mint.isPending}
           />
