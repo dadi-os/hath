@@ -218,8 +218,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${APPLE_API_PRIVATE_KEY}" ] || [ -z "${APPLE_API_KEY_ID}" ]; then
-            echo "No App Store Connect API key — skipping notarization key file."
-            exit 0
+            echo "::error::APPLE_API_PRIVATE_KEY and APPLE_API_KEY_ID secrets are required on macOS (see .env.github)."
+            exit 1
           fi
           KEY_DIR="$HOME/private_keys"
           mkdir -p "$KEY_DIR"
@@ -227,7 +227,7 @@ jobs:
           echo "APPLE_API_KEY_PATH=$KEY_DIR/AuthKey_${APPLE_API_KEY_ID}.p8" >> "$GITHUB_ENV"
           echo "APPLE_API_KEY=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
 
-      # Optional macOS Developer ID + notarization (see .env.github).
+      # macOS Developer ID + notarization (see .env.github).
       # Empty APPLE_* secrets must be unset — Tauri treats an empty
       # APPLE_CERTIFICATE as "please sign" and fails the import.
       # TAURI_SIGNING_* signs updater artifacts (.sig / macOS .app.tar.gz).

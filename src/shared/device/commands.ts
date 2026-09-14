@@ -24,10 +24,7 @@ export type HathLocalTool =
   | "hath_write_clipboard"
   | "hath_send_file";
 
-/**
- * Run one hath_* tool against the local device.
- * @throws {DeviceError} when the OS denies or does not support the capability.
- */
+/** Run one hath_* tool against the local device; failures surface as DeviceError. */
 export async function executeHathTool(
   tool: HathLocalTool,
   args: Record<string, unknown>,

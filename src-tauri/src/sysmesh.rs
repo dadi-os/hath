@@ -425,7 +425,6 @@ fn start_daemon_windows(
         }
     }
 
-    // Wintun needs admin. UAC via elevated cmd (stdout redirects cannot use -Verb RunAs alone).
     let cmd_line = format!(
         "\"{}\" --statedir=\"{}\" --socket=\"{}\" --verbose=1 >\"{}\" 2>&1",
         bins.tailscaled.display(),
@@ -493,14 +492,12 @@ fn stop_daemon(state_dir: &Path, socket: &Path) {
     #[cfg(windows)]
     {
         let _ = socket;
-        // Prefer pidfile when present; otherwise stop by image next to our statedir log hint.
         let pidfile = state_dir.join("tailscaled.pid");
         if let Ok(pid) = fs::read_to_string(&pidfile) {
             let _ = Command::new("taskkill")
                 .args(["/PID", pid.trim(), "/F"])
                 .status();
         }
-        // Elevated children may not share DAEMON_PID; `tailscale down` already ran.
     }
 }
 
