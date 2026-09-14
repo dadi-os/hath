@@ -291,7 +291,10 @@ jobs:
 
   release-updater-manifest:
     needs: release-desktop
-    if: github.ref == 'refs/heads/main'
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      contains(fromJSON('["success","failure"]'), needs.release-desktop.result)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -313,25 +316,39 @@ jobs:
           set -euo pipefail
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
           export BASE VERSION
+          ls -la updater-sigs || true
           python3 <<'PY'
-          import json, pathlib, os
+          import json, pathlib, os, sys
           base = os.environ["BASE"]
           version = os.environ["VERSION"]
           sigs = pathlib.Path("updater-sigs")
-          platforms = {
-              "linux-x86_64": {
-                  "url": f"{base}/hath-linux-x86_64.AppImage",
-                  "signature": (sigs / "hath-linux-x86_64.AppImage.sig").read_text().strip(),
-              },
-              "darwin-aarch64": {
-                  "url": f"{base}/hath-macos-aarch64.app.tar.gz",
-                  "signature": (sigs / "hath-macos-aarch64.app.tar.gz.sig").read_text().strip(),
-              },
-              "windows-x86_64": {
-                  "url": f"{base}/hath-windows-x86_64-setup.exe",
-                  "signature": (sigs / "hath-windows-x86_64-setup.exe.sig").read_text().strip(),
-              },
+          catalog = {
+              "linux-x86_64": (
+                  f"{base}/hath-linux-x86_64.AppImage",
+                  "hath-linux-x86_64.AppImage.sig",
+              ),
+              "darwin-aarch64": (
+                  f"{base}/hath-macos-aarch64.app.tar.gz",
+                  "hath-macos-aarch64.app.tar.gz.sig",
+              ),
+              "windows-x86_64": (
+                  f"{base}/hath-windows-x86_64-setup.exe",
+                  "hath-windows-x86_64-setup.exe.sig",
+              ),
           }
+          platforms = {}
+          for key, (url, sig_name) in catalog.items():
+              path = sigs / sig_name
+              if not path.is_file():
+                  print(f"omit {key}: missing {sig_name}", file=sys.stderr)
+                  continue
+              platforms[key] = {
+                  "url": url,
+                  "signature": path.read_text().strip(),
+              }
+          if not platforms:
+              print("::error::No updater signatures found — cannot write latest.json", file=sys.stderr)
+              sys.exit(1)
           manifest = {
               "version": version,
               "notes": f"Hath {version}",

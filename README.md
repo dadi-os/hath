@@ -103,7 +103,7 @@ docker build --target production -t hath .
 | `ci.yml` → `container` | PR + push to `main` | `docker build --target production` |
 | `ci.yml` → `publish` | `main` after `container` | `ghcr.io/dadi-os/hath:latest` + sha tag |
 | `ci.yml` → `release-desktop` | `main` after `ci` | AppImage / DMG / NSIS (+ macOS `.app.tar.gz` for updater) → GitHub Release `hath-<sha>`; SemVer `0.0.<run_number>` |
-| `ci.yml` → `release-updater-manifest` | `main` after `release-desktop` | `latest.json` on the same release (signatures inlined; `.sig` files stay off the release) |
+| `ci.yml` → `release-updater-manifest` | `main` after any successful `release-desktop` leg | `latest.json` for platforms that uploaded this run (omit missing OS; `.sig` files stay off the release) |
 | `ci.yml` → `release-ios` | `main` after `ci` | TestFlight when Apple secrets present; IPA on same `hath-<sha>` release |
 
 ## Logging / error codes
