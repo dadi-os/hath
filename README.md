@@ -17,6 +17,7 @@ hath/
   src/
     pages/                 route construction sites
     features/<domain>/     agents, memory, timeline, system, logs
+      agents/              tree, popover, host-session peek (browser frame + terminal chip)
     chrome/                AppShell, Header, chatSidebar/
       chatSidebar/         portable unit (index = construction site)
         list/ thread/ composer/ message/

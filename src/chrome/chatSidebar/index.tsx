@@ -9,7 +9,13 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { dimaag } from "../../shared/api";
+import { dimaag, nas } from "../../shared/api";
+import { BrowserFrame } from "../../features/agents/BrowserFrame";
+import { TerminalChip } from "../../features/agents/TerminalChip";
+import {
+  pickLiveBrowser,
+  pickLiveTerminal,
+} from "../../features/agents/sessions";
 import { useConnection } from "../../hooks/useConnection";
 import {
   AGENTS_QUERY_KEY,
@@ -127,6 +133,20 @@ export function ChatSidebar({
       const { agents } = await dimaag.listAgents();
       return agents;
     },
+    enabled: connected,
+    refetchInterval: POLL_MS,
+  });
+
+  const browsersQuery = useQuery({
+    queryKey: ["nas", "browsers"],
+    queryFn: () => nas.listBrowsers(),
+    enabled: connected,
+    refetchInterval: POLL_MS,
+  });
+
+  const terminalsQuery = useQuery({
+    queryKey: ["nas", "terminals"],
+    queryFn: () => nas.listTerminals(),
     enabled: connected,
     refetchInterval: POLL_MS,
   });
@@ -593,6 +613,26 @@ export function ChatSidebar({
   const showWorkingPulse =
     reasoningBusy && !conversationBusy && queuedMessages.length === 0;
 
+  const openAgentRecord = openAgentId
+    ? agentsQuery.data?.find((a) => a.id === openAgentId)
+    : undefined;
+  const liveBrowserId =
+    openAgentRecord && browsersQuery.isSuccess
+      ? pickLiveBrowser(
+          openAgentRecord.sessions.browsers,
+          browsersQuery.data,
+        )
+      : null;
+  const liveTerminal =
+    openAgentRecord && terminalsQuery.isSuccess
+      ? pickLiveTerminal(
+          openAgentRecord.sessions.terminals,
+          terminalsQuery.data,
+        )
+      : null;
+  const showHostOverlay =
+    viewingThread && (liveBrowserId !== null || liveTerminal !== null);
+
   const showThreadMain = isMobile ? true : viewingThread;
   const showListInDrawer = isMobile;
   const showListInPanel = !isMobile && !viewingThread;
@@ -647,6 +687,20 @@ export function ChatSidebar({
       ) : null}
 
       <div className="relative min-h-0 flex-1">
+        {showHostOverlay ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col items-stretch gap-1.5 px-4 pt-2">
+            {liveTerminal ? (
+              <TerminalChip
+                command={liveTerminal.last_command}
+                terminalId={liveTerminal.id}
+                className="self-start"
+              />
+            ) : null}
+            {liveBrowserId !== null ? (
+              <BrowserFrame browserId={liveBrowserId} variant="rail" />
+            ) : null}
+          </div>
+        ) : null}
         <AnimatePresence mode="wait" initial={false}>
           {showThreadMain && (viewingThread || isMobile) ? (
             viewingThread ? (

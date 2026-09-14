@@ -8,6 +8,11 @@ import { formatOutboundContent } from "./store/chat";
 import type { ChatMessage } from "./store/chat";
 import { buildTree, visualState } from "./features/agents/tree";
 import {
+  hasRememberedSessions,
+  pickLiveBrowser,
+  pickLiveTerminal,
+} from "./features/agents/sessions";
+import {
   addDays,
   isSameDay,
   startOfWeek,
@@ -88,6 +93,7 @@ describe("agent tree", () => {
     parent_agent_id: null,
     active: true,
     running: { reasoning: false, conversation: false },
+    sessions: { browsers: [], terminals: [] },
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
@@ -113,6 +119,31 @@ describe("agent tree", () => {
 
   it("fails loudly when agents list is empty", () => {
     expect(() => buildTree([])).toThrow(/no agents/);
+  });
+});
+
+describe("agent host sessions", () => {
+  it("picks the newest live browser and terminal", () => {
+    expect(pickLiveBrowser([10, 12, 11], [{ id: 10 }, { id: 11 }])).toBe(11);
+    expect(pickLiveBrowser([10], [{ id: 12 }])).toBeNull();
+    expect(
+      pickLiveTerminal(
+        [
+          { id: "t1", last_command: "ls" },
+          { id: "t2", last_command: "pwd" },
+        ],
+        [{ id: "t2" }],
+      ),
+    ).toEqual({ id: "t2", last_command: "pwd" });
+    expect(
+      hasRememberedSessions({ browsers: [], terminals: [] }),
+    ).toBe(false);
+    expect(
+      hasRememberedSessions({
+        browsers: [10],
+        terminals: [],
+      }),
+    ).toBe(true);
   });
 });
 

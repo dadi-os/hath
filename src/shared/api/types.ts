@@ -19,6 +19,12 @@ export type PostMessageResponse = {
   created_at: string;
 };
 
+/** Nas browsers/terminals this agent recently drove. Empty after Dimaag restart. */
+export type AgentSessions = {
+  browsers: number[];
+  terminals: Array<{ id: string; last_command: string | null }>;
+};
+
 /** Flat agent row from GET /agents. */
 export type AgentRecord = {
   id: string;
@@ -27,6 +33,7 @@ export type AgentRecord = {
   parent_agent_id: string | null;
   active: boolean;
   running: { reasoning: boolean; conversation: boolean };
+  sessions: AgentSessions;
   created_at: string;
   updated_at: string;
 };

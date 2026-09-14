@@ -125,7 +125,7 @@ export class MeshTransport implements Transport {
     method: "GET" | "POST" | "PUT";
     body?: unknown;
     bodyText?: string;
-    responseType?: "json" | "text";
+    responseType?: "json" | "text" | "blob";
   }): Promise<T> {
     if (this.port === null || !this.active) {
       throw new Error("Not connected");
@@ -166,6 +166,9 @@ export class MeshTransport implements Transport {
 
     if (opts.responseType === "text") {
       return (await response.text()) as T;
+    }
+    if (opts.responseType === "blob") {
+      return (await response.blob()) as T;
     }
     return (await response.json()) as T;
   }

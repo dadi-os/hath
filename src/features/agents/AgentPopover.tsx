@@ -101,6 +101,7 @@ export function AgentPopover({
       running,
       created_at: createdAt ?? new Date(0).toISOString(),
       updated_at: lastActiveAt ?? updatedAt ?? new Date(0).toISOString(),
+      sessions: { browsers: [], terminals: [] },
     },
     running,
   );

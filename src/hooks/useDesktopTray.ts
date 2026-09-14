@@ -75,7 +75,7 @@ export function useDesktopTray(opts: {
   });
 
   const browsersQuery = useQuery({
-    queryKey: ["nas", "browsers", "tray"],
+    queryKey: ["nas", "browsers"],
     queryFn: () => nas.listBrowsers(),
     enabled: target === "desktop" && state === "connected",
     refetchInterval: TRAY_REFRESH_MS,

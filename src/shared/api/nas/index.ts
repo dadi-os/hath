@@ -214,6 +214,27 @@ export function createNasClient(transport: Transport, baseUrl: string) {
         method: "GET",
       });
     },
+
+    /** GET /browsers/:id/screenshot — PNG of the virtual monitor. */
+    getBrowserScreenshot(id: number): Promise<Blob> {
+      return transport.request({
+        baseUrl,
+        path: `/browsers/${id}/screenshot`,
+        method: "GET",
+        responseType: "blob",
+      });
+    },
+
+    /** GET /terminals — live host terminal panes on Nas. */
+    listTerminals(): Promise<
+      Array<{ id: string; cwd: string; created_at: string; busy: boolean }>
+    > {
+      return transport.request({
+        baseUrl,
+        path: "/terminals",
+        method: "GET",
+      });
+    },
   };
 }
 

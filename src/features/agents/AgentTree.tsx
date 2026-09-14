@@ -11,7 +11,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { hierarchy, tree, type HierarchyPointNode } from "d3-hierarchy";
 import { motion } from "motion/react";
-import { dimaag } from "../../shared/api";
+import { dimaag, nas } from "../../shared/api";
 import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
@@ -19,12 +19,20 @@ import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
 import { AgentPopover } from "./AgentPopover";
+import { SessionPeek } from "./SessionPeek";
+import {
+  hasRememberedSessions,
+  pickLiveBrowser,
+  pickLiveTerminal,
+} from "./sessions";
 import {
   buildTree,
   linkPath,
   visualState,
   type AgentTreeNode,
 } from "./tree";
+
+const PEEK_DELAY_MS = 350;
 
 type ViewTransform = { x: number; y: number; k: number };
 
@@ -84,6 +92,20 @@ export function AgentTree({
       seedRunningFromAgents(agents);
       return agents;
     },
+    enabled: connected,
+    refetchInterval: POLL_MS,
+  });
+
+  const browsersQuery = useQuery({
+    queryKey: ["nas", "browsers"],
+    queryFn: () => nas.listBrowsers(),
+    enabled: connected,
+    refetchInterval: POLL_MS,
+  });
+
+  const terminalsQuery = useQuery({
+    queryKey: ["nas", "terminals"],
+    queryFn: () => nas.listTerminals(),
     enabled: connected,
     refetchInterval: POLL_MS,
   });
@@ -173,11 +195,34 @@ export function AgentTree({
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [peekId, setPeekId] = useState<string | null>(null);
+  const [peekAnchor, setPeekAnchor] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const peekTimerRef = useRef<number | null>(null);
+
+  /** Cancel a pending hover-peek timer without clearing the visible peek. */
+  const clearPeekTimer = () => {
+    if (peekTimerRef.current !== null) {
+      window.clearTimeout(peekTimerRef.current);
+      peekTimerRef.current = null;
+    }
+  };
+
+  /** Hide the session peek and cancel any pending timer. */
+  const hidePeek = () => {
+    clearPeekTimer();
+    setPeekId(null);
+    setPeekAnchor(null);
+  };
+
+  useEffect(() => () => clearPeekTimer(), []);
 
   useEffect(() => {
     setView({ x: 0, y: 0, k: 1 });
     setSelectedId(null);
     setAnchor(null);
+    hidePeek();
   }, [entranceKey]);
 
   const resetView = () => setView({ x: 0, y: 0, k: 1 });
@@ -210,6 +255,7 @@ export function AgentTree({
       return;
     }
     drag.moved = true;
+    hidePeek();
     drag.lastX = e.clientX;
     drag.lastY = e.clientY;
     const svg = svgRef.current;
@@ -324,7 +370,44 @@ export function AgentTree({
     return { x: screen.x - rect.left, y: screen.y - rect.top };
   };
 
+  /** Viewport (client) coordinates for a tree node — used to place the hover peek portal. */
+  const nodeViewportAnchor = (node: HierarchyPointNode<AgentTreeNode>) => {
+    const svg = svgRef.current;
+    if (!svg) {
+      return null;
+    }
+    const pt = svg.createSVGPoint();
+    pt.x = node.x * view.k + view.x;
+    pt.y = node.y * view.k + view.y;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) {
+      return null;
+    }
+    const screen = pt.matrixTransform(ctm);
+    return { x: screen.x, y: screen.y };
+  };
+
+  /** After a short delay, show the host-session peek for a node with remembered sessions. */
+  const schedulePeek = (node: HierarchyPointNode<AgentTreeNode>) => {
+    if (dragRef.current.active || selectedId === node.data.id) {
+      return;
+    }
+    const agent = agentsById.get(node.data.id);
+    if (!agent || !hasRememberedSessions(agent.sessions)) {
+      return;
+    }
+    clearPeekTimer();
+    peekTimerRef.current = window.setTimeout(() => {
+      if (dragRef.current.active || selectedId === node.data.id) {
+        return;
+      }
+      setPeekId(node.data.id);
+      setPeekAnchor(nodeViewportAnchor(node));
+    }, PEEK_DELAY_MS);
+  };
+
   const openNode = (node: HierarchyPointNode<AgentTreeNode>) => {
+    hidePeek();
     setSelectedId(node.data.id);
     const anchorPt = nodeScreenAnchor(node);
     if (anchorPt) {
@@ -369,6 +452,20 @@ export function AgentTree({
   }
 
   const { viewBox } = layout;
+  const peekAgent = peekId ? agentsById.get(peekId) : undefined;
+  const peekBrowserId =
+    peekAgent && browsersQuery.isSuccess
+      ? pickLiveBrowser(peekAgent.sessions.browsers, browsersQuery.data)
+      : null;
+  const peekTerminal =
+    peekAgent && terminalsQuery.isSuccess
+      ? pickLiveTerminal(peekAgent.sessions.terminals, terminalsQuery.data)
+      : null;
+  const peekOpen =
+    peekId !== null &&
+    peekAnchor !== null &&
+    peekId !== selectedId &&
+    (peekBrowserId !== null || peekTerminal !== null);
 
   return (
     <div ref={rootRef} className={`relative h-full min-h-0 w-full ${className ?? ""}`}>
@@ -433,6 +530,12 @@ export function AgentTree({
                 transform={`translate(${node.x},${node.y})`}
                 onPointerDown={(e) => {
                   e.stopPropagation();
+                }}
+                onPointerEnter={() => {
+                  schedulePeek(node);
+                }}
+                onPointerLeave={() => {
+                  hidePeek();
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -503,6 +606,12 @@ export function AgentTree({
           setAnchor(null);
         }}
         onSelectParent={movePopoverToAgent}
+      />
+      <SessionPeek
+        open={peekOpen}
+        anchor={peekAnchor}
+        browserId={peekBrowserId}
+        terminal={peekTerminal}
       />
     </div>
   );
