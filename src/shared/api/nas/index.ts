@@ -124,6 +124,20 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /pull_updates — apply module and/or OS updates. */
+    pullUpdates(scope: "modules" | "os" | "all"): Promise<{
+      status: string;
+      scope: string;
+      reboot_required: boolean;
+    }> {
+      return transport.request({
+        baseUrl,
+        path: "/pull_updates",
+        method: "POST",
+        body: { scope },
+      });
+    },
+
     /** GET /cloudflared/token — tunnel token text. */
     getCloudflaredToken(): Promise<string> {
       return transport.request({
