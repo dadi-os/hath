@@ -344,6 +344,14 @@ export function AgentTree({
     }
   };
 
+  if (!connected) {
+    return (
+      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
+        <p className="text-[13px] text-ink-ghost">Connect to load agents</p>
+      </div>
+    );
+  }
+
   if (agentsQuery.isError) {
     return (
       <div className={`flex h-full items-center justify-center ${className ?? ""}`}>

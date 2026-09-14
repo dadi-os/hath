@@ -16,6 +16,7 @@ import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
  * Persistent chrome. Desktop: bone-glass header + chat rail + widget outlet.
+ * First-launch provisioning frosts that chrome; mesh-down overlays the widgets.
  * Mobile: ChatGPT-style chat-only shell (no widget routes).
  */
 export function AppShell() {
@@ -73,20 +74,17 @@ export function AppShell() {
           transition={{ duration: SLOW_S, ease: EASE, delay: 0.2 }}
         >
           <div className="h-full min-h-0 overflow-hidden">
-            {showOnboarding ? (
-              <DisconnectedState />
-            ) : (
-              <div
-                key={location.pathname}
-                className="h-full min-h-0 overflow-hidden"
-              >
-                <Outlet />
-              </div>
-            )}
+            <div
+              key={location.pathname}
+              className="h-full min-h-0 overflow-hidden"
+            >
+              <Outlet />
+            </div>
           </div>
           {showPower || showConnecting ? <MeshPowerOverlay /> : null}
         </motion.main>
       </div>
+      {showOnboarding ? <DisconnectedState /> : null}
     </div>
   );
 }

@@ -109,22 +109,17 @@ export function MobileChatShell() {
         animate={{ opacity: 1 }}
         transition={{ duration: SLOW_S, ease: EASE, delay: 0.08 }}
       >
-        {showOnboarding ? (
-          <div className="h-full p-4">
-            <DisconnectedState />
-          </div>
-        ) : (
-          <ChatSidebar
-            variant="mobile"
-            sessionKey={sessionKey}
-            className="h-full"
-            drawerOpen={drawerOpen}
-            onDrawerClose={() => setDrawerOpen(false)}
-            onDrawerOpen={() => setDrawerOpen(true)}
-          />
-        )}
+        <ChatSidebar
+          variant="mobile"
+          sessionKey={sessionKey}
+          className="h-full"
+          drawerOpen={drawerOpen}
+          onDrawerClose={() => setDrawerOpen(false)}
+          onDrawerOpen={() => setDrawerOpen(true)}
+        />
         {showPower ? <MeshPowerOverlay /> : null}
       </motion.div>
+      {showOnboarding ? <DisconnectedState /> : null}
     </div>
   );
 }
