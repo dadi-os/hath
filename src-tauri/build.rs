@@ -1,61 +1,59 @@
 fn main() {
     let target = std::env::var("TARGET").expect("TARGET");
-    let dir = if target.contains("apple-darwin") {
-        if target.starts_with("x86_64-") {
-            "darwin-amd64"
-        } else {
-            "darwin-arm64"
-        }
-    } else if target.contains("apple-ios") {
-        "ios-arm64"
-    } else if target.contains("linux") {
-        "linux-amd64"
-    } else if target.contains("windows") {
-        "windows-amd64"
-    } else {
-        panic!("unsupported target for hathnet: {target}");
-    };
+    let ios = target.contains("apple-ios");
+    let desktop_apple = target.contains("apple-darwin");
+    let windows = target.contains("windows");
+    let linux = target.contains("linux");
 
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("lib")
-        .join(dir);
-
-    if target.contains("windows") {
-        let dll = path.join("hathnet.dll");
-        if !dll.exists() {
-            panic!(
-                "missing {} — run `cd net && ./build.sh windows-amd64` first",
-                dll.display()
-            );
-        }
-        println!("cargo:rerun-if-changed={}", dll.display());
-        // Linkage is #[link(..., kind = "raw-dylib")] in net.rs — no import lib.
-        // Ensure the DLL is beside the built binary for `tauri build` / local runs.
-        let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-        let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(&profile);
-        let _ = std::fs::create_dir_all(&out_dir);
-        let _ = std::fs::copy(&dll, out_dir.join("hathnet.dll"));
-        // Cross-target builds land under target/<triple>/<profile>.
-        if let Ok(target_triple) = std::env::var("TARGET") {
-            let cross = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join(&target_triple)
-                .join(&profile);
-            let _ = std::fs::create_dir_all(&cross);
-            let _ = std::fs::copy(&dll, cross.join("hathnet.dll"));
-        }
-    } else {
+    // Desktop uses system tailscaled (sysmesh). iOS keeps in-process libhathnet.
+    if ios {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("lib")
+            .join("ios-arm64");
         if !path.join("libhathnet.a").exists() {
             panic!(
-                "missing {}/libhathnet.a — run `cd net && ./build.sh` first",
+                "missing {}/libhathnet.a — run `cd net && ./build.sh ios-arm64` first",
                 path.display()
             );
         }
         println!("cargo:rerun-if-changed={}", path.join("libhathnet.a").display());
         println!("cargo:rustc-link-search=native={}", path.display());
         println!("cargo:rustc-link-lib=static=hathnet");
+    }
+
+    if desktop_apple || linux || windows {
+        let bin_dir = if desktop_apple {
+            if target.starts_with("x86_64-") {
+                "darwin-amd64"
+            } else {
+                "darwin-arm64"
+            }
+        } else if linux {
+            "linux-amd64"
+        } else {
+            "windows-amd64"
+        };
+        let bin_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("bin")
+            .join(bin_dir);
+        let ts = if windows {
+            bin_path.join("tailscale.exe")
+        } else {
+            bin_path.join("tailscale")
+        };
+        let tsd = if windows {
+            bin_path.join("tailscaled.exe")
+        } else {
+            bin_path.join("tailscaled")
+        };
+        if !ts.exists() || !tsd.exists() {
+            panic!(
+                "missing {} — run `cd net && ./build-tailscale.sh {bin_dir}` first",
+                bin_path.display()
+            );
+        }
+        println!("cargo:rerun-if-changed={}", ts.display());
+        println!("cargo:rerun-if-changed={}", tsd.display());
     }
 
     if target.contains("apple") {
@@ -65,7 +63,9 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=SystemConfiguration");
     }
 
-    if target.contains("apple-ios") {
+    // Network Extension bridge (iOS + macOS). Real ObjC is linked from Xcode;
+    // cargo builds use the C stub until the extension target is wired.
+    if ios || desktop_apple {
         println!("cargo:rustc-link-lib=framework=NetworkExtension");
         let stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("dadimesh-extension")

@@ -1,6 +1,5 @@
-/* Soft stubs for iOS when DadiMeshBridge.m is not yet linked in Xcode.
- * Replace by adding dadimesh-extension/DadiMeshBridge.m to the app target
- * and removing this file from the compile sources if you hit duplicate symbols.
+/* Soft stubs when DadiMeshBridge.m is not yet linked in Xcode (iOS/macOS).
+ * Replace by adding dadimesh-extension/DadiMeshBridge.m to the app target.
  */
 int dadimesh_vpn_ensure(void) { return 0; }
 int dadimesh_vpn_start(int proxy_port) {

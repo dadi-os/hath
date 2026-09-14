@@ -11,10 +11,16 @@ import { consumeSseBuffer } from "./sse";
 export { NotProvisionedError } from "./errors";
 
 /**
+ * Sentinel from desktop `mesh_start` when system `tailscaled` TUN is up.
+ * Traffic uses MagicDNS `*.dadi` directly (no local `/@host` proxy).
+ */
+const SYSTEM_MESH_PORT = 0;
+
+/**
  * Transport that dials Dimaag/Yaad/Nas through dadiMesh.
  *
- * Mesh hostnames stay in API constants (`http://dimaag.dadi`); the dialer
- * reaches them via `/@host/path` on the local mesh proxy (no X-Hath-Upstream).
+ * Desktop: system Tailscale TUN + MagicDNS → `http://dimaag.dadi/...`.
+ * iOS: in-process dialer → `http://127.0.0.1:<port>/@host/...`.
  * Connection is explicit — no silent reconnect.
  */
 export class MeshTransport implements Transport {
@@ -125,9 +131,8 @@ export class MeshTransport implements Transport {
       throw new Error("Not connected");
     }
 
-    const host = meshHost(opts.baseUrl);
     const path = opts.path.startsWith("/") ? opts.path : `/${opts.path}`;
-    const url = `http://127.0.0.1:${this.port}/@${host}${path}`;
+    const url = this.meshUrl(opts.baseUrl, path);
     const headers: Record<string, string> = {};
     let body: string | undefined;
     if (opts.bodyText !== undefined) {
@@ -195,6 +200,16 @@ export class MeshTransport implements Transport {
     };
   }
 
+  /** Desktop system mesh uses MagicDNS; iOS uses the local `/@host` proxy. */
+  private meshUrl(baseUrl: string, path: string): string {
+    if (this.port === SYSTEM_MESH_PORT) {
+      const base = baseUrl.replace(/\/$/, "");
+      return `${base}${path}`;
+    }
+    const host = meshHost(baseUrl);
+    return `http://127.0.0.1:${this.port}/@${host}${path}`;
+  }
+
   private async startNode(credentials: Credentials): Promise<number> {
     return invoke<number>("mesh_start", {
       controlUrl: credentials.control_url,
@@ -214,9 +229,8 @@ export class MeshTransport implements Transport {
       return;
     }
 
-    const host = meshHost(baseUrl);
     const urlPath = path.startsWith("/") ? path : `/${path}`;
-    const url = `http://127.0.0.1:${this.port}/@${host}${urlPath}`;
+    const url = this.meshUrl(baseUrl, urlPath);
     const closed = () => {
       if (!signal.aborted) {
         onClose?.();

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": [
+      "bin/darwin-arm64/tailscale",
+      "bin/darwin-arm64/tailscaled"
+    ]
+  }
+}

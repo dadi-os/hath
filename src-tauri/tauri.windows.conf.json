@@ -1,7 +1,8 @@
 {
   "bundle": {
-    "resources": {
-      "lib/windows-amd64/hathnet.dll": "hathnet.dll"
-    }
+    "resources": [
+      "bin/windows-amd64/tailscale.exe",
+      "bin/windows-amd64/tailscaled.exe"
+    ]
   }
 }

@@ -102,8 +102,8 @@ export function MeshPowerOverlay() {
       </p>
       <p className="mt-2 max-w-xs text-center text-[13px] text-ink-muted">
         {busy
-          ? "Configuring the on-device tunnel…"
-          : "Tap to join the mesh."}
+          ? "Joining the mesh (TUN + MagicDNS)…"
+          : "Tap to join dadiMesh system-wide."}
       </p>
       {error ? (
         <div className="mt-3 flex max-w-sm flex-col items-center gap-2">

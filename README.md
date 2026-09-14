@@ -8,7 +8,7 @@ The sole UI client for dadi. One codebase, two form factors — desktop and mobi
 - Dimaag (`http://dimaag.dadi`) — agents, messages, events
 - Yaad (`http://yaad.dadi`) — memory graph
 - Dwar (indirect via Dimaag/Yaad)
-- dadiMesh (Go tsnet forward proxy + Tauri shell; iOS Network Extension profile)
+- dadiMesh (desktop: system `tailscaled` TUN + MagicDNS; iOS: Go tsnet dialer + Network Extension)
 
 ## Layout
 
@@ -51,7 +51,7 @@ Signing / release secrets live in `.env.github` for CI only — not application 
 
 ## Local run
 
-Prerequisites once: `npm install`, then `cd net && ./build.sh && cd ..` (builds `libhathnet` for the Tauri shell).
+Prerequisites once: `npm install`, then `cd net && ./build-tailscale.sh && cd ..` (desktop). For iOS builds also `cd net && ./build.sh ios-arm64`.
 
 ### Desktop (Tauri)
 
@@ -135,29 +135,51 @@ On the box: **Add Device** (or Preferences → Devices) mints a Nas `POST /provi
 
 ## Transport / dadiMesh
 
-All network calls go through a `Transport` (`shared/api/`). Tauri loads `MeshTransport` (dynamic import); the browser loads `BrowserTransport` (fetch + EventSource, Nas `/health` for ONLINE/OFFLINE).
+All network calls go through a `Transport` (`shared/api/`). Tauri loads `MeshTransport` (dynamic import); the browser loads `BrowserTransport` (fetch + EventSource, Nas `/health` for ONLINE/OFFLINE). Browser Hath is for Nas compose on-box UI only — it does not join Headscale.
 
 Lifecycle (Tauri):
 
 - Unprovisioned → onboarding (scan/paste)
 - Provisioned + mesh down → glassy power overlay (tap to join); no silent auto-start
 - Connected → app UI; chrome power control leaves the mesh
-- Background / other apps → mesh stays up while the process (or iOS Network Extension) is alive
+- **Desktop:** power on starts bundled `tailscaled` (TUN + MagicDNS `--accept-dns`) against the provisioned Headscale control URL — same model as the Nas host node `os`. Hath talks to `http://*.dadi` directly. Terminal can `ssh user@os.dadi` while joined. macOS prompts once for admin (osascript); Linux uses `pkexec`/`sudo`; Windows elevates via UAC for Wintun.
+- **iOS:** in-process tsnet dialer + Network Extension profile (`dadiMesh` in Settings → VPN) with L3 CGNAT routes + MagicDNS (and optional HTTP proxy while the dialer port is non-zero)
+- Leave → `tailscale down` / dialer stop; mesh names stop resolving
 
-Header shows ONLINE/OFFLINE.
+Header shows ONLINE / JOINING… / OFFLINE.
 
-### iOS Network Extension
+### Phase 1 success check (macOS)
 
-Sources live under `src-tauri/dadimesh-extension/` (Packet Tunnel Provider). After `npm run tauri ios init`:
+1. Fresh Hath → provision → power on (approve admin once if prompted).
+2. MagicDNS: `scutil --dns` shows `.dadi`, or `ping os.dadi` resolves.
+3. `ssh user@os.dadi` from Terminal while Hath is joined.
+4. Hath header ONLINE against mesh services; power off → SSH to `os.dadi` fails again.
+
+Phase 1 may **not** list dadiMesh under System Settings → VPN (open-source `tailscaled`/utun often does not). That Settings profile is Phase 2 Network Extension work.
+
+### Desktop system mesh binaries
+
+```sh
+cd net && ./build-tailscale.sh          # host platform → src-tauri/bin/<target>/
+cd net && ./build-tailscale.sh all      # all desktop targets (CI)
+```
+
+Pin is `TS_VER` (default `v1.82.0`, aligned with `net/go.mod`). Required before `tauri build` / `tauri dev` on desktop.
+
+Phase 2 (Apple Settings → VPN as a first-class System/Network Extension that owns WireGuard, plus iOS L3 packet path) uses sources under `src-tauri/dadimesh-extension/` (`PacketTunnelProvider.swift`, `Info-macos.plist`, `Info-ios.plist`, `dadimesh.entitlements`). Wire the Xcode NE target as below; until the extension embeds the crypto stack, desktop TUN from `tailscaled` is what carries SSH. Desktop `mesh_start` may register the VPN preference but does **not** start the NE tunnel on top of sysmesh.
+
+### iOS / macOS Network Extension
+
+Sources live under `src-tauri/dadimesh-extension/` (Packet Tunnel Provider with L3 CGNAT routes + MagicDNS + optional HTTP proxy). After `npm run tauri ios init` (or adding a macOS NE target):
 
 1. Open `src-tauri/gen/apple/hath.xcodeproj`.
 2. **File → New → Target → Network Extension → Packet Tunnel Provider** — Product Name `dadimesh`, Bundle ID `com.dadi.hath.dadimesh`.
-3. Replace the generated Swift provider with `PacketTunnelProvider.swift`.
-4. Add `DadiMeshBridge.m` to the **main** Hath app target (not the extension).
+3. Replace the generated Swift provider with `PacketTunnelProvider.swift`; use `Info-macos.plist` / `Info-ios.plist` / `dadimesh.entitlements` as needed.
+4. Add `DadiMeshBridge.m` to the **main** Hath app target (not the extension); remove the cargo C stub if you hit duplicate symbols.
 5. Enable on **both** targets: App Groups `group.com.dadi.hath`, Network Extensions → Packet Tunnel, Personal VPN (app).
 6. No On Demand rules — join/leave stays explicit from Hath.
 
-`mesh_start` / `mesh_stop` call into `DadiMeshBridge.m` on iOS after the in-process dialer is up.
+`mesh_start` / `mesh_stop` call into the bridge after the dialer/sysmesh is up.
 
 ## Chrome and routes
 
@@ -180,10 +202,11 @@ Bone glass — field bloom, frosted veil panels, sage accent; dark palette via `
 | `npm test` | Vitest behavior suite |
 | `npm run build` | `tsc` + Vite production build (no `libhathnet` required) |
 | `npm run dev` | Vite web client (`0.0.0.0:8080`, `hath.dadi` allowedHosts) |
-| `npm run tauri dev` | Desktop Tauri app (requires `net/build.sh` first) |
+| `npm run tauri dev` | Desktop Tauri app (requires `net/build-tailscale.sh` first) |
 | `npm run tauri ios init` | Generate iOS Xcode project under `src-tauri/gen/apple` |
 | `npm run tauri ios dev` | iOS simulator / device (requires `ios init` + Xcode) |
-| `cd net && ./build.sh` | Build libhathnet for linking |
+| `cd net && ./build.sh` | Build libhathnet for iOS dialer linking |
+| `cd net && ./build-tailscale.sh` | Build desktop `tailscale`/`tailscaled` into `src-tauri/bin/` |
 | `npx tauri icon app-icon.png` | Regenerate desktop / iOS / Android icons from `app-icon.png` (દાદી mark) |
 
 ### Desktop auto-update

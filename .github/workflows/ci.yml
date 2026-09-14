@@ -29,9 +29,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential
 
-      - name: Build tsnet archive
-        run: cd net && ./build.sh linux-amd64
-
       - run: npm ci
 
       - run: npm test
@@ -200,9 +197,9 @@ jobs:
             exit 1
           fi
 
-      - name: Build tsnet archive
+      - name: Build system mesh binaries
         shell: bash
-        run: cd net && ./build.sh ${{ matrix.net_target }}
+        run: cd net && ./build-tailscale.sh ${{ matrix.net_target }}
 
       - run: npm ci
         shell: bash
@@ -383,7 +380,7 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      - name: Build tsnet archive
+      - name: Build tsnet archive (iOS dialer)
         if: steps.apple.outputs.configured == 'true'
         run: cd net && ./build.sh ios-arm64
 

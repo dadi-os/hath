@@ -1,19 +1,26 @@
+#[cfg(target_os = "ios")]
 use crate::logutil;
 
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
-/// Bound for dadimesh Up — stale auth keys or a dead control plane must not hang forever.
+#[cfg(target_os = "ios")]
+use std::ffi::{CStr, CString};
+#[cfg(target_os = "ios")]
+use std::os::raw::{c_char, c_int};
+#[cfg(target_os = "ios")]
+use std::path::Path;
+#[cfg(target_os = "ios")]
+use std::time::Duration;
+
+/// Bound for in-process dialer Up (iOS).
+#[cfg(target_os = "ios")]
 const MESH_START_TIMEOUT: Duration = Duration::from_secs(45);
 
-#[cfg(windows)]
-#[link(name = "hathnet", kind = "raw-dylib")]
+#[cfg(target_os = "ios")]
 extern "C" {
     fn dadimesh_start(
         control_url: *const c_char,
@@ -28,22 +35,8 @@ extern "C" {
     fn dadimesh_free(p: *mut c_char);
 }
 
-#[cfg(not(windows))]
-extern "C" {
-    fn dadimesh_start(
-        control_url: *const c_char,
-        auth_key: *const c_char,
-        hostname: *const c_char,
-        state_dir: *const c_char,
-    ) -> c_int;
-    fn dadimesh_stop();
-    fn dadimesh_status() -> c_int;
-    fn dadimesh_port() -> c_int;
-    fn dadimesh_last_error() -> *mut c_char;
-    fn dadimesh_free(p: *mut c_char);
-}
-
-/// Shared dialer port after a successful start (None when stopped).
+/// Shared dialer port after a successful start.
+/// Desktop system mesh stores [`crate::sysmesh::SYSTEM_MESH_SENTINEL`] (0).
 pub struct MeshState {
     pub port: Mutex<Option<u16>>,
 }
@@ -63,58 +56,7 @@ pub struct Credentials {
     pub node_name: String,
 }
 
-fn last_error_string() -> String {
-    unsafe {
-        let ptr = dadimesh_last_error();
-        if ptr.is_null() {
-            return "unknown dadimesh error".into();
-        }
-        let s = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        dadimesh_free(ptr);
-        s
-    }
-}
-
-fn start_node(
-    control_url: &str,
-    auth_key: &str,
-    hostname: &str,
-    state_dir: &Path,
-) -> Result<u16, String> {
-    let control = CString::new(control_url).map_err(|e| e.to_string())?;
-    let key = CString::new(auth_key).map_err(|e| e.to_string())?;
-    let host = CString::new(hostname).map_err(|e| e.to_string())?;
-    let dir = CString::new(state_dir.to_string_lossy().as_ref()).map_err(|e| e.to_string())?;
-
-    let code =
-        unsafe { dadimesh_start(control.as_ptr(), key.as_ptr(), host.as_ptr(), dir.as_ptr()) };
-    if code < 0 {
-        let err = last_error_string();
-        logutil::emit("error", format!("dadimesh start failed: {err}"));
-        return Err(err);
-    }
-    logutil::emit("info", format!("dadimesh connected dialer_port={code}"));
-    Ok(code as u16)
-}
-
-pub fn stop_node() {
-    logutil::emit("info", "dadimesh stopping");
-    unsafe { dadimesh_stop() };
-}
-
-fn node_status() -> u8 {
-    unsafe { dadimesh_status() as u8 }
-}
-
-fn node_port() -> Option<u16> {
-    let p = unsafe { dadimesh_port() };
-    if p > 0 {
-        Some(p as u16)
-    } else {
-        None
-    }
-}
-
+#[cfg(target_os = "ios")]
 fn mesh_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let data = app
         .path()
@@ -122,7 +64,6 @@ fn mesh_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("app_data_dir: {e}"))?;
     let dir = data.join("dadimesh");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create dadimesh dir: {e}"))?;
-    // Migrate legacy tsnet state directory if present and new dir is empty.
     let legacy = data.join("tsnet");
     if legacy.is_dir()
         && std::fs::read_dir(&dir)
@@ -134,6 +75,7 @@ fn mesh_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+#[cfg(target_os = "ios")]
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -158,7 +100,7 @@ fn credentials_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data.join("credentials.json"))
 }
 
-/// Bring up dadiMesh (tsnet + local forward proxy). Blocks until Up completes.
+/// Bring up dadiMesh. Desktop: system `tailscaled` TUN. iOS: in-process tsnet + NE.
 #[tauri::command]
 pub async fn mesh_start(
     app: AppHandle,
@@ -179,66 +121,112 @@ pub async fn mesh_start(
         return Err("node_name is empty".into());
     }
 
-    let state_dir = mesh_dir(&app)?;
-    let hostname = trimmed_name.to_string();
+    #[cfg(not(target_os = "ios"))]
+    {
+        let app2 = app.clone();
+        let hostname = trimmed_name.to_string();
+        let port = tauri::async_runtime::spawn_blocking(move || {
+            crate::sysmesh::start(&app2, &control_url, &auth_key, &hostname)
+        })
+        .await
+        .map_err(|e| format!("mesh_start join: {e}"))??;
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(start_node(&control_url, &auth_key, &hostname, &state_dir));
-    });
+        #[cfg(target_os = "macos")]
+        {
+            // Phase 2 scaffold: register Settings → VPN profile when the NE
+            // target is linked. Do not startTunnel here — L3 routes would fight
+            // the sysmesh utun; SSH rides on tailscaled until the extension owns WireGuard.
+            let _ = crate::ios_vpn::ensure_vpn_configuration();
+        }
 
-    let port = match rx.recv_timeout(MESH_START_TIMEOUT) {
-        Ok(Ok(port)) => port,
-        Ok(Err(err)) => return Err(err),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            logutil::emit("error", "dadimesh start timed out");
-            stop_node();
-            return Err(
-                "dadiMesh join timed out. Check the setup code or network.".into(),
-            );
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            return Err("mesh_start worker ended unexpectedly".into());
-        }
-    };
+        let mut guard = state.port.lock().map_err(|e| e.to_string())?;
+        *guard = Some(port);
+        return Ok(port);
+    }
 
     #[cfg(target_os = "ios")]
     {
+        let state_dir = mesh_dir(&app)?;
+        let hostname = trimmed_name.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(start_node_ios(
+                &control_url,
+                &auth_key,
+                &hostname,
+                &state_dir,
+            ));
+        });
+
+        let port = match rx.recv_timeout(MESH_START_TIMEOUT) {
+            Ok(Ok(port)) => port,
+            Ok(Err(err)) => return Err(err),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                logutil::emit("error", "dadimesh start timed out");
+                stop_node_ios();
+                return Err(
+                    "dadiMesh join timed out. Check the setup code or network.".into(),
+                );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("mesh_start worker ended unexpectedly".into());
+            }
+        };
+
         let _ = crate::ios_vpn::ensure_vpn_configuration();
         let _ = crate::ios_vpn::start_tunnel(port);
-    }
 
-    let mut guard = state.port.lock().map_err(|e| e.to_string())?;
-    *guard = Some(port);
-    Ok(port)
+        let mut guard = state.port.lock().map_err(|e| e.to_string())?;
+        *guard = Some(port);
+        Ok(port)
+    }
 }
 
 #[tauri::command]
-pub async fn mesh_stop(state: State<'_, MeshState>) -> Result<(), String> {
-    #[cfg(target_os = "ios")]
+pub async fn mesh_stop(app: AppHandle, state: State<'_, MeshState>) -> Result<(), String> {
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     {
         let _ = crate::ios_vpn::stop_tunnel();
     }
-    tauri::async_runtime::spawn_blocking(stop_node)
-        .await
-        .map_err(|e| format!("mesh_stop join: {e}"))?;
+
+    #[cfg(not(target_os = "ios"))]
+    {
+        let app2 = app.clone();
+        tauri::async_runtime::spawn_blocking(move || crate::sysmesh::stop(&app2))
+            .await
+            .map_err(|e| format!("mesh_stop join: {e}"))??;
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        let _ = app;
+        tauri::async_runtime::spawn_blocking(stop_node_ios)
+            .await
+            .map_err(|e| format!("mesh_stop join: {e}"))?;
+    }
+
     let mut guard = state.port.lock().map_err(|e| e.to_string())?;
     *guard = None;
     Ok(())
 }
 
 #[tauri::command]
-pub fn mesh_status() -> u8 {
-    node_status()
+pub fn mesh_status(app: AppHandle) -> u8 {
+    #[cfg(not(target_os = "ios"))]
+    {
+        return crate::sysmesh::status(&app);
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let _ = app;
+        unsafe { dadimesh_status() as u8 }
+    }
 }
 
 #[tauri::command]
 pub fn mesh_port(state: State<'_, MeshState>) -> Result<Option<u16>, String> {
     let guard = state.port.lock().map_err(|e| e.to_string())?;
-    if let Some(port) = *guard {
-        return Ok(Some(port));
-    }
-    Ok(node_port())
+    Ok(*guard)
 }
 
 #[tauri::command]
@@ -290,14 +278,13 @@ pub fn mesh_save_credentials(app: AppHandle, credentials: Credentials) -> Result
     let json = serde_json::to_string_pretty(&credentials).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("write credentials: {e}"))?;
 
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     {
         let _ = crate::ios_vpn::write_shared_credentials(&credentials);
     }
     Ok(())
 }
 
-// Back-compat command names used by older frontend builds during migration.
 #[tauri::command]
 pub async fn net_start(
     app: AppHandle,
@@ -310,13 +297,13 @@ pub async fn net_start(
 }
 
 #[tauri::command]
-pub async fn net_stop(state: State<'_, MeshState>) -> Result<(), String> {
-    mesh_stop(state).await
+pub async fn net_stop(app: AppHandle, state: State<'_, MeshState>) -> Result<(), String> {
+    mesh_stop(app, state).await
 }
 
 #[tauri::command]
-pub fn net_status() -> u8 {
-    mesh_status()
+pub fn net_status(app: AppHandle) -> u8 {
+    mesh_status(app)
 }
 
 #[tauri::command]
@@ -327,4 +314,46 @@ pub fn net_load_credentials(app: AppHandle) -> Result<Option<Credentials>, Strin
 #[tauri::command]
 pub fn net_save_credentials(app: AppHandle, credentials: Credentials) -> Result<(), String> {
     mesh_save_credentials(app, credentials)
+}
+
+#[cfg(target_os = "ios")]
+fn last_error_string() -> String {
+    unsafe {
+        let ptr = dadimesh_last_error();
+        if ptr.is_null() {
+            return "unknown dadimesh error".into();
+        }
+        let s = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        dadimesh_free(ptr);
+        s
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn start_node_ios(
+    control_url: &str,
+    auth_key: &str,
+    hostname: &str,
+    state_dir: &Path,
+) -> Result<u16, String> {
+    let control = CString::new(control_url).map_err(|e| e.to_string())?;
+    let key = CString::new(auth_key).map_err(|e| e.to_string())?;
+    let host = CString::new(hostname).map_err(|e| e.to_string())?;
+    let dir = CString::new(state_dir.to_string_lossy().as_ref()).map_err(|e| e.to_string())?;
+
+    let code =
+        unsafe { dadimesh_start(control.as_ptr(), key.as_ptr(), host.as_ptr(), dir.as_ptr()) };
+    if code < 0 {
+        let err = last_error_string();
+        logutil::emit("error", format!("dadimesh start failed: {err}"));
+        return Err(err);
+    }
+    logutil::emit("info", format!("dadimesh connected dialer_port={code}"));
+    Ok(code as u16)
+}
+
+#[cfg(target_os = "ios")]
+fn stop_node_ios() {
+    logutil::emit("info", "dadimesh stopping");
+    unsafe { dadimesh_stop() };
 }

@@ -104,7 +104,9 @@ export function DisconnectedState() {
             JOIN DADIMESH
           </span>
           <p className="max-w-sm text-center text-[14px] leading-relaxed text-ink-muted">
-            Scan or paste the setup code from Add Device on the box.
+            Scan or paste the setup code from Add Device on the box. Joining
+          installs a system mesh (TUN + MagicDNS) so other apps can reach
+          *.dadi too.
           </p>
         </div>
 
