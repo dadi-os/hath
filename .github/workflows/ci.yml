@@ -97,7 +97,7 @@ jobs:
           - os: macos-latest
             net_target: darwin-arm64
             rust_targets: aarch64-apple-darwin
-            build_args: "--bundles dmg --target aarch64-apple-darwin"
+            build_args: "--bundles app,dmg --target aarch64-apple-darwin"
             installer_glob: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg"
             installer_name: hath-macos-aarch64.dmg
             updater_glob: "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig"
@@ -253,20 +253,22 @@ jobs:
           done
           npm run tauri build -- ${{ matrix.build_args }}
 
+      # Vite writes the web build to dist/; do not glob that onto the GitHub
+      # Release (index.html, favicons). Installers go in release-assets/.
       - name: Stage release assets
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
+          mkdir -p release-assets updater-sigs
           src=$(ls ${{ matrix.installer_glob }} | head -1)
-          cp "$src" "dist/${{ matrix.installer_name }}"
+          cp "$src" "release-assets/${{ matrix.installer_name }}"
           sig=$(ls ${{ matrix.updater_glob }} | head -1)
-          cp "$sig" "dist/${{ matrix.updater_name }}"
+          cp "$sig" "updater-sigs/${{ matrix.updater_name }}"
           if [ -n "${{ matrix.updater_bundle }}" ]; then
             bundle=$(ls ${{ matrix.updater_bundle }} | head -1)
-            cp "$bundle" "dist/${{ matrix.updater_bundle_name }}"
+            cp "$bundle" "release-assets/${{ matrix.updater_bundle_name }}"
           fi
-          ls -la dist/
+          ls -la release-assets updater-sigs
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -275,7 +277,14 @@ jobs:
           name: Hath ${{ github.sha }}
           make_latest: true
           overwrite_files: true
-          files: dist/*
+          files: release-assets/*
+
+      - name: Share updater signatures
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-sig-${{ matrix.os }}
+          path: updater-sigs/*
+          if-no-files-found: error
 
   release-updater-manifest:
     needs: release-desktop
@@ -284,6 +293,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Download updater signatures
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updater-sig-*
+          merge-multiple: true
+          path: updater-sigs
+
       - name: Build and upload latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -292,33 +308,25 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          mkdir -p dist
-          for asset in \
-            hath-linux-x86_64.AppImage.sig \
-            hath-macos-aarch64.app.tar.gz.sig \
-            hath-windows-x86_64-setup.exe.sig
-          do
-            gh release download "$TAG" --repo "$REPO" -p "$asset" -D dist
-          done
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
           export BASE VERSION
           python3 <<'PY'
           import json, pathlib, os
           base = os.environ["BASE"]
           version = os.environ["VERSION"]
-          dist = pathlib.Path("dist")
+          sigs = pathlib.Path("updater-sigs")
           platforms = {
               "linux-x86_64": {
                   "url": f"{base}/hath-linux-x86_64.AppImage",
-                  "signature": (dist / "hath-linux-x86_64.AppImage.sig").read_text().strip(),
+                  "signature": (sigs / "hath-linux-x86_64.AppImage.sig").read_text().strip(),
               },
               "darwin-aarch64": {
                   "url": f"{base}/hath-macos-aarch64.app.tar.gz",
-                  "signature": (dist / "hath-macos-aarch64.app.tar.gz.sig").read_text().strip(),
+                  "signature": (sigs / "hath-macos-aarch64.app.tar.gz.sig").read_text().strip(),
               },
               "windows-x86_64": {
                   "url": f"{base}/hath-windows-x86_64-setup.exe",
-                  "signature": (dist / "hath-windows-x86_64-setup.exe.sig").read_text().strip(),
+                  "signature": (sigs / "hath-windows-x86_64-setup.exe.sig").read_text().strip(),
               },
           }
           manifest = {
@@ -326,11 +334,11 @@ jobs:
               "notes": f"Hath {version}",
               "platforms": platforms,
           }
-          out = dist / "latest.json"
+          out = pathlib.Path("latest.json")
           out.write_text(json.dumps(manifest, indent=2) + "\n")
           print(out.read_text())
           PY
-          gh release upload "$TAG" dist/latest.json --repo "$REPO" --clobber
+          gh release upload "$TAG" latest.json --repo "$REPO" --clobber
 
   # Signed IPA + TestFlight when Apple iOS secrets from .env.github are set.
   # Job always schedules on main; exits early if secrets are missing (secrets
