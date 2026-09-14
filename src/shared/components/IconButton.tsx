@@ -217,3 +217,24 @@ export function IconPower() {
     </svg>
   );
 }
+
+/** Download / install update glyph. */
+export function IconUpdate() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M9 3.5v8.5M5.5 8.5 9 12l3.5-3.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3.5 14.5h11"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

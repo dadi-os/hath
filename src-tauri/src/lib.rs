@@ -47,7 +47,7 @@ pub fn run() {
     prepare_hathnet_dll_search_path();
 
     logutil::emit("info", "hath starting");
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
@@ -64,7 +64,16 @@ pub fn run() {
             net::net_status,
             net::net_load_credentials,
             net::net_save_credentials,
-        ])
+        ]);
+
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {

@@ -2,7 +2,13 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { nas } from "../shared/api";
 import { useConnection } from "../hooks/useConnection";
-import { IconButton, IconHome, IconPower } from "../shared/components/IconButton";
+import { useDesktopUpdate } from "../hooks/useDesktopUpdate";
+import {
+  IconButton,
+  IconHome,
+  IconPower,
+  IconUpdate,
+} from "../shared/components/IconButton";
 import { POLL_MS } from "../shared/lib/ux/poll";
 import { Tooltip } from "../shared/components/Tooltip";
 
@@ -24,6 +30,7 @@ function formatUptime(seconds: number): string {
 export function Header() {
   const navigate = useNavigate();
   const { state, disconnect } = useConnection();
+  const update = useDesktopUpdate();
   const location = useLocation();
   const atHome = location.pathname === "/";
   const statusLabel = state === "connected" ? "ONLINE" : "OFFLINE";
@@ -76,6 +83,36 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-3">
+        {update.available ? (
+          <Tooltip
+            content={
+              update.installing
+                ? "Installing update…"
+                : update.version
+                  ? `Install update ${update.version}`
+                  : "Install update"
+            }
+          >
+            <span className="inline-flex">
+              <button
+                type="button"
+                disabled={update.installing}
+                onClick={() => {
+                  void update.install();
+                }}
+                className="inline-flex items-center gap-1.5 rounded-[6px] border border-sage-line bg-sage-fill/40 px-2 py-1 text-[11px] font-medium tracking-[1.5px] text-sage-deep hover:border-sage-deep disabled:opacity-50"
+                aria-label={
+                  update.installing ? "Installing update" : "Install update"
+                }
+              >
+                <span className="inline-flex size-3.5 shrink-0 [&_svg]:size-3.5">
+                  <IconUpdate />
+                </span>
+                {update.installing ? "INSTALLING…" : "UPDATE"}
+              </button>
+            </span>
+          </Tooltip>
+        ) : null}
         {state === "connected" ? (
           <Tooltip content="Leave dadiMesh">
             <span className="inline-flex">
@@ -113,4 +150,3 @@ export function Header() {
     </header>
   );
 }
-

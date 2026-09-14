@@ -89,20 +89,30 @@ jobs:
             net_target: linux-amd64
             rust_targets: ""
             build_args: "--bundles appimage"
-            asset_glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
-            asset_name: hath-linux-x86_64.AppImage
+            installer_glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
+            installer_name: hath-linux-x86_64.AppImage
+            updater_glob: "src-tauri/target/release/bundle/appimage/*.AppImage.sig"
+            updater_name: hath-linux-x86_64.AppImage.sig
+            updater_bundle: ""
           - os: macos-latest
             net_target: darwin-arm64
             rust_targets: aarch64-apple-darwin
             build_args: "--bundles dmg --target aarch64-apple-darwin"
-            asset_glob: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg"
-            asset_name: hath-macos-aarch64.dmg
+            installer_glob: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg"
+            installer_name: hath-macos-aarch64.dmg
+            updater_glob: "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig"
+            updater_name: hath-macos-aarch64.app.tar.gz.sig
+            updater_bundle: "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz"
+            updater_bundle_name: hath-macos-aarch64.app.tar.gz
           - os: windows-latest
             net_target: windows-amd64
             rust_targets: ""
             build_args: "--bundles nsis"
-            asset_glob: "src-tauri/target/release/bundle/nsis/*setup.exe"
-            asset_name: hath-windows-x86_64-setup.exe
+            installer_glob: "src-tauri/target/release/bundle/nsis/*setup.exe"
+            installer_name: hath-windows-x86_64-setup.exe
+            updater_glob: "src-tauri/target/release/bundle/nsis/*setup.exe.sig"
+            updater_name: hath-windows-x86_64-setup.exe.sig
+            updater_bundle: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -167,6 +177,29 @@ jobs:
           fi
           x86_64-w64-mingw32-gcc --version
 
+      - name: Stamp SemVer from run number
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="0.0.${{ github.run_number }}"
+          sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" src-tauri/Cargo.toml
+          rm -f src-tauri/Cargo.toml.bak
+          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.version=process.argv[1]; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');" "$VERSION"
+          echo "Stamped version ${VERSION}"
+          grep '^version' src-tauri/Cargo.toml
+          node -p "require('./package.json').version"
+
+      - name: Require updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is required (see .env.github)."
+            exit 1
+          fi
+
       - name: Build tsnet archive
         shell: bash
         run: cd net && ./build.sh ${{ matrix.net_target }}
@@ -194,6 +227,7 @@ jobs:
       # Optional macOS Developer ID + notarization (see .env.github).
       # Empty APPLE_* secrets must be unset — Tauri treats an empty
       # APPLE_CERTIFICATE as "please sign" and fails the import.
+      # TAURI_SIGNING_* signs updater artifacts (.sig / macOS .app.tar.gz).
       - name: Build desktop installer
         shell: bash
         env:
@@ -205,11 +239,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
                    APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER \
-                   APPLE_API_KEY_PATH; do
+                   APPLE_API_KEY_PATH TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
             eval "val=\${$v:-}"
             if [ -z "$val" ]; then
               unset "$v"
@@ -217,13 +253,19 @@ jobs:
           done
           npm run tauri build -- ${{ matrix.build_args }}
 
-      - name: Stage release asset
+      - name: Stage release assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          src=$(ls ${{ matrix.asset_glob }} | head -1)
-          cp "$src" "dist/${{ matrix.asset_name }}"
+          src=$(ls ${{ matrix.installer_glob }} | head -1)
+          cp "$src" "dist/${{ matrix.installer_name }}"
+          sig=$(ls ${{ matrix.updater_glob }} | head -1)
+          cp "$sig" "dist/${{ matrix.updater_name }}"
+          if [ -n "${{ matrix.updater_bundle }}" ]; then
+            bundle=$(ls ${{ matrix.updater_bundle }} | head -1)
+            cp "$bundle" "dist/${{ matrix.updater_bundle_name }}"
+          fi
           ls -la dist/
 
       - name: Upload to GitHub Release
@@ -233,7 +275,62 @@ jobs:
           name: Hath ${{ github.sha }}
           make_latest: true
           overwrite_files: true
-          files: dist/${{ matrix.asset_name }}
+          files: dist/*
+
+  release-updater-manifest:
+    needs: release-desktop
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Build and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: hath-${{ github.sha }}
+          VERSION: 0.0.${{ github.run_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for asset in \
+            hath-linux-x86_64.AppImage.sig \
+            hath-macos-aarch64.app.tar.gz.sig \
+            hath-windows-x86_64-setup.exe.sig
+          do
+            gh release download "$TAG" --repo "$REPO" -p "$asset" -D dist
+          done
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          export BASE VERSION
+          python3 <<'PY'
+          import json, pathlib, os
+          base = os.environ["BASE"]
+          version = os.environ["VERSION"]
+          dist = pathlib.Path("dist")
+          platforms = {
+              "linux-x86_64": {
+                  "url": f"{base}/hath-linux-x86_64.AppImage",
+                  "signature": (dist / "hath-linux-x86_64.AppImage.sig").read_text().strip(),
+              },
+              "darwin-aarch64": {
+                  "url": f"{base}/hath-macos-aarch64.app.tar.gz",
+                  "signature": (dist / "hath-macos-aarch64.app.tar.gz.sig").read_text().strip(),
+              },
+              "windows-x86_64": {
+                  "url": f"{base}/hath-windows-x86_64-setup.exe",
+                  "signature": (dist / "hath-windows-x86_64-setup.exe.sig").read_text().strip(),
+              },
+          }
+          manifest = {
+              "version": version,
+              "notes": f"Hath {version}",
+              "platforms": platforms,
+          }
+          out = dist / "latest.json"
+          out.write_text(json.dumps(manifest, indent=2) + "\n")
+          print(out.read_text())
+          PY
+          gh release upload "$TAG" dist/latest.json --repo "$REPO" --clobber
 
   # Signed IPA + TestFlight when Apple iOS secrets from .env.github are set.
   # Job always schedules on main; exits early if secrets are missing (secrets

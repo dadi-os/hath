@@ -102,7 +102,8 @@ docker build --target production -t hath .
 | `ci.yml` → `ci` | PR + push to `main` | Build tsnet archive, `npm test`, `npm run build` |
 | `ci.yml` → `container` | PR + push to `main` | `docker build --target production` |
 | `ci.yml` → `publish` | `main` after `container` | `ghcr.io/dadi-os/hath:latest` + sha tag |
-| `ci.yml` → `release-desktop` | `main` after `ci` | AppImage / DMG / NSIS → GitHub Release `hath-<sha>` |
+| `ci.yml` → `release-desktop` | `main` after `ci` | AppImage / DMG / NSIS + updater `.sig` (and macOS `.app.tar.gz`) → GitHub Release `hath-<sha>`; SemVer `0.0.<run_number>` |
+| `ci.yml` → `release-updater-manifest` | `main` after `release-desktop` | Merged `latest.json` on the same release (desktop auto-update) |
 | `ci.yml` → `release-ios` | `main` after `ci` | TestFlight when Apple secrets present; IPA on same `hath-<sha>` release |
 
 ## Logging / error codes
@@ -184,5 +185,9 @@ Bone glass — field bloom, frosted veil panels, sage accent; dark palette via `
 | `npm run tauri ios dev` | iOS simulator / device (requires `ios init` + Xcode) |
 | `cd net && ./build.sh` | Build libhathnet for linking |
 | `npx tauri icon app-icon.png` | Regenerate desktop / iOS / Android icons from `app-icon.png` (દાદી mark) |
+
+### Desktop auto-update
+
+Tauri desktop builds (Windows / macOS / Linux) check `https://github.com/dadi-os/hath/releases/latest/download/latest.json` via the updater plugin. Artifacts are signed with `TAURI_SIGNING_PRIVATE_KEY` (see `.env.github`). When a newer SemVer is available, the header shows **UPDATE** — install is explicit, then the app relaunches. iOS stays on TestFlight; browser Hath has no native updater.
 
 Hath updates outside `bootc` / `podman-auto-update` as a native binary by design; the web container is for Nas compose / CI only.
