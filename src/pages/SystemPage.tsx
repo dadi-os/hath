@@ -19,7 +19,7 @@ export function SystemPage() {
     >
       <PageHeader
         title="SYSTEM"
-        hint="Reachability · config · logs"
+        hint="Reachability · tunnel · logs"
       />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-1 pb-1 lg:grid-cols-2 lg:gap-5">
@@ -34,7 +34,7 @@ export function SystemPage() {
           </div>
           <div className="flex max-h-[40%] min-h-[180px] shrink-0 flex-col overflow-hidden border-t border-dashed border-sage-line pt-3">
             <span className="mb-3 shrink-0 text-[11px] font-medium tracking-[2px] text-sage-deep">
-              MODULES
+              TUNNEL
             </span>
             <div className="min-h-0 flex-1 overflow-y-auto">
               <ModuleSettings />
