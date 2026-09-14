@@ -187,6 +187,22 @@ export function createNasClient(transport: Transport, baseUrl: string) {
         body: { node_name: nodeName },
       });
     },
+
+    /** GET /clients — Headscale mesh nodes for this appliance user. */
+    listClients(): Promise<{
+      clients: Array<{
+        node_name: string;
+        online: boolean;
+        last_seen: string | null;
+        ip_addresses: string[];
+      }>;
+    }> {
+      return transport.request({
+        baseUrl,
+        path: "/clients",
+        method: "GET",
+      });
+    },
   };
 }
 

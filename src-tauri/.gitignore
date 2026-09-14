@@ -13,3 +13,4 @@
 /bin/**/tailscale
 /bin/**/tailscaled
 /bin/**/*.exe
+/bin/**/wintun.dll

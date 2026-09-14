@@ -13,6 +13,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.102.8",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
     "@tauri-apps/plugin-http": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-os": "^2.3.2",

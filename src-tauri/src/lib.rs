@@ -1,5 +1,6 @@
 mod logutil;
 mod net;
+mod device;
 mod ios_vpn;
 
 #[cfg(not(target_os = "ios"))]
@@ -14,6 +15,7 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(MeshState::default())
         .invoke_handler(tauri::generate_handler![
             net::mesh_start,
@@ -28,6 +30,8 @@ pub fn run() {
             net::net_status,
             net::net_load_credentials,
             net::net_save_credentials,
+            device::device_get_battery,
+            device::device_write_download,
         ]);
 
     #[cfg(desktop)]

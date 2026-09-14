@@ -2,7 +2,8 @@
   "bundle": {
     "resources": [
       "bin/windows-amd64/tailscale.exe",
-      "bin/windows-amd64/tailscaled.exe"
+      "bin/windows-amd64/tailscaled.exe",
+      "bin/windows-amd64/wintun.dll"
     ]
   }
 }

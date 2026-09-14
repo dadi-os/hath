@@ -148,14 +148,18 @@ Lifecycle (Tauri):
 
 Header shows ONLINE / JOINING… / OFFLINE.
 
-### Phase 1 success check (macOS)
+### Phase 1 success check (desktop)
 
-1. Fresh Hath → provision → power on (approve admin once if prompted).
-2. MagicDNS: `scutil --dns` shows `.dadi`, or `ping os.dadi` resolves.
-3. `ssh user@os.dadi` from Terminal while Hath is joined.
+**macOS / Windows / Linux** (same power button → `tailscaled` TUN):
+
+1. Fresh Hath → provision → power on (approve admin / UAC / polkit once if prompted).
+2. MagicDNS works: `ping os.dadi` (or `ping os.dadi` from PowerShell / `Get-Command` DNS resolve).
+3. `ssh user@os.dadi` from a terminal while Hath is joined.
 4. Hath header ONLINE against mesh services; power off → SSH to `os.dadi` fails again.
 
-Phase 1 may **not** list dadiMesh under System Settings → VPN (open-source `tailscaled`/utun often does not). That Settings profile is Phase 2 Network Extension work.
+**Windows notes:** CI bundles `tailscale.exe`, `tailscaled.exe`, and `wintun.dll`. First join triggers UAC so Wintun can create the adapter.
+
+**macOS Settings → VPN:** Phase 1 may **not** list dadiMesh (open-source `tailscaled`/utun often does not). That Settings profile is Phase 2 Network Extension work and needs Apple Developer signing — same class of hard fail as the ungated iOS release job when secrets are missing.
 
 ### Desktop system mesh binaries
 

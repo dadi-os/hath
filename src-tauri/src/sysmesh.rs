@@ -152,12 +152,23 @@ fn resolve_bins(app: &AppHandle) -> Result<Bins, String> {
     for dir in &candidates {
         let tailscale = dir.join(names.0);
         let tailscaled = dir.join(names.1);
-        if tailscale.is_file() && tailscaled.is_file() {
-            return Ok(Bins {
-                tailscale,
-                tailscaled,
-            });
+        if !(tailscale.is_file() && tailscaled.is_file()) {
+            continue;
         }
+        #[cfg(windows)]
+        {
+            let wintun = dir.join("wintun.dll");
+            if !wintun.is_file() {
+                return Err(format!(
+                    "wintun.dll missing next to {} — run `cd net && ./build-tailscale.sh windows-amd64`",
+                    dir.display()
+                ));
+            }
+        }
+        return Ok(Bins {
+            tailscale,
+            tailscaled,
+        });
     }
 
     Err(format!(
@@ -414,20 +425,20 @@ fn start_daemon_windows(
         }
     }
 
-    // Wintun needs admin. UAC via elevated cmd (redirects incompatible with -Verb RunAs alone).
-    let inner = format!(
-        "\"{}\" --statedir={} --socket={} --verbose=1 >{} 2>&1",
+    // Wintun needs admin. UAC via elevated cmd (stdout redirects cannot use -Verb RunAs alone).
+    let cmd_line = format!(
+        "\"{}\" --statedir=\"{}\" --socket=\"{}\" --verbose=1 >\"{}\" 2>&1",
         bins.tailscaled.display(),
         state_dir.display(),
         socket.display(),
         log_path.display(),
     );
-    let ps = format!(
+    let elevate = format!(
         "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c',{} -Verb RunAs -WindowStyle Hidden",
-        ps_quote(&inner)
+        ps_quote(&cmd_line)
     );
     let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &ps])
+        .args(["-NoProfile", "-Command", &elevate])
         .output()
         .map_err(|e| format!("elevated tailscaled (UAC): {e}"))?;
     if !output.status.success() {
@@ -436,7 +447,19 @@ fn start_daemon_windows(
             "admin approval required to create the dadiMesh TUN (Wintun): {err}"
         ));
     }
-    Ok(())
+
+    let deadline = Instant::now() + DAEMON_WAIT;
+    while Instant::now() < deadline {
+        if daemon_reports_via_cli(bins, socket) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    Err(format!(
+        "elevated tailscaled did not become ready within {}s — check {} (Wintun/UAC)",
+        DAEMON_WAIT.as_secs(),
+        log_path.display()
+    ))
 }
 
 fn stop_daemon(state_dir: &Path, socket: &Path) {
@@ -469,8 +492,15 @@ fn stop_daemon(state_dir: &Path, socket: &Path) {
     }
     #[cfg(windows)]
     {
-        let _ = (state_dir, socket);
-        // Elevated child may outlive this process; `tailscale down` already ran.
+        let _ = socket;
+        // Prefer pidfile when present; otherwise stop by image next to our statedir log hint.
+        let pidfile = state_dir.join("tailscaled.pid");
+        if let Ok(pid) = fs::read_to_string(&pidfile) {
+            let _ = Command::new("taskkill")
+                .args(["/PID", pid.trim(), "/F"])
+                .status();
+        }
+        // Elevated children may not share DAEMON_PID; `tailscale down` already ran.
     }
 }
 

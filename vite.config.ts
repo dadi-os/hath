@@ -3,6 +3,14 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import process from "node:process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(fileURLToPath(import.meta.url));
+const packageJson = JSON.parse(
+  readFileSync(join(root, "package.json"), "utf8"),
+) as { version: string };
 
 /** Set by `tauri dev` / `tauri build` — keep existing Tauri Vite wiring untouched. */
 const tauriHost = process.env.TAURI_DEV_HOST;
@@ -13,6 +21,9 @@ const isTauriCli = Boolean(
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
   clearScreen: false,
+  define: {
+    __HATH_APP_VERSION__: JSON.stringify(packageJson.version),
+  },
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],

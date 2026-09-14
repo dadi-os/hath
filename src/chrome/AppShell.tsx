@@ -9,6 +9,7 @@ import { MobileChatShell } from "./MobileChatShell";
 import { bootstrapMesh } from "../store/connection";
 import { useConnection } from "../hooks/useConnection";
 import { useEvents } from "../hooks/useEvents";
+import { useHathRemote } from "../hooks/useHathRemote";
 import { useNeedsProvisioning } from "../hooks/useNeedsProvisioning";
 import { useTarget } from "../hooks/useTarget";
 import { usingTsnet } from "../shared/api";
@@ -28,6 +29,7 @@ export function AppShell() {
   const needsProvisioning = useNeedsProvisioning();
 
   useEvents();
+  useHathRemote();
 
   useEffect(() => {
     void bootstrapMesh();

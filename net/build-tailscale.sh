@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build Tailscale CLI binaries (tailscale + tailscaled) into src-tauri/bin/<target>/.
 # Used by desktop sysmesh (TUN + MagicDNS). Pin matches hathnet's go.mod when possible.
+# Windows also fetches wintun.dll (required next to tailscaled.exe for the TUN).
 #
 # Usage:
 #   ./build-tailscale.sh              # host platform
@@ -16,6 +17,7 @@ ROOT="$(cd .. && pwd)"
 BIN_ROOT="$ROOT/src-tauri/bin"
 # Keep in sync with net/go.mod tailscale.com version when bumping.
 TS_VER="${TS_VER:-v1.82.0}"
+WINTUN_VER="${WINTUN_VER:-0.14.1}"
 
 resolve_mod() {
   local mod
@@ -32,6 +34,31 @@ resolve_mod() {
   echo "$tmp/tailscale"
 }
 
+fetch_wintun() {
+  local out_dir="$1"
+  local zip url tmp
+  mkdir -p "$out_dir"
+  if [[ -f "$out_dir/wintun.dll" ]]; then
+    echo "→ wintun.dll already present in ${out_dir}"
+    return 0
+  fi
+  url="https://www.wintun.net/builds/wintun-${WINTUN_VER}.zip"
+  echo "→ fetch wintun ${WINTUN_VER} → ${out_dir}/wintun.dll"
+  tmp="$(mktemp -d)"
+  zip="$tmp/wintun.zip"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$zip" "$url"
+  else
+    wget -q -O "$zip" "$url"
+  fi
+  (
+    cd "$tmp"
+    unzip -q "$zip"
+    cp wintun/bin/amd64/wintun.dll "$out_dir/wintun.dll"
+  )
+  rm -rf "$tmp"
+}
+
 build_one() {
   local goos="$1" goarch="$2" out_dir="$3" ext="${4:-}"
   echo "→ tailscale ${goos}/${goarch} → ${out_dir}"
@@ -46,6 +73,9 @@ build_one() {
       go build -o "${out_dir}/tailscaled${ext}" ./cmd/tailscaled
   )
   rm -rf "$(dirname "$src")"
+  if [[ "$goos" == "windows" ]]; then
+    fetch_wintun "$out_dir"
+  fi
   ls -la "$out_dir"
 }
 

@@ -7,9 +7,13 @@
     "core:default",
     "opener:default",
     "os:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
     "process:default",
     "updater:default",
     "allow-net",
+    "allow-device-get-battery",
+    "allow-device-write-download",
     {
       "identifier": "http:default",
       "allow": [

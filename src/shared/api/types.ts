@@ -67,7 +67,15 @@ export type DimaagEvent =
       name: string;
       at: string;
     }
-  | { type: "agent_modified"; agent_id: string; active: boolean; at: string };
+  | { type: "agent_modified"; agent_id: string; active: boolean; at: string }
+  | {
+      type: "hath_command";
+      command_id: string;
+      node_name: string;
+      tool: string;
+      args: Record<string, unknown>;
+      at: string;
+    };
 
 /** Yaad node kind. */
 export type NodeKind = "person" | "memory" | "plan" | "place";

@@ -78,6 +78,40 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
         method: "GET",
       });
     },
+
+    /** POST /hath/presence — heartbeat for this mesh node. */
+    postPresence(body: {
+      node_name: string;
+      platform: string;
+      app_version: string;
+    }): Promise<{
+      node_name: string;
+      platform: string;
+      app_version: string;
+      at: string;
+    }> {
+      return transport.request({
+        baseUrl,
+        path: "/hath/presence",
+        method: "POST",
+        body,
+      });
+    },
+
+    /** POST /hath/commands/:id/result — complete a reverse-RPC command. */
+    postCommandResult(
+      commandId: string,
+      body:
+        | { ok: true; result: unknown }
+        | { ok: false; error: { type: string; message: string } },
+    ): Promise<{ accepted: true }> {
+      return transport.request({
+        baseUrl,
+        path: `/hath/commands/${encodeURIComponent(commandId)}/result`,
+        method: "POST",
+        body,
+      });
+    },
   };
 }
 

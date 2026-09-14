@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-device-get-battery"
+description = "Allows reading battery level for hath_get_battery."
+commands.allow = ["device_get_battery"]
+
+[[permission]]
+identifier = "allow-device-write-download"
+description = "Allows writing files into the Downloads folder for hath_send_file."
+commands.allow = ["device_write_download"]

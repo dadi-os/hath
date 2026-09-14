@@ -54,6 +54,16 @@ fn main() {
         }
         println!("cargo:rerun-if-changed={}", ts.display());
         println!("cargo:rerun-if-changed={}", tsd.display());
+        if windows {
+            let wintun = bin_path.join("wintun.dll");
+            if !wintun.exists() {
+                panic!(
+                    "missing {} — run `cd net && ./build-tailscale.sh windows-amd64` (fetches Wintun)",
+                    wintun.display()
+                );
+            }
+            println!("cargo:rerun-if-changed={}", wintun.display());
+        }
     }
 
     if target.contains("apple") {
