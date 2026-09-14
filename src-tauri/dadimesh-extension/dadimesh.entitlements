@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Network Extension entitlements for com.dadi.hath.dadimesh (macOS + iOS).
-  Apply to the Packet Tunnel Provider target in Xcode after `tauri ios init`
-  / macOS NE target creation. App target needs personal-vpn + app-groups too.
+  Network Extension entitlements for com.dadi.hath.dadimesh (iOS).
+  Apply to the Packet Tunnel Provider target in Xcode after `tauri ios init`.
+  App target needs personal-vpn + app-groups too.
 -->
 <plist version="1.0">
 <dict>

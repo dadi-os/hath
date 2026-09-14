@@ -1,6 +1,8 @@
 mod logutil;
 mod net;
 mod device;
+
+#[cfg(target_os = "ios")]
 mod ios_vpn;
 
 #[cfg(not(target_os = "ios"))]

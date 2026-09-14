@@ -1,4 +1,4 @@
-/* Soft stubs when DadiMeshBridge.m is not yet linked in Xcode (iOS/macOS).
+/* Cargo link placeholders until DadiMeshBridge.m is added to the iOS app target.
  * Replace by adding dadimesh-extension/DadiMeshBridge.m to the app target.
  */
 int dadimesh_vpn_ensure(void) { return 0; }

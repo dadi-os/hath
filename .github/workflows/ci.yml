@@ -360,8 +360,7 @@ jobs:
           PY
           gh release upload "$TAG" latest.json --repo "$REPO" --clobber
 
-  # IPA + TestFlight on main. No secret preflight — missing Apple materials
-  # fail the job the same way a broken Network Extension / VPN build would.
+  # IPA + TestFlight on main. No secret preflight — missing Apple materials fail the job.
   release-ios:
     needs: ci
     if: github.ref == 'refs/heads/main'

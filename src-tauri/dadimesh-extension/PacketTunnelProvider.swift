@@ -1,6 +1,6 @@
 //
-// dadiMesh Packet Tunnel Provider
-// Bundle this Network Extension target into the Hath iOS / macOS app
+// dadiMesh Packet Tunnel Provider (iOS).
+// Bundle this Network Extension target into the Hath iOS app
 // (Xcode: File → New → Target → Packet Tunnel Provider, then replace sources).
 //
 // Bundle ID: com.dadi.hath.dadimesh
@@ -8,9 +8,8 @@
 // App Group: group.com.dadi.hath
 //
 // L3 settings steer Tailscale CGNAT (100.64.0.0/10) and MagicDNS (100.100.100.100)
-// for *.dadi. Full packet crypto runs in the engine that owns the WireGuard
-// keys (desktop: system tailscaled; iOS: in-process dialer until the extension
-// embeds the stack). HTTP(S) proxy for *.dadi remains as a Hath-compatible path.
+// for *.dadi. WireGuard keys live in the in-process dialer. HTTP(S) proxy for
+// *.dadi remains as a Hath-compatible path while the dialer port is non-zero.
 //
 
 import NetworkExtension
@@ -24,7 +23,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
 
-        // Tailscale CGNAT — device-wide L3 path for ssh/ping to mesh nodes.
         let ipv4 = NEIPv4Settings(addresses: ["100.100.100.100"], subnetMasks: ["255.255.255.255"])
         let mesh = NEIPv4Route(destinationAddress: "100.64.0.0", subnetMask: "255.192.0.0")
         ipv4.includedRoutes = [mesh]
@@ -36,7 +34,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         dns.matchDomainsNoSearch = false
         settings.dnsSettings = dns
 
-        // Hath UI / Safari HTTP(S) to *.dadi via the local dialer when present.
         if port > 0 {
             let proxy = NEProxySettings()
             proxy.httpEnabled = true
@@ -56,6 +53,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler()
     }
 
+    /// Proxy port from the startTunnel options dictionary.
     private func proxyPortFromOptions(_ options: [String: NSObject]?) -> Int? {
         if let n = options?["proxyPort"] as? NSNumber {
             return n.intValue
@@ -63,6 +61,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         return nil
     }
 
+    /// Proxy port persisted in the App Group by the Hath host app.
     private func readSharedProxyPort() -> Int? {
         guard let defaults = UserDefaults(suiteName: appGroup) else { return nil }
         let port = defaults.integer(forKey: "dadimesh.proxyPort")

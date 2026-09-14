@@ -131,14 +131,6 @@ pub async fn mesh_start(
         .await
         .map_err(|e| format!("mesh_start join: {e}"))??;
 
-        #[cfg(target_os = "macos")]
-        {
-            // Phase 2 scaffold: register Settings → VPN profile when the NE
-            // target is linked. Do not startTunnel here — L3 routes would fight
-            // the sysmesh utun; SSH rides on tailscaled until the extension owns WireGuard.
-            let _ = crate::ios_vpn::ensure_vpn_configuration();
-        }
-
         let mut guard = state.port.lock().map_err(|e| e.to_string())?;
         *guard = Some(port);
         return Ok(port);
@@ -173,8 +165,14 @@ pub async fn mesh_start(
             }
         };
 
-        let _ = crate::ios_vpn::ensure_vpn_configuration();
-        let _ = crate::ios_vpn::start_tunnel(port);
+        crate::ios_vpn::ensure_vpn_configuration().map_err(|e| {
+            stop_node_ios();
+            e
+        })?;
+        crate::ios_vpn::start_tunnel(port).map_err(|e| {
+            stop_node_ios();
+            e
+        })?;
 
         let mut guard = state.port.lock().map_err(|e| e.to_string())?;
         *guard = Some(port);
@@ -184,9 +182,9 @@ pub async fn mesh_start(
 
 #[tauri::command]
 pub async fn mesh_stop(app: AppHandle, state: State<'_, MeshState>) -> Result<(), String> {
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[cfg(target_os = "ios")]
     {
-        let _ = crate::ios_vpn::stop_tunnel();
+        crate::ios_vpn::stop_tunnel()?;
     }
 
     #[cfg(not(target_os = "ios"))]
@@ -278,9 +276,9 @@ pub fn mesh_save_credentials(app: AppHandle, credentials: Credentials) -> Result
     let json = serde_json::to_string_pretty(&credentials).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("write credentials: {e}"))?;
 
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[cfg(target_os = "ios")]
     {
-        let _ = crate::ios_vpn::write_shared_credentials(&credentials);
+        crate::ios_vpn::write_shared_credentials(&credentials)?;
     }
     Ok(())
 }

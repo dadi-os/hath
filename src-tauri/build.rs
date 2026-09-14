@@ -5,7 +5,6 @@ fn main() {
     let windows = target.contains("windows");
     let linux = target.contains("linux");
 
-    // Desktop uses system tailscaled (sysmesh). iOS keeps in-process libhathnet.
     if ios {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("lib")
@@ -73,9 +72,7 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=SystemConfiguration");
     }
 
-    // Network Extension bridge (iOS + macOS). Real ObjC is linked from Xcode;
-    // cargo builds use the C stub until the extension target is wired.
-    if ios || desktop_apple {
+    if ios {
         println!("cargo:rustc-link-lib=framework=NetworkExtension");
         let stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("dadimesh-extension")

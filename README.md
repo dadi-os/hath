@@ -149,7 +149,9 @@ Lifecycle (Tauri):
 
 Header shows ONLINE / JOINING… / OFFLINE.
 
-### Phase 1 success check (desktop)
+Connect on desktop is device-wide: after join, a normal terminal `ssh user@os.dadi` works.
+
+### Desktop success check
 
 **macOS / Windows / Linux** (same power button → `tailscaled` TUN):
 
@@ -160,8 +162,6 @@ Header shows ONLINE / JOINING… / OFFLINE.
 
 **Windows notes:** CI bundles `tailscale.exe`, `tailscaled.exe`, and `wintun.dll`. First join triggers UAC so Wintun can create the adapter.
 
-**macOS Settings → VPN:** Phase 1 may **not** list dadiMesh (open-source `tailscaled`/utun often does not). That Settings profile is Phase 2 Network Extension work and needs Apple Developer signing — same class of hard fail as the ungated iOS release job when secrets are missing.
-
 ### Desktop system mesh binaries
 
 ```sh
@@ -171,20 +171,18 @@ cd net && ./build-tailscale.sh all      # all desktop targets (CI)
 
 Pin is `TS_VER` (default `v1.82.0`, aligned with `net/go.mod`). Required before `tauri build` / `tauri dev` on desktop.
 
-Phase 2 (Apple Settings → VPN as a first-class System/Network Extension that owns WireGuard, plus iOS L3 packet path) uses sources under `src-tauri/dadimesh-extension/` (`PacketTunnelProvider.swift`, `Info-macos.plist`, `Info-ios.plist`, `dadimesh.entitlements`). Wire the Xcode NE target as below; until the extension embeds the crypto stack, desktop TUN from `tailscaled` is what carries SSH. Desktop `mesh_start` may register the VPN preference but does **not** start the NE tunnel on top of sysmesh.
+### iOS Network Extension
 
-### iOS / macOS Network Extension
-
-Sources live under `src-tauri/dadimesh-extension/` (Packet Tunnel Provider with L3 CGNAT routes + MagicDNS + optional HTTP proxy). After `npm run tauri ios init` (or adding a macOS NE target):
+iOS cannot run `tailscaled` as a system daemon, so join uses the in-process dialer plus a Packet Tunnel Provider (`src-tauri/dadimesh-extension/`). After `npm run tauri ios init`:
 
 1. Open `src-tauri/gen/apple/hath.xcodeproj`.
 2. **File → New → Target → Network Extension → Packet Tunnel Provider** — Product Name `dadimesh`, Bundle ID `com.dadi.hath.dadimesh`.
-3. Replace the generated Swift provider with `PacketTunnelProvider.swift`; use `Info-macos.plist` / `Info-ios.plist` / `dadimesh.entitlements` as needed.
+3. Replace the generated Swift provider with `PacketTunnelProvider.swift`; use `Info-ios.plist` / `dadimesh.entitlements` as needed.
 4. Add `DadiMeshBridge.m` to the **main** Hath app target (not the extension); remove the cargo C stub if you hit duplicate symbols.
 5. Enable on **both** targets: App Groups `group.com.dadi.hath`, Network Extensions → Packet Tunnel, Personal VPN (app).
 6. No On Demand rules — join/leave stays explicit from Hath.
 
-`mesh_start` / `mesh_stop` call into the bridge after the dialer/sysmesh is up.
+`mesh_start` / `mesh_stop` call into the bridge after the dialer is up.
 
 ## Chrome and routes
 
