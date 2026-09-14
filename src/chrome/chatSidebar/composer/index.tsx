@@ -58,36 +58,41 @@ export function FloatingComposer({
       style={{
         paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))",
       }}
-      initial={{ opacity: 0, y: 10 }}
+      initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
       {connected ? (
         <form
           onSubmit={onSubmit}
-          className={`pointer-events-auto flex flex-col gap-1.5 rounded-[var(--radius-window)] border px-2 py-1.5 shadow-[var(--shadow-deep)] backdrop-blur-[var(--glass-blur)] transition-[border-color,background-color] duration-slow ease-hath ${
+          className={`pointer-events-auto flex flex-col gap-1.5 rounded-[22px] border px-2 py-1.5 backdrop-blur-[var(--glass-blur)] transition-[border-color,background-color,box-shadow] duration-slow ease-hath ${
             holdMode
-              ? "border-sage-line/70 bg-sage-fill/40"
-              : workingMode
-                ? "border-sage/45 bg-[var(--glass-sheet)]"
-                : "border-[var(--glass-border)] bg-[var(--glass-sheet)]"
+              ? "border-sage-line/55 bg-[var(--glass-sheet)]"
+              : "border-[var(--glass-border)] bg-[var(--glass-sheet)]"
+          } ${
+            workingMode && !holdMode
+              ? "shadow-[0_0_0_1px_color-mix(in_srgb,var(--sage)_28%,transparent)]"
+              : "shadow-[var(--shadow)]"
           }`}
         >
           {attachments.length > 0 ? (
             <div className="flex gap-1.5 overflow-x-auto px-0.5 pt-0.5">
               {attachments.map((att, index) => (
-                <div
+                <motion.div
                   key={`${att.filename ?? att.media_type}-${index}`}
                   className="relative shrink-0"
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ duration: SLOW_S, ease: EASE }}
                 >
                   {att.previewUrl ? (
                     <img
                       src={att.previewUrl}
                       alt={att.filename ?? "attachment"}
-                      className="h-12 w-12 rounded-[6px] object-cover"
+                      className="h-12 w-12 rounded-[8px] object-cover"
                     />
                   ) : (
-                    <div className="flex h-12 max-w-[7rem] items-center rounded-[6px] border border-dashed border-sage-line bg-sage-fill/30 px-2 text-[10px] leading-tight text-ink-muted">
+                    <div className="flex h-12 max-w-[7rem] items-center rounded-[8px] border border-dashed border-sage-line bg-sage-fill/30 px-2 text-[10px] leading-tight text-ink-muted">
                       <span className="truncate">{att.filename ?? "file"}</span>
                     </div>
                   )}
@@ -99,11 +104,11 @@ export function FloatingComposer({
                   >
                     <IconDismiss />
                   </button>
-                </div>
+                </motion.div>
               ))}
             </div>
           ) : null}
-          <div className="flex items-end gap-1">
+          <div className="flex items-end gap-0.5">
             <input
               ref={fileInputRef}
               type="file"
@@ -150,7 +155,7 @@ export function FloatingComposer({
               onKeyDown={onKeyDown}
               rows={1}
               placeholder={placeholder}
-              className={`block max-h-[88px] min-h-[32px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-1.5 text-[13px] leading-snug outline-none placeholder:text-ink-ghost ${
+              className={`block max-h-[88px] min-h-[34px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-[14px] leading-snug outline-none placeholder:text-ink-ghost ${
                 holdMode ? "text-ink/70" : "text-ink"
               }`}
               style={{ maxHeight: TEXTAREA_MAX_PX }}
@@ -160,10 +165,10 @@ export function FloatingComposer({
               label={holdMode ? "Queue message" : "Send"}
               disabled={!canSubmit}
               size="lg"
-              className={`mb-px border-sage-line bg-sage-fill ${
-                workingMode && !holdMode
-                  ? "shadow-[0_0_0_1px_rgba(143,163,130,0.35)]"
-                  : ""
+              className={`mb-px border-transparent shadow-none transition-[background-color,opacity] duration-slow ease-hath ${
+                canSubmit
+                  ? "bg-sage-fill text-sage-deep hover:bg-sage-active"
+                  : "bg-transparent text-ink-ghost"
               }`}
             >
               <IconSend />
@@ -171,7 +176,7 @@ export function FloatingComposer({
           </div>
         </form>
       ) : (
-        <div className="pointer-events-auto rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/92 px-3 py-2 text-[13px] text-ink-ghost shadow-[var(--shadow)] backdrop-blur-md">
+        <div className="pointer-events-auto rounded-[18px] border border-dashed border-sage-line/70 bg-bone/90 px-3 py-2.5 text-[13px] text-ink-ghost backdrop-blur-md">
           Connect to message Dadi
         </div>
       )}

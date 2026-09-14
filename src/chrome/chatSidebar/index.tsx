@@ -674,6 +674,11 @@ export function ChatSidebar({
                   }
                 }}
                 onCancel={cancelQueued}
+                onRevealTick={() => {
+                  if (stickToBottomRef.current) {
+                    scrollToBottom("auto");
+                  }
+                }}
               />
             ) : (
               <motion.div

@@ -6,8 +6,10 @@ import { DisconnectedState } from "./DisconnectedState";
 import { Header } from "./Header";
 import { MeshPowerOverlay } from "./MeshPowerOverlay";
 import { MobileChatShell } from "./MobileChatShell";
+import { ProvisionOverlay } from "./ProvisionOverlay";
 import { bootstrapMesh } from "../store/connection";
 import { useConnection } from "../hooks/useConnection";
+import { useDesktopTray } from "../hooks/useDesktopTray";
 import { useEvents } from "../hooks/useEvents";
 import { useHathRemote } from "../hooks/useHathRemote";
 import { useNeedsProvisioning } from "../hooks/useNeedsProvisioning";
@@ -26,10 +28,16 @@ export function AppShell() {
   const location = useLocation();
   const isMobile = target === "mobile";
   const [sessionKey, setSessionKey] = useState(0);
+  const [provisionOpen, setProvisionOpen] = useState(false);
   const needsProvisioning = useNeedsProvisioning();
 
   useEvents();
   useHathRemote();
+  useDesktopTray({
+    onProvision: () => {
+      setProvisionOpen(true);
+    },
+  });
 
   useEffect(() => {
     void bootstrapMesh();
@@ -87,6 +95,10 @@ export function AppShell() {
         </motion.main>
       </div>
       {showOnboarding ? <DisconnectedState /> : null}
+      <ProvisionOverlay
+        open={provisionOpen}
+        onClose={() => setProvisionOpen(false)}
+      />
     </div>
   );
 }

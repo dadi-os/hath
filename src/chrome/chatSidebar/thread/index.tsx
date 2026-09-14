@@ -22,6 +22,8 @@ export interface ThreadViewProps {
   showWorkingPulse: boolean;
   onRetry: (msg: ChatMessage) => void;
   onCancel: (seq: number) => void;
+  /** Keep the thread pinned while agent typewriter content grows. */
+  onRevealTick?: () => void;
 }
 
 /** Open thread scroll pane: settled messages, hold pulse, queued drafts, working pulse. */
@@ -37,6 +39,7 @@ export function ThreadView({
   showWorkingPulse,
   onRetry,
   onCancel,
+  onRevealTick,
 }: ThreadViewProps) {
   return (
     <motion.div
@@ -51,7 +54,7 @@ export function ThreadView({
       exit={{ opacity: 0, x: -14 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-4">
         <AnimatePresence initial={false}>
           {settledMessages.map((msg) => (
             <MessageBubble
@@ -63,6 +66,7 @@ export function ThreadView({
               onCancel={
                 msg.failed ? () => onCancel(msg.seq) : undefined
               }
+              onRevealTick={msg.from_user ? undefined : onRevealTick}
             />
           ))}
         </AnimatePresence>

@@ -1,16 +1,14 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { nas } from "../shared/api";
 import { useConnection } from "../hooks/useConnection";
-import { useDesktopUpdate } from "../hooks/useDesktopUpdate";
-import {
-  IconButton,
-  IconHome,
-  IconPower,
-  IconUpdate,
-} from "../shared/components/IconButton";
+import { IconButton, IconHome, IconPower } from "../shared/components/IconButton";
 import { POLL_MS } from "../shared/lib/ux/poll";
 import { Tooltip } from "../shared/components/Tooltip";
+import { isTauriRuntime } from "../shared/api/runtime";
+import { detectDesktopOs } from "../target";
+import { WindowControls } from "./WindowControls";
 
 function formatUptime(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
@@ -26,13 +24,22 @@ function formatUptime(seconds: number): string {
   return `${mins}m`;
 }
 
-/** Desktop glass menu bar — brand + mesh status + leave control. */
+/** Toggle maximize on the current Tauri window; no-op outside the desktop shell. */
+function toggleMaximize() {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  void getCurrentWindow().toggleMaximize();
+}
+
+/** Desktop glass menu bar — brand + mesh status + leave control + window chrome. */
 export function Header() {
   const navigate = useNavigate();
   const { state, disconnect } = useConnection();
-  const update = useDesktopUpdate();
   const location = useLocation();
+  const desktopOs = detectDesktopOs();
   const atHome = location.pathname === "/";
+  const frameless = desktopOs === "windows" || desktopOs === "linux";
   const statusLabel =
     state === "connected"
       ? "ONLINE"
@@ -59,8 +66,16 @@ export function Header() {
         : "—";
 
   return (
-    <header className="flex shrink-0 items-center justify-between px-4 pb-3.5 pt-4 sm:px-6">
-      <div className="flex items-center gap-3">
+    <header
+      className={`titlebar flex h-12 shrink-0 items-stretch select-none ${
+        desktopOs === "macos"
+          ? "pl-[76px] pr-3"
+          : frameless
+            ? "pl-3 pr-0"
+            : "px-4 sm:px-6"
+      }`}
+    >
+      <div className="flex shrink-0 items-center gap-2.5 py-2">
         <Tooltip content={atHome ? "Home" : "Back home"}>
           <span className="inline-flex">
             <IconButton
@@ -79,43 +94,23 @@ export function Header() {
           className="flex items-baseline gap-2.5"
           aria-label="Dadi home"
         >
-          <span className="font-gujarati text-[28px] leading-none text-sage-text">
+          <span className="font-gujarati text-[24px] leading-none text-sage-text">
             દાદી
           </span>
         </button>
       </div>
 
-      <div className="flex items-center gap-3">
-        {update.available ? (
-          <Tooltip
-            content={
-              update.installing
-                ? "Installing update…"
-                : update.version
-                  ? `Install update ${update.version}`
-                  : "Install update"
-            }
-          >
-            <span className="inline-flex">
-              <button
-                type="button"
-                disabled={update.installing}
-                onClick={() => {
-                  void update.install();
-                }}
-                className="inline-flex items-center gap-1.5 rounded-[6px] border border-sage-line bg-sage-fill/40 px-2 py-1 text-[11px] font-medium tracking-[1.5px] text-sage-deep hover:border-sage-deep disabled:opacity-50"
-                aria-label={
-                  update.installing ? "Installing update" : "Install update"
-                }
-              >
-                <span className="inline-flex size-3.5 shrink-0 [&_svg]:size-3.5">
-                  <IconUpdate />
-                </span>
-                {update.installing ? "INSTALLING…" : "UPDATE"}
-              </button>
-            </span>
-          </Tooltip>
-        ) : null}
+      <div
+        className="titlebar-drag min-h-0 min-w-[24px] flex-1"
+        data-tauri-drag-region
+        onDoubleClick={toggleMaximize}
+      />
+
+      <div
+        className={`flex shrink-0 items-center gap-2.5 py-2 ${
+          frameless ? "pr-1.5" : ""
+        }`}
+      >
         {state === "connected" ? (
           <Tooltip content="Leave dadiMesh">
             <span className="inline-flex">
@@ -131,9 +126,9 @@ export function Header() {
             </span>
           </Tooltip>
         ) : null}
-        <div className="flex flex-col items-end gap-0.5">
+        <div className="flex flex-col items-end gap-0.5 pr-1">
           <span
-            className={`text-[11px] font-medium tracking-[2.5px] ${statusClass}`}
+            className={`text-[10px] font-medium tracking-[2.5px] ${statusClass}`}
           >
             {statusLabel}
           </span>
@@ -144,12 +139,14 @@ export function Header() {
                 : "Dadi uptime"
             }
           >
-            <span className="text-[11px] tracking-wide text-ink-ghost">
+            <span className="text-[10px] tracking-wide text-ink-ghost">
               {uptime}
             </span>
           </Tooltip>
         </div>
       </div>
+
+      {frameless ? <WindowControls /> : null}
     </header>
   );
 }

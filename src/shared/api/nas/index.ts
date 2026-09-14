@@ -203,6 +203,17 @@ export function createNasClient(transport: Transport, baseUrl: string) {
         method: "GET",
       });
     },
+
+    /** GET /browsers — live headed Chromium sessions on Nas. */
+    listBrowsers(): Promise<
+      Array<{ id: number; display: string; cdp_url: string; healthy: boolean }>
+    > {
+      return transport.request({
+        baseUrl,
+        path: "/browsers",
+        method: "GET",
+      });
+    },
   };
 }
 

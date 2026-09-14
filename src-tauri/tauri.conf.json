@@ -14,7 +14,13 @@
         "title": "Dadi",
         "width": 1280,
         "height": 800,
-        "decorations": true
+        "decorations": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 18
+        }
       }
     ],
     "security": {

@@ -1,9 +1,12 @@
 {
-  "bundle": {
-    "resources": [
-      "bin/windows-amd64/tailscale.exe",
-      "bin/windows-amd64/tailscaled.exe",
-      "bin/windows-amd64/wintun.dll"
+  "app": {
+    "windows": [
+      {
+        "title": "Dadi",
+        "width": 1280,
+        "height": 800,
+        "decorations": false
+      }
     ]
   }
 }

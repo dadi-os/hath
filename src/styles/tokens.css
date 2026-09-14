@@ -99,6 +99,19 @@
 }
 
 /* Bone glass surfaces */
+.titlebar-drag {
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+.titlebar button,
+.titlebar a,
+.titlebar input,
+.window-controls {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
 .glass-veil {
   background: var(--glass-veil);
   -webkit-backdrop-filter: blur(var(--glass-blur));

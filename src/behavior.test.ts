@@ -182,6 +182,11 @@ describe("runtime outside Tauri", () => {
     const { detectTarget } = await import("./target");
     expect(detectTarget()).toBe("desktop");
   });
+
+  it("detectDesktopOs is null outside Tauri", async () => {
+    const { detectDesktopOs } = await import("./target");
+    expect(detectDesktopOs()).toBeNull();
+  });
 });
 
 describe("transport selection", () => {

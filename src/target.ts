@@ -2,6 +2,9 @@ import { isTauriRuntime } from "./shared/api/runtime";
 
 export type Target = "desktop" | "mobile";
 
+/** Desktop OS family for chrome layout (null in browser / mobile). */
+export type DesktopOs = "macos" | "windows" | "linux";
+
 let tauriPlatform: string | null = null;
 
 /**
@@ -24,4 +27,24 @@ export function detectTarget(): Target {
   }
   const p = tauriPlatform;
   return p === "ios" || p === "android" ? "mobile" : "desktop";
+}
+
+/**
+ * Desktop host OS for window chrome. Null when not a desktop Tauri shell
+ * (browser, iOS, Android).
+ */
+export function detectDesktopOs(): DesktopOs | null {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  if (tauriPlatform === "macos") {
+    return "macos";
+  }
+  if (tauriPlatform === "windows") {
+    return "windows";
+  }
+  if (tauriPlatform === "linux") {
+    return "linux";
+  }
+  return null;
 }
