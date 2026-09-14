@@ -53,6 +53,73 @@ export type NasLogsParams = {
   limit?: number;
 };
 
+/** Provider keys from dwar `.env`. */
+export type DwarEnv = {
+  ANTHROPIC_API_KEY: string;
+  GEMINI_API_KEY: string;
+  OPENAI_API_KEY: string;
+  DEEPGRAM_API_KEY: string;
+};
+
+/** Dwar config.toml as JSON (same keys as the file). */
+export type DwarConfig = {
+  chat: {
+    reasoning: {
+      provider: string;
+      model: string;
+      max_tokens: number;
+      thinking_budget: number;
+    };
+    conversation: {
+      provider: string;
+      model: string;
+      max_tokens: number;
+    };
+  };
+  embed: {
+    provider: string;
+    model: string;
+    dimensions: number;
+    max_batch_size: number;
+    max_text_length: number;
+  };
+  image: {
+    describe: {
+      provider: string;
+      model: string;
+      max_tokens: number;
+      max_bytes: number;
+      max_prompt_length: number;
+      allowed_media_types: string[];
+    };
+    create: {
+      provider: string;
+      model: string;
+      max_prompt_length: number;
+    };
+  };
+  speech: {
+    transcribe: {
+      provider: string;
+      model: string;
+      language: string;
+      max_bytes: number;
+      allowed_media_types: string[];
+    };
+  };
+  retry: {
+    attempts: number;
+    backoff_seconds: number[];
+    timeout_seconds: number;
+  };
+};
+
+/** Nas GET/PUT /modules/dwar/settings. */
+export type DwarSettings = {
+  env: DwarEnv;
+  config: DwarConfig;
+};
+
 /**
  * Nas HTTP client — status, logs, module env/config, stack, provision.
  * Paths live here; callers pass only domain args.
@@ -114,6 +181,25 @@ export function createNasClient(transport: Transport, baseUrl: string) {
         path: `/modules/${name}/env`,
         method: "PUT",
         bodyText: text,
+      });
+    },
+
+    /** GET /modules/dwar/settings — typed keys + config. */
+    getDwarSettings(): Promise<DwarSettings> {
+      return transport.request({
+        baseUrl,
+        path: "/modules/dwar/settings",
+        method: "GET",
+      });
+    },
+
+    /** PUT /modules/dwar/settings — write keys + config.toml and restart dwar. */
+    putDwarSettings(settings: DwarSettings): Promise<{ status: string }> {
+      return transport.request({
+        baseUrl,
+        path: "/modules/dwar/settings",
+        method: "PUT",
+        body: settings,
       });
     },
 
