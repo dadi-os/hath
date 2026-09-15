@@ -31,6 +31,15 @@ export type NasStatus = {
   errors: string[];
 };
 
+/** Headscale UPnP publish snapshot from PUT/GET /headscale/* . */
+export type HeadscalePublishStatus = {
+  status?: string;
+  control_url?: string;
+  hostname?: string;
+  lan_ip?: string;
+  wan_ip?: string;
+};
+
 /** Log severity filter for Nas GET /logs. */
 export type NasLogLevel = "debug" | "info" | "warn" | "error";
 
@@ -138,26 +147,6 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** GET /cloudflared/token — tunnel token text. */
-    getCloudflaredToken(): Promise<string> {
-      return transport.request({
-        baseUrl,
-        path: "/cloudflared/token",
-        method: "GET",
-        responseType: "text",
-      });
-    },
-
-    /** PUT /cloudflared/token — replace tunnel token. */
-    putCloudflaredToken(token: string): Promise<{ status: string }> {
-      return transport.request({
-        baseUrl,
-        path: "/cloudflared/token",
-        method: "PUT",
-        bodyText: token,
-      });
-    },
-
     /** GET /headscale/control-url — public control plane URL for provision bundles. */
     getControlUrl(): Promise<string> {
       return transport.request({
@@ -168,13 +157,22 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** PUT /headscale/control-url — persist control plane URL. */
-    putControlUrl(url: string): Promise<{ status: string }> {
+    /** PUT /headscale/control-url — persist URL and publish Headscale on the appliance. */
+    putControlUrl(url: string): Promise<HeadscalePublishStatus> {
       return transport.request({
         baseUrl,
         path: "/headscale/control-url",
         method: "PUT",
         bodyText: url,
+      });
+    },
+
+    /** GET /headscale/publish — WAN/LAN IPs after UPnP publish. */
+    getHeadscalePublish(): Promise<HeadscalePublishStatus> {
+      return transport.request({
+        baseUrl,
+        path: "/headscale/publish",
+        method: "GET",
       });
     },
 
