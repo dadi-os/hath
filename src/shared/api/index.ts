@@ -1,13 +1,20 @@
+import { createChaaviClient, type ChaaviClient } from "./chaavi";
 import { createDimaagClient, type DimaagClient } from "./dimaag";
 import { createNasClient, type NasClient } from "./nas";
-import { DIMAAG, NAS, YAAD } from "./constants";
+import { CHAAVI, DIMAAG, NAS, YAAD } from "./constants";
 import { BrowserTransport } from "./browser-transport";
 import { selectTransportKind } from "./runtime";
 import type { Transport } from "./transport";
 import { createYaadClient, type YaadClient } from "./yaad";
 
-export { DIMAAG as DIMAAG_URL, YAAD as YAAD_URL, NAS as NAS_URL } from "./constants";
-export { DIMAAG, YAAD, NAS } from "./constants";
+export { createChaaviClient, type ChaaviClient } from "./chaavi";
+export {
+  CHAAVI as CHAAVI_URL,
+  DIMAAG as DIMAAG_URL,
+  YAAD as YAAD_URL,
+  NAS as NAS_URL,
+} from "./constants";
+export { CHAAVI, DIMAAG, YAAD, NAS } from "./constants";
 export { isTauriRuntime, selectTransportKind } from "./runtime";
 export type { TransportKind } from "./runtime";
 export type { Transport, ConnectionState } from "./transport";
@@ -27,6 +34,9 @@ export let yaad!: YaadClient;
 /** Shared Nas client bound to {@link NAS} and {@link transport}. */
 export let nas!: NasClient;
 
+/** Shared Chaavi client bound to {@link CHAAVI} and {@link transport}. */
+export let chaavi!: ChaaviClient;
+
 /**
  * Select and wire the Transport + domain clients.
  * MeshTransport (and Rust invoke) load only when Tauri is present so they stay out of
@@ -44,4 +54,5 @@ export async function initApi(): Promise<void> {
   dimaag = createDimaagClient(transport, DIMAAG);
   yaad = createYaadClient(transport, YAAD);
   nas = createNasClient(transport, NAS);
+  chaavi = createChaaviClient(transport, CHAAVI);
 }

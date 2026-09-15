@@ -1,12 +1,16 @@
 import type { KeyboardEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
+import { useConnection } from "../hooks/useConnection";
 import { useTarget } from "../hooks/useTarget";
 import { AgentTree } from "../features/agents/AgentTree";
 import { MemoryCounters } from "../features/memory/MemoryCounters";
 import { SystemMap } from "../features/system/SystemMap";
 import { TimelineCalendar } from "../features/timeline/TimelineCalendar";
+import { CHAAVI, chaavi } from "../shared/api";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
+import { POLL_MS } from "../shared/lib/ux/poll";
 import { WidgetFrame } from "../shared/components/WidgetFrame";
 
 const tile =
@@ -14,13 +18,22 @@ const tile =
 
 /**
  * Home widget grid — hardcoded 4×4 on desktop with per-widget spans.
- * Agents 2×1, Memory 2×1, Timeline 2×2, System 1×2 — leftover cells stay empty.
+ * Agents 2×1, Memory 2×1, Timeline 2×2, System 1×2, Chaavi 1×2.
  * Interactive bits inside (e.g. agent nodes) stop propagation for popovers.
  */
 export function WidgetGridPage() {
   const navigate = useNavigate();
   const target = useTarget();
   const allowAgents = target !== "mobile";
+  const { state: connection } = useConnection();
+  const connected = connection === "connected";
+
+  const chaaviHealth = useQuery({
+    queryKey: ["chaavi", "health"],
+    queryFn: () => chaavi.getHealth(),
+    enabled: connected,
+    refetchInterval: POLL_MS,
+  });
 
   const open = (path: string) => () => navigate(path);
   const onActivate =
@@ -91,6 +104,38 @@ export function WidgetGridPage() {
         className={`${tile} md:col-span-1 md:row-span-2`}
       >
         <SystemMap mode="preview" />
+      </WidgetFrame>
+
+      <WidgetFrame
+        title="CHAAVI"
+        role="link"
+        tabIndex={0}
+        onClick={open("/chaavi")}
+        onKeyDown={onActivate("/chaavi")}
+        className={`${tile} md:col-span-1 md:row-span-2`}
+      >
+        <div className="flex h-full flex-col justify-center gap-2 px-3">
+          <p className="text-[13px] leading-relaxed text-ink-muted">
+            Bitwarden at {CHAAVI}
+          </p>
+          {!connected ? (
+            <p className="text-[11px] text-ink-ghost">Connect to load vault</p>
+          ) : chaaviHealth.isError ? (
+            <p className="text-[11px] text-ink-muted">
+              {chaaviHealth.error instanceof Error
+                ? chaaviHealth.error.message
+                : String(chaaviHealth.error)}
+            </p>
+          ) : chaaviHealth.isLoading || !chaaviHealth.data ? (
+            <p className="text-[11px] text-ink-ghost">Loading…</p>
+          ) : (
+            <p className="text-[11px] tracking-[2px] text-sage-deep">
+              {chaaviHealth.data.vault === "ready"
+                ? "VAULT READY"
+                : "VAULT UNCONFIGURED"}
+            </p>
+          )}
+        </div>
       </WidgetFrame>
     </motion.div>
   );

@@ -19,7 +19,9 @@ import {
   toIsoBounds,
 } from "./features/timeline/dates";
 import { consumeSseBuffer, joinUrl } from "./shared/api/sse";
-import { YAAD, DIMAAG, NAS } from "./shared/api/constants";
+import { createChaaviClient } from "./shared/api/chaavi";
+import { YAAD, DIMAAG, NAS, CHAAVI } from "./shared/api/constants";
+import type { Transport } from "./shared/api/transport";
 import type { AgentRecord } from "./shared/api/types";
 
 describe("truncateOneLine", () => {
@@ -197,6 +199,34 @@ describe("mesh constants", () => {
     expect(YAAD).toBe("http://yaad.dadi");
     expect(DIMAAG).toBe("http://dimaag.dadi");
     expect(NAS).toBe("http://nas.dadi");
+    expect(CHAAVI).toBe("http://chaavi.dadi");
+  });
+});
+
+describe("chaavi client", () => {
+  it("calls /health and /v1/items with query params", async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    const transport = {
+      request: async (opts: { path: string; method: string }) => {
+        calls.push({ path: opts.path, method: opts.method });
+        if (opts.path === "/health") {
+          return { status: "ok", vault: "ready" };
+        }
+        return { items: [] };
+      },
+    } as unknown as Transport;
+    const client = createChaaviClient(transport, CHAAVI);
+    await client.getHealth();
+    await client.listItems({ q: "bank", uri: "https://ex.test", kind: "login" });
+    await client.listItems();
+    expect(calls).toEqual([
+      { path: "/health", method: "GET" },
+      {
+        path: "/v1/items?q=bank&uri=https%3A%2F%2Fex.test&kind=login",
+        method: "GET",
+      },
+      { path: "/v1/items", method: "GET" },
+    ]);
   });
 });
 
@@ -227,6 +257,7 @@ describe("transport selection", () => {
     expect(api.usingTsnet).toBe(false);
     expect(api.selectTransportKind()).toBe("browser");
     expect(api.transport.connectionState()).toBe("disconnected");
+    expect(typeof api.chaavi.getHealth).toBe("function");
   });
 
   it("selects tsnet when Tauri globals are present", async () => {

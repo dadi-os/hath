@@ -1,7 +1,6 @@
-import { useCallback, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  BundleDecodeError,
   decodeProvisioningBundle,
   saveCredentials,
   type Credentials,
@@ -16,6 +15,7 @@ type MeshJoinTransport = {
   connect(override?: Credentials): Promise<void>;
 };
 
+/** Narrow the shared transport to the mesh join API, or null when unavailable. */
 function asMeshJoin(t: unknown): MeshJoinTransport | null {
   if (
     t &&
@@ -44,23 +44,47 @@ export function DisconnectedState() {
     if (!api) {
       return;
     }
-    setBusy(true);
     setError(null);
+    let credentials: Credentials;
     try {
-      const credentials = decodeProvisioningBundle(raw);
+      credentials = decodeProvisioningBundle(raw);
+    } catch (err) {
+      setCode(raw);
+      setMode("paste");
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    setBusy(true);
+    try {
       await api.connect(credentials);
       await saveCredentials(credentials);
       setCode("");
     } catch (err) {
-      if (err instanceof BundleDecodeError) {
-        setError(err.message);
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      setCode(raw);
+      setMode("paste");
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   }, []);
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (busy) {
+        return;
+      }
+      const text = e.clipboardData?.getData("text")?.trim();
+      if (!text) {
+        return;
+      }
+      e.preventDefault();
+      setCode(text);
+      setMode("paste");
+      void joinWithCode(text);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [busy, joinWithCode]);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -170,6 +194,7 @@ export function DisconnectedState() {
                     SETUP CODE
                   </span>
                   <textarea
+                    autoFocus
                     autoComplete="off"
                     spellCheck={false}
                     value={code}

@@ -14,5 +14,11 @@
         }
       }
     ]
+  },
+  "bundle": {
+    "macOS": {
+      "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist"
+    }
   }
 }

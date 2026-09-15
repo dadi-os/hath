@@ -7,6 +7,7 @@ The sole UI client for dadi. One codebase, two form factors — desktop and mobi
 - Nas (`http://nas.dadi`) — provision, status, logs, module config
 - Dimaag (`http://dimaag.dadi`) — agents, messages, events
 - Yaad (`http://yaad.dadi`) — memory graph
+- Chaavi (`http://chaavi.dadi`) — vault item catalog + Bitwarden extension URL (not a password manager UI)
 - Dwar (indirect via Dimaag/Yaad)
 - dadiMesh (desktop: system `tailscaled` TUN + MagicDNS; iOS: Go tsnet dialer + Network Extension)
 
@@ -30,7 +31,7 @@ hath/
         tsnet-transport.ts    MeshTransport / dadiMesh (Tauri; dynamic import)
         runtime.ts         isTauriRuntime / transport kind
         sse.ts / credentials.ts / types.ts
-        dimaag/ yaad/ nas/ portable client modules
+        dimaag/ yaad/ nas/ chaavi/ portable client modules
       lib/
         platform/          logging helpers
         content/           attachments
@@ -127,6 +128,7 @@ Do not detect by viewport width. Theme follows `prefers-color-scheme` (system li
 | `YAAD` | `http://yaad.dadi` |
 | `DIMAAG` | `http://dimaag.dadi` |
 | `NAS` | `http://nas.dadi` |
+| `CHAAVI` | `http://chaavi.dadi` |
 
 Plain HTTP on the WireGuard mesh. No localhost fallback.
 
@@ -186,13 +188,13 @@ iOS cannot run `tailscaled` as a system daemon, so join uses the in-process dial
 
 ## Chrome and routes
 
-**Desktop:** glass header + chat sidebar; `<Outlet />` swaps. Routes: `/`, `/agents`, `/memory`, `/timeline`, `/system`.
+**Desktop:** glass header + chat sidebar; `<Outlet />` swaps. Routes: `/`, `/agents`, `/memory`, `/timeline`, `/system`, `/chaavi`.
 
 **Mobile:** `MobileChatShell` — conversation drawer + thread/composer. All other paths redirect to `/`.
 
 ## Agents / chat / memory
 
-`/agents` is a live d3 hierarchy (desktop). Chat sidebar is conversation list + thread; dual-lane busy rules and provisional new-chat routing are documented in code under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api` (`yaad` client; paths live in `shared/api/yaad`).
+`/agents` is a live d3 hierarchy (desktop). Chat sidebar is conversation list + thread; dual-lane busy rules and provisional new-chat routing are documented in code under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api` (`yaad` client; paths live in `shared/api/yaad`). `/chaavi` is a catalog of vault item metadata plus the Bitwarden self-hosted URL (`http://chaavi.dadi`) — Hath never shows or copies passwords; human fill is the Bitwarden extension on the mesh.
 
 ## Design tokens
 

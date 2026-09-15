@@ -1,23 +1,57 @@
 import jsQR from "jsqr";
 import { useEffect, useRef, useState } from "react";
+import { useTarget } from "../hooks/useTarget";
+import type { Target } from "../target";
 
 type QrScannerProps = {
+  /** Called once with the decoded QR payload. */
   onDecode: (text: string) => void;
+  /** Optional switch to paste-code onboarding. */
   onCancel?: () => void;
   /** Fill the parent instead of a fixed max-width card. */
   fill?: boolean;
 };
 
 /**
+ * Video constraint for the onboarding QR camera.
+ * Mobile prefers the rear camera. Desktop must not demand `environment` —
+ * Macs have no back camera, and that constraint blocks the webcam and Continuity Camera.
+ */
+export function qrVideoConstraint(target: Target): MediaTrackConstraints | true {
+  if (target === "mobile") {
+    return { facingMode: { ideal: "environment" } };
+  }
+  return true;
+}
+
+/** User-facing copy for a getUserMedia failure. */
+export function cameraFailureMessage(err: unknown): string {
+  const name = err instanceof DOMException ? err.name : "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Camera permission denied. Allow camera access, or paste the setup code instead.";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "No camera matched. Connect a webcam or Continuity Camera, or paste the setup code instead.";
+  }
+  if (name === "NotReadableError") {
+    return "Camera is in use by another app. Close it, or paste the setup code instead.";
+  }
+  const detail = err instanceof Error && err.message ? err.message : String(err);
+  return `Couldn't open the camera (${detail}). Paste the setup code instead.`;
+}
+
+/**
  * Live camera QR reader integrated into the onboarding surface.
  * Stops the MediaStream on unmount / cancel / success.
  */
 export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
+  const target = useTarget();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onDecodeRef = useRef(onDecode);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const decodedRef = useRef(false);
 
   useEffect(() => {
@@ -28,6 +62,7 @@ export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
     let stream: MediaStream | null = null;
     let raf = 0;
     let cancelled = false;
+    decodedRef.current = false;
 
     const stop = () => {
       if (raf) {
@@ -84,11 +119,7 @@ export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
+          video: qrVideoConstraint(target),
         });
         if (cancelled) {
           stop();
@@ -100,14 +131,14 @@ export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
           return;
         }
         video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
         await video.play();
         setReady(true);
         raf = requestAnimationFrame(tick);
-      } catch {
+      } catch (err) {
         if (!cancelled) {
-          setError(
-            "Camera permission denied. Allow camera access, or paste the setup code instead.",
-          );
+          setError(cameraFailureMessage(err));
         }
         stop();
       }
@@ -117,7 +148,14 @@ export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
       cancelled = true;
       stop();
     };
-  }, []);
+  }, [attempt, target]);
+
+  /** Retry getUserMedia after a camera failure. */
+  const retry = () => {
+    setError(null);
+    setReady(false);
+    setAttempt((n) => n + 1);
+  };
 
   return (
     <div
@@ -139,7 +177,6 @@ export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
         />
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* Sage viewfinder */}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="relative size-[68%] max-w-[280px]">
             <span className="absolute left-0 top-0 h-8 w-8 rounded-tl-[10px] border-l-2 border-t-2 border-sage" />
@@ -159,7 +196,16 @@ export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
       </div>
 
       {error ? (
-        <p className="text-center text-[13px] text-ink-muted">{error}</p>
+        <div className="flex flex-col items-center gap-2">
+          <p className="text-center text-[13px] text-ink-muted">{error}</p>
+          <button
+            type="button"
+            onClick={retry}
+            className="text-[12px] font-medium tracking-[2px] text-sage-deep"
+          >
+            TRY CAMERA
+          </button>
+        </div>
       ) : (
         <p className="text-center text-[13px] text-ink-muted">
           Hold the setup QR in the frame — it joins automatically.

@@ -78,6 +78,8 @@ export class MeshTransport implements Transport {
   /**
    * Start dadiMesh. Pass `override` during first-run provisioning.
    * Does not schedule retries — leave/join is explicit (power control).
+   * Onboarding stays up until `mesh_start` succeeds so a failed join does
+   * not remount the scan/paste overlay.
    */
   async connect(override?: Credentials): Promise<void> {
     const credentials = override ?? (await loadCredentials());
@@ -90,19 +92,16 @@ export class MeshTransport implements Transport {
     }
 
     this.active = true;
-    this.setProvisioningNeeded(false);
     this.setState("connecting");
 
     try {
       this.port = await this.startNode(credentials);
+      this.setProvisioningNeeded(false);
       this.setState("connected");
     } catch (err) {
       this.port = null;
       this.active = false;
       this.setState("disconnected");
-      if (override) {
-        this.setProvisioningNeeded(true);
-      }
       throw err instanceof Error ? err : new Error(String(err));
     }
   }
