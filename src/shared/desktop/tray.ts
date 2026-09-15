@@ -43,7 +43,8 @@ export type TraySnapshot = {
 };
 
 let tray: TrayIcon | null = null;
-let building = false;
+let chain: Promise<void> = Promise.resolve();
+let queued: TraySnapshot | null = null;
 
 /** True on desktop Tauri (not iOS/Android webview shells). */
 export async function isDesktopTrayHost(): Promise<boolean> {
@@ -57,43 +58,86 @@ export async function isDesktopTrayHost(): Promise<boolean> {
 
 /**
  * Create or refresh the tray icon menu from {@link TraySnapshot}.
- * Safe to call often — rebuilds the menu in place. Rejects on tray API failure.
+ * Serializes overlapping calls on one promise chain so the latest snapshot lands.
+ * macOS app menu is applied before tray icon creation.
  */
 export async function syncDesktopTray(snapshot: TraySnapshot): Promise<void> {
-  if (!(await isDesktopTrayHost()) || building) {
+  queued = snapshot;
+  if (!isTauriRuntime()) {
     return;
   }
-  building = true;
-  try {
-    const menu = await Menu.new({ items: menuBranches(snapshot) });
-    if (!tray) {
-      const icon = await defaultWindowIcon();
-      if (!icon) {
-        throw new Error("default window icon is missing for tray");
-      }
-      tray = await TrayIcon.new({
-        id: TRAY_ID,
-        icon,
-        tooltip: "Dadi",
-        menu,
-        showMenuOnLeftClick: true,
-        action: (event) => {
-          if (event.type === "DoubleClick") {
-            void focusMainWindow();
-          }
-        },
-      });
-    } else {
-      await tray.setMenu(menu);
-    }
+  chain = chain.then(drainTrayQueue, drainTrayQueue);
+  await chain;
+}
 
-    const { type } = await import("@tauri-apps/plugin-os");
-    if (type() === "macos") {
-      await setMacAppMenu(snapshot);
-    }
-  } finally {
-    building = false;
+/** Apply the newest queued snapshot(s); re-reads {@link queued} after each apply. */
+async function drainTrayQueue(): Promise<void> {
+  if (!(await isDesktopTrayHost())) {
+    queued = null;
+    return;
   }
+  while (queued) {
+    const snapshot = queued;
+    queued = null;
+    await applyDesktopShell(snapshot);
+  }
+}
+
+/**
+ * Install the macOS app menu first, then the tray icon.
+ * App menu must not depend on tray icon success.
+ */
+async function applyDesktopShell(snapshot: TraySnapshot): Promise<void> {
+  const { type } = await import("@tauri-apps/plugin-os");
+  const platform = type();
+  const menu = await Menu.new({ items: menuBranches(snapshot) });
+
+  if (platform === "macos") {
+    await setMacAppMenu(snapshot);
+  }
+
+  try {
+    await ensureTray(menu, platform);
+  } catch (err) {
+    if (platform === "macos") {
+      throw new Error(
+        `tray icon failed (app menu already set): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    throw err;
+  }
+}
+
+/** Create or reuse the status-item / notification-area tray. */
+async function ensureTray(menu: Menu, platform: string): Promise<void> {
+  if (!tray) {
+    tray = await TrayIcon.getById(TRAY_ID);
+  }
+  if (tray) {
+    await tray.setMenu(menu);
+    await tray.setVisible(true);
+    return;
+  }
+
+  const icon = await defaultWindowIcon();
+  if (!icon) {
+    throw new Error("default window icon is missing for tray");
+  }
+  tray = await TrayIcon.new({
+    id: TRAY_ID,
+    icon,
+    tooltip: "Dadi",
+    menu,
+    showMenuOnLeftClick: true,
+    iconAsTemplate: platform === "macos",
+    action: (event) => {
+      if (event.type === "DoubleClick") {
+        void focusMainWindow();
+      }
+    },
+  });
 }
 
 /**

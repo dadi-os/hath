@@ -59,7 +59,7 @@ export function AppShell() {
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-transparent">
       <motion.div
-        className="glass-veil z-20 border-b-0 shadow-[var(--shadow)]"
+        className="glass-veil relative z-[60] border-b-0 shadow-[var(--shadow)]"
         initial={{ opacity: 0, y: -14 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: SLOW_S, ease: EASE }}
