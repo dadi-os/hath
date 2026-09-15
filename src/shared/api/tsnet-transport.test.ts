@@ -10,7 +10,9 @@ vi.mock("@tauri-apps/plugin-http", () => ({
   fetch: vi.fn(),
 }));
 
+import { fetch } from "@tauri-apps/plugin-http";
 import { MeshTransport } from "./tsnet-transport";
+import { DIMAAG } from "./constants";
 
 const creds = {
   control_url: "http://headscale.dadi",
@@ -66,6 +68,39 @@ describe("MeshTransport.connect onboarding", () => {
 
     await transport.connect(creds);
     expect(transport.needsProvisioningKey()).toBe(false);
+    expect(transport.connectionState()).toBe("connected");
+  });
+});
+
+describe("MeshTransport.request", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    vi.mocked(fetch).mockReset();
+  });
+
+  it("uses the /@host proxy on a real port and keeps the mesh up if HTTP fails", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "mesh_start") {
+        return 4242;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    vi.mocked(fetch).mockRejectedValue(new Error("connect failed"));
+
+    const transport = new MeshTransport();
+    await transport.connect(creds);
+    await expect(
+      transport.request({
+        baseUrl: DIMAAG,
+        path: "/agents",
+        method: "GET",
+      }),
+    ).rejects.toThrow(/connect failed/);
+
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:4242/@dimaag.dadi/agents",
+    );
+    expect(transport.isActive()).toBe(true);
     expect(transport.connectionState()).toBe("connected");
   });
 });

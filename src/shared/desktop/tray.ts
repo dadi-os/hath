@@ -145,8 +145,31 @@ async function ensureTray(menu: Menu, platform: string): Promise<void> {
  * MenuItems cannot be parented to two menus, so this builds a separate tree.
  */
 async function setMacAppMenu(snapshot: TraySnapshot): Promise<void> {
-  const appMenu = await Menu.new({ items: menuBranches(snapshot) });
+  const appMenu = await Menu.new({ items: macAppMenuBranches(snapshot) });
   await appMenu.setAsAppMenu();
+}
+
+/** macOS menu bar: Dadi / Edit / Agents / System. Edit restores Cmd+V paste. */
+function macAppMenuBranches(snapshot: TraySnapshot) {
+  const [dadi, agents, system] = menuBranches(snapshot);
+  return [
+    dadi,
+    {
+      id: "menu-edit",
+      text: "Edit",
+      items: [
+        { item: "Undo" as const },
+        { item: "Redo" as const },
+        { item: "Separator" as const },
+        { item: "Cut" as const },
+        { item: "Copy" as const },
+        { item: "Paste" as const },
+        { item: "SelectAll" as const },
+      ],
+    },
+    agents,
+    system,
+  ];
 }
 
 /** Top-level Dadi / Agents / System submenu roots. */

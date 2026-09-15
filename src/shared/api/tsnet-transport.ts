@@ -11,15 +11,15 @@ import { consumeSseBuffer } from "./sse";
 export { NotProvisionedError } from "./errors";
 
 /**
- * Sentinel from desktop `mesh_start` when system `tailscaled` TUN is up.
- * Traffic uses MagicDNS `*.dadi` directly (no local `/@host` proxy).
+ * Legacy `mesh_start` port when desktop dialed `*.dadi` via the OS resolver.
+ * Current desktop returns a local MagicDNS proxy port (`/@host`, same as iOS).
  */
 const SYSTEM_MESH_PORT = 0;
 
 /**
  * Transport that dials Dimaag/Yaad/Nas through dadiMesh.
  *
- * Desktop: system Tailscale TUN + MagicDNS → `http://dimaag.dadi/...`.
+ * Desktop: system Tailscale TUN + local `/@host` proxy (MagicDNS, not libc).
  * iOS: in-process dialer → `http://127.0.0.1:<port>/@host/...`.
  * Connection is explicit — no silent reconnect.
  */
@@ -150,7 +150,6 @@ export class MeshTransport implements Transport {
         body,
       });
     } catch (err) {
-      this.markFailure();
       throw err instanceof Error ? err : new Error(String(err));
     }
 
@@ -202,7 +201,7 @@ export class MeshTransport implements Transport {
     };
   }
 
-  /** Desktop system mesh uses MagicDNS; iOS uses the local `/@host` proxy. */
+  /** Local `/@host` proxy; port `0` is the unused libc MagicDNS path. */
   private meshUrl(baseUrl: string, path: string): string {
     if (this.port === SYSTEM_MESH_PORT) {
       const base = baseUrl.replace(/\/$/, "");
@@ -272,7 +271,6 @@ export class MeshTransport implements Transport {
       closed();
     } catch {
       if (!signal.aborted) {
-        this.markFailure();
         onClose?.();
       }
     }
@@ -283,12 +281,6 @@ export class MeshTransport implements Transport {
       return;
     }
     this.setState("connected");
-  }
-
-  private markFailure(): void {
-    this.active = false;
-    this.port = null;
-    this.setState("disconnected");
   }
 
   private setProvisioningNeeded(needed: boolean): void {

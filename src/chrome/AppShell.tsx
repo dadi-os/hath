@@ -59,12 +59,16 @@ export function AppShell() {
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-transparent">
       <motion.div
-        className="glass-veil relative z-[60] border-b-0 shadow-[var(--shadow)]"
+        className={
+          showOnboarding
+            ? "relative z-[60]"
+            : "glass-veil relative z-[60] border-b-0 shadow-[var(--shadow)]"
+        }
         initial={{ opacity: 0, y: -14 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: SLOW_S, ease: EASE }}
       >
-        <Header />
+        <Header minimal={showOnboarding} />
       </motion.div>
 
       <div className="relative flex min-h-0 flex-1">

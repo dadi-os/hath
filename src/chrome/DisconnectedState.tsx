@@ -6,6 +6,7 @@ import {
   type Credentials,
 } from "../shared/api/credentials";
 import { transport } from "../shared/api";
+import { isTauriRuntime } from "../shared/api/runtime";
 import { useNeedsProvisioning } from "../hooks/useNeedsProvisioning";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 import { QrScanner } from "./QrScanner";
@@ -73,14 +74,28 @@ export function DisconnectedState() {
       if (busy) {
         return;
       }
-      const text = e.clipboardData?.getData("text")?.trim();
-      if (!text) {
+      const target = e.target;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      ) {
         return;
       }
       e.preventDefault();
-      setCode(text);
-      setMode("paste");
-      void joinWithCode(text);
+      void (async () => {
+        try {
+          const text = await readClipboardText(e);
+          if (!text) {
+            return;
+          }
+          setCode(text);
+          setMode("paste");
+          await joinWithCode(text);
+        } catch (err) {
+          setMode("paste");
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      })();
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
@@ -106,7 +121,7 @@ export function DisconnectedState() {
 
   return (
     <motion.div
-      className="absolute inset-x-0 top-12 bottom-0 z-50 flex flex-col items-center justify-center bg-bone/55 px-6 backdrop-blur-xl dark:bg-[#1a1c18]/70"
+      className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-bone/55 px-6 pt-12 backdrop-blur-xl dark:bg-[#1a1c18]/70"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: SLOW_S, ease: EASE }}
@@ -121,7 +136,7 @@ export function DisconnectedState() {
         transition={{ duration: SLOW_S, ease: EASE }}
       >
         <div className="mb-5 flex flex-col items-center gap-2">
-          <span className="font-gujarati text-[44px] leading-none text-sage-text">
+          <span className="font-gujarati text-[44px] leading-[1.35] text-sage-text">
             દાદી
           </span>
           <span className="text-[11px] font-medium tracking-[2.5px] text-ink-faint">
@@ -200,8 +215,8 @@ export function DisconnectedState() {
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
                     placeholder="Paste the code from Dadi"
-                    rows={4}
-                    className="w-full resize-none rounded-[var(--radius)] border border-sage-line bg-bone/50 px-3 py-2 font-mono text-[13px] text-ink outline-none focus:border-sage"
+                    rows={8}
+                    className="min-h-[10rem] w-full flex-1 resize-none overflow-y-auto rounded-[var(--radius)] border border-sage-line bg-bone/50 px-3 py-2 font-mono text-[13px] leading-relaxed text-ink outline-none focus:border-sage"
                     disabled={busy}
                   />
                 </label>
@@ -237,4 +252,13 @@ export function DisconnectedState() {
       </motion.div>
     </motion.div>
   );
+}
+
+/** Full clipboard text. Tauri's paste event often truncates; the plugin does not. */
+async function readClipboardText(e: ClipboardEvent): Promise<string> {
+  if (isTauriRuntime()) {
+    const { readText } = await import("@tauri-apps/plugin-clipboard-manager");
+    return (await readText()).trim();
+  }
+  return e.clipboardData?.getData("text")?.trim() ?? "";
 }

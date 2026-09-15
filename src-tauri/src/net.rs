@@ -36,7 +36,7 @@ extern "C" {
 }
 
 /// Shared dialer port after a successful start.
-/// Desktop system mesh stores [`crate::sysmesh::SYSTEM_MESH_SENTINEL`] (0).
+/// Desktop system mesh stores the local MagicDNS HTTP proxy port.
 pub struct MeshState {
     pub port: Mutex<Option<u16>>,
 }

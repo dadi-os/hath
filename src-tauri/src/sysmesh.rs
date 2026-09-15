@@ -17,11 +17,14 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 
-/// Returned from `mesh_start` when the OS TUN is up — frontend uses direct `*.dadi` URLs.
-pub const SYSTEM_MESH_SENTINEL: u16 = 0;
-
 const JOIN_TIMEOUT: Duration = Duration::from_secs(45);
 const DAEMON_WAIT: Duration = Duration::from_secs(20);
+
+#[cfg(target_os = "macos")]
+const MAGIC_DNS_RESOLVER_INSTALL: &str = "/bin/mkdir -p /etc/resolver && /usr/bin/printf 'nameserver 100.100.100.100\\n' > /etc/resolver/dadi && /usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder 2>/dev/null; true";
+
+#[cfg(target_os = "macos")]
+const MAGIC_DNS_RESOLVER_REMOVE: &str = "/bin/rm -f /etc/resolver/dadi && /usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder 2>/dev/null; true";
 
 static DAEMON_PID: Mutex<Option<u32>> = Mutex::new(None);
 
@@ -30,7 +33,7 @@ struct Bins {
     tailscaled: PathBuf,
 }
 
-/// Bring up system Tailscale against Headscale. Returns [`SYSTEM_MESH_SENTINEL`].
+/// Bring up system Tailscale against Headscale. Returns the local MagicDNS HTTP proxy port.
 pub fn start(
     app: &AppHandle,
     control_url: &str,
@@ -41,15 +44,22 @@ pub fn start(
     let socket = local_api_path(&state_dir);
     let bins = resolve_bins(app)?;
 
+    logutil::emit("info", format!("sysmesh start hostname={hostname} login-server={control_url}"));
     ensure_daemon(&bins, &state_dir, &socket)?;
-    tailscale_up(&bins, &socket, control_url, auth_key, hostname)?;
-    wait_until_running(&bins, &socket)?;
+    if backend_running(&bins, &socket) {
+        logutil::emit("info", "sysmesh already Running; skipping tailscale up");
+    } else {
+        tailscale_up(&bins, &socket, control_url, auth_key, hostname)?;
+        wait_until_running(&bins, &socket)?;
+    }
+    let port = crate::meshproxy::start()?;
+    ensure_magic_dns_resolver()?;
 
     logutil::emit(
         "info",
-        format!("sysmesh up hostname={hostname} login-server={control_url}"),
+        format!("sysmesh up hostname={hostname} login-server={control_url} proxy=127.0.0.1:{port}"),
     );
-    Ok(SYSTEM_MESH_SENTINEL)
+    Ok(port)
 }
 
 /// Leave the mesh (`tailscale down`) and stop the managed daemon when we started it.
@@ -65,7 +75,11 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
             .stderr(Stdio::null())
             .status();
     }
+    crate::meshproxy::stop();
     stop_daemon(&state_dir, &socket);
+    if let Err(e) = remove_magic_dns_resolver() {
+        logutil::emit("error", format!("sysmesh MagicDNS resolver: {e}"));
+    }
     logutil::emit("info", "sysmesh down");
     Ok(())
 }
@@ -84,6 +98,21 @@ pub fn status(app: &AppHandle) -> u8 {
     } else {
         0
     }
+}
+
+#[cfg(unix)]
+fn state_owned_by_root(state_dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    state_dir
+        .join("tailscaled.state")
+        .metadata()
+        .map(|m| m.uid() == 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn state_owned_by_root(_state_dir: &Path) -> bool {
+    false
 }
 
 fn sysmesh_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -235,10 +264,6 @@ fn daemon_reports_via_cli(bins: &Bins, socket: &Path) -> bool {
 
 fn start_daemon(bins: &Bins, state_dir: &Path, socket: &Path) -> Result<(), String> {
     let log_path = state_dir.join("tailscaled.log");
-    #[cfg(unix)]
-    {
-        let _ = fs::remove_file(socket);
-    }
 
     #[cfg(target_os = "macos")]
     {
@@ -291,6 +316,7 @@ fn spawn_daemon_process(
     Ok(())
 }
 
+/// Starts tailscaled via admin `osascript` and returns when the local API socket answers so `do shell script` cannot hold join on the daemon child.
 #[cfg(target_os = "macos")]
 fn start_daemon_macos(
     bins: &Bins,
@@ -298,18 +324,22 @@ fn start_daemon_macos(
     socket: &Path,
     log_path: &Path,
 ) -> Result<(), String> {
-    if spawn_daemon_process(bins, state_dir, socket, log_path).is_ok() {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if socket_live(socket) {
-                return Ok(());
+    if !state_owned_by_root(state_dir) {
+        if spawn_daemon_process(bins, state_dir, socket, log_path).is_ok() {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if socket_live(socket) {
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(100));
             }
-            thread::sleep(Duration::from_millis(100));
         }
     }
 
+    logutil::emit("info", "sysmesh requesting admin to start tailscaled");
     let script = format!(
-        "/bin/mkdir -p {statedir} && /bin/rm -f {socket} && {tailscaled} --statedir={statedir} --socket={socket} --verbose=1 >{log} 2>&1 & echo $! >{pidfile}; sleep 1; /bin/chmod 666 {socket} 2>/dev/null; true",
+        "/bin/mkdir -p {statedir} && /bin/rm -f {socket} && {tailscaled} --statedir={statedir} --socket={socket} --verbose=1 >{log} 2>&1 < /dev/null & echo $! >{pidfile}; /bin/sleep 1; /bin/chmod 666 {socket} 2>/dev/null; {resolver}; true",
+        resolver = MAGIC_DNS_RESOLVER_INSTALL,
         statedir = sh_single_quote(&state_dir.to_string_lossy()),
         socket = sh_single_quote(&socket.to_string_lossy()),
         tailscaled = sh_single_quote(&bins.tailscaled.to_string_lossy()),
@@ -322,21 +352,17 @@ fn start_daemon_macos(
         apple_escape(&script)
     );
 
-    let output = Command::new("osascript")
+    let mut child = Command::new("osascript")
         .arg("-e")
         .arg(&apple)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("osascript (admin TUN): {e}"))?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "admin approval required to create the dadiMesh TUN: {err}"
-        ));
-    }
-
-    let deadline = Instant::now() + DAEMON_WAIT;
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
         if socket.exists() {
             let _ = Command::new("/bin/chmod")
                 .args(["666", &socket.to_string_lossy()])
@@ -345,9 +371,44 @@ fn start_daemon_macos(
                 return Ok(());
             }
         }
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => {
+                let err = match child.stderr.take() {
+                    Some(mut s) => {
+                        let mut buf = String::new();
+                        let _ = std::io::Read::read_to_string(&mut s, &mut buf);
+                        buf
+                    }
+                    None => String::new(),
+                };
+                return Err(format!(
+                    "admin approval required to create the dadiMesh TUN: {err}"
+                ));
+            }
+            Ok(Some(_)) => {
+                let wait = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < wait {
+                    if socket_live(socket) {
+                        return Ok(());
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                let log = fs::read_to_string(log_path).unwrap_or_default();
+                return Err(format!(
+                    "tailscaled did not stay up after admin start — {}",
+                    log.trim()
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("osascript (admin TUN): {e}")),
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "admin approval timed out. Approve the password prompt, then join again.".into(),
+            );
+        }
         thread::sleep(Duration::from_millis(200));
     }
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -559,6 +620,68 @@ fn backend_running(bins: &Bins, socket: &Path) -> bool {
     let body = String::from_utf8_lossy(&output.stdout);
     body.contains("\"BackendState\":\"Running\"")
         || body.contains("\"BackendState\": \"Running\"")
+}
+
+fn ensure_magic_dns_resolver() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if macos_magic_dns_resolver_ok() {
+            return Ok(());
+        }
+        logutil::emit("info", "sysmesh installing /etc/resolver/dadi for os.dadi");
+        run_osascript_admin(MAGIC_DNS_RESOLVER_INSTALL)?;
+        if !macos_magic_dns_resolver_ok() {
+            return Err(
+                "admin approval required to resolve os.dadi (install /etc/resolver/dadi)".into(),
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+fn remove_magic_dns_resolver() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if !Path::new("/etc/resolver/dadi").exists() {
+            return Ok(());
+        }
+        run_osascript_admin(MAGIC_DNS_RESOLVER_REMOVE)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_magic_dns_resolver_ok() -> bool {
+    fs::read_to_string("/etc/resolver/dadi")
+        .map(|s| s.contains("100.100.100.100"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn run_osascript_admin(script: &str) -> Result<(), String> {
+    let apple = format!(
+        "do shell script \"{}\" with administrator privileges",
+        apple_escape(script)
+    );
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&apple)
+        .output()
+        .map_err(|e| format!("osascript: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "admin approval required for MagicDNS (os.dadi): {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
 fn sh_single_quote(s: &str) -> String {

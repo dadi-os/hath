@@ -6,6 +6,8 @@ mod device;
 mod ios_vpn;
 
 #[cfg(not(target_os = "ios"))]
+mod meshproxy;
+#[cfg(not(target_os = "ios"))]
 mod sysmesh;
 
 use net::MeshState;

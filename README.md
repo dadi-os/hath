@@ -145,7 +145,7 @@ Lifecycle (Tauri):
 - Unprovisioned → onboarding (scan/paste)
 - Provisioned + mesh down → glassy power overlay (tap to join); no silent auto-start
 - Connected → app UI; chrome power control leaves the mesh
-- **Desktop:** power on starts bundled `tailscaled` (TUN + MagicDNS `--accept-dns`) against the provisioned Headscale control URL — same model as the Nas host node `os`. Hath talks to `http://*.dadi` directly. Terminal can `ssh user@os.dadi` while joined. macOS prompts once for admin (osascript); Linux uses `pkexec`/`sudo`; Windows elevates via UAC for Wintun.
+- **Desktop:** power on starts bundled `tailscaled` (TUN + MagicDNS `--accept-dns`) against the provisioned Headscale control URL — same model as the Nas host node `os`. Hath reaches `*.dadi` through a local `/@host` proxy that queries MagicDNS (`100.100.100.100`) so Compose `/etc/hosts` loopbacks cannot hijack service names. On macOS, join also writes `/etc/resolver/dadi` → `100.100.100.100` so Terminal `ssh user@os.dadi` uses MagicDNS (libc will not). macOS prompts for admin (osascript); Linux uses `pkexec`/`sudo`; Windows elevates via UAC for Wintun.
 - **iOS:** in-process tsnet dialer + Network Extension profile (`dadiMesh` in Settings → VPN) with L3 CGNAT routes + MagicDNS (and optional HTTP proxy while the dialer port is non-zero)
 - Leave → `tailscale down` / dialer stop; mesh names stop resolving
 

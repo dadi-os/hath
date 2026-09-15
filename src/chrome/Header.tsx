@@ -32,8 +32,13 @@ function toggleMaximize() {
   void getCurrentWindow().toggleMaximize();
 }
 
+export type HeaderProps = {
+  /** Drag strip + window controls only — first-launch join must not grow a second chrome bar. */
+  minimal?: boolean;
+};
+
 /** Desktop glass menu bar — brand + mesh status + leave control + window chrome. */
-export function Header() {
+export function Header({ minimal = false }: HeaderProps) {
   const navigate = useNavigate();
   const { state, disconnect } = useConnection();
   const location = useLocation();
@@ -65,15 +70,33 @@ export function Header() {
         ? "…"
         : "—";
 
+  const pad =
+    desktopOs === "macos"
+      ? "pl-[80px] pr-3"
+      : frameless
+        ? "pl-3 pr-0"
+        : "px-4 sm:px-6";
+
+  if (minimal) {
+    return (
+      <header
+        className={`titlebar flex h-12 shrink-0 items-stretch select-none ${
+          desktopOs === "macos" ? "pl-[80px] pr-0" : pad
+        }`}
+      >
+        <div
+          className="titlebar-drag min-h-0 min-w-[24px] flex-1"
+          data-tauri-drag-region
+          onDoubleClick={toggleMaximize}
+        />
+        {frameless ? <WindowControls /> : null}
+      </header>
+    );
+  }
+
   return (
     <header
-      className={`titlebar flex h-12 shrink-0 items-stretch select-none ${
-        desktopOs === "macos"
-          ? "pl-[76px] pr-3"
-          : frameless
-            ? "pl-3 pr-0"
-            : "px-4 sm:px-6"
-      }`}
+      className={`titlebar flex h-12 shrink-0 items-stretch select-none ${pad}`}
     >
       <div className="flex shrink-0 items-center gap-2.5 py-2">
         <Tooltip content={atHome ? "Home" : "Back home"}>
@@ -91,10 +114,10 @@ export function Header() {
         <button
           type="button"
           onClick={() => navigate("/")}
-          className="flex items-baseline gap-2.5"
+          className="flex items-center"
           aria-label="Dadi home"
         >
-          <span className="font-gujarati text-[24px] leading-none text-sage-text">
+          <span className="font-gujarati text-[22px] leading-[1.45] text-sage-text">
             દાદી
           </span>
         </button>
