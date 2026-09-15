@@ -469,6 +469,24 @@ fn start_daemon_linux(
     ))
 }
 
+/// Strip Windows `\\?\` / `\\?\UNC\` prefixes so `cmd` and PowerShell accept the path.
+#[cfg(windows)]
+fn win_shell_path(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.into_owned()
+    }
+}
+
+/// Starts elevated `tailscaled` on Windows (Wintun + named-pipe SDDL need admin).
+///
+/// Unelevated listen always fails with ERROR_INVALID_OWNER (`O:BA` pipe SDDL).
+/// Elevates the exe via `RunAs` with WorkingDirectory set so `wintun.dll` loads;
+/// paths are stripped of Rust's `\\?\` prefix (`cmd` cannot open those).
 #[cfg(windows)]
 fn start_daemon_windows(
     bins: &Bins,
@@ -482,21 +500,27 @@ fn start_daemon_windows(
             bins.tailscaled.display()
         )
     })?;
-    let _ = fs::write(log_path, "");
-    let launcher = state_dir.join("start-tailscaled.cmd");
-    let script = format!(
-        "@echo off\r\ncd /d \"{}\"\r\n\"{}\" --statedir=\"{}\" --socket=\"{}\" --verbose=1 >>\"{}\" 2>&1\r\n",
-        bin_dir.display(),
-        bins.tailscaled.display(),
-        state_dir.display(),
-        socket.display(),
-        log_path.display(),
-    );
-    fs::write(&launcher, script).map_err(|e| format!("write tailscaled launcher: {e}"))?;
+    let exe = win_shell_path(&bins.tailscaled);
+    let workdir = win_shell_path(bin_dir);
+    let statedir = win_shell_path(state_dir);
+    let sock = win_shell_path(socket);
+
+    fs::write(
+        log_path,
+        format!(
+            "elevating tailscaled exe={exe} workdir={workdir}\r\n\
+             (elevated stdout is not captured under UAC RunAs; Tailscale also logs under %LocalAppData%\\Tailscale)\r\n"
+        ),
+    )
+    .map_err(|e| format!("write tailscaled elevate log: {e}"))?;
 
     let elevate = format!(
-        "Start-Process -FilePath {} -Verb RunAs -WindowStyle Hidden",
-        ps_quote(&launcher.display().to_string())
+        "Start-Process -FilePath {} -WorkingDirectory {} -ArgumentList {},{},{} -Verb RunAs -WindowStyle Hidden",
+        ps_quote(&exe),
+        ps_quote(&workdir),
+        ps_quote(&format!("--statedir={statedir}")),
+        ps_quote(&format!("--socket={sock}")),
+        ps_quote("--verbose=1"),
     );
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", &elevate])
@@ -519,21 +543,15 @@ fn start_daemon_windows(
     Err(windows_daemon_ready_timeout(log_path))
 }
 
-/// Builds the Windows daemon-ready timeout error, including log-derived hints.
+/// Builds the Windows daemon-ready timeout error.
+///
+/// Elevated stdout is not redirected under UAC `RunAs`, so this points at the
+/// elevate header we wrote plus Tailscale's own LocalAppData logs.
 #[cfg(windows)]
 fn windows_daemon_ready_timeout(log_path: &Path) -> String {
-    let body = fs::read_to_string(log_path).unwrap_or_default();
-    let hint = if body.contains("security ID may not be assigned as the owner") {
-        "named pipe listen needs elevation (UAC Yes); daemon was not admin"
-    } else if body.contains("Access is denied") || body.contains(r"ProgramData\Tailscale") {
-        r"leftover Tailscale state — remove C:\ProgramData\Tailscale and %LocalAppData%\Tailscale, uninstall official Tailscale, retry"
-    } else {
-        "Wintun/UAC"
-    };
     format!(
-        "elevated tailscaled did not become ready within {}s — {} (check {})",
+        "elevated tailscaled did not become ready within {}s — approve UAC if prompted; see {} and %LocalAppData%\\Tailscale (leftover C:\\ProgramData\\Tailscale can also block Wintun)",
         DAEMON_WAIT.as_secs(),
-        hint,
         log_path.display()
     )
 }
