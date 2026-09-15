@@ -31,10 +31,9 @@ export type NasStatus = {
   errors: string[];
 };
 
-/** Headscale UPnP publish snapshot from PUT/GET /headscale/* . */
+/** Headscale publish snapshot from GET/POST /headscale/publish. */
 export type HeadscalePublishStatus = {
-  status?: string;
-  control_url?: string;
+  control_url: string;
   hostname?: string;
   lan_ip?: string;
   wan_ip?: string;
@@ -63,7 +62,7 @@ export type NasLogsParams = {
 };
 
 /**
- * Nas HTTP client — status, logs, tunnel, stack, provision.
+ * Nas HTTP client — status, logs, stack, provision.
  * Paths live here; callers pass only domain args.
  */
 export function createNasClient(transport: Transport, baseUrl: string) {
@@ -147,27 +146,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** GET /headscale/control-url — public control plane URL for provision bundles. */
-    getControlUrl(): Promise<string> {
-      return transport.request({
-        baseUrl,
-        path: "/headscale/control-url",
-        method: "GET",
-        responseType: "text",
-      });
-    },
-
-    /** PUT /headscale/control-url — persist URL and publish Headscale on the appliance. */
-    putControlUrl(url: string): Promise<HeadscalePublishStatus> {
-      return transport.request({
-        baseUrl,
-        path: "/headscale/control-url",
-        method: "PUT",
-        bodyText: url,
-      });
-    },
-
-    /** GET /headscale/publish — WAN/LAN IPs after UPnP publish. */
+    /** GET /headscale/publish — live WAN-minted control URL plus LAN/WAN IPs. */
     getHeadscalePublish(): Promise<HeadscalePublishStatus> {
       return transport.request({
         baseUrl,

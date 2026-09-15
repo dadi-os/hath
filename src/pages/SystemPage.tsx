@@ -6,7 +6,6 @@ import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
  * Split system view: health on one side, log explorer on the other.
- * Control plane URL is appliance-owned (`GET /headscale/control-url`).
  * Device provisioning lives on the desktop tray / app menu (Dadi → Provision client).
  */
 export function SystemPage() {

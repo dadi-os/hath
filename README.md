@@ -135,7 +135,7 @@ Plain HTTP on the WireGuard mesh. No localhost fallback.
 
 ## Provisioning
 
-On the box: **Preferences → Devices** mints a Nas `POST /provision` setup QR. The bundle embeds the **control plane URL** from the appliance (`GET /headscale/control-url` — not edited in Hath). New Tauri Hath: camera scan (or paste) → join dadiMesh. Credentials store in app data. Browser Hath has no provisioning.
+On the box: **Preferences → Devices** mints a Nas `POST /provision` setup QR. The bundle embeds the live WAN Headscale URL (`http://<wan>:8080`). New Tauri Hath: camera scan (or paste) → join dadiMesh. Credentials store in app data. Browser Hath has no provisioning.
 
 ## Transport / dadiMesh
 
