@@ -476,26 +476,27 @@ fn start_daemon_windows(
     socket: &Path,
     log_path: &Path,
 ) -> Result<(), String> {
-    if spawn_daemon_process(bins, state_dir, socket, log_path).is_ok() {
-        let deadline = Instant::now() + Duration::from_secs(4);
-        while Instant::now() < deadline {
-            if daemon_reports_via_cli(bins, socket) {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(200));
-        }
-    }
-
-    let cmd_line = format!(
-        "\"{}\" --statedir=\"{}\" --socket=\"{}\" --verbose=1 >\"{}\" 2>&1",
+    let bin_dir = bins.tailscaled.parent().ok_or_else(|| {
+        format!(
+            "tailscaled path has no parent directory: {}",
+            bins.tailscaled.display()
+        )
+    })?;
+    let _ = fs::write(log_path, "");
+    let launcher = state_dir.join("start-tailscaled.cmd");
+    let script = format!(
+        "@echo off\r\ncd /d \"{}\"\r\n\"{}\" --statedir=\"{}\" --socket=\"{}\" --verbose=1 >>\"{}\" 2>&1\r\n",
+        bin_dir.display(),
         bins.tailscaled.display(),
         state_dir.display(),
         socket.display(),
         log_path.display(),
     );
+    fs::write(&launcher, script).map_err(|e| format!("write tailscaled launcher: {e}"))?;
+
     let elevate = format!(
-        "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c',{} -Verb RunAs -WindowStyle Hidden",
-        ps_quote(&cmd_line)
+        "Start-Process -FilePath {} -Verb RunAs -WindowStyle Hidden",
+        ps_quote(&launcher.display().to_string())
     );
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", &elevate])
@@ -515,11 +516,26 @@ fn start_daemon_windows(
         }
         thread::sleep(Duration::from_millis(250));
     }
-    Err(format!(
-        "elevated tailscaled did not become ready within {}s — check {} (Wintun/UAC)",
+    Err(windows_daemon_ready_timeout(log_path))
+}
+
+/// Builds the Windows daemon-ready timeout error, including log-derived hints.
+#[cfg(windows)]
+fn windows_daemon_ready_timeout(log_path: &Path) -> String {
+    let body = fs::read_to_string(log_path).unwrap_or_default();
+    let hint = if body.contains("security ID may not be assigned as the owner") {
+        "named pipe listen needs elevation (UAC Yes); daemon was not admin"
+    } else if body.contains("Access is denied") || body.contains(r"ProgramData\Tailscale") {
+        r"leftover Tailscale state — remove C:\ProgramData\Tailscale and %LocalAppData%\Tailscale, uninstall official Tailscale, retry"
+    } else {
+        "Wintun/UAC"
+    };
+    format!(
+        "elevated tailscaled did not become ready within {}s — {} (check {})",
         DAEMON_WAIT.as_secs(),
+        hint,
         log_path.display()
-    ))
+    )
 }
 
 fn stop_daemon(state_dir: &Path, socket: &Path) {
