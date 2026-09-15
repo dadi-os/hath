@@ -86,9 +86,11 @@ export function ConversationList({
       ) : null}
 
       {conversations.length === 0 && !pendingNewChat ? (
-        <p className="px-3 py-6 text-[13px] text-ink-ghost">
-          No conversations yet
-        </p>
+        <div className="flex min-h-[12rem] flex-col items-center justify-center px-6">
+          <p className="text-center text-[13px] text-ink-ghost">
+            No conversations
+          </p>
+        </div>
       ) : (
         <div className="flex flex-col">
           {conversations.map((conv, i) => (

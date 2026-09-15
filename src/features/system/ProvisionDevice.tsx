@@ -43,21 +43,17 @@ export function ProvisionDevice() {
 
   if (!connected) {
     return (
-      <p className="text-sm text-ink-muted">
-        Connect to the mesh to create a setup code.
+      <p className="py-6 text-center text-[13px] text-ink-ghost">
+        Connect to create a setup code
       </p>
     );
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-3">
-      <p className="text-xs text-ink-muted">
-        Name the new device, then show the QR (or paste the code) on that
-        install. Single-use, expires in about an hour.
-      </p>
-      <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-2">
-        <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
-          <span className="text-[11px] font-medium tracking-[1.5px] text-sage-deep">
+    <div className="flex min-h-0 flex-col gap-5">
+      <form onSubmit={onSubmit} className="flex flex-col gap-3">
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium tracking-[2px] text-ink-ghost">
             NODE NAME
           </span>
           <input
@@ -67,20 +63,22 @@ export function ProvisionDevice() {
             value={nodeName}
             onChange={(e) => setNodeName(e.target.value)}
             placeholder="phone"
-            className="rounded-[var(--radius)] border border-sage-line bg-[var(--glass-sheet)] px-2 py-1.5 text-sm text-ink outline-none focus:border-sage"
+            className="rounded-[var(--radius)] border border-rule bg-bone/50 px-3 py-2 text-[14px] text-ink outline-none focus:border-sage"
             disabled={mint.isPending}
           />
         </label>
         <button
           type="submit"
           disabled={mint.isPending || !nodeName.trim()}
-          className="rounded-[var(--radius)] border border-sage-line bg-sage-fill/40 px-2.5 py-1.5 text-[11px] font-medium tracking-[1.5px] text-sage-deep hover:border-sage-deep disabled:opacity-50"
+          className="rounded-[var(--radius)] bg-sage-fill px-3 py-2 text-[12px] font-medium tracking-[2px] text-sage-deep disabled:opacity-40"
         >
           {mint.isPending ? "CREATING…" : "CREATE SETUP CODE"}
         </button>
       </form>
       {mint.error instanceof Error ? (
-        <p className="text-xs text-[#b56b5c]">{mint.error.message}</p>
+        <p className="text-center text-[13px] text-[#b56b5c]">
+          {mint.error.message}
+        </p>
       ) : null}
       {bundle ? (
         <SetupCodeDisplay
@@ -101,18 +99,22 @@ function SetupCodeDisplay(props: {
   onCopy: () => void;
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [encodeError, setEncodeError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void renderBrandedQr(props.bundle, { size: 240 })
+    setEncodeError(null);
+    setDataUrl(null);
+    void renderBrandedQr(props.bundle, { size: 220 })
       .then((url) => {
         if (!cancelled) {
           setDataUrl(url);
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!cancelled) {
           setDataUrl(null);
+          setEncodeError(err instanceof Error ? err.message : String(err));
         }
       });
     return () => {
@@ -121,46 +123,35 @@ function SetupCodeDisplay(props: {
   }, [props.bundle]);
 
   return (
-    <div className="flex flex-col gap-3 border-t border-dashed border-sage-line pt-3">
-      <div className="flex flex-col items-center gap-3">
-        {dataUrl ? (
-          <div className="rounded-[var(--radius-window)] border border-sage-line bg-bone p-3 shadow-[var(--shadow-deep)]">
-            <img
-              src={dataUrl}
-              alt="Setup code QR"
-              className="h-[240px] w-[240px]"
-            />
-          </div>
-        ) : (
-          <div className="flex h-[240px] w-[240px] items-center justify-center text-xs text-ink-muted">
-            Encoding…
-          </div>
-        )}
-        <p className="text-center text-xs text-ink-muted">
-          Scan with the new Hath, or paste the code below.
-        </p>
-      </div>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[11px] font-medium tracking-[2px] text-sage-deep">
-            SETUP CODE
-          </span>
-          <button
-            type="button"
-            onClick={props.onCopy}
-            className="rounded-[var(--radius)] border border-sage-line px-2 py-0.5 text-[11px] tracking-[1px] text-ink-muted hover:border-sage-deep hover:text-sage-deep"
-          >
-            {props.copied ? "Copied" : "Copy"}
-          </button>
-        </div>
-        <textarea
-          readOnly
-          value={props.bundle}
-          rows={4}
-          className="w-full resize-y rounded-[var(--radius)] border border-sage-line bg-[var(--glass-sheet)] px-2 py-1.5 font-mono text-xs text-ink"
-          onFocus={(e) => e.target.select()}
+    <div className="flex flex-col items-center gap-4">
+      {dataUrl ? (
+        <img
+          src={dataUrl}
+          alt="Setup code QR"
+          className="h-[220px] w-[220px]"
         />
-      </div>
+      ) : (
+        <div className="flex h-[220px] w-[220px] items-center justify-center px-3 text-center text-[13px] text-ink-ghost">
+          {encodeError ?? "Encoding…"}
+        </div>
+      )}
+      <p className="text-center text-[13px] text-ink-ghost">
+        Scan with the new Hath, or copy the code.
+      </p>
+      <button
+        type="button"
+        onClick={props.onCopy}
+        className="text-[12px] font-medium tracking-[2px] text-sage-deep"
+      >
+        {props.copied ? "COPIED" : "COPY CODE"}
+      </button>
+      <textarea
+        readOnly
+        value={props.bundle}
+        rows={3}
+        className="w-full resize-none rounded-[var(--radius)] border border-rule bg-bone/40 px-3 py-2 font-mono text-[11px] text-ink-muted"
+        onFocus={(e) => e.target.select()}
+      />
     </div>
   );
 }

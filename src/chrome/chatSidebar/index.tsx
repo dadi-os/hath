@@ -7,7 +7,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { dimaag, nas } from "../../shared/api";
 import { BrowserFrame } from "../../features/agents/BrowserFrame";
@@ -44,7 +44,7 @@ import {
   type ChatMessage,
   type MessageAttachment,
 } from "../../store/chat";
-import { getRunning, subscribeRunning } from "../../store/running";
+import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
 import {
   filesToDraftAttachments,
   MAX_ATTACHMENTS,
@@ -99,6 +99,7 @@ export function ChatSidebar({
   onDrawerOpen,
 }: ChatSidebarProps) {
   const { state: connection } = useConnection();
+  const queryClient = useQueryClient();
   const connected = connection === "connected";
   const chat = useSyncExternalStore(subscribeChat, getChatState, getChatState);
   const running = useSyncExternalStore(
@@ -131,6 +132,7 @@ export function ChatSidebar({
     queryKey: AGENTS_QUERY_KEY,
     queryFn: async () => {
       const { agents } = await dimaag.listAgents();
+      seedRunningFromAgents(agents);
       return agents;
     },
     enabled: connected,
@@ -309,15 +311,41 @@ export function ChatSidebar({
     const attachments = opts?.attachments;
     const trimmed = (opts?.content ?? draft).trim();
     const display = formatOutboundContent(trimmed, attachments);
-    if (
-      (!trimmed && (!attachments || attachments.length === 0)) ||
-      !connected ||
-      !rootId
-    ) {
+    if (!trimmed && (!attachments || attachments.length === 0)) {
+      return;
+    }
+    if (!connected) {
       return;
     }
 
-    const queueLocally = conversationBusy && !opts?.force;
+    let toId = rootId;
+    if (!toId) {
+      try {
+        const root = await queryClient.fetchQuery({
+          queryKey: ROOT_AGENT_QUERY_KEY,
+          queryFn: () => dimaag.getRootAgent(),
+        });
+        toId = root.id;
+      } catch {
+        if (opts?.existingSeq !== undefined) {
+          markPendingNewChatMessageFailed(opts.existingSeq);
+        } else {
+          if (opts?.content === undefined) {
+            setDraft("");
+            clearDraftAttachments();
+          }
+          enqueuePendingNewChat(display, {
+            attachments,
+            outboundText: trimmed,
+          });
+          markPendingNewChatFailed();
+        }
+        logLine("error", "Dadi root agent could not be loaded.", "not_ready");
+        return;
+      }
+    }
+
+    const queueLocally = viewingProvisional && conversationBusy && !opts?.force;
     if (opts?.existingSeq === undefined && opts?.content === undefined) {
       setDraft("");
       clearDraftAttachments();
@@ -340,6 +368,7 @@ export function ChatSidebar({
         attachments,
         outboundText: trimmed,
       });
+      openProvisional();
     }
 
     if (queueLocally) {
@@ -357,7 +386,7 @@ export function ChatSidebar({
 
     try {
       await dimaag.postMessage({
-        to_agent_id: rootId,
+        to_agent_id: toId,
         content: trimmed,
         attachments:
           attachments && attachments.length > 0 ? attachments : undefined,
@@ -594,13 +623,19 @@ export function ChatSidebar({
         ? "provisional"
         : chat.open.agentId;
 
-  const placeholder = conversationBusy
-    ? `Held for ${talkTargetName}…`
-    : `Talk to ${talkTargetName}`;
+  const placeholder =
+    connected && !openAgentId && !rootId
+      ? rootQuery.isError
+        ? "Dadi is unreachable"
+        : "Waiting for Dadi…"
+      : conversationBusy
+        ? `Held for ${talkTargetName}…`
+        : `Talk to ${talkTargetName}`;
 
   const canSubmit =
     connected &&
-    (draft.trim().length > 0 || draftAttachments.length > 0);
+    (draft.trim().length > 0 || draftAttachments.length > 0) &&
+    (openAgentId !== null || !!rootId);
   const composerPad =
     draftAttachments.length > 0 ? COMPOSER_PAD_WITH_ATTACH : COMPOSER_PAD;
 
@@ -647,27 +682,19 @@ export function ChatSidebar({
       style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : undefined }}
     >
       {!isMobile ? (
-        <div className="relative z-10 border-b border-dashed border-sage-line px-4 py-3">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={viewingThread ? "thread-head" : "list-head"}
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4 }}
-              transition={{ duration: SLOW_S, ease: EASE }}
-              className="flex min-w-0 flex-1 items-center gap-2.5"
+        <div className="relative z-10 flex h-10 shrink-0 items-center px-4">
+          {viewingThread ? (
+            <button
+              type="button"
+              onClick={backToList}
+              className="flex min-w-0 items-center gap-1.5 text-sage-deep"
+              aria-label="Back to conversations"
             >
-              {viewingThread ? (
-                <IconButton
-                  label="Back to conversations"
-                  size="sm"
-                  onClick={backToList}
-                >
-                  <IconBack />
-                </IconButton>
-              ) : null}
+              <span className="inline-flex size-3.5 shrink-0 [&_svg]:size-full">
+                <IconBack />
+              </span>
               <motion.span
-                className="truncate text-[11px] font-medium tracking-[2.5px] text-sage-deep"
+                className="truncate text-[11px] font-medium tracking-[2.5px]"
                 animate={
                   reasoningBusy || conversationBusy
                     ? { opacity: [0.55, 1, 0.55] }
@@ -681,8 +708,12 @@ export function ChatSidebar({
               >
                 {headerTitle}
               </motion.span>
-            </motion.div>
-          </AnimatePresence>
+            </button>
+          ) : (
+            <span className="text-[11px] font-medium tracking-[2.5px] text-sage-deep">
+              {headerTitle}
+            </span>
+          )}
         </div>
       ) : null}
 

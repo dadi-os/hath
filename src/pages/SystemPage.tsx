@@ -1,12 +1,12 @@
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
 import { LogExplorer } from "../features/logs/LogExplorer";
-import { ModuleSettings } from "../features/system/ModuleSettings";
 import { SystemMap } from "../features/system/SystemMap";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
- * Split system view: health + mesh settings on one side, log explorer on the other.
+ * Split system view: health on one side, log explorer on the other.
+ * Control plane URL is appliance-owned (`GET /headscale/control-url`).
  * Device provisioning lives on the desktop tray / app menu (Dadi → Provision client).
  */
 export function SystemPage() {
@@ -17,10 +17,7 @@ export function SystemPage() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
-      <PageHeader
-        title="SYSTEM"
-        hint="Reachability · mesh · logs"
-      />
+      <PageHeader title="SYSTEM" hint="Reachability · mesh · logs" />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-1 pb-1 lg:grid-cols-2 lg:gap-5">
         <section className="flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/40 px-3 py-3">
@@ -32,17 +29,8 @@ export function SystemPage() {
               <SystemMap mode="full" />
             </div>
           </div>
-          <div className="flex max-h-[45%] min-h-[200px] shrink-0 flex-col overflow-hidden border-t border-dashed border-sage-line pt-3">
-            <span className="mb-3 shrink-0 text-[11px] font-medium tracking-[2px] text-sage-deep">
-              MESH
-            </span>
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <ModuleSettings />
-            </div>
-          </div>
           <p className="shrink-0 text-[11px] leading-relaxed text-ink-ghost">
-            Provision a new Hath client from the menu bar / tray:{" "}
-            <span className="text-ink-muted">Dadi → Provision client…</span>
+            New clients: Dadi → Provision client…
           </p>
         </section>
 

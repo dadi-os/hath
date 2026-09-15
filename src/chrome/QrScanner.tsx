@@ -164,35 +164,33 @@ export function QrScanner({ onDecode, onCancel, fill }: QrScannerProps) {
       }`}
     >
       <div
-        className={`relative overflow-hidden rounded-[var(--radius-window)] border border-sage-line bg-ink/10 shadow-[var(--shadow-deep)] ${
-          fill ? "min-h-0 w-full flex-1" : "aspect-square w-full"
+        className={`relative ${
+          fill ? "min-h-0 h-full w-full flex-1" : "aspect-square w-full"
         }`}
       >
-        <video
-          ref={videoRef}
-          playsInline
-          muted
-          autoPlay
-          className="h-full w-full object-cover"
-        />
-        <canvas ref={canvasRef} className="hidden" />
-
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="relative size-[68%] max-w-[280px]">
-            <span className="absolute left-0 top-0 h-8 w-8 rounded-tl-[10px] border-l-2 border-t-2 border-sage" />
-            <span className="absolute right-0 top-0 h-8 w-8 rounded-tr-[10px] border-r-2 border-t-2 border-sage" />
-            <span className="absolute bottom-0 left-0 h-8 w-8 rounded-bl-[10px] border-b-2 border-l-2 border-sage" />
-            <span className="absolute bottom-0 right-0 h-8 w-8 rounded-br-[10px] border-b-2 border-r-2 border-sage" />
-          </div>
+        <div className="pointer-events-none absolute inset-0 z-10">
+          <span className="absolute left-0 top-0 h-11 w-11 rounded-tl-[14px] border-l-[3px] border-t-[3px] border-sage" />
+          <span className="absolute right-0 top-0 h-11 w-11 rounded-tr-[14px] border-r-[3px] border-t-[3px] border-sage" />
+          <span className="absolute bottom-0 left-0 h-11 w-11 rounded-bl-[14px] border-b-[3px] border-l-[3px] border-sage" />
+          <span className="absolute bottom-0 right-0 h-11 w-11 rounded-br-[14px] border-b-[3px] border-r-[3px] border-sage" />
         </div>
-
-        {!ready && !error ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-bone/40 backdrop-blur-sm">
-            <p className="text-[12px] font-medium tracking-[2px] text-sage-deep">
-              OPENING CAMERA…
-            </p>
-          </div>
-        ) : null}
+        <div className="absolute inset-[10px] overflow-hidden rounded-[10px] bg-ink/10">
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            className="h-full w-full object-cover"
+          />
+          <canvas ref={canvasRef} className="hidden" />
+          {!ready && !error ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-bone/40">
+              <p className="text-[12px] font-medium tracking-[2px] text-sage-deep">
+                OPENING CAMERA…
+              </p>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {error ? (

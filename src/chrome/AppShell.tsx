@@ -18,9 +18,9 @@ import { usingTsnet } from "../shared/api";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
- * Persistent chrome. Desktop: bone-glass header + chat rail + widget outlet.
- * First-launch provisioning frosts that chrome; mesh-down overlays the widgets.
- * Mobile: ChatGPT-style chat-only shell (no widget routes).
+ * Persistent chrome. Desktop: short title bar + chat rail + widget outlet.
+ * Both unprovisioned and provisioned-disconnected frost the same content
+ * plane. Mobile: chat-only shell.
  */
 export function AppShell() {
   const target = useTarget();
@@ -53,22 +53,19 @@ export function AppShell() {
 
   const showOnboarding = usingTsnet && needsProvisioning;
   const showPower =
-    usingTsnet && !needsProvisioning && state !== "connected" && state !== "connecting";
-  const showConnecting = usingTsnet && state === "connecting" && !needsProvisioning;
+    usingTsnet &&
+    !needsProvisioning &&
+    (state === "disconnected" || state === "connecting");
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-transparent">
       <motion.div
-        className={
-          showOnboarding
-            ? "relative z-[60]"
-            : "glass-veil relative z-[60] border-b-0 shadow-[var(--shadow)]"
-        }
+        className="glass-veil relative z-[60] border-b-0 shadow-[var(--shadow)]"
         initial={{ opacity: 0, y: -14 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: SLOW_S, ease: EASE }}
       >
-        <Header minimal={showOnboarding} />
+        <Header />
       </motion.div>
 
       <div className="relative flex min-h-0 flex-1">
@@ -95,10 +92,11 @@ export function AppShell() {
               <Outlet />
             </div>
           </div>
-          {showPower || showConnecting ? <MeshPowerOverlay /> : null}
         </motion.main>
+
+        {showOnboarding ? <DisconnectedState /> : null}
+        {showPower ? <MeshPowerOverlay /> : null}
       </div>
-      {showOnboarding ? <DisconnectedState /> : null}
       <ProvisionOverlay
         open={provisionOpen}
         onClose={() => setProvisionOpen(false)}

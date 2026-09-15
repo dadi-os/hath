@@ -380,7 +380,9 @@ export function LogExplorer({ className }: LogExplorerProps) {
             Could not load logs.
           </p>
         ) : entries.length === 0 ? (
-          <p className="px-3 py-6 text-[13px] text-ink-ghost">No log lines</p>
+          <div className="flex h-full items-center justify-center px-3 py-6">
+            <p className="text-[13px] text-ink-ghost">No log lines</p>
+          </div>
         ) : (
           <ul className="divide-y divide-rule/80">
             {entries.map((entry, i) => (
@@ -478,9 +480,7 @@ export function ErrorLogCards({ className, limit = 8 }: ErrorLogCardsProps) {
       {errorsQuery.isLoading ? (
         <p className="text-[13px] text-ink-ghost">Loading…</p>
       ) : entries.length === 0 ? (
-        <p className="rounded-[var(--radius)] border border-dashed border-sage-line bg-sage-fill/40 px-3 py-4 text-[13px] text-ink-ghost">
-          No errors in the last hour
-        </p>
+        <p className="text-[13px] text-ink-ghost">No errors in the last hour</p>
       ) : (
         <ul className="grid gap-2 sm:grid-cols-2">
           {entries.map((entry, i) => {

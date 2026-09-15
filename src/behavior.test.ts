@@ -20,7 +20,7 @@ import {
 } from "./features/timeline/dates";
 import { consumeSseBuffer, joinUrl } from "./shared/api/sse";
 import { createChaaviClient } from "./shared/api/chaavi";
-import { YAAD, DIMAAG, NAS, CHAAVI } from "./shared/api/constants";
+import { YAAD, DIMAAG, NAS, CHAAVI, GHAR } from "./shared/api/constants";
 import type { Transport } from "./shared/api/transport";
 import type { AgentRecord } from "./shared/api/types";
 
@@ -200,6 +200,7 @@ describe("mesh constants", () => {
     expect(DIMAAG).toBe("http://dimaag.dadi");
     expect(NAS).toBe("http://nas.dadi");
     expect(CHAAVI).toBe("http://chaavi.dadi");
+    expect(GHAR).toBe("http://ghar.dadi");
   });
 });
 
@@ -226,6 +227,45 @@ describe("chaavi client", () => {
         method: "GET",
       },
       { path: "/v1/items", method: "GET" },
+    ]);
+  });
+});
+
+describe("ghar client", () => {
+  it("lists devices and posts switch toggles", async () => {
+    const calls: Array<{ path: string; method: string; body?: unknown }> = [];
+    const transport = {
+      request: async (opts: {
+        path: string;
+        method: string;
+        body?: unknown;
+      }) => {
+        calls.push({
+          path: opts.path,
+          method: opts.method,
+          body: opts.body,
+        });
+        if (opts.path === "/devices") {
+          return { devices: [] };
+        }
+        return undefined;
+      },
+    } as unknown as Transport;
+    const { createGharClient } = await import("./shared/api/ghar");
+    const client = createGharClient(transport, GHAR);
+    await client.listDevices();
+    await client.toggleSwitch("dev-1");
+    expect(calls).toEqual([
+      { path: "/devices", method: "GET", body: undefined },
+      {
+        path: "/devices/dev-1/command",
+        method: "POST",
+        body: {
+          capability: "switchable",
+          params: { state: "toggle" },
+          cause: "user",
+        },
+      },
     ]);
   });
 });
@@ -258,6 +298,7 @@ describe("transport selection", () => {
     expect(api.selectTransportKind()).toBe("browser");
     expect(api.transport.connectionState()).toBe("disconnected");
     expect(typeof api.chaavi.getHealth).toBe("function");
+    expect(typeof api.ghar.listDevices).toBe("function");
   });
 
   it("selects tsnet when Tauri globals are present", async () => {

@@ -8,6 +8,7 @@ The sole UI client for dadi. One codebase, two form factors — desktop and mobi
 - Dimaag (`http://dimaag.dadi`) — agents, messages, events
 - Yaad (`http://yaad.dadi`) — memory graph
 - Chaavi (`http://chaavi.dadi`) — vault item catalog + Bitwarden extension URL (not a password manager UI)
+- Ghar (`http://ghar.dadi`) — rooms and Matter devices
 - Dwar (indirect via Dimaag/Yaad)
 - dadiMesh (desktop: system `tailscaled` TUN + MagicDNS; iOS: Go tsnet dialer + Network Extension)
 
@@ -17,7 +18,7 @@ The sole UI client for dadi. One codebase, two form factors — desktop and mobi
 hath/
   src/
     pages/                 route construction sites
-    features/<domain>/     agents, memory, timeline, system, logs
+    features/<domain>/     agents, memory, timeline, ghar, chaavi, system, logs
       agents/              tree, popover, host-session peek (browser frame + terminal chip)
     chrome/                AppShell, Header, chatSidebar/
       chatSidebar/         portable unit (index = construction site)
@@ -31,7 +32,7 @@ hath/
         tsnet-transport.ts    MeshTransport / dadiMesh (Tauri; dynamic import)
         runtime.ts         isTauriRuntime / transport kind
         sse.ts / credentials.ts / types.ts
-        dimaag/ yaad/ nas/ chaavi/ portable client modules
+        dimaag/ yaad/ nas/ chaavi/ ghar/ portable client modules
       lib/
         platform/          logging helpers
         content/           attachments
@@ -134,7 +135,7 @@ Plain HTTP on the WireGuard mesh. No localhost fallback.
 
 ## Provisioning
 
-On the box: **Preferences → Devices** mints a Nas `POST /provision` setup QR. The bundle embeds the **control plane URL** from Hath System settings (`PUT /headscale/control-url` on Nas — not hardcoded in the client). New Tauri Hath: camera scan (or paste) → join dadiMesh. Credentials store in app data. Browser Hath has no provisioning.
+On the box: **Preferences → Devices** mints a Nas `POST /provision` setup QR. The bundle embeds the **control plane URL** from the appliance (`GET /headscale/control-url` — not edited in Hath). New Tauri Hath: camera scan (or paste) → join dadiMesh. Credentials store in app data. Browser Hath has no provisioning.
 
 ## Transport / dadiMesh
 

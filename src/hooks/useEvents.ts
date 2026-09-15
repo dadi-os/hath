@@ -29,6 +29,7 @@ function isDimaagEvent(data: unknown): data is DimaagEvent {
     type === "message" ||
     type === "lane_started" ||
     type === "lane_finished" ||
+    type === "lane_failed" ||
     type === "agent_spawned" ||
     type === "agent_modified"
   );
@@ -128,6 +129,11 @@ export function useEvents(): void {
       }
 
       if (data.type === "lane_finished") {
+        setLaneRunning(data.agent_id, data.lane, false);
+        return;
+      }
+
+      if (data.type === "lane_failed") {
         setLaneRunning(data.agent_id, data.lane, false);
         return;
       }

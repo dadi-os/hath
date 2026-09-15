@@ -18,7 +18,7 @@ export function ProvisionOverlay({ open, onClose }: ProvisionOverlayProps) {
     <AnimatePresence>
       {open ? (
         <motion.div
-          className="absolute inset-0 z-50 flex items-center justify-center bg-bone/55 px-6 pt-12 backdrop-blur-xl dark:bg-[#1a1c18]/70"
+          className="frost-scrim absolute inset-0 z-50 flex items-center justify-center px-6"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -29,15 +29,15 @@ export function ProvisionOverlay({ open, onClose }: ProvisionOverlayProps) {
             role="dialog"
             aria-modal="true"
             aria-label="Provision client"
-            className="glass-sheet relative flex max-h-[min(90vh,40rem)] w-full max-w-md flex-col overflow-hidden rounded-[var(--radius-window)] p-4 shadow-[var(--shadow-deep)]"
+            className="relative flex max-h-[min(90vh,40rem)] w-full max-w-sm flex-col overflow-hidden rounded-[var(--radius-window)] border border-[var(--glass-border)] bg-[var(--glass-sheet)] p-5 shadow-[var(--shadow-deep)]"
             initial={{ opacity: 0, y: 12, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.98 }}
             transition={{ duration: SLOW_S, ease: EASE }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <span className="text-[11px] font-medium tracking-[2px] text-sage-deep">
+            <div className="mb-5 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium tracking-[2px] text-ink-ghost">
                 PROVISION CLIENT
               </span>
               <IconButton label="Close" size="sm" onClick={onClose}>

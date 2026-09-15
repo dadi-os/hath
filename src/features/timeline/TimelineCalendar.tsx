@@ -195,42 +195,49 @@ export function TimelineCalendar({
   if (preview) {
     const days = weekDays(anchor);
     return (
-      <div className={`flex h-full min-h-0 flex-col px-3 pb-3 pt-1 ${className ?? ""}`}>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <span className="text-[11px] text-ink-ghost">{formatWeekTitle(anchor)}</span>
-        </div>
-        <div className="grid min-h-0 flex-1 grid-cols-7 gap-1">
-          {days.map((day) => {
-            const dayPlans = plans.filter((p) => planOverlapsDay(p, day));
+      <div className={`flex h-full min-h-0 flex-col px-2 pb-2 pt-1 ${className ?? ""}`}>
+        <div className="flex min-h-0 flex-1">
+          {days.map((day, i) => {
+            const dayPlans = plans
+              .filter((p) => planOverlapsDay(p, day))
+              .sort((a, b) =>
+                (a.occurred_at ?? "").localeCompare(b.occurred_at ?? ""),
+              );
             const isToday = isSameDay(day, today);
             return (
               <div
                 key={day.toISOString()}
-                className={`flex min-h-0 flex-col rounded-[6px] px-0.5 py-1 ${
-                  isToday ? "bg-sage-active/50" : ""
+                className={`flex min-h-0 min-w-0 flex-1 flex-col px-1.5 pt-1 ${
+                  i > 0 ? "border-l border-rule/80" : ""
                 }`}
               >
-                <span
-                  className={`mb-1 text-center text-[10px] ${
-                    isToday ? "font-medium text-sage-deep" : "text-ink-ghost"
-                  }`}
-                >
-                  {day.getDate()}
+                <span className="mb-1.5 text-center text-[11px] tracking-wide text-ink-ghost">
+                  {labels[i]}
                 </span>
-                <div className="flex flex-col gap-0.5 overflow-hidden">
-                  {dayPlans.slice(0, 3).map((p) => (
-                    <div
-                      key={p.id}
-                      className={`truncate rounded-[3px] px-1 py-0.5 text-[9px] leading-tight ${statusClass(statusOf(p))}`}
-                    >
-                      {p.title}
+                <div className="mb-2 flex justify-center">
+                  <span
+                    className={`flex size-9 items-center justify-center rounded-full text-[13px] ${
+                      isToday
+                        ? "bg-ink text-bone"
+                        : "text-ink"
+                    }`}
+                  >
+                    {day.getDate()}
+                  </span>
+                </div>
+                <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden">
+                  {dayPlans.slice(0, 5).map((p) => (
+                    <div key={p.id} className="min-w-0">
+                      {planStartsOn(p, day) && p.occurred_at ? (
+                        <p className="text-[10px] text-ink-ghost">
+                          {formatTime(p.occurred_at)}
+                        </p>
+                      ) : null}
+                      <p className="truncate text-[11px] leading-snug text-ink">
+                        {p.title || "plan"}
+                      </p>
                     </div>
                   ))}
-                  {dayPlans.length > 3 ? (
-                    <span className="text-center text-[9px] text-ink-ghost">
-                      +{dayPlans.length - 3}
-                    </span>
-                  ) : null}
                 </div>
               </div>
             );
@@ -360,7 +367,7 @@ function WeekView({
 }) {
   const days = weekDays(anchor);
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-7 gap-2 overflow-hidden">
+    <div className="grid min-h-0 flex-1 grid-cols-7 overflow-hidden">
       {days.map((day, i) => {
         const dayPlans = plans
           .filter((p) => planOverlapsDay(p, day))
@@ -371,28 +378,24 @@ function WeekView({
         return (
           <div
             key={day.toISOString()}
-            className={`flex min-h-0 flex-col rounded-[var(--radius)] border border-dashed px-1.5 py-2 ${
-              isToday
-                ? "border-sage bg-sage-faint/60"
-                : "border-rule bg-bone/40"
+            className={`flex min-h-0 flex-col px-1.5 py-2 ${
+              i > 0 ? "border-l border-rule/80" : ""
             }`}
           >
-            <div className="mb-2 flex flex-col items-center gap-0.5">
-              <span className="text-[10px] tracking-wide text-ink-ghost">
+            <div className="mb-2 flex flex-col items-center gap-1">
+              <span className="text-[11px] tracking-wide text-ink-ghost">
                 {labels[i]}
               </span>
               <span
-                className={`text-[13px] ${
-                  isToday ? "font-medium text-sage-deep" : "text-ink"
+                className={`flex size-9 items-center justify-center rounded-full text-[13px] ${
+                  isToday ? "bg-ink text-bone" : "text-ink"
                 }`}
               >
                 {day.getDate()}
               </span>
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-              {dayPlans.length === 0 ? (
-                <span className="text-center text-[11px] text-ink-ghost/70">—</span>
-              ) : (
+              {dayPlans.length === 0 ? null : (
                 dayPlans.map((p) => (
                   <div
                     key={p.id}

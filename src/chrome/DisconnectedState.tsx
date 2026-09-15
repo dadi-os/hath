@@ -31,7 +31,7 @@ function asMeshJoin(t: unknown): MeshJoinTransport | null {
 
 /**
  * First-launch overlay: scan or paste a provision code, then join dadiMesh.
- * Frosts the chrome underneath until credentials are saved.
+ * Same frost plane as the provisioned-disconnected power overlay.
  */
 export function DisconnectedState() {
   const needsProvisioning = useNeedsProvisioning();
@@ -121,7 +121,7 @@ export function DisconnectedState() {
 
   return (
     <motion.div
-      className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-bone/55 px-6 pt-12 backdrop-blur-xl dark:bg-[#1a1c18]/70"
+      className="frost-scrim absolute inset-0 z-50 flex flex-col items-center justify-center px-6"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: SLOW_S, ease: EASE }}
@@ -130,27 +130,21 @@ export function DisconnectedState() {
       aria-label="Join dadiMesh"
     >
       <motion.div
-        className="flex h-[min(36rem,calc(100dvh-4rem))] w-full max-w-md flex-col items-center"
+        className="flex h-[min(32rem,calc(100dvh-6rem))] w-full max-w-sm flex-col items-center"
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: SLOW_S, ease: EASE }}
       >
-        <div className="mb-5 flex flex-col items-center gap-2">
-          <span className="font-gujarati text-[44px] leading-[1.35] text-sage-text">
-            દાદી
-          </span>
-          <span className="text-[11px] font-medium tracking-[2.5px] text-ink-faint">
+        <div className="mb-4 flex flex-col items-center gap-1.5">
+          <span className="text-[11px] font-medium tracking-[2.5px] text-sage-deep">
             JOIN DADIMESH
           </span>
-          <p className="max-w-sm text-center text-[14px] leading-relaxed text-ink-muted">
-            Scan or paste the setup code from Add Device on the box. Joining
-            installs a system mesh (TUN + MagicDNS) so Terminal, SSH, and other
-            apps can reach *.dadi — macOS may ask for admin; Windows for UAC /
-            Wintun.
+          <p className="max-w-xs text-center text-[13px] leading-relaxed text-ink-muted">
+            Scan or paste the setup code from the box.
           </p>
         </div>
 
-        <div className="glass-sheet flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[var(--radius-window)] p-4 shadow-[var(--shadow-deep)]">
+        <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
           <AnimatePresence mode="wait" initial={false}>
             {busy ? (
               <motion.div

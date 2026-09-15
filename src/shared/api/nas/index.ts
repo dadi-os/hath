@@ -191,6 +191,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       clients: Array<{
         node_name: string;
         online: boolean;
+        pending: boolean;
         last_seen: string | null;
         ip_addresses: string[];
       }>;

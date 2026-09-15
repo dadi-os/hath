@@ -1,4 +1,4 @@
-import type { FormEvent, KeyboardEvent, RefObject } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type RefObject } from "react";
 import { motion } from "motion/react";
 import {
   IconAttach,
@@ -33,7 +33,8 @@ export interface FloatingComposerProps {
 
 /**
  * Floating bottom composer. Hold mode queues; working mode keeps send live
- * while reasoning runs in the background.
+ * while reasoning runs in the background. Disconnected keeps the same chrome,
+ * disabled.
  */
 export function FloatingComposer({
   connected,
@@ -52,6 +53,28 @@ export function FloatingComposer({
   onSubmit,
   onKeyDown,
 }: FloatingComposerProps) {
+  const [attachOpen, setAttachOpen] = useState(false);
+  const attachRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!attachOpen) {
+      return;
+    }
+    const onDoc = (e: MouseEvent) => {
+      if (
+        attachRef.current &&
+        e.target instanceof Node &&
+        !attachRef.current.contains(e.target)
+      ) {
+        setAttachOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [attachOpen]);
+
+  const attachDisabled = !connected;
+
   return (
     <motion.div
       className="pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3"
@@ -62,124 +85,143 @@ export function FloatingComposer({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
-      {connected ? (
-        <form
-          onSubmit={onSubmit}
-          className={`pointer-events-auto flex flex-col gap-1.5 rounded-[22px] border px-2 py-1.5 backdrop-blur-[var(--glass-blur)] transition-[border-color,background-color,box-shadow] duration-slow ease-hath ${
-            holdMode
-              ? "border-sage-line/55 bg-[var(--glass-sheet)]"
-              : "border-[var(--glass-border)] bg-[var(--glass-sheet)]"
-          } ${
-            workingMode && !holdMode
-              ? "shadow-[0_0_0_1px_color-mix(in_srgb,var(--sage)_28%,transparent)]"
-              : "shadow-[var(--shadow)]"
-          }`}
-        >
-          {attachments.length > 0 ? (
-            <div className="flex gap-1.5 overflow-x-auto px-0.5 pt-0.5">
-              {attachments.map((att, index) => (
-                <motion.div
-                  key={`${att.filename ?? att.media_type}-${index}`}
-                  className="relative shrink-0"
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: SLOW_S, ease: EASE }}
+      <form
+        onSubmit={onSubmit}
+        className={`pointer-events-auto flex flex-col gap-1.5 rounded-[22px] border px-2 py-1.5 backdrop-blur-[var(--glass-blur)] transition-[border-color,background-color,box-shadow,opacity] duration-slow ease-hath ${
+          holdMode
+            ? "border-sage-line/55 bg-[var(--glass-sheet)]"
+            : "border-[var(--glass-border)] bg-[var(--glass-sheet)]"
+        } ${
+          workingMode && !holdMode
+            ? "shadow-[0_0_0_1px_color-mix(in_srgb,var(--sage)_28%,transparent)]"
+            : "shadow-[var(--shadow)]"
+        } ${connected ? "" : "opacity-70"}`}
+      >
+        {attachments.length > 0 ? (
+          <div className="flex gap-1.5 overflow-x-auto px-0.5 pt-0.5">
+            {attachments.map((att, index) => (
+              <motion.div
+                key={`${att.filename ?? att.media_type}-${index}`}
+                className="relative shrink-0"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: SLOW_S, ease: EASE }}
+              >
+                {att.previewUrl ? (
+                  <img
+                    src={att.previewUrl}
+                    alt={att.filename ?? "attachment"}
+                    className="h-12 w-12 rounded-[8px] object-cover"
+                  />
+                ) : (
+                  <div className="flex h-12 max-w-[7rem] items-center rounded-[8px] border border-rule bg-sage-fill/30 px-2 text-[10px] leading-tight text-ink-muted">
+                    <span className="truncate">{att.filename ?? "file"}</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  aria-label="Remove attachment"
+                  onClick={() => onRemoveAttachment(index)}
+                  className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full bg-bone text-ink-muted shadow-[var(--shadow)]"
                 >
-                  {att.previewUrl ? (
-                    <img
-                      src={att.previewUrl}
-                      alt={att.filename ?? "attachment"}
-                      className="h-12 w-12 rounded-[8px] object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-12 max-w-[7rem] items-center rounded-[8px] border border-dashed border-sage-line bg-sage-fill/30 px-2 text-[10px] leading-tight text-ink-muted">
-                      <span className="truncate">{att.filename ?? "file"}</span>
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    aria-label="Remove attachment"
-                    onClick={() => onRemoveAttachment(index)}
-                    className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full bg-bone text-ink-muted shadow-[var(--shadow)]"
-                  >
-                    <IconDismiss />
-                  </button>
-                </motion.div>
-              ))}
-            </div>
-          ) : null}
-          <div className="flex items-end gap-0.5">
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              multiple
-              onChange={(e) => {
-                onPickFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <input
-              ref={cameraInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                onPickFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
+                  <IconDismiss />
+                </button>
+              </motion.div>
+            ))}
+          </div>
+        ) : null}
+        <div className="flex items-end gap-1">
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            multiple
+            onChange={(e) => {
+              onPickFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              onPickFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKeyDown}
+            rows={1}
+            disabled={!connected}
+            placeholder={connected ? placeholder : "Connect to message Dadi"}
+            className={`block max-h-[88px] min-h-[36px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-[14px] leading-snug outline-none placeholder:text-ink-ghost disabled:cursor-default ${
+              holdMode ? "text-ink/70" : "text-ink"
+            }`}
+            style={{ maxHeight: TEXTAREA_MAX_PX }}
+          />
+          <div ref={attachRef} className="relative mb-px">
             <IconButton
               type="button"
-              label="Attach file"
-              size="md"
-              className="mb-px border-transparent bg-transparent shadow-none"
-              onClick={() => fileInputRef.current?.click()}
+              label="Attach"
+              size="lg"
+              disabled={attachDisabled}
+              className="border-transparent bg-transparent shadow-none"
+              onClick={() => setAttachOpen((open) => !open)}
             >
               <IconAttach />
             </IconButton>
-            <IconButton
-              type="button"
-              label="Take photo"
-              size="md"
-              className="mb-px border-transparent bg-transparent shadow-none"
-              onClick={() => cameraInputRef.current?.click()}
-            >
-              <IconCamera />
-            </IconButton>
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={onKeyDown}
-              rows={1}
-              placeholder={placeholder}
-              className={`block max-h-[88px] min-h-[34px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1.5 py-2 text-[14px] leading-snug outline-none placeholder:text-ink-ghost ${
-                holdMode ? "text-ink/70" : "text-ink"
-              }`}
-              style={{ maxHeight: TEXTAREA_MAX_PX }}
-            />
-            <IconButton
-              type="submit"
-              label={holdMode ? "Queue message" : "Send"}
-              disabled={!canSubmit}
-              size="lg"
-              className={`mb-px border-transparent shadow-none transition-[background-color,opacity] duration-slow ease-hath ${
-                canSubmit
-                  ? "bg-sage-fill text-sage-deep hover:bg-sage-active"
-                  : "bg-transparent text-ink-ghost"
-              }`}
-            >
-              <IconSend />
-            </IconButton>
+            {attachOpen ? (
+              <div className="absolute bottom-[calc(100%+6px)] right-0 z-30 flex min-w-[10.5rem] flex-col overflow-hidden rounded-[12px] border border-[var(--glass-border)] bg-[var(--glass-sheet)] py-1 shadow-[var(--shadow-deep)]">
+                <button
+                  type="button"
+                  className="flex items-center gap-2 px-3 py-2 text-left text-[13px] text-ink hover:bg-sage-active/40"
+                  onClick={() => {
+                    setAttachOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  <span className="size-4 text-sage-deep [&_svg]:size-full">
+                    <IconAttach />
+                  </span>
+                  Attach file
+                </button>
+                <button
+                  type="button"
+                  className="flex items-center gap-2 px-3 py-2 text-left text-[13px] text-ink hover:bg-sage-active/40"
+                  onClick={() => {
+                    setAttachOpen(false);
+                    cameraInputRef.current?.click();
+                  }}
+                >
+                  <span className="size-4 text-sage-deep [&_svg]:size-full">
+                    <IconCamera />
+                  </span>
+                  Take picture
+                </button>
+              </div>
+            ) : null}
           </div>
-        </form>
-      ) : (
-        <div className="pointer-events-auto rounded-[18px] border border-dashed border-sage-line/70 bg-bone/90 px-3 py-2.5 text-[13px] text-ink-ghost backdrop-blur-md">
-          Connect to message Dadi
+          <IconButton
+            type="submit"
+            label={holdMode ? "Queue message" : "Send"}
+            disabled={!canSubmit}
+            size="lg"
+            className={`mb-px border-transparent shadow-none transition-[background-color,opacity] duration-slow ease-hath ${
+              canSubmit
+                ? "bg-sage-fill text-sage-deep hover:bg-sage-active"
+                : "bg-transparent text-ink-ghost"
+            }`}
+          >
+            <IconSend />
+          </IconButton>
         </div>
-      )}
+      </form>
     </motion.div>
   );
 }

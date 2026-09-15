@@ -68,6 +68,13 @@ export type DimaagEvent =
   | { type: "lane_started"; agent_id: string; lane: Lane; at: string }
   | { type: "lane_finished"; agent_id: string; lane: Lane; at: string }
   | {
+      type: "lane_failed";
+      agent_id: string;
+      lane: Lane;
+      message: string;
+      at: string;
+    }
+  | {
       type: "agent_spawned";
       agent_id: string;
       parent_agent_id: string;
@@ -226,4 +233,31 @@ export type ChaaviHealth = {
   status: string;
   /** Whether a vault is configured on this node. */
   vault: "ready" | "unconfigured";
+};
+
+/** Ghar capability name on a device. */
+export type GharCapabilityName =
+  | "switchable"
+  | "dimmable"
+  | "colorable"
+  | "sensor"
+  | "lockable"
+  | "media"
+  | "thermostat";
+
+/** Live attribute from Ghar GET /devices. */
+export type GharAttributeState = {
+  value: unknown;
+  changed_at: string;
+};
+
+/** Device row from Ghar GET /devices. */
+export type GharDevice = {
+  id: string;
+  name: string;
+  room: { id: string; name: string };
+  capabilities: Array<{ capability: GharCapabilityName }>;
+  online: boolean;
+  last_seen_at: string | null;
+  state: Record<string, GharAttributeState>;
 };

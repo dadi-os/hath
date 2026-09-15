@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./chrome/AppShell";
 import { AgentsPage } from "./pages/AgentsPage";
 import { ChaaviPage } from "./pages/ChaaviPage";
+import { GharPage } from "./pages/GharPage";
 import { MemoryPage } from "./pages/MemoryPage";
 import { SystemPage } from "./pages/SystemPage";
 import { TimelinePage } from "./pages/TimelinePage";
@@ -43,6 +44,7 @@ function AppRoutes() {
         <Route path="calendar" element={<Navigate to="/timeline" replace />} />
         <Route path="system" element={<SystemPage />} />
         <Route path="chaavi" element={<ChaaviPage />} />
+        <Route path="ghar" element={<GharPage />} />
         <Route path="logs" element={<Navigate to="/system" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

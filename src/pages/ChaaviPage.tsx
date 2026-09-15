@@ -39,7 +39,7 @@ export function ChaaviPage() {
     >
       <PageHeader
         title="CHAAVI"
-        hint={`Bitwarden extension self-hosted URL is ${CHAAVI}. Join the mesh first. This page is a catalog — fill passwords in the extension, not here.`}
+        hint={`Catalog only — fill passwords in the Bitwarden extension at ${CHAAVI}.`}
       />
 
       <div className="min-h-0 flex-1 px-1 pb-1">
@@ -77,30 +77,42 @@ export function ChaaviPage() {
           </span>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {!connected ? (
-              <p className="text-[13px] text-ink-ghost">
-                Connect to load vault items
-              </p>
+              <div className="flex h-full items-center justify-center">
+                <p className="text-[13px] text-ink-ghost">
+                  Connect to load vault items
+                </p>
+              </div>
             ) : healthQuery.isError ? (
-              <p className="text-[13px] text-ink-muted">
-                {healthQuery.error instanceof Error
-                  ? healthQuery.error.message
-                  : String(healthQuery.error)}
-              </p>
+              <div className="flex h-full items-center justify-center px-4">
+                <p className="text-center text-[13px] text-ink-muted">
+                  {healthQuery.error instanceof Error
+                    ? healthQuery.error.message
+                    : String(healthQuery.error)}
+                </p>
+              </div>
             ) : healthQuery.data?.vault === "unconfigured" ? (
-              <p className="text-[13px] text-ink-ghost">
-                Vault unconfigured — sign up in the Bitwarden extension, then
-                set BW_* and restart chaavi.
-              </p>
+              <div className="flex h-full items-center justify-center px-4">
+                <p className="text-center text-[13px] text-ink-ghost">
+                  Vault unconfigured — sign up in the Bitwarden extension, then
+                  set BW_* and restart chaavi.
+                </p>
+              </div>
             ) : itemsQuery.isError ? (
-              <p className="text-[13px] text-ink-muted">
-                {itemsQuery.error instanceof Error
-                  ? itemsQuery.error.message
-                  : String(itemsQuery.error)}
-              </p>
+              <div className="flex h-full items-center justify-center px-4">
+                <p className="text-center text-[13px] text-ink-muted">
+                  {itemsQuery.error instanceof Error
+                    ? itemsQuery.error.message
+                    : String(itemsQuery.error)}
+                </p>
+              </div>
             ) : itemsQuery.isLoading || items === undefined ? (
-              <p className="text-[13px] text-ink-ghost">Loading…</p>
+              <div className="flex h-full items-center justify-center">
+                <p className="text-[13px] text-ink-ghost">Loading…</p>
+              </div>
             ) : items.length === 0 ? (
-              <p className="text-[13px] text-ink-ghost">No vault items</p>
+              <div className="flex h-full items-center justify-center">
+                <p className="text-[13px] text-ink-ghost">No vault items</p>
+              </div>
             ) : (
               <ul className="divide-y divide-sage-line/70">
                 {items.map((item) => (

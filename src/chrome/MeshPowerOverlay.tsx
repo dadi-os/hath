@@ -70,7 +70,7 @@ export function MeshPowerOverlay() {
 
   return (
     <motion.div
-      className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-bone/55 px-6 backdrop-blur-xl dark:bg-[#1a1c18]/70"
+      className="frost-scrim absolute inset-0 z-50 flex flex-col items-center justify-center px-6"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: SLOW_S, ease: EASE }}

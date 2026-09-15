@@ -112,6 +112,12 @@
   -webkit-app-region: no-drag;
 }
 
+.frost-scrim {
+  background: color-mix(in srgb, var(--bone) 28%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
 .glass-veil {
   background: var(--glass-veil);
   -webkit-backdrop-filter: blur(var(--glass-blur));
