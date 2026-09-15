@@ -24,7 +24,7 @@ export function ChaaviPage() {
   const itemsQuery = useQuery({
     queryKey: ["chaavi", "items"],
     queryFn: () => chaavi.listItems(),
-    enabled: connected,
+    enabled: connected && healthQuery.data?.vault === "ready",
     refetchInterval: POLL_MS,
   });
 
@@ -79,6 +79,17 @@ export function ChaaviPage() {
             {!connected ? (
               <p className="text-[13px] text-ink-ghost">
                 Connect to load vault items
+              </p>
+            ) : healthQuery.isError ? (
+              <p className="text-[13px] text-ink-muted">
+                {healthQuery.error instanceof Error
+                  ? healthQuery.error.message
+                  : String(healthQuery.error)}
+              </p>
+            ) : healthQuery.data?.vault === "unconfigured" ? (
+              <p className="text-[13px] text-ink-ghost">
+                Vault unconfigured — sign up in the Bitwarden extension, then
+                set BW_* and restart chaavi.
               </p>
             ) : itemsQuery.isError ? (
               <p className="text-[13px] text-ink-muted">
