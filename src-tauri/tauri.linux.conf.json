@@ -8,5 +8,11 @@
         "decorations": false
       }
     ]
+  },
+  "bundle": {
+    "resources": [
+      "bin/linux-amd64/tailscale",
+      "bin/linux-amd64/tailscaled"
+    ]
   }
 }

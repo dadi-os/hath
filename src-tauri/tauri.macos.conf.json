@@ -16,6 +16,10 @@
     ]
   },
   "bundle": {
+    "resources": [
+      "bin/darwin-arm64/tailscale",
+      "bin/darwin-arm64/tailscaled"
+    ],
     "macOS": {
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist"
