@@ -146,7 +146,7 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** GET /headscale/publish — live WAN-minted control URL plus LAN/WAN IPs. */
+    /** GET /headscale/publish — live LAN-minted control URL plus LAN IP. */
     getHeadscalePublish(): Promise<HeadscalePublishStatus> {
       return transport.request({
         baseUrl,
