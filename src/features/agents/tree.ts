@@ -1,7 +1,7 @@
 import type { HierarchyPointLink } from "d3-hierarchy";
 import type { AgentRecord } from "../../shared/api/types";
 
-/** Hierarchy node for the agent tree SVG. */
+/** Hierarchy node for the agent forest SVG. */
 export type AgentTreeNode = {
   id: string;
   name: string;
@@ -13,28 +13,19 @@ export type AgentTreeNode = {
 export type NodeVisual = "running" | "idle" | "dormant";
 
 /**
- * Build a hierarchy from parent_agent_id. Root is the sole null-parent agent.
- * Orphans (null or dangling parent) attach to root rather than disappearing.
+ * Build a forest from parent_agent_id. Every null or dangling parent is a root.
+ * There is no Dadi node — top-level threads are the roots.
  */
-export function buildTree(agents: AgentRecord[]): AgentTreeNode {
-  if (agents.length === 0) {
-    throw new Error("GET /agents returned no agents");
-  }
-
+export function buildTree(agents: AgentRecord[]): AgentTreeNode[] {
   const byId = new Map(agents.map((a) => [a.id, a]));
-  const rootAgent = agents.find((a) => a.parent_agent_id === null);
-  if (!rootAgent) {
-    throw new Error("GET /agents has no root agent");
-  }
-
   const childrenOf = new Map<string, AgentRecord[]>();
+  const roots: AgentRecord[] = [];
+
   for (const agent of agents) {
-    if (agent.id === rootAgent.id) {
-      continue;
-    }
-    let parentId = agent.parent_agent_id;
+    const parentId = agent.parent_agent_id;
     if (parentId === null || !byId.has(parentId)) {
-      parentId = rootAgent.id;
+      roots.push(agent);
+      continue;
     }
     const list = childrenOf.get(parentId) ?? [];
     list.push(agent);
@@ -51,7 +42,7 @@ export function buildTree(agents: AgentRecord[]): AgentTreeNode {
     };
   }
 
-  return toNode(rootAgent);
+  return roots.map(toNode);
 }
 
 /** Cubic path from parent to child in the tree layout. */

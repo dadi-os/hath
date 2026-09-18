@@ -31,12 +31,12 @@ export function MobileChatShell() {
   const openAgentId =
     chat.open.kind === "agent" ? chat.open.agentId : null;
   const title =
-    openAgentId != null
-      ? openAgentId === chat.rootId
-        ? "Dadi"
-        : (chat.conversations.find((c) => c.agent_id === openAgentId)
+    chat.open.kind === "dadi"
+      ? "Dadi"
+      : openAgentId != null
+        ? (chat.conversations.find((c) => c.agent_id === openAgentId)
             ?.agent_name ?? "Chat")
-      : "દાદી";
+        : "દાદી";
 
   const statusLabel =
     state === "connected"

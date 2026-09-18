@@ -37,18 +37,19 @@ export type Conversation = {
   from_user: boolean;
 };
 
-export type ChatOpen = { kind: "list" } | { kind: "agent"; agentId: string };
+export type ChatOpen =
+  | { kind: "list" }
+  | { kind: "dadi" }
+  | { kind: "agent"; agentId: string };
 
 export type HistoryStatus = "idle" | "loading" | "ready" | "error";
 
 type ChatState = {
-  /** User-thread messages keyed by agent id, including root (Dadi). */
+  /** User-thread messages keyed by agent id. */
   threads: Record<string, ChatMessage[]>;
-  /** Thread agents the human has talked to. Excludes root — Dadi is pinned separately. */
+  /** Thread agents the human has talked to. */
   conversations: Conversation[];
   open: ChatOpen;
-  /** Root agent id once known; Talk to Dadi opens this thread. */
-  rootId: string | null;
   historyStatus: HistoryStatus;
   historyError: string | null;
 };
@@ -59,7 +60,6 @@ let state: ChatState = {
   threads: {},
   conversations: [],
   open: { kind: "list" },
-  rootId: null,
   historyStatus: "idle",
   historyError: null,
 };
@@ -154,7 +154,7 @@ export function openList(): void {
   emit();
 }
 
-/** Open a user-thread for the given agent (root = Talk to Dadi). */
+/** Open a user-thread for the given agent. */
 export function openAgent(agentId: string): void {
   if (state.open.kind === "agent" && state.open.agentId === agentId) {
     return;
@@ -163,21 +163,12 @@ export function openAgent(agentId: string): void {
   emit();
 }
 
-/** Open the Dadi (root) thread when the root id is known. */
-export function openDadi(): boolean {
-  if (!state.rootId) {
-    return false;
-  }
-  openAgent(state.rootId);
-  return true;
-}
-
-/** Remember the root agent id used by Talk to Dadi. */
-export function setChatRoot(rootId: string | null): void {
-  if (state.rootId === rootId) {
+/** Open the Talk to Dadi composer (not an agent thread). */
+export function openDadi(): void {
+  if (state.open.kind === "dadi") {
     return;
   }
-  state = { ...state, rootId };
+  state = { ...state, open: { kind: "dadi" } };
   emit();
 }
 
@@ -199,7 +190,6 @@ export function clearLiveChat(): void {
     threads: {},
     conversations: [],
     open: { kind: "list" },
-    rootId: state.rootId,
     historyStatus: "idle",
     historyError: null,
   };
@@ -470,14 +460,10 @@ export function userThreadFromLog(log: LogRecord): {
   };
 }
 
-/**
- * Load user-thread history from message logs. Root (Dadi) fills `threads[rootId]`
- * but is kept out of the conversation list — Talk to Dadi is the entry.
- */
+/** Load user-thread history from message logs into threads and the conversation list. */
 export function hydrateFromLogs(
   logs: LogRecord[],
   names: Record<string, string>,
-  rootId: string | null,
 ): void {
   let changed = false;
   for (const log of logs) {
@@ -487,9 +473,6 @@ export function hydrateFromLogs(
     }
     if (importHistoryMessage(parsed.agent_id, parsed.message, true)) {
       changed = true;
-    }
-    if (rootId !== null && parsed.agent_id === rootId) {
-      continue;
     }
     const existing = state.conversations.find(
       (c) => c.agent_id === parsed.agent_id,

@@ -19,6 +19,23 @@ export type PostMessageResponse = {
   created_at: string;
 };
 
+/** Response from Dimaag POST /dadi. */
+export type PostDadiResponse =
+  | {
+      action: "routed";
+      thread_id: string;
+      created: boolean;
+      content: string;
+      seq: number;
+      created_at: string;
+    }
+  | {
+      action: "modified";
+      agent_id: string;
+      active: boolean;
+      system_prompt: string;
+    };
+
 /** Nas browsers/terminals this agent recently drove. Empty after Dimaag restart. */
 export type AgentSessions = {
   browsers: number[];
@@ -74,10 +91,13 @@ export type DimaagEvent =
       message: string;
       at: string;
     }
+  | { type: "dadi_started"; at: string }
+  | { type: "dadi_finished"; at: string }
+  | { type: "dadi_failed"; message: string; at: string }
   | {
       type: "agent_spawned";
       agent_id: string;
-      parent_agent_id: string;
+      parent_agent_id: string | null;
       name: string;
       at: string;
     }

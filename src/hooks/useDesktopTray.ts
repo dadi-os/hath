@@ -127,7 +127,6 @@ export function useDesktopTray(opts: {
         ? {
             status: "ready" as const,
             items: agents.items
-              .filter((a) => a.parent_agent_id !== null)
               .map((a) => ({
                 id: a.id,
                 name: a.name,

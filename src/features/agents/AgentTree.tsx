@@ -33,6 +33,7 @@ import {
 } from "./tree";
 
 const PEEK_DELAY_MS = 350;
+const FOREST_LAYOUT_ID = "__forest__";
 
 type ViewTransform = { x: number; y: number; k: number };
 
@@ -79,7 +80,6 @@ export function AgentTree({
   const spacingY = preview ? 64 : 96;
   const viewPad = preview ? 36 : 48;
   const rIdle = preview ? 3.25 : 4.5;
-  const rRoot = preview ? 4 : 5.5;
   const rDormant = preview ? 2.25 : 3;
   /** Floor so sparse trees do not balloon to fill the widget. */
   const minViewW = preview ? 200 : 320;
@@ -125,9 +125,21 @@ export function AgentTree({
     if (!agents || agents.length === 0) {
       return null;
     }
-    const root = hierarchy(buildTree(agents));
+    const forest = buildTree(agents);
+    if (forest.length === 0) {
+      return null;
+    }
+    const layoutRoot: AgentTreeNode = {
+      id: FOREST_LAYOUT_ID,
+      name: "",
+      active: true,
+      children: forest,
+    };
+    const root = hierarchy(layoutRoot);
     const positioned = tree<AgentTreeNode>().nodeSize([spacingX, spacingY])(root);
-    const nodes = positioned.descendants();
+    const nodes = positioned
+      .descendants()
+      .filter((n) => n.data.id !== FOREST_LAYOUT_ID);
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
@@ -145,7 +157,7 @@ export function AgentTree({
     const h = Math.max(contentH + viewPad * 2 + labelPad, minViewH);
     return {
       nodes,
-      links: positioned.links(),
+      links: positioned.links().filter((l) => l.source.data.id !== FOREST_LAYOUT_ID),
       viewBox: {
         x: minX - (w - contentW) / 2,
         y: minY - (h - contentH) / 2,
@@ -443,10 +455,18 @@ export function AgentTree({
     );
   }
 
-  if (!layout || !agents) {
+  if (!agents) {
     return (
       <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
         <p className="text-[13px] text-ink-muted">Loading agents…</p>
+      </div>
+    );
+  }
+
+  if (agents.length === 0 || !layout) {
+    return (
+      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
+        <p className="text-[13px] text-ink-muted">No agents yet</p>
       </div>
     );
   }
@@ -508,16 +528,13 @@ export function AgentTree({
               return null;
             }
             const visual = visualState(agent, runningMap[agent.id]);
-            const isRoot = agent.parent_agent_id === null;
             const selected = selectedId === agent.id;
-            const r =
-              visual === "dormant" ? rDormant : isRoot ? rRoot : rIdle;
+            const r = visual === "dormant" ? rDormant : rIdle;
             const depth = node.depth;
             const delay = Math.min(depth * 0.03, 0.18);
             const coreClass = [
               "agent-node__core",
               `agent-node__core--${visual}`,
-              isRoot ? "is-root" : "",
               selected ? "is-selected" : "",
             ]
               .filter(Boolean)
@@ -569,14 +586,13 @@ export function AgentTree({
                   <motion.text
                     className={[
                       "agent-node__label",
-                      isRoot ? "is-root" : "",
                       visual === "dormant" ? "is-dormant" : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
                     y={r + (preview ? 16 : 22)}
                     textAnchor="middle"
-                    fontSize={preview ? (isRoot ? 8 : 7) : isRoot ? 11 : 9.5}
+                    fontSize={preview ? 7 : 9.5}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{

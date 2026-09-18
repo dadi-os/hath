@@ -5,6 +5,7 @@ import type {
   LogEvent,
   LogRecord,
   MessageAttachment,
+  PostDadiResponse,
   PostMessageResponse,
 } from "../types";
 
@@ -14,7 +15,7 @@ import type {
  */
 export function createDimaagClient(transport: Transport, baseUrl: string) {
   return {
-    /** POST /messages — human or agent outbound. */
+    /** POST /messages — human → agent. */
     postMessage(body: {
       to_agent_id: string;
       content: string;
@@ -28,7 +29,20 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** GET /agents — flat roster including root. */
+    /** POST /dadi — speak to the router, not an agent. */
+    postDadi(body: {
+      content: string;
+      attachments?: MessageAttachment[];
+    }): Promise<PostDadiResponse> {
+      return transport.request({
+        baseUrl,
+        path: "/dadi",
+        method: "POST",
+        body,
+      });
+    },
+
+    /** GET /agents — flat roster of agents (no Dadi row). */
     listAgents(): Promise<{ agents: AgentRecord[] }> {
       return transport.request({
         baseUrl,
@@ -42,15 +56,6 @@ export function createDimaagClient(transport: Transport, baseUrl: string) {
       return transport.request({
         baseUrl,
         path: `/agents/${id}`,
-        method: "GET",
-      });
-    },
-
-    /** Sole null-parent agent. Stable; cache under ["agents", "root"]. */
-    getRootAgent(): Promise<AgentDetail> {
-      return transport.request({
-        baseUrl,
-        path: "/agents/root",
         method: "GET",
       });
     },

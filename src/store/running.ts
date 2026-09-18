@@ -5,6 +5,7 @@ export type RunningMap = Record<string, { reasoning: boolean; conversation: bool
 type Listener = (running: RunningMap) => void;
 
 let running: RunningMap = {};
+let dadiBusy = false;
 const listeners = new Set<Listener>();
 
 function emit(): void {
@@ -44,5 +45,20 @@ export function setLaneRunning(
     ...running,
     [agentId]: { ...current, [lane]: isRunning },
   };
+  emit();
+}
+
+/** True while POST /dadi is classifying. */
+export function isDadiBusy(): boolean {
+  return dadiBusy;
+}
+
+/** Set from SSE `dadi_started` / `dadi_finished` / `dadi_failed`. */
+export function setDadiBusy(next: boolean): void {
+  if (dadiBusy === next) {
+    return;
+  }
+  dadiBusy = next;
+  running = { ...running };
   emit();
 }

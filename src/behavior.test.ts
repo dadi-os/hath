@@ -223,23 +223,15 @@ describe("user-thread history", () => {
     ).toBeNull();
   });
 
-  it("hydrates Dadi onto the root thread and keeps it out of the conversation list", () => {
+  it("hydrates user-thread logs onto agent threads", () => {
     clearLiveChat();
     hydrateFromLogs(
       [
         messageLog({
-          agent_id: "root",
-          from: null,
-          to: "root",
-          content: "talk to dadi",
-          seq: 1,
-          at: "2026-03-10T11:00:00Z",
-        }),
-        messageLog({
           agent_id: "planner",
           from: null,
           to: "planner",
-          content: "talk to dadi",
+          content: "plan the week",
           seq: 2,
           at: "2026-03-10T11:00:02Z",
         }),
@@ -252,13 +244,11 @@ describe("user-thread history", () => {
           at: "2026-03-10T11:00:03Z",
         }),
       ],
-      { root: "Dadi", planner: "Planner" },
-      "root",
+      { planner: "Planner" },
     );
     const snap = getChatState();
-    expect(snap.threads.root?.map((m) => m.content)).toEqual(["talk to dadi"]);
     expect(snap.threads.planner?.map((m) => m.content)).toEqual([
-      "talk to dadi",
+      "plan the week",
       "on it",
     ]);
     expect(snap.conversations.map((c) => c.agent_id)).toEqual(["planner"]);
@@ -286,7 +276,6 @@ describe("user-thread history", () => {
         }),
       ],
       { planner: "Planner" },
-      "root",
     );
     const contents = getChatState().threads.planner?.map((m) => m.content);
     expect(contents).toEqual(["old process", "new process"]);
@@ -316,9 +305,9 @@ describe("user-thread history", () => {
 });
 
 describe("agent tree", () => {
-  const root: AgentRecord = {
-    id: "root",
-    name: "Dadi",
+  const planner: AgentRecord = {
+    id: "planner",
+    name: "Planner",
     system_prompt: "sys",
     parent_agent_id: null,
     active: true,
@@ -328,27 +317,44 @@ describe("agent tree", () => {
     updated_at: "2026-01-01T00:00:00Z",
   };
 
-  it("builds hierarchy from parent_agent_id", () => {
+  it("builds a forest of null-parent threads", () => {
     const child: AgentRecord = {
-      ...root,
+      ...planner,
       id: "child",
       name: "Worker",
-      parent_agent_id: "root",
+      parent_agent_id: "planner",
     };
-    const tree = buildTree([root, child]);
-    expect(tree.id).toBe("root");
-    expect(tree.children?.[0]?.id).toBe("child");
+    const other: AgentRecord = {
+      ...planner,
+      id: "home",
+      name: "Home",
+    };
+    const forest = buildTree([planner, child, other]);
+    expect(forest.map((n) => n.id).sort()).toEqual(["home", "planner"]);
+    const plannerNode = forest.find((n) => n.id === "planner");
+    expect(plannerNode?.children?.[0]?.id).toBe("child");
+  });
+
+  it("treats a dangling parent as its own root", () => {
+    const orphan: AgentRecord = {
+      ...planner,
+      id: "orphan",
+      name: "Orphan",
+      parent_agent_id: "missing",
+    };
+    const forest = buildTree([planner, orphan]);
+    expect(forest.map((n) => n.id).sort()).toEqual(["orphan", "planner"]);
   });
 
   it("marks running lanes", () => {
-    expect(visualState(root, { reasoning: true, conversation: false })).toBe(
+    expect(visualState(planner, { reasoning: true, conversation: false })).toBe(
       "running",
     );
-    expect(visualState({ ...root, active: false }, undefined)).toBe("dormant");
+    expect(visualState({ ...planner, active: false }, undefined)).toBe("dormant");
   });
 
-  it("fails loudly when agents list is empty", () => {
-    expect(() => buildTree([])).toThrow(/no agents/);
+  it("returns an empty forest when there are no agents", () => {
+    expect(buildTree([])).toEqual([]);
   });
 });
 

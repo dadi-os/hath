@@ -7,11 +7,10 @@ import {
   hydrateFromLogs,
   ingestLiveMessage,
   isUserThreadMessage,
-  setChatRoot,
   setHistoryState,
   upsertConversation,
 } from "../store/chat";
-import { seedRunningFromAgents, setLaneRunning } from "../store/running";
+import { seedRunningFromAgents, setDadiBusy, setLaneRunning } from "../store/running";
 import { logLine } from "../shared/lib/platform/log";
 import { HISTORY_LOG_LIMIT } from "../chrome/chatSidebar/constants";
 
@@ -20,9 +19,6 @@ const MAX_BACKOFF_MS = 30_000;
 
 /** React Query key for GET /agents. */
 export const AGENTS_QUERY_KEY = ["agents"] as const;
-
-/** React Query key for GET /agents/root — does not change. */
-export const ROOT_AGENT_QUERY_KEY = ["agents", "root"] as const;
 
 function isDimaagEvent(data: unknown): data is DimaagEvent {
   if (!data || typeof data !== "object") {
@@ -34,22 +30,12 @@ function isDimaagEvent(data: unknown): data is DimaagEvent {
     type === "lane_started" ||
     type === "lane_finished" ||
     type === "lane_failed" ||
+    type === "dadi_started" ||
+    type === "dadi_finished" ||
+    type === "dadi_failed" ||
     type === "agent_spawned" ||
     type === "agent_modified"
   );
-}
-
-function rootIdFromCache(queryClient: QueryClient): string | null {
-  const root = queryClient.getQueryData<{ id: string }>(ROOT_AGENT_QUERY_KEY);
-  if (root?.id) {
-    return root.id;
-  }
-  const agents = queryClient.getQueryData<AgentRecord[]>(AGENTS_QUERY_KEY);
-  if (!agents) {
-    return null;
-  }
-  const roots = agents.filter((a) => a.parent_agent_id === null);
-  return roots.length === 1 ? roots[0].id : null;
 }
 
 function agentNameFromCache(
@@ -79,9 +65,7 @@ async function hydrateHistory(queryClient: QueryClient): Promise<void> {
       event: "message",
       limit: HISTORY_LOG_LIMIT,
     });
-    const rootId = rootIdFromCache(queryClient);
-    setChatRoot(rootId);
-    hydrateFromLogs(logs, agentNames(queryClient), rootId);
+    hydrateFromLogs(logs, agentNames(queryClient));
     setHistoryState("ready");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -93,7 +77,6 @@ async function hydrateHistory(queryClient: QueryClient): Promise<void> {
 /**
  * Subscribe to Dimaag SSE. Reconnects with backoff on drop and refetches
  * GET /agents plus user-thread message logs on reconnect (the stream has no replay).
- * Root (Dadi) user-thread messages are first-class — Talk to Dadi is that thread.
  */
 export function useEvents(): void {
   const queryClient = useQueryClient();
@@ -136,10 +119,6 @@ export function useEvents(): void {
           content: data.content,
           at: data.at,
         });
-        const rootId = rootIdFromCache(queryClient);
-        if (rootId !== null && data.agent_id === rootId) {
-          return;
-        }
         upsertConversation({
           agent_id: data.agent_id,
           agent_name: agentNameFromCache(queryClient, data.agent_id),
@@ -147,6 +126,16 @@ export function useEvents(): void {
           last_at: data.at,
           from_user: data.from_agent_id === null,
         });
+        return;
+      }
+
+      if (data.type === "dadi_started") {
+        setDadiBusy(true);
+        return;
+      }
+
+      if (data.type === "dadi_finished" || data.type === "dadi_failed") {
+        setDadiBusy(false);
         return;
       }
 
@@ -170,7 +159,7 @@ export function useEvents(): void {
         void queryClient.invalidateQueries({
           queryKey: ["agent", data.agent_id],
         });
-        if (data.type === "agent_spawned") {
+        if (data.type === "agent_spawned" && data.parent_agent_id !== null) {
           void queryClient.invalidateQueries({
             queryKey: ["agent", data.parent_agent_id],
           });
@@ -246,6 +235,7 @@ export function useEvents(): void {
         generation += 1;
         clearTimer();
         teardownStream();
+        setDadiBusy(false);
       }
     };
 

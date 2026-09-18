@@ -7,7 +7,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { dimaag, nas } from "../../shared/api";
 import { BrowserFrame } from "../../features/agents/BrowserFrame";
@@ -17,16 +17,14 @@ import {
   pickLiveTerminal,
 } from "../../features/agents/sessions";
 import { useConnection } from "../../hooks/useConnection";
-import {
-  AGENTS_QUERY_KEY,
-  ROOT_AGENT_QUERY_KEY,
-} from "../../hooks/useEvents";
+import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
 import {
   addOptimistic,
   clearLiveChat,
   formatOutboundContent,
   getChatState,
   hydrateFromLogs,
+  ingestLiveMessage,
   listQueuedThread,
   markFailed,
   markPending,
@@ -35,11 +33,16 @@ import {
   openList,
   removeMessage,
   resolveOptimistic,
-  setChatRoot,
   subscribeChat,
   type MessageAttachment,
 } from "../../store/chat";
-import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
+import {
+  getRunning,
+  isDadiBusy,
+  seedRunningFromAgents,
+  setDadiBusy,
+  subscribeRunning,
+} from "../../store/running";
 import {
   filesToDraftAttachments,
   MAX_ATTACHMENTS,
@@ -82,7 +85,7 @@ export interface ChatSidebarProps {
 
 /**
  * Conversation list + thread views. Live messages arrive via SSE; history is
- * hydrated from Dimaag `agent_logs` (user ↔ agent, including Talk to Dadi).
+ * hydrated from Dimaag `agent_logs`. Talk to Dadi is a composer onto POST /dadi.
  */
 export function ChatSidebar({
   sessionKey,
@@ -92,6 +95,7 @@ export function ChatSidebar({
   onDrawerClose,
   onDrawerOpen,
 }: ChatSidebarProps) {
+  const queryClient = useQueryClient();
   const { state: connection } = useConnection();
   const connected = connection === "connected";
   const chat = useSyncExternalStore(subscribeChat, getChatState, getChatState);
@@ -112,13 +116,7 @@ export function ChatSidebar({
   const stickToBottomRef = useRef(true);
   const [keyboardInset, setKeyboardInset] = useState(0);
 
-  const rootQuery = useQuery({
-    queryKey: ROOT_AGENT_QUERY_KEY,
-    queryFn: () => dimaag.getRootAgent(),
-    enabled: connected,
-    staleTime: Infinity,
-  });
-  const rootId = rootQuery.data?.id ?? chat.rootId;
+  const dadiBusy = isDadiBusy();
 
   const agentsQuery = useQuery({
     queryKey: AGENTS_QUERY_KEY,
@@ -146,21 +144,16 @@ export function ChatSidebar({
   });
 
   useEffect(() => {
-    if (rootQuery.data?.id) {
-      setChatRoot(rootQuery.data.id);
-    }
-  }, [rootQuery.data?.id]);
-
-  useEffect(() => {
     if (connection === "disconnected") {
       clearLiveChat();
+      setDadiBusy(false);
     }
   }, [connection]);
 
   const openAgentId =
     chat.open.kind === "agent" ? chat.open.agentId : null;
-  const viewingDadi = openAgentId !== null && openAgentId === rootId;
-  const viewingThread = openAgentId !== null;
+  const viewingDadi = chat.open.kind === "dadi";
+  const viewingThread = chat.open.kind === "agent";
   const openConversation = chat.conversations.find(
     (c) => c.agent_id === openAgentId,
   );
@@ -168,24 +161,18 @@ export function ChatSidebar({
     ? (chat.threads[openAgentId] ?? [])
     : [];
 
-  const talkTargetName = viewingDadi
-    ? (rootQuery.data?.name ?? "Dadi")
-    : openAgentId
-      ? (openConversation?.agent_name ??
-        agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
-        "agent")
-      : (rootQuery.data?.name ?? "Dadi");
+  const talkTargetName = viewingThread
+    ? (openConversation?.agent_name ??
+      agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
+      "agent")
+    : "Dadi";
 
-  const laneAgentId = openAgentId ?? (!viewingThread ? rootId : null);
-  const conversationBusy =
-    (laneAgentId !== null && running[laneAgentId]?.conversation === true) ||
-    (!viewingThread && !!rootId && running[rootId]?.conversation === true);
-  const reasoningBusy =
-    laneAgentId !== null
-      ? running[laneAgentId]?.reasoning === true
-      : !viewingThread && !!rootId
-        ? running[rootId]?.reasoning === true
-        : false;
+  const conversationBusy = viewingThread
+    ? running[openAgentId!]?.conversation === true
+    : dadiBusy;
+  const reasoningBusy = viewingThread
+    ? running[openAgentId!]?.reasoning === true
+    : false;
 
   const scrollToBottom = useEffectEvent((behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current;
@@ -255,10 +242,7 @@ export function ChatSidebar({
         const names = Object.fromEntries(
           (agentsQuery.data ?? []).map((a) => [a.id, a.name]),
         );
-        if (rootQuery.data) {
-          names[rootQuery.data.id] = rootQuery.data.name;
-        }
-        hydrateFromLogs(logs, names, getChatState().rootId);
+        hydrateFromLogs(logs, names);
       })
       .catch((err: unknown) => {
         logLine(
@@ -355,7 +339,7 @@ export function ChatSidebar({
     if (!connected) {
       return;
     }
-    const targetId = openAgentId ?? rootId;
+    const targetId = openAgentId;
     if (!targetId) {
       return;
     }
@@ -424,11 +408,64 @@ export function ChatSidebar({
     });
   };
 
-  const resolveSendTarget = (): string | null => {
-    if (openAgentId) {
-      return openAgentId;
+  /** Speak to the router; on route, jump into the thread. */
+  const sendDadi = async (
+    content: string,
+    attachments?: MessageAttachment[],
+  ) => {
+    const trimmed = content.trim();
+    if (
+      (!trimmed && (!attachments || attachments.length === 0)) ||
+      !connected ||
+      dadiBusy
+    ) {
+      return;
     }
-    return rootId ?? null;
+    const savedDraft = draft;
+    const savedAttachments = draftAttachments;
+    setDraft("");
+    setDadiBusy(true);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+    try {
+      const res = await dimaag.postDadi({
+        content: trimmed,
+        attachments:
+          attachments && attachments.length > 0 ? attachments : undefined,
+      });
+      clearDraftAttachments();
+      if (res.action === "routed") {
+        openAgent(res.thread_id);
+        ingestLiveMessage(res.thread_id, {
+          seq: res.seq,
+          from_user: true,
+          content: res.content,
+          at: res.created_at,
+        });
+        return;
+      }
+      if (res.action === "modified") {
+        void queryClient.invalidateQueries({ queryKey: AGENTS_QUERY_KEY });
+        void queryClient.invalidateQueries({
+          queryKey: ["agent", res.agent_id],
+        });
+        openAgent(res.agent_id);
+        return;
+      }
+      const _exhaustive: never = res;
+      void _exhaustive;
+    } catch (err: unknown) {
+      setDraft(savedDraft);
+      setDraftAttachments(savedAttachments);
+      logLine(
+        "error",
+        err instanceof Error ? err.message : String(err),
+        "dadi_send_failed",
+      );
+    } finally {
+      setDadiBusy(false);
+    }
   };
 
   const onSubmit = (e: FormEvent) => {
@@ -437,14 +474,11 @@ export function ChatSidebar({
       draftAttachments.length > 0
         ? toMessageAttachments(draftAttachments)
         : undefined;
-    const toId = resolveSendTarget();
-    if (!toId) {
+    if (viewingThread && openAgentId) {
+      void sendThread(openAgentId, draft, undefined, attachments);
       return;
     }
-    if (!openAgentId) {
-      openAgent(toId);
-    }
-    void sendThread(toId, draft, undefined, attachments);
+    void sendDadi(draft, attachments);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -465,9 +499,7 @@ export function ChatSidebar({
   const startNewChat = () => {
     setDraft("");
     clearDraftAttachments();
-    if (!openDadi()) {
-      openList();
-    }
+    openDadi();
     onDrawerClose?.();
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
@@ -477,29 +509,25 @@ export function ChatSidebar({
     onDrawerClose?.();
   };
 
-  const headerTitle = viewingDadi
-    ? (rootQuery.data?.name ?? "Dadi")
-    : openAgentId
-      ? (openConversation?.agent_name ??
-        agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
-        "Chat")
-      : "Dadi";
+  const headerTitle = viewingThread
+    ? (openConversation?.agent_name ??
+      agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
+      "Chat")
+    : "Dadi";
 
-  const viewKey = chat.open.kind === "list" ? "list" : chat.open.agentId;
+  const viewKey =
+    chat.open.kind === "agent" ? chat.open.agentId : chat.open.kind;
 
-  const placeholder =
-    connected && !openAgentId && !rootId
-      ? rootQuery.isError
-        ? "Dadi is unreachable"
-        : "Waiting for Dadi…"
-      : conversationBusy
-        ? `Held for ${talkTargetName}…`
-        : `Message ${talkTargetName}`;
+  const placeholder = !connected
+    ? "Connect to message Dadi"
+    : conversationBusy
+      ? `Held for ${talkTargetName}…`
+      : `Message ${talkTargetName}`;
 
   const canSubmit =
     connected &&
-    (draft.trim().length > 0 || draftAttachments.length > 0) &&
-    resolveSendTarget() !== null;
+    !dadiBusy &&
+    (draft.trim().length > 0 || draftAttachments.length > 0);
   const composerPad =
     draftAttachments.length > 0 ? COMPOSER_PAD_WITH_ATTACH : COMPOSER_PAD;
 
@@ -531,16 +559,10 @@ export function ChatSidebar({
   const showHostOverlay =
     viewingThread && (liveBrowserId !== null || liveTerminal !== null);
 
-  const showThreadMain = isMobile ? true : viewingThread;
+  const showThreadMain = isMobile ? true : viewingThread || viewingDadi;
   const showListInDrawer = isMobile;
-  const showListInPanel = !isMobile && !viewingThread;
-  const showComposer = isMobile || viewingThread;
-
-  const dadiMessages = rootId ? (chat.threads[rootId] ?? []) : [];
-  const dadiPreview =
-    dadiMessages.length > 0
-      ? dadiMessages[dadiMessages.length - 1]!.content
-      : null;
+  const showListInPanel = !isMobile && !viewingThread && !viewingDadi;
+  const showComposer = isMobile || viewingThread || viewingDadi;
 
   const list = (
     <ConversationList
@@ -551,10 +573,10 @@ export function ChatSidebar({
       onOpenAgent={isMobile ? selectAgent : openAgent}
       onDismissKeyboard={dismissKeyboard}
       dadi={{
-        available: !!rootId,
+        available: connected,
         selected: viewingDadi,
-        preview: dadiPreview,
-        busy: !!rootId && running[rootId]?.conversation === true,
+        preview: null,
+        busy: dadiBusy,
         onOpen: startNewChat,
       }}
     />
@@ -565,13 +587,13 @@ export function ChatSidebar({
       className={`relative flex h-full min-h-0 flex-col overflow-hidden ${
         isMobile ? "" : "chat-rail"
       } ${className ?? ""}`}
-      data-agent-id={openAgentId ?? rootId ?? undefined}
+      data-agent-id={openAgentId ?? undefined}
       data-session-key={sessionKey}
       style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : undefined }}
     >
       {!isMobile ? (
         <div className="relative z-10 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-(--chat-edge) px-3">
-          {viewingThread ? (
+          {viewingThread || viewingDadi ? (
             <button
               type="button"
               onClick={backToList}
@@ -629,8 +651,8 @@ export function ChatSidebar({
           </div>
         ) : null}
         <AnimatePresence mode="wait" initial={false}>
-          {showThreadMain && (viewingThread || isMobile) ? (
-            viewingThread ? (
+          {showThreadMain && (viewingThread || viewingDadi || isMobile) ? (
+            viewingThread || viewingDadi ? (
               <ThreadView
                 viewKey={viewKey}
                 scrollRef={scrollRef}
