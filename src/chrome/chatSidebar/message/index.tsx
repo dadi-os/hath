@@ -12,6 +12,11 @@ import { useRevealText } from "./useRevealText";
 export interface MessageBubbleProps {
   /** Message to render (user or agent). */
   message: ChatMessage;
+  /**
+   * Row appeared after this thread view opened.
+   * Enter motion + typewriter only apply here — reopen is static.
+   */
+  live?: boolean;
   /** Retry a failed user send. */
   onRetry?: () => void;
   /** Remove a failed or queued user message. */
@@ -23,53 +28,56 @@ export interface MessageBubbleProps {
 /** Single chat row — quiet user pill or agent markdown with typewriter reveal. */
 export function MessageBubble({
   message,
+  live = false,
   onRetry,
   onCancel,
   onRevealTick,
 }: MessageBubbleProps) {
   if (message.from_user) {
     return (
-      <UserBubble message={message} onRetry={onRetry} onCancel={onCancel} />
+      <UserBubble
+        message={message}
+        live={live}
+        onRetry={onRetry}
+        onCancel={onCancel}
+      />
     );
   }
-  return <AgentBubble message={message} onRevealTick={onRevealTick} />;
+  return (
+    <AgentBubble
+      message={message}
+      live={live}
+      onRevealTick={onRevealTick}
+    />
+  );
 }
+
+const userRowClass = (queued: boolean, failed: boolean) =>
+  `flex justify-end gap-1.5 ${queued || failed ? "items-center" : "items-end"}`;
 
 /** Right-aligned user pill with optional retry / cancel for failed or queued sends. */
 function UserBubble({
   message,
+  live,
   onRetry,
   onCancel,
 }: {
   message: ChatMessage;
+  live: boolean;
   onRetry?: () => void;
   onCancel?: () => void;
 }) {
   const failed = Boolean(message.failed);
   const queued = Boolean(message.queued);
-
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 14, scale: 0.97 }}
-      animate={{
-        opacity: message.pending && !queued && !failed ? 0.7 : 1,
-        y: 0,
-        scale: 1,
-      }}
-      exit={{ opacity: 0, y: -6, scale: 0.98 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
-      className={`flex justify-end gap-1.5 ${
-        queued || failed ? "items-center" : "items-end"
-      }`}
-    >
+  const body = (
+    <>
       {failed && onRetry ? (
         <button
           type="button"
           onClick={onRetry}
           aria-label="Retry send"
           title="Retry"
-          className="inline-flex size-7 shrink-0 items-center justify-center text-[#b56b5c] transition-opacity duration-slow ease-hath hover:opacity-70"
+          className="inline-flex size-7 shrink-0 items-center justify-center text-error transition-opacity duration-slow ease-hath hover:opacity-70"
         >
           <IconRetry />
         </button>
@@ -86,16 +94,36 @@ function UserBubble({
         </button>
       ) : null}
       <div
-        className={`max-w-[min(92%,34rem)] rounded-[18px] px-3.5 py-2 text-[14px] leading-[1.55] whitespace-pre-wrap ${
+        className={`max-w-[min(92%,34rem)] rounded-[20px] px-3.5 py-2.5 text-[14.5px] leading-[1.55] whitespace-pre-wrap ${
           failed
-            ? "border border-[#c47868]/55 bg-[#c47868]/10 text-ink"
+            ? "border border-error-line bg-error-fill text-ink"
             : queued
               ? "border border-dashed border-sage-line/50 bg-sage-fill/25 text-ink/60"
-              : "bg-sage-active/80 text-ink"
+              : "bg-sage-active text-ink"
         }`}
       >
         {message.content}
       </div>
+    </>
+  );
+
+  const className = userRowClass(queued, failed);
+  if (!live) {
+    return <div className={className}>{body}</div>;
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{
+        opacity: message.pending && !queued && !failed ? 0.7 : 1,
+        y: 0,
+      }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: SLOW_S, ease: EASE }}
+      className={className}
+    >
+      {body}
     </motion.div>
   );
 }
@@ -103,12 +131,14 @@ function UserBubble({
 /** Left-aligned agent row with markdown and typewriter reveal. */
 function AgentBubble({
   message,
+  live,
   onRevealTick,
 }: {
   message: ChatMessage;
+  live: boolean;
   onRevealTick?: () => void;
 }) {
-  const { visible, done } = useRevealText(message.seq, message.content);
+  const { visible, done } = useRevealText(message.seq, message.content, live);
 
   useEffect(() => {
     if (!done) {
@@ -116,15 +146,8 @@ function AgentBubble({
     }
   }, [visible, done, onRevealTick]);
 
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -4 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
-      className="max-w-[min(96%,40rem)] text-[14.5px] leading-[1.65] text-ink"
-    >
+  const inner = (
+    <>
       <MarkdownBody content={visible} />
       {!done ? (
         <span
@@ -132,6 +155,25 @@ function AgentBubble({
           aria-hidden
         />
       ) : null}
+    </>
+  );
+
+  const className =
+    "max-w-[min(96%,40rem)] text-[14.5px] leading-[1.65] text-ink [overflow-anchor:none]";
+
+  if (!live) {
+    return <div className={className}>{inner}</div>;
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: SLOW_S, ease: EASE }}
+      className={className}
+    >
+      {inner}
     </motion.div>
   );
 }

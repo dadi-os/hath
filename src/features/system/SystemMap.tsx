@@ -252,7 +252,7 @@ function SystemPreview({
             <li key={s.name} className="flex items-center justify-between gap-2">
               <span className="truncate text-[13px] text-ink">{s.name}</span>
               <span
-                className={`text-[13px] ${s.ok ? "text-sage-deep" : "text-[#9a5a4e]"}`}
+                className={`text-[13px] ${s.ok ? "text-sage-deep" : "text-error"}`}
               >
                 {s.ok ? "✓" : "✕"}
               </span>
@@ -339,12 +339,12 @@ function ServiceRows({
           <span className="text-[13px] text-ink">{s.name}</span>
           <span
             className={`inline-flex items-center gap-1.5 text-[11px] tracking-wide ${
-              s.ok ? "text-sage-deep" : "text-[#9a5a4e]"
+              s.ok ? "text-sage-deep" : "text-error"
             }`}
           >
             <span
               className={`h-1.5 w-1.5 rounded-full ${
-                s.ok ? "bg-sage" : "bg-[#9a5a4e]"
+                s.ok ? "bg-sage" : "bg-error"
               }`}
               aria-hidden
             />

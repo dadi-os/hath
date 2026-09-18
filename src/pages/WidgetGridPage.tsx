@@ -16,7 +16,7 @@ const tile =
 
 /**
  * Home widget grid — 4×4 on desktop.
- * Agents 2×1, Memory 2×1, Timeline 2×2, Ghar 1×1, Chaavi 1×1, System 1×2.
+ * Agents 2×2, Timeline 2×2, Memory 2×1, Ghar 2×1, Chaavi 1×1, System 1×2.
  */
 export function WidgetGridPage() {
   const navigate = useNavigate();
@@ -46,14 +46,14 @@ export function WidgetGridPage() {
           tabIndex={0}
           onClick={open("/agents")}
           onKeyDown={onActivate("/agents")}
-          className={`${tile} md:col-span-2 md:row-span-1`}
+          className={`${tile} md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1`}
         >
           <AgentTree mode="preview" entranceKey="home-agents" />
         </WidgetFrame>
       ) : (
         <WidgetFrame
           title="AGENTS"
-          className="flex items-center justify-center px-6 md:col-span-2 md:row-span-1"
+          className="flex items-center justify-center px-6 md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1"
         >
           <p className="px-4 py-8 text-center text-[13px] text-ink-ghost">
             Agent tree is available on desktop.
@@ -67,7 +67,7 @@ export function WidgetGridPage() {
         tabIndex={0}
         onClick={open("/memory")}
         onKeyDown={onActivate("/memory")}
-        className={`${tile} md:col-span-2 md:row-span-1`}
+        className={`${tile} md:col-span-2 md:col-start-1 md:row-start-3`}
       >
         <MemoryCounters />
       </WidgetFrame>
@@ -78,7 +78,7 @@ export function WidgetGridPage() {
         tabIndex={0}
         onClick={open("/timeline")}
         onKeyDown={onActivate("/timeline")}
-        className={`${tile} md:col-span-2 md:col-start-1 md:row-span-2 md:row-start-2`}
+        className={`${tile} md:col-span-2 md:col-start-3 md:row-span-2 md:row-start-1`}
       >
         <TimelineCalendar mode="preview" hideIdeas />
       </WidgetFrame>
@@ -89,7 +89,7 @@ export function WidgetGridPage() {
         tabIndex={0}
         onClick={open("/ghar")}
         onKeyDown={onActivate("/ghar")}
-        className={`${tile} md:col-span-1 md:col-start-3 md:row-start-2`}
+        className={`${tile} md:col-span-2 md:col-start-1 md:row-start-4`}
       >
         <GharRoster mode="preview" />
       </WidgetFrame>
@@ -111,7 +111,7 @@ export function WidgetGridPage() {
         tabIndex={0}
         onClick={open("/system")}
         onKeyDown={onActivate("/system")}
-        className={`${tile} md:col-span-1 md:col-start-4 md:row-span-2 md:row-start-2`}
+        className={`${tile} md:col-span-1 md:col-start-4 md:row-span-2 md:row-start-3`}
       >
         <SystemMap mode="preview" />
       </WidgetFrame>

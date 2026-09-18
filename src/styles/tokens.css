@@ -29,6 +29,11 @@
   --ink-faint: #a8af9f;
   --ink-ghost: #b0b8a6;
 
+  /* Error */
+  --error: #9a5a4e;
+  --error-line: #c4a49a;
+  --error-fill: rgba(196, 164, 154, 0.28);
+
   /* Structure */
   --rule: #e4ebdc;
   --radius: 9px;
@@ -83,6 +88,10 @@
     --ink-muted: #a3ab98;
     --ink-faint: #7a8272;
     --ink-ghost: #5c6456;
+
+    --error: #d4a098;
+    --error-line: #5c403c;
+    --error-fill: rgba(154, 90, 78, 0.22);
 
     --rule: #2a3026;
     --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
@@ -232,6 +241,94 @@
   background: color-mix(in srgb, var(--sage-faint) 55%, var(--bone));
   box-shadow: inset 0 0 0 0.5px
     color-mix(in srgb, var(--sage) 25%, transparent);
+}
+
+/* Chat rail — olive strip in light, charcoal strip in dark. Contrasts widgets either way. */
+.chat-rail {
+  --ink: #2c302a;
+  --ink-muted: #6e7568;
+  --ink-faint: #9aa390;
+  --ink-ghost: #8a9180;
+  --rule: #d4dcc6;
+  --sage: #8fa382;
+  --sage-text: #5c6b52;
+  --sage-deep: #4a5642;
+  --sage-line: #c3cdb4;
+  --sage-faint: rgba(143, 163, 130, 0.16);
+  --sage-fill: rgba(143, 163, 130, 0.14);
+  --sage-active: rgba(143, 163, 130, 0.22);
+  --bone: #e6eadc;
+  --bone-raised: #eef1e6;
+  --glass-veil: #e6eadc;
+  --glass-sheet: #f4f6ee;
+  --glass-solid: #eef1e6;
+  --glass-border: color-mix(in srgb, var(--sage-line) 80%, transparent);
+  --color-ink: #2c302a;
+  --color-ink-muted: #6e7568;
+  --color-ink-faint: #9aa390;
+  --color-ink-ghost: #8a9180;
+  --color-rule: #d4dcc6;
+  --color-sage: #8fa382;
+  --color-sage-text: #5c6b52;
+  --color-sage-deep: #4a5642;
+  --color-sage-line: #c3cdb4;
+  --color-sage-faint: rgba(143, 163, 130, 0.16);
+  --color-sage-fill: rgba(143, 163, 130, 0.14);
+  --color-sage-active: rgba(143, 163, 130, 0.22);
+  --color-bone: #e6eadc;
+  --color-bone-raised: #eef1e6;
+  --color-glass-veil: #e6eadc;
+  --color-glass-sheet: #f4f6ee;
+  --chat-hover: rgba(44, 48, 42, 0.05);
+  --chat-active: rgba(44, 48, 42, 0.09);
+  --chat-edge: #d4dcc6;
+  background: #e4e8db;
+  color: #2c302a;
+  border-right: 1px solid var(--chat-edge);
+}
+
+@media (prefers-color-scheme: dark) {
+  .chat-rail {
+    --ink: #eceee6;
+    --ink-muted: #a4aa9a;
+    --ink-faint: #7a8072;
+    --ink-ghost: #6a7064;
+    --rule: #2c3028;
+    --sage: #a8b89a;
+    --sage-text: #b4c4a6;
+    --sage-deep: #d0dcc4;
+    --sage-line: #3d4538;
+    --sage-faint: rgba(168, 184, 154, 0.1);
+    --sage-fill: rgba(168, 184, 154, 0.14);
+    --sage-active: rgba(168, 184, 154, 0.2);
+    --bone: #171915;
+    --bone-raised: #1c1f1a;
+    --glass-veil: #171915;
+    --glass-sheet: #22251f;
+    --glass-solid: #1c1f1a;
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --color-ink: #eceee6;
+    --color-ink-muted: #a4aa9a;
+    --color-ink-faint: #7a8072;
+    --color-ink-ghost: #6a7064;
+    --color-rule: #2c3028;
+    --color-sage: #a8b89a;
+    --color-sage-text: #b4c4a6;
+    --color-sage-deep: #d0dcc4;
+    --color-sage-line: #3d4538;
+    --color-sage-faint: rgba(168, 184, 154, 0.1);
+    --color-sage-fill: rgba(168, 184, 154, 0.14);
+    --color-sage-active: rgba(168, 184, 154, 0.2);
+    --color-bone: #171915;
+    --color-bone-raised: #1c1f1a;
+    --color-glass-veil: #171915;
+    --color-glass-sheet: #22251f;
+    --chat-hover: rgba(255, 255, 255, 0.055);
+    --chat-active: rgba(255, 255, 255, 0.1);
+    --chat-edge: rgba(255, 255, 255, 0.06);
+    background: #171915;
+    color: #eceee6;
+  }
 }
 
 .widget-frame__body {

@@ -97,11 +97,24 @@ export function IconSend() {
   return (
     <svg viewBox="0 0 18 18" fill="none" aria-hidden>
       <path
-        d="M3.2 9h11.2M10.2 4.5 14.5 9l-4.3 4.5"
+        d="M9 14.2V4.2M5 8.2 9 4l4 4.2"
         stroke="currentColor"
         strokeWidth="1.75"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function IconPlus() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden>
+      <path
+        d="M9 3.8v10.4M3.8 9h10.4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
       />
     </svg>
   );

@@ -28,9 +28,6 @@ export function SystemPage() {
               <SystemMap mode="full" />
             </div>
           </div>
-          <p className="shrink-0 text-[11px] leading-relaxed text-ink-ghost">
-            New clients: Dadi → Provision client…
-          </p>
         </section>
 
         <section className="flex min-h-[min(420px,48vh)] min-w-0 flex-col overflow-hidden rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/40 px-3 py-3 lg:min-h-0">

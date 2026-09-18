@@ -1,11 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { formatRelative, truncateOneLine } from "./chrome/chatSidebar/format";
 import {
-  pendingToChatMessages,
+  conversationBucket,
+  formatRelative,
+  groupConversations,
+  truncateOneLine,
+} from "./chrome/chatSidebar/format";
+import {
+  messageKey,
   partitionByQueued,
+  trackIncoming,
 } from "./chrome/chatSidebar/lanes";
-import { formatOutboundContent } from "./store/chat";
+import {
+  clearLiveChat,
+  formatOutboundContent,
+  getChatState,
+  hydrateFromLogs,
+  ingestLiveMessage,
+  isUserThreadMessage,
+  threadAgentId,
+  upsertConversation,
+  userThreadFromLog,
+} from "./store/chat";
 import type { ChatMessage } from "./store/chat";
+import type { LogRecord } from "./shared/api/types";
 import { buildTree, visualState } from "./features/agents/tree";
 import {
   hasRememberedSessions,
@@ -20,6 +37,7 @@ import {
 } from "./features/timeline/dates";
 import { consumeSseBuffer, joinUrl } from "./shared/api/sse";
 import { createChaaviClient } from "./shared/api/chaavi";
+import { createNasClient } from "./shared/api/nas";
 import { YAAD, DIMAAG, NAS, CHAAVI, GHAR } from "./shared/api/constants";
 import type { Transport } from "./shared/api/transport";
 import type { AgentRecord } from "./shared/api/types";
@@ -50,21 +68,6 @@ describe("formatOutboundContent", () => {
 });
 
 describe("chatSidebar lanes", () => {
-  it("maps pending rows to chat messages", () => {
-    const mapped = pendingToChatMessages([
-      {
-        seq: -1,
-        content: "hello",
-        at: "2026-01-01T00:00:00Z",
-        pending: true,
-        queued: true,
-      },
-    ]);
-    expect(mapped).toHaveLength(1);
-    expect(mapped[0]!.from_user).toBe(true);
-    expect(mapped[0]!.queued).toBe(true);
-  });
-
   it("partitions queued vs settled", () => {
     const messages: ChatMessage[] = [
       {
@@ -84,6 +87,231 @@ describe("chatSidebar lanes", () => {
     const { settled, queued } = partitionByQueued(messages);
     expect(settled.map((m) => m.seq)).toEqual([1]);
     expect(queued.map((m) => m.seq)).toEqual([-2]);
+  });
+
+  it("treats only post-open non-historical rows as live", () => {
+    const existing: ChatMessage = {
+      seq: 1,
+      from_user: true,
+      content: "hi",
+      at: "2026-01-01T00:00:00Z",
+    };
+    const known = new Set<string>();
+    const live = new Set<string>();
+    trackIncoming(known, live, [existing], true);
+    expect(live.size).toBe(0);
+
+    const incoming: ChatMessage = {
+      seq: 2,
+      from_user: false,
+      content: "hello",
+      at: "2026-01-01T00:00:01Z",
+    };
+    const historical: ChatMessage = {
+      seq: 3,
+      from_user: false,
+      content: "old",
+      at: "2026-01-01T00:00:02Z",
+      historical: true,
+    };
+    trackIncoming(known, live, [existing, incoming, historical], false);
+    expect(live.has(messageKey(incoming))).toBe(true);
+    expect(live.has(messageKey(historical))).toBe(false);
+    expect(live.has(messageKey(existing))).toBe(false);
+  });
+});
+
+describe("conversationBucket", () => {
+  const now = new Date(2026, 2, 10, 15, 0, 0).getTime();
+  const today = new Date(2026, 2, 10, 10, 0, 0).toISOString();
+  const todayEarlier = new Date(2026, 2, 10, 8, 0, 0).toISOString();
+  const yesterday = new Date(2026, 2, 9, 20, 0, 0).toISOString();
+  const previous = new Date(2026, 2, 1, 0, 0, 0).toISOString();
+
+  it("groups today, yesterday, and previous", () => {
+    expect(conversationBucket(today, now)).toBe("Today");
+    expect(conversationBucket(yesterday, now)).toBe("Yesterday");
+    expect(conversationBucket(previous, now)).toBe("Previous");
+  });
+
+  it("preserves newest-first order inside groups", () => {
+    const grouped = groupConversations(
+      [
+        { last_at: today, id: "a" },
+        { last_at: todayEarlier, id: "b" },
+        { last_at: previous, id: "c" },
+      ],
+      now,
+    );
+    expect(grouped.map((g) => g.bucket)).toEqual(["Today", "Previous"]);
+    expect(grouped[0]!.items.map((i) => i.id)).toEqual(["a", "b"]);
+  });
+});
+
+function messageLog(partial: {
+  agent_id: string;
+  from: string | null;
+  to: string | null;
+  content: string;
+  seq: number;
+  at: string;
+}): LogRecord {
+  return {
+    id: `${partial.agent_id}-${partial.seq}-${partial.at}`,
+    agent_id: partial.agent_id,
+    lane: "conversation",
+    event: "message",
+    payload: {
+      from_agent_id: partial.from,
+      to_agent_id: partial.to,
+      content: partial.content,
+      seq: partial.seq,
+    },
+    created_at: partial.at,
+  };
+}
+
+describe("user-thread history", () => {
+  it("keys a user message on the recipient and an agent reply on the sender", () => {
+    expect(isUserThreadMessage(null, "agent")).toBe(true);
+    expect(isUserThreadMessage("agent", null)).toBe(true);
+    expect(isUserThreadMessage("a", "b")).toBe(false);
+    expect(threadAgentId(null, "agent")).toBe("agent");
+    expect(threadAgentId("agent", null)).toBe("agent");
+    expect(threadAgentId("a", "b")).toBeNull();
+  });
+
+  it("parses user-thread logs and ignores agent↔agent traffic", () => {
+    const user = userThreadFromLog(
+      messageLog({
+        agent_id: "planner",
+        from: null,
+        to: "planner",
+        content: "plan dinner",
+        seq: 4,
+        at: "2026-03-10T12:00:00Z",
+      }),
+    );
+    expect(user?.agent_id).toBe("planner");
+    expect(user?.message.from_user).toBe(true);
+    expect(user?.message.historical).toBe(true);
+
+    const reply = userThreadFromLog(
+      messageLog({
+        agent_id: "planner",
+        from: "planner",
+        to: null,
+        content: "ok",
+        seq: 5,
+        at: "2026-03-10T12:00:01Z",
+      }),
+    );
+    expect(reply?.agent_id).toBe("planner");
+    expect(reply?.message.from_user).toBe(false);
+
+    expect(
+      userThreadFromLog(
+        messageLog({
+          agent_id: "planner",
+          from: "root",
+          to: "planner",
+          content: "internal",
+          seq: 6,
+          at: "2026-03-10T12:00:02Z",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("hydrates Dadi onto the root thread and keeps it out of the conversation list", () => {
+    clearLiveChat();
+    hydrateFromLogs(
+      [
+        messageLog({
+          agent_id: "root",
+          from: null,
+          to: "root",
+          content: "talk to dadi",
+          seq: 1,
+          at: "2026-03-10T11:00:00Z",
+        }),
+        messageLog({
+          agent_id: "planner",
+          from: null,
+          to: "planner",
+          content: "talk to dadi",
+          seq: 2,
+          at: "2026-03-10T11:00:02Z",
+        }),
+        messageLog({
+          agent_id: "planner",
+          from: "planner",
+          to: null,
+          content: "on it",
+          seq: 3,
+          at: "2026-03-10T11:00:03Z",
+        }),
+      ],
+      { root: "Dadi", planner: "Planner" },
+      "root",
+    );
+    const snap = getChatState();
+    expect(snap.threads.root?.map((m) => m.content)).toEqual(["talk to dadi"]);
+    expect(snap.threads.planner?.map((m) => m.content)).toEqual([
+      "talk to dadi",
+      "on it",
+    ]);
+    expect(snap.conversations.map((c) => c.agent_id)).toEqual(["planner"]);
+    expect(snap.conversations[0]!.last_message).toBe("on it");
+    clearLiveChat();
+  });
+
+  it("does not drop a live message when a historical row reuses the same seq", () => {
+    clearLiveChat();
+    ingestLiveMessage("planner", {
+      seq: 1,
+      from_user: true,
+      content: "new process",
+      at: "2026-03-10T15:00:00Z",
+    });
+    hydrateFromLogs(
+      [
+        messageLog({
+          agent_id: "planner",
+          from: null,
+          to: "planner",
+          content: "old process",
+          seq: 1,
+          at: "2026-03-01T00:00:00Z",
+        }),
+      ],
+      { planner: "Planner" },
+      "root",
+    );
+    const contents = getChatState().threads.planner?.map((m) => m.content);
+    expect(contents).toEqual(["old process", "new process"]);
+    clearLiveChat();
+  });
+
+  it("keeps a resolved agent name when a later upsert only has the id", () => {
+    clearLiveChat();
+    upsertConversation({
+      agent_id: "planner",
+      agent_name: "Planner",
+      last_message: "hi",
+      last_at: "2026-03-10T11:00:00Z",
+      from_user: true,
+    });
+    upsertConversation({
+      agent_id: "planner",
+      agent_name: "planner",
+      last_message: "later",
+      last_at: "2026-03-10T12:00:00Z",
+      from_user: false,
+    });
+    expect(getChatState().conversations[0]!.agent_name).toBe("Planner");
+    expect(getChatState().conversations[0]!.last_message).toBe("later");
+    clearLiveChat();
   });
 });
 
@@ -201,6 +429,22 @@ describe("mesh constants", () => {
     expect(NAS).toBe("http://nas.dadi");
     expect(CHAAVI).toBe("http://chaavi.dadi");
     expect(GHAR).toBe("http://ghar.dadi");
+  });
+});
+
+describe("nas log services", () => {
+  it("calls GET /logs/services", async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    const transport = {
+      request: async (opts: { path: string; method: string }) => {
+        calls.push({ path: opts.path, method: opts.method });
+        return { services: ["chaavi", "nas"] };
+      },
+    } as unknown as Transport;
+    const client = createNasClient(transport, NAS);
+    const got = await client.listLogServices();
+    expect(got.services).toEqual(["chaavi", "nas"]);
+    expect(calls).toEqual([{ path: "/logs/services", method: "GET" }]);
   });
 });
 

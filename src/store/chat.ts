@@ -1,4 +1,4 @@
-import type { MessageAttachment } from "../shared/api/types";
+import type { LogRecord, MessageAttachment } from "../shared/api/types";
 
 export type { MessageAttachment };
 
@@ -25,6 +25,8 @@ export type ChatMessage = {
    * (e.g. with `[Image: …]` placeholders before describe-patch).
    */
   outboundText?: string;
+  /** Loaded from agent_logs; skip typewriter and never collide with live seqs. */
+  historical?: boolean;
 };
 
 export type Conversation = {
@@ -35,39 +37,20 @@ export type Conversation = {
   from_user: boolean;
 };
 
-/**
- * One optimistic outbound to root while routing. Survives list back-nav.
- * Cleared when any routed copy lands on a thread agent (or dismiss / timeout).
- */
-export type PendingNewChatMessage = {
-  /** Negative temp id, same space as thread optimistic seqs. */
-  seq: number;
-  content: string;
-  at: string;
-  pending?: boolean;
-  failed?: boolean;
-  /** Local-only while Dadi is busy; not POSTed until flush. */
-  queued?: boolean;
-  attachments?: MessageAttachment[];
-  outboundText?: string;
-};
+export type ChatOpen = { kind: "list" } | { kind: "agent"; agentId: string };
 
-/** Queued user→Dadi messages awaiting route_message onto a thread. */
-export type PendingNewChat = {
-  messages: PendingNewChatMessage[];
-};
-
-export type ChatOpen =
-  | { kind: "list" }
-  | { kind: "provisional" }
-  | { kind: "agent"; agentId: string };
+export type HistoryStatus = "idle" | "loading" | "ready" | "error";
 
 type ChatState = {
-  /** User-thread messages keyed by agent id. */
+  /** User-thread messages keyed by agent id, including root (Dadi). */
   threads: Record<string, ChatMessage[]>;
+  /** Thread agents the human has talked to. Excludes root — Dadi is pinned separately. */
   conversations: Conversation[];
-  pendingNewChat: PendingNewChat | null;
   open: ChatOpen;
+  /** Root agent id once known; Talk to Dadi opens this thread. */
+  rootId: string | null;
+  historyStatus: HistoryStatus;
+  historyError: string | null;
 };
 
 type Listener = (state: ChatState) => void;
@@ -75,8 +58,10 @@ type Listener = (state: ChatState) => void;
 let state: ChatState = {
   threads: {},
   conversations: [],
-  pendingNewChat: null,
   open: { kind: "list" },
+  rootId: null,
+  historyStatus: "idle",
+  historyError: null,
 };
 const listeners = new Set<Listener>();
 let nextTempSeq = -1;
@@ -87,7 +72,7 @@ function emit(): void {
   }
 }
 
-/** Confirmed first; then in-flight pending; queued drafts last (oldest first). */
+/** Confirmed first (by time, then seq); then in-flight pending; queued drafts last. */
 function sortMessages(list: ChatMessage[]): ChatMessage[] {
   return [...list].sort((a, b) => {
     const rank = (m: ChatMessage) => {
@@ -103,6 +88,13 @@ function sortMessages(list: ChatMessage[]): ChatMessage[] {
     const rb = rank(b);
     if (ra !== rb) {
       return ra - rb;
+    }
+    if (ra === 0) {
+      const byTime = a.at.localeCompare(b.at);
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return a.seq - b.seq;
     }
     if (a.seq < 0 && b.seq < 0) {
       return b.seq - a.seq;
@@ -126,7 +118,21 @@ function setThread(agentId: string, messages: ChatMessage[]): void {
   };
 }
 
-/** Snapshot of chat store state (threads, list, provisional, open view). */
+function hasLiveSeq(list: ChatMessage[], seq: number): boolean {
+  return list.some((m) => !m.historical && m.seq === seq);
+}
+
+function hasHistoricalTwin(list: ChatMessage[], msg: ChatMessage): boolean {
+  return list.some(
+    (m) =>
+      m.historical === true &&
+      m.seq === msg.seq &&
+      m.at === msg.at &&
+      m.content === msg.content,
+  );
+}
+
+/** Snapshot of chat store state (threads, list, open view, history). */
 export function getChatState(): ChatState {
   return state;
 }
@@ -148,19 +154,7 @@ export function openList(): void {
   emit();
 }
 
-/** Show the provisional new-chat view when one exists. */
-export function openProvisional(): void {
-  if (!state.pendingNewChat) {
-    return;
-  }
-  if (state.open.kind === "provisional") {
-    return;
-  }
-  state = { ...state, open: { kind: "provisional" } };
-  emit();
-}
-
-/** Open a user-thread for the given agent. */
+/** Open a user-thread for the given agent (root = Talk to Dadi). */
 export function openAgent(agentId: string): void {
   if (state.open.kind === "agent" && state.open.agentId === agentId) {
     return;
@@ -169,31 +163,78 @@ export function openAgent(agentId: string): void {
   emit();
 }
 
+/** Open the Dadi (root) thread when the root id is known. */
+export function openDadi(): boolean {
+  if (!state.rootId) {
+    return false;
+  }
+  openAgent(state.rootId);
+  return true;
+}
+
+/** Remember the root agent id used by Talk to Dadi. */
+export function setChatRoot(rootId: string | null): void {
+  if (state.rootId === rootId) {
+    return;
+  }
+  state = { ...state, rootId };
+  emit();
+}
+
+/** Record history fetch progress. Failed loads keep any threads already in memory. */
+export function setHistoryState(
+  status: HistoryStatus,
+  error: string | null = null,
+): void {
+  if (state.historyStatus === status && state.historyError === error) {
+    return;
+  }
+  state = { ...state, historyStatus: status, historyError: error };
+  emit();
+}
+
 /** Drop live chat when the mesh drops — transcript dies with Dimaag; don't ghost it. */
 export function clearLiveChat(): void {
   state = {
     threads: {},
     conversations: [],
-    pendingNewChat: null,
     open: { kind: "list" },
+    rootId: state.rootId,
+    historyStatus: "idle",
+    historyError: null,
   };
   emit();
 }
 
-/** Insert or refresh a conversation summary; list stays newest-first. */
+/** Insert or refresh a conversation summary if `last_at` is newer than what we have. */
 export function upsertConversation(conv: Conversation): void {
+  const existing = state.conversations.find((c) => c.agent_id === conv.agent_id);
+  if (existing && existing.last_at > conv.last_at) {
+    return;
+  }
   const rest = state.conversations.filter((c) => c.agent_id !== conv.agent_id);
+  const next: Conversation = {
+    ...conv,
+    agent_name:
+      conv.agent_name !== conv.agent_id
+        ? conv.agent_name
+        : (existing?.agent_name ?? conv.agent_name),
+  };
   state = {
     ...state,
-    conversations: sortConversations([conv, ...rest]),
+    conversations: sortConversations([next, ...rest]),
   };
   emit();
 }
 
-/** Append if seq is new; no-op on duplicate. */
+/** Append if this live/optimistic seq is new; no-op on duplicate live seq. */
 export function appendMessage(agentId: string, msg: ChatMessage): void {
   const current = threadOf(agentId);
-  if (current.some((m) => m.seq === msg.seq)) {
+  if (msg.historical) {
+    if (hasHistoricalTwin(current, msg)) {
+      return;
+    }
+  } else if (hasLiveSeq(current, msg.seq)) {
     return;
   }
   setThread(agentId, sortMessages([...current, msg]));
@@ -257,7 +298,7 @@ export function resolveOptimistic(
   content?: string,
 ): void {
   const current = threadOf(agentId);
-  if (current.some((m) => m.seq === realSeq)) {
+  if (hasLiveSeq(current, realSeq)) {
     setThread(
       agentId,
       sortMessages(current.filter((m) => m.seq !== tempSeq)),
@@ -324,172 +365,6 @@ export function listQueuedThread(agentId: string): ChatMessage[] {
   return threadOf(agentId).filter((m) => m.queued && m.from_user);
 }
 
-/** Append a message to Dadi; `queued` stays local-only until flush. */
-export function enqueuePendingNewChat(
-  content: string,
-  opts?: {
-    queued?: boolean;
-    attachments?: MessageAttachment[];
-    outboundText?: string;
-  },
-): number {
-  const queued = Boolean(opts?.queued);
-  const msg: PendingNewChatMessage = {
-    seq: nextPendingSeq(),
-    content,
-    at: new Date().toISOString(),
-    pending: true,
-    queued: queued || undefined,
-    attachments: opts?.attachments,
-    outboundText: opts?.outboundText,
-  };
-  const existing = state.pendingNewChat;
-  state = {
-    ...state,
-    pendingNewChat: {
-      messages: existing ? [...existing.messages, msg] : [msg],
-    },
-    open: { kind: "provisional" },
-  };
-  emit();
-  return msg.seq;
-}
-
-/** Drop the provisional new-chat session; return to list if it was open. */
-export function clearPendingNewChat(): void {
-  if (state.pendingNewChat === null) {
-    return;
-  }
-  const open: ChatOpen =
-    state.open.kind === "provisional" ? { kind: "list" } : state.open;
-  state = { ...state, pendingNewChat: null, open };
-  emit();
-}
-
-/**
- * Mark every still-pending provisional message failed (timeout / hard fail).
- * Queued drafts were never POSTed and stay queued.
- */
-export function markPendingNewChatFailed(): void {
-  const pending = state.pendingNewChat;
-  if (!pending) {
-    return;
-  }
-  const messages = pending.messages.map((m) =>
-    m.failed || m.queued ? m : { ...m, pending: false, failed: true },
-  );
-  if (messages.every((m, i) => m === pending.messages[i])) {
-    return;
-  }
-  state = { ...state, pendingNewChat: { messages } };
-  emit();
-}
-
-/** Mark one provisional message failed by seq. */
-export function markPendingNewChatMessageFailed(seq: number): void {
-  const pending = state.pendingNewChat;
-  if (!pending) {
-    return;
-  }
-  state = {
-    ...state,
-    pendingNewChat: {
-      messages: pending.messages.map((m) =>
-        m.seq === seq ? { ...m, pending: false, failed: true } : m,
-      ),
-    },
-  };
-  emit();
-}
-
-/** Clear failed/queued on one provisional message before a retry POST. */
-export function markPendingNewChatMessagePending(seq: number): void {
-  const pending = state.pendingNewChat;
-  if (!pending) {
-    return;
-  }
-  state = {
-    ...state,
-    pendingNewChat: {
-      messages: pending.messages.map((m) =>
-        m.seq === seq
-          ? { ...m, pending: true, failed: false, queued: undefined }
-          : m,
-      ),
-    },
-  };
-  emit();
-}
-
-/** Drop one provisional message (cancel a local queue draft). */
-export function removePendingNewChatMessage(seq: number): void {
-  const pending = state.pendingNewChat;
-  if (!pending) {
-    return;
-  }
-  const messages = pending.messages.filter((m) => m.seq !== seq);
-  if (messages.length === pending.messages.length) {
-    return;
-  }
-  if (messages.length === 0) {
-    const open: ChatOpen =
-      state.open.kind === "provisional" ? { kind: "list" } : state.open;
-    state = { ...state, pendingNewChat: null, open };
-    emit();
-    return;
-  }
-  state = { ...state, pendingNewChat: { messages } };
-  emit();
-}
-
-/** Queued provisional messages, oldest first. */
-export function listQueuedPendingNewChat(): PendingNewChatMessage[] {
-  return (state.pendingNewChat?.messages ?? []).filter((m) => m.queued);
-}
-
-function nextPendingSeq(): number {
-  const seq = nextTempSeq;
-  nextTempSeq -= 1;
-  return seq;
-}
-
-/**
- * When any user-thread activity lands on a non-root agent while a provisional
- * chat is open, attach it. Exact content match is preferred by callers but not
- * required — root may paraphrase, or the first signal may be the thread's reply.
- * Local queue drafts move onto that agent so they can still be cancelled or flushed.
- */
-export function tryBindPendingNewChat(agentId: string): boolean {
-  const pending = state.pendingNewChat;
-  if (!pending) {
-    return false;
-  }
-  if (pending.messages.every((m) => m.failed)) {
-    return false;
-  }
-  const carry = pending.messages.filter((m) => m.queued && !m.failed);
-  const open: ChatOpen =
-    state.open.kind === "provisional"
-      ? { kind: "agent", agentId }
-      : state.open;
-  state = { ...state, pendingNewChat: null, open };
-  if (carry.length > 0) {
-    const extras: ChatMessage[] = carry.map((m) => ({
-      seq: m.seq,
-      from_user: true,
-      content: m.content,
-      at: m.at,
-      pending: true,
-      queued: true,
-      attachments: m.attachments,
-      outboundText: m.outboundText,
-    }));
-    setThread(agentId, sortMessages([...threadOf(agentId), ...extras]));
-  }
-  emit();
-  return true;
-}
-
 /**
  * User-thread filter: the human is null on one side.
  * Agent↔agent traffic stays out of the chat sidebar.
@@ -502,13 +377,159 @@ export function isUserThreadMessage(
 }
 
 /**
+ * Conversation key for a user-thread message: the non-null agent.
+ * User → agent uses the recipient; agent → user uses the sender.
+ */
+export function threadAgentId(
+  fromAgentId: string | null,
+  toAgentId: string | null,
+): string | null {
+  if (fromAgentId === null && toAgentId !== null) {
+    return toAgentId;
+  }
+  if (toAgentId === null && fromAgentId !== null) {
+    return fromAgentId;
+  }
+  return null;
+}
+
+/**
+ * Merge a durable agent_logs message into a thread.
+ * Historical rows never collide with live seqs from a later Dimaag process.
+ * Returns whether the thread changed. Pass `silent` to batch emits (hydrate).
+ */
+export function importHistoryMessage(
+  agentId: string,
+  msg: ChatMessage,
+  silent = false,
+): boolean {
+  const current = threadOf(agentId);
+  if (hasHistoricalTwin(current, msg)) {
+    return false;
+  }
+  if (
+    current.some(
+      (m) =>
+        !m.historical &&
+        m.seq >= 0 &&
+        !m.pending &&
+        m.seq === msg.seq &&
+        m.content === msg.content &&
+        m.from_user === msg.from_user,
+    )
+  ) {
+    return false;
+  }
+  setThread(agentId, sortMessages([...current, { ...msg, historical: true }]));
+  if (!silent) {
+    emit();
+  }
+  return true;
+}
+
+/**
+ * Parse a Dimaag message log into a user-thread row.
+ * Returns null for agent↔agent traffic or a payload missing seq/content.
+ */
+export function userThreadFromLog(log: LogRecord): {
+  agent_id: string;
+  message: ChatMessage;
+} | null {
+  if (log.event !== "message") {
+    return null;
+  }
+  const from = log.payload.from_agent_id;
+  const to = log.payload.to_agent_id;
+  const content = log.payload.content;
+  const seq = log.payload.seq;
+  if (from !== null && typeof from !== "string") {
+    return null;
+  }
+  if (to !== null && typeof to !== "string") {
+    return null;
+  }
+  if (typeof content !== "string" || typeof seq !== "number" || !Number.isInteger(seq)) {
+    return null;
+  }
+  if (!isUserThreadMessage(from, to)) {
+    return null;
+  }
+  const agentId = threadAgentId(from, to);
+  if (!agentId) {
+    return null;
+  }
+  return {
+    agent_id: agentId,
+    message: {
+      seq,
+      from_user: from === null,
+      content,
+      at: log.created_at,
+      historical: true,
+    },
+  };
+}
+
+/**
+ * Load user-thread history from message logs. Root (Dadi) fills `threads[rootId]`
+ * but is kept out of the conversation list — Talk to Dadi is the entry.
+ */
+export function hydrateFromLogs(
+  logs: LogRecord[],
+  names: Record<string, string>,
+  rootId: string | null,
+): void {
+  let changed = false;
+  for (const log of logs) {
+    const parsed = userThreadFromLog(log);
+    if (!parsed) {
+      continue;
+    }
+    if (importHistoryMessage(parsed.agent_id, parsed.message, true)) {
+      changed = true;
+    }
+    if (rootId !== null && parsed.agent_id === rootId) {
+      continue;
+    }
+    const existing = state.conversations.find(
+      (c) => c.agent_id === parsed.agent_id,
+    );
+    if (existing && existing.last_at > parsed.message.at) {
+      continue;
+    }
+    const rest = state.conversations.filter(
+      (c) => c.agent_id !== parsed.agent_id,
+    );
+    const existingName = existing?.agent_name;
+    const named = names[parsed.agent_id];
+    state = {
+      ...state,
+      conversations: sortConversations([
+        {
+          agent_id: parsed.agent_id,
+          agent_name: named ?? existingName ?? parsed.agent_id,
+          last_message: parsed.message.content,
+          last_at: parsed.message.at,
+          from_user: parsed.message.from_user,
+        },
+        ...rest,
+      ]),
+    };
+    changed = true;
+  }
+  if (changed) {
+    emit();
+  }
+}
+
+/**
  * If a pending optimistic row has the same content, resolve it to realSeq.
  * Otherwise, if exactly one in-flight (non-queued) user pending exists — typical
  * after image describe rewrites content — resolve that. Else append.
  */
 export function ingestLiveMessage(agentId: string, msg: ChatMessage): void {
   const current = threadOf(agentId);
-  if (current.some((m) => m.seq === msg.seq)) {
+  if (hasLiveSeq(current, msg.seq)) {
     return;
   }
   if (msg.from_user) {

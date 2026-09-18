@@ -1,128 +1,135 @@
 import { motion } from "motion/react";
 import { EASE, SLOW_S } from "../../../shared/lib/ux/motion";
-import type { Conversation } from "../../../store/chat";
+import type { Conversation, HistoryStatus } from "../../../store/chat";
 import { ActivityPulse } from "../ActivityPulse";
-import { formatRelative, truncateOneLine } from "../format";
+import { groupConversations, truncateOneLine } from "../format";
 
 export interface ConversationListProps {
-  /** Conversations with the user (excludes root). */
+  /** Thread-agent conversations (excludes Dadi). */
   conversations: Conversation[];
-  /** Provisional new-chat row while awaiting route. */
-  pendingNewChat: {
-    messages: Array<{
-      at: string;
-      content: string;
-      failed?: boolean;
-      queued?: boolean;
-    }>;
-  } | null;
-  /** True while root is still routing the provisional chat. */
-  awaitingRoute: boolean;
-  onOpenProvisional: () => void;
+  /** Highlighted thread, if any. */
+  selectedAgentId: string | null;
+  historyStatus: HistoryStatus;
+  historyError: string | null;
   onOpenAgent: (agentId: string) => void;
   onDismissKeyboard: () => void;
-  /** Bottom padding so content clears the floating composer. */
-  composerPad: number;
+  /** Pinned Talk to Dadi row at the bottom of the ChatGPT-style list. */
+  dadi: {
+    available: boolean;
+    selected: boolean;
+    preview: string | null;
+    busy: boolean;
+    onOpen: () => void;
+  };
 }
 
-/** Conversation list pane: provisional row, empty state, and agent threads. */
+/** Conversation list pane: grouped threads, empty/error states, Talk to Dadi. */
 export function ConversationList({
   conversations,
-  pendingNewChat,
-  awaitingRoute,
-  onOpenProvisional,
+  selectedAgentId,
+  historyStatus,
+  historyError,
   onOpenAgent,
   onDismissKeyboard,
-  composerPad,
+  dadi,
 }: ConversationListProps) {
+  const groups = groupConversations(conversations);
+  const loading = historyStatus === "loading" && conversations.length === 0;
+  const failed = historyStatus === "error" && conversations.length === 0;
+
   return (
     <motion.div
       key="list"
       onClick={onDismissKeyboard}
-      className="absolute inset-0 overflow-y-auto px-2 py-2"
-      style={{ paddingBottom: composerPad }}
-      initial={{ opacity: 0, x: -18 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 14 }}
+      className="absolute inset-0 flex flex-col"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
-      {pendingNewChat ? (
-        <motion.button
-          type="button"
-          layout
-          onClick={() => onOpenProvisional()}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: SLOW_S, ease: EASE }}
-          className="mb-1 flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
-        >
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[13px] text-ink">New chat</span>
-            <span className="shrink-0 text-[11px] text-ink-ghost">
-              {formatRelative(
-                pendingNewChat.messages[pendingNewChat.messages.length - 1]!.at,
-              )}
-            </span>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
+        {failed ? (
+          <div className="flex h-full flex-col items-center justify-center px-6">
+            <p className="text-center text-[13px] text-ink-muted">
+              Couldn&apos;t load conversations
+            </p>
+            <p className="mt-1.5 max-w-[16rem] text-center text-[12px] leading-relaxed text-ink-ghost">
+              {historyError}
+            </p>
           </div>
-          <p
-            className="truncate text-[12px] text-ink-ghost"
-            style={{
-              opacity: pendingNewChat.messages.every((m) => m.failed) ? 0.7 : 1,
-            }}
-          >
-            {truncateOneLine(
-              pendingNewChat.messages[pendingNewChat.messages.length - 1]!
-                .content,
-            )}
-          </p>
-          {awaitingRoute || pendingNewChat.messages.some((m) => m.queued) ? (
-            <div className="mt-1.5">
-              <ActivityPulse />
-            </div>
-          ) : (
-            <span className="mt-1 text-[11px] text-sage-text">No reply yet</span>
-          )}
-        </motion.button>
-      ) : null}
-
-      {conversations.length === 0 && !pendingNewChat ? (
-        <div className="flex min-h-[12rem] flex-col items-center justify-center px-6">
-          <p className="text-center text-[13px] text-ink-ghost">
-            No conversations
-          </p>
-        </div>
-      ) : (
-        <div className="flex flex-col">
-          {conversations.map((conv, i) => (
-            <motion.button
-              key={conv.agent_id}
-              type="button"
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{
-                duration: SLOW_S,
-                ease: EASE,
-                delay: Math.min(i * 0.04, 0.24),
-              }}
-              onClick={() => onOpenAgent(conv.agent_id)}
-              className="flex w-full flex-col gap-0.5 rounded-[var(--radius)] px-3 py-2.5 text-left transition-colors duration-slow ease-hath hover:bg-sage-active/40"
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate text-[13px] text-ink">
-                  {conv.agent_name}
-                </span>
-                <span className="shrink-0 text-[11px] text-ink-ghost">
-                  {formatRelative(conv.last_at)}
-                </span>
+        ) : loading ? (
+          <div className="flex h-full items-center justify-center">
+            <ActivityPulse />
+          </div>
+        ) : conversations.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center px-6">
+            <p className="text-center text-[13px] text-ink-ghost">
+              No conversations
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col pb-2">
+            {groups.map((group) => (
+              <div key={group.bucket} className="mt-1 first:mt-0">
+                <p className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-ink-ghost">
+                  {group.bucket}
+                </p>
+                {group.items.map((conv) => {
+                  const selected = conv.agent_id === selectedAgentId;
+                  return (
+                    <button
+                      key={conv.agent_id}
+                      type="button"
+                      onClick={() => onOpenAgent(conv.agent_id)}
+                      className={`flex w-full flex-col gap-0.5 rounded-[10px] px-2.5 py-2 text-left transition-colors duration-fast ease-hath ${
+                        selected
+                          ? "bg-(--chat-active)"
+                          : "hover:bg-(--chat-hover)"
+                      }`}
+                    >
+                      <span className="truncate text-[13.5px] font-medium text-ink">
+                        {conv.agent_name}
+                      </span>
+                      <p className="truncate text-[12px] text-ink-ghost">
+                        {conv.from_user ? "You: " : ""}
+                        {truncateOneLine(conv.last_message, 56)}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
-              <p className="truncate text-[12px] text-ink-ghost">
-                {conv.from_user ? "You: " : ""}
-                {truncateOneLine(conv.last_message)}
-              </p>
-            </motion.button>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0 border-t border-(--chat-edge) px-2 py-2">
+        <button
+          type="button"
+          onClick={dadi.onOpen}
+          disabled={!dadi.available}
+          className={`flex w-full items-center gap-3 rounded-[10px] px-2.5 py-2.5 text-left transition-colors duration-fast ease-hath disabled:opacity-50 ${
+            dadi.selected
+              ? "bg-(--chat-active)"
+              : "hover:bg-(--chat-hover)"
+          }`}
+        >
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sage-fill font-gujarati text-[15px] leading-none text-sage-deep">
+            દ
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13.5px] font-medium text-ink">
+              Talk to Dadi
+            </span>
+            <span className="block truncate text-[12px] text-ink-ghost">
+              {dadi.preview
+                ? truncateOneLine(dadi.preview, 48)
+                : "Route a new conversation"}
+            </span>
+          </span>
+          {dadi.busy ? <ActivityPulse /> : null}
+        </button>
+      </div>
     </motion.div>
   );
 }

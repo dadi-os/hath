@@ -7,15 +7,6 @@ import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 
-export const LOG_SERVICES = [
-  "dimaag",
-  "yaad",
-  "dwar",
-  "nas",
-  "hath",
-  "caddy",
-] as const;
-
 export type RangePreset = "1h" | "6h" | "24h";
 
 export type LogExplorerProps = {
@@ -44,7 +35,7 @@ export function formatLogTime(iso: string): string {
 function levelClass(level: string): string {
   const l = level.toLowerCase();
   if (l === "error") {
-    return "text-[#9a5a4e]";
+    return "text-error";
   }
   if (l === "warn") {
     return "text-sage-deep";
@@ -264,7 +255,7 @@ function SeverityGlider({
 }
 
 /**
- * Nas GET /logs explorer: modules, severity + range, then search.
+ * Nas GET /logs explorer: live service chips, severity + range, then search.
  */
 export function LogExplorer({ className }: LogExplorerProps) {
   const { state: connection } = useConnection();
@@ -278,6 +269,13 @@ export function LogExplorer({ className }: LogExplorerProps) {
 
   const servicesParam =
     selected.size > 0 ? [...selected].sort().join(",") : undefined;
+
+  const servicesQuery = useQuery({
+    queryKey: ["nas", "logs", "services"],
+    queryFn: () => nas.listLogServices(),
+    enabled: connected,
+    refetchInterval: POLL_MS,
+  });
 
   const logsQuery = useQuery({
     queryKey: ["nas", "logs", servicesParam ?? "", level, q, range],
@@ -327,23 +325,33 @@ export function LogExplorer({ className }: LogExplorerProps) {
   return (
     <div className={`flex h-full min-h-0 flex-col gap-3 ${className ?? ""}`}>
       <div className="flex flex-wrap items-center gap-2">
-        {LOG_SERVICES.map((name) => {
-          const on = selected.has(name);
-          return (
-            <button
-              key={name}
-              type="button"
-              onClick={() => toggleService(name)}
-              className={`rounded-[6px] border border-dashed px-2 py-1 text-[11px] tracking-wide transition-colors duration-slow ease-hath ${
-                on
-                  ? "border-sage bg-sage-active text-sage-deep"
-                  : "border-rule text-ink-ghost hover:border-sage-line"
-              }`}
-            >
-              {name}
-            </button>
-          );
-        })}
+        {servicesQuery.isError ? (
+          <p className="text-[13px] text-ink-muted">
+            {servicesQuery.error instanceof Error
+              ? servicesQuery.error.message
+              : String(servicesQuery.error)}
+          </p>
+        ) : servicesQuery.isLoading || !servicesQuery.data ? (
+          <p className="text-[13px] text-ink-ghost">Loading services…</p>
+        ) : (
+          servicesQuery.data.services.map((name) => {
+            const on = selected.has(name);
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => toggleService(name)}
+                className={`rounded-[6px] border border-dashed px-2 py-1 text-[11px] tracking-wide transition-colors duration-slow ease-hath ${
+                  on
+                    ? "border-sage bg-sage-active text-sage-deep"
+                    : "border-rule text-ink-ghost hover:border-sage-line"
+                }`}
+              >
+                {name}
+              </button>
+            );
+          })
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -495,10 +503,10 @@ export function ErrorLogCards({ className, limit = 8 }: ErrorLogCardsProps) {
                   ease: EASE,
                   delay: Math.min(i * 0.03, 0.2),
                 }}
-                className="min-w-0 overflow-hidden rounded-[var(--radius)] border border-dashed border-[#c4a49a] bg-[#f7f0ed]/60 px-3 py-2.5"
+                className="min-w-0 overflow-hidden rounded-[var(--radius)] border border-dashed border-error-line bg-error-fill px-3 py-2.5"
               >
                 <div className="flex min-w-0 items-baseline justify-between gap-2">
-                  <span className="min-w-0 truncate text-[11px] font-medium tracking-wide text-[#9a5a4e]">
+                  <span className="min-w-0 truncate text-[11px] font-medium tracking-wide text-error">
                     {entry.service || "unknown"}
                     {code != null ? (
                       <span className="ml-1.5 font-normal text-ink-ghost">
@@ -510,7 +518,7 @@ export function ErrorLogCards({ className, limit = 8 }: ErrorLogCardsProps) {
                     {formatCardTime(entry.time)}
                   </span>
                 </div>
-                <p className="mt-1.5 min-w-0 overflow-hidden text-[13px] leading-snug text-ink [overflow-wrap:anywhere] line-clamp-3">
+                <p className="mt-1.5 min-w-0 overflow-hidden text-[13px] leading-snug tracking-normal text-ink [overflow-wrap:break-word] line-clamp-3">
                   {title}
                 </p>
                 {context ? (

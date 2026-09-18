@@ -76,6 +76,15 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** GET /logs/services — Loki service labels unioned with health-checked modules. */
+    listLogServices(): Promise<{ services: string[] }> {
+      return transport.request({
+        baseUrl,
+        path: "/logs/services",
+        method: "GET",
+      });
+    },
+
     /** GET /logs — Loki query via Nas. */
     getLogs(params?: NasLogsParams): Promise<{ entries: NasLogEntry[] }> {
       const qs = new URLSearchParams();

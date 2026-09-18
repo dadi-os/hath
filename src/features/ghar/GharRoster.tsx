@@ -105,7 +105,7 @@ export function GharRoster({ mode, className }: GharRosterProps) {
       } ${className ?? ""}`}
     >
       {toggle.isError ? (
-        <p className="mb-2 px-3 text-[12px] text-[#9a5a4e]">
+        <p className="mb-2 px-3 text-[12px] text-error">
           {toggle.error instanceof Error
             ? toggle.error.message
             : String(toggle.error)}

@@ -1,22 +1,22 @@
 import { useEffect, useState } from "react";
 
-/** Seqs that already finished a typewriter reveal this session. */
-const revealedSeqs = new Set<number>();
-
 /**
- * Reveal `text` character-by-character once per message seq.
- * Skips when the seq already revealed, reduced-motion is on, or text is empty.
+ * Reveal `text` character-by-character while `active` (an incoming agent row).
+ * Already-open threads, history, reduced motion, and empty text show immediately.
  */
-export function useRevealText(seq: number, text: string): {
+export function useRevealText(
+  seq: number,
+  text: string,
+  active: boolean,
+): {
   visible: string;
   done: boolean;
 } {
-  const already = revealedSeqs.has(seq);
-  const [visible, setVisible] = useState(already ? text : "");
-  const [done, setDone] = useState(already || text.length === 0);
+  const [visible, setVisible] = useState(active ? "" : text);
+  const [done, setDone] = useState(!active || text.length === 0);
 
   useEffect(() => {
-    if (revealedSeqs.has(seq)) {
+    if (!active || text.length === 0) {
       setVisible(text);
       setDone(true);
       return;
@@ -25,8 +25,7 @@ export function useRevealText(seq: number, text: string): {
     const reduced =
       typeof window !== "undefined" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced || text.length === 0) {
-      revealedSeqs.add(seq);
+    if (reduced) {
       setVisible(text);
       setDone(true);
       return;
@@ -39,12 +38,10 @@ export function useRevealText(seq: number, text: string): {
 
     const tick = () => {
       const remaining = text.length - index;
-      const step =
-        remaining > 400 ? 4 : remaining > 120 ? 2 : 1;
+      const step = remaining > 400 ? 4 : remaining > 120 ? 2 : 1;
       index = Math.min(text.length, index + step);
       setVisible(text.slice(0, index));
       if (index >= text.length) {
-        revealedSeqs.add(seq);
         setDone(true);
         return;
       }
@@ -55,7 +52,7 @@ export function useRevealText(seq: number, text: string): {
     return () => {
       window.clearTimeout(frame);
     };
-  }, [seq, text]);
+  }, [seq, text, active]);
 
   return { visible, done };
 }

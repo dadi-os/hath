@@ -12,7 +12,7 @@ import {
   IconPower,
 } from "../shared/components/IconButton";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
-import { getChatState, openList, subscribeChat } from "../store/chat";
+import { getChatState, openDadi, subscribeChat } from "../store/chat";
 import { disconnectTransport } from "../store/connection";
 import { usingTsnet } from "../shared/api";
 
@@ -32,11 +32,11 @@ export function MobileChatShell() {
     chat.open.kind === "agent" ? chat.open.agentId : null;
   const title =
     openAgentId != null
-      ? (chat.conversations.find((c) => c.agent_id === openAgentId)
-          ?.agent_name ?? "Chat")
-      : chat.open.kind === "provisional"
-        ? "New chat"
-        : "દાદી";
+      ? openAgentId === chat.rootId
+        ? "Dadi"
+        : (chat.conversations.find((c) => c.agent_id === openAgentId)
+            ?.agent_name ?? "Chat")
+      : "દાદી";
 
   const statusLabel =
     state === "connected"
@@ -46,7 +46,7 @@ export function MobileChatShell() {
         : "OFFLINE";
 
   const startNew = () => {
-    openList();
+    openDadi();
     setDrawerOpen(false);
     setSessionKey((k) => k + 1);
   };

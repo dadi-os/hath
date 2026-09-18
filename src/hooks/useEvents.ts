@@ -4,12 +4,16 @@ import { DIMAAG_URL, dimaag, transport } from "../shared/api";
 import type { AgentRecord, DimaagEvent } from "../shared/api/types";
 import { subscribeConnection } from "../store/connection";
 import {
+  hydrateFromLogs,
   ingestLiveMessage,
   isUserThreadMessage,
-  tryBindPendingNewChat,
+  setChatRoot,
+  setHistoryState,
   upsertConversation,
 } from "../store/chat";
 import { seedRunningFromAgents, setLaneRunning } from "../store/running";
+import { logLine } from "../shared/lib/platform/log";
+import { HISTORY_LOG_LIMIT } from "../chrome/chatSidebar/constants";
 
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
@@ -62,10 +66,34 @@ async function refetchAgents(queryClient: QueryClient): Promise<void> {
   queryClient.setQueryData(AGENTS_QUERY_KEY, agents);
 }
 
+function agentNames(queryClient: QueryClient): Record<string, string> {
+  const agents = queryClient.getQueryData<AgentRecord[]>(AGENTS_QUERY_KEY) ?? [];
+  return Object.fromEntries(agents.map((a) => [a.id, a.name]));
+}
+
+/** Pull durable user-thread messages from agent_logs into the chat store. */
+async function hydrateHistory(queryClient: QueryClient): Promise<void> {
+  setHistoryState("loading");
+  try {
+    const { logs } = await dimaag.getLogs({
+      event: "message",
+      limit: HISTORY_LOG_LIMIT,
+    });
+    const rootId = rootIdFromCache(queryClient);
+    setChatRoot(rootId);
+    hydrateFromLogs(logs, agentNames(queryClient), rootId);
+    setHistoryState("ready");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    setHistoryState("error", message);
+    logLine("error", message, "history_load_failed");
+  }
+}
+
 /**
  * Subscribe to Dimaag SSE. Reconnects with backoff on drop and refetches
- * GET /agents on reconnect (the stream has no replay).
- * Root agent_id messages are routing noise and stay out of the chat store.
+ * GET /agents plus user-thread message logs on reconnect (the stream has no replay).
+ * Root (Dadi) user-thread messages are first-class — Talk to Dadi is that thread.
  */
 export function useEvents(): void {
   const queryClient = useQueryClient();
@@ -98,11 +126,7 @@ export function useEvents(): void {
       }
 
       if (data.type === "message") {
-        const rootId = rootIdFromCache(queryClient);
-        if (
-          !isUserThreadMessage(data.from_agent_id, data.to_agent_id) ||
-          (rootId !== null && data.agent_id === rootId)
-        ) {
+        if (!isUserThreadMessage(data.from_agent_id, data.to_agent_id)) {
           return;
         }
 
@@ -112,6 +136,10 @@ export function useEvents(): void {
           content: data.content,
           at: data.at,
         });
+        const rootId = rootIdFromCache(queryClient);
+        if (rootId !== null && data.agent_id === rootId) {
+          return;
+        }
         upsertConversation({
           agent_id: data.agent_id,
           agent_name: agentNameFromCache(queryClient, data.agent_id),
@@ -119,7 +147,6 @@ export function useEvents(): void {
           last_at: data.at,
           from_user: data.from_agent_id === null,
         });
-        tryBindPendingNewChat(data.agent_id);
         return;
       }
 
@@ -180,6 +207,7 @@ export function useEvents(): void {
       }
 
       teardownStream();
+      void hydrateHistory(queryClient);
       stopStream = transport.stream({
         baseUrl: DIMAAG_URL,
         path: "/events",

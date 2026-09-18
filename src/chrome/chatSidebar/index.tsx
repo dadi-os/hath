@@ -7,7 +7,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { dimaag, nas } from "../../shared/api";
 import { BrowserFrame } from "../../features/agents/BrowserFrame";
@@ -24,24 +24,19 @@ import {
 import {
   addOptimistic,
   clearLiveChat,
-  enqueuePendingNewChat,
   formatOutboundContent,
   getChatState,
-  listQueuedPendingNewChat,
+  hydrateFromLogs,
   listQueuedThread,
   markFailed,
   markPending,
-  markPendingNewChatFailed,
-  markPendingNewChatMessageFailed,
-  markPendingNewChatMessagePending,
   openAgent,
+  openDadi,
   openList,
-  openProvisional,
   removeMessage,
-  removePendingNewChatMessage,
   resolveOptimistic,
+  setChatRoot,
   subscribeChat,
-  type ChatMessage,
   type MessageAttachment,
 } from "../../store/chat";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
@@ -60,11 +55,11 @@ import { FloatingComposer } from "./composer";
 import {
   COMPOSER_PAD,
   COMPOSER_PAD_WITH_ATTACH,
+  HISTORY_LOG_LIMIT,
   NEAR_BOTTOM_PX,
-  NEW_CHAT_TIMEOUT_MS,
   TEXTAREA_MAX_PX,
 } from "./constants";
-import { pendingToChatMessages, partitionByQueued } from "./lanes";
+import { partitionByQueued } from "./lanes";
 import { ConversationList } from "./list";
 import { ThreadView } from "./thread";
 
@@ -73,8 +68,8 @@ export interface ChatSidebarProps {
   sessionKey: number;
   className?: string;
   /**
-   * `rail` — desktop widget glass panel (list ↔ thread).
-   * `mobile` — ChatGPT-style: main thread + optional list drawer controlled outside.
+   * `rail` — desktop ChatGPT-style dark list ↔ thread.
+   * `mobile` — main thread + optional list drawer controlled outside.
    */
   variant?: "rail" | "mobile";
   /** Mobile: whether the conversation drawer is open. */
@@ -86,9 +81,8 @@ export interface ChatSidebarProps {
 }
 
 /**
- * Conversation list + thread views. Messages arrive only via SSE (and local
- * optimistic/queued rows). No history fetch — Dimaag's transcript is in-memory
- * and dies with the process; agent_logs are not a chat store.
+ * Conversation list + thread views. Live messages arrive via SSE; history is
+ * hydrated from Dimaag `agent_logs` (user ↔ agent, including Talk to Dadi).
  */
 export function ChatSidebar({
   sessionKey,
@@ -99,7 +93,6 @@ export function ChatSidebar({
   onDrawerOpen,
 }: ChatSidebarProps) {
   const { state: connection } = useConnection();
-  const queryClient = useQueryClient();
   const connected = connection === "connected";
   const chat = useSyncExternalStore(subscribeChat, getChatState, getChatState);
   const running = useSyncExternalStore(
@@ -118,7 +111,6 @@ export function ChatSidebar({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const stickToBottomRef = useRef(true);
   const [keyboardInset, setKeyboardInset] = useState(0);
-  const newChatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const rootQuery = useQuery({
     queryKey: ROOT_AGENT_QUERY_KEY,
@@ -126,7 +118,7 @@ export function ChatSidebar({
     enabled: connected,
     staleTime: Infinity,
   });
-  const rootId = rootQuery.data?.id;
+  const rootId = rootQuery.data?.id ?? chat.rootId;
 
   const agentsQuery = useQuery({
     queryKey: AGENTS_QUERY_KEY,
@@ -154,6 +146,12 @@ export function ChatSidebar({
   });
 
   useEffect(() => {
+    if (rootQuery.data?.id) {
+      setChatRoot(rootQuery.data.id);
+    }
+  }, [rootQuery.data?.id]);
+
+  useEffect(() => {
     if (connection === "disconnected") {
       clearLiveChat();
     }
@@ -161,40 +159,27 @@ export function ChatSidebar({
 
   const openAgentId =
     chat.open.kind === "agent" ? chat.open.agentId : null;
-  const viewingProvisional = chat.open.kind === "provisional";
-  const viewingThread = openAgentId !== null || viewingProvisional;
+  const viewingDadi = openAgentId !== null && openAgentId === rootId;
+  const viewingThread = openAgentId !== null;
   const openConversation = chat.conversations.find(
     (c) => c.agent_id === openAgentId,
   );
   const threadMessages = openAgentId
     ? (chat.threads[openAgentId] ?? [])
     : [];
-  const provisionalMessages: ChatMessage[] =
-    viewingProvisional && chat.pendingNewChat
-      ? pendingToChatMessages(chat.pendingNewChat.messages)
-      : [];
 
-  const awaitingRoute =
-    !!chat.pendingNewChat &&
-    chat.pendingNewChat.messages.some((m) => !m.failed && !m.queued);
-  const talkTargetName = openAgentId
-    ? (openConversation?.agent_name ??
-      agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
-      "agent")
-    : (rootQuery.data?.name ?? "Dadi");
+  const talkTargetName = viewingDadi
+    ? (rootQuery.data?.name ?? "Dadi")
+    : openAgentId
+      ? (openConversation?.agent_name ??
+        agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
+        "agent")
+      : (rootQuery.data?.name ?? "Dadi");
 
-  /** Dual-lane: only conversation occupancy blocks/queues; reasoning-busy still allows send. */
-  const laneAgentId =
-    viewingProvisional && awaitingRoute
-      ? (rootId ?? null)
-      : openAgentId;
+  const laneAgentId = openAgentId ?? (!viewingThread ? rootId : null);
   const conversationBusy =
-    awaitingRoute ||
-    (laneAgentId !== null &&
-      running[laneAgentId]?.conversation === true) ||
-    (!viewingThread &&
-      !!rootId &&
-      running[rootId]?.conversation === true);
+    (laneAgentId !== null && running[laneAgentId]?.conversation === true) ||
+    (!viewingThread && !!rootId && running[rootId]?.conversation === true);
   const reasoningBusy =
     laneAgentId !== null
       ? running[laneAgentId]?.reasoning === true
@@ -219,12 +204,7 @@ export function ChatSidebar({
     if (viewingThread && stickToBottomRef.current) {
       scrollToBottom("smooth");
     }
-  }, [
-    threadMessages,
-    provisionalMessages,
-    conversationBusy,
-    viewingThread,
-  ]);
+  }, [threadMessages, conversationBusy, viewingThread]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -253,14 +233,6 @@ export function ChatSidebar({
     el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_PX)}px`;
   }, [draft, chat.open]);
 
-  useEffect(() => {
-    return () => {
-      if (newChatTimerRef.current !== null) {
-        clearTimeout(newChatTimerRef.current);
-      }
-    };
-  }, []);
-
   const draftAttachmentsRef = useRef(draftAttachments);
   draftAttachmentsRef.current = draftAttachments;
   useEffect(() => {
@@ -268,6 +240,37 @@ export function ChatSidebar({
       revokeDraftPreviews(draftAttachmentsRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!connected || !openAgentId) {
+      return;
+    }
+    let cancelled = false;
+    void dimaag
+      .getAgentLogs(openAgentId, { event: "message", limit: HISTORY_LOG_LIMIT })
+      .then(({ logs }) => {
+        if (cancelled) {
+          return;
+        }
+        const names = Object.fromEntries(
+          (agentsQuery.data ?? []).map((a) => [a.id, a.name]),
+        );
+        if (rootQuery.data) {
+          names[rootQuery.data.id] = rootQuery.data.name;
+        }
+        hydrateFromLogs(logs, names, getChatState().rootId);
+      })
+      .catch((err: unknown) => {
+        logLine(
+          "error",
+          err instanceof Error ? err.message : String(err),
+          "thread_history_failed",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connected, openAgentId]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -282,19 +285,6 @@ export function ChatSidebar({
     textareaRef.current?.blur();
   };
 
-  const clearNewChatTimer = () => {
-    if (newChatTimerRef.current !== null) {
-      clearTimeout(newChatTimerRef.current);
-      newChatTimerRef.current = null;
-    }
-  };
-
-  useEffect(() => {
-    if (chat.pendingNewChat === null) {
-      clearNewChatTimer();
-    }
-  }, [chat.pendingNewChat]);
-
   const clearDraftAttachments = () => {
     setDraftAttachments((prev) => {
       revokeDraftPreviews(prev);
@@ -302,108 +292,8 @@ export function ChatSidebar({
     });
   };
 
-  const sendNewChat = async (opts?: {
-    content?: string;
-    attachments?: MessageAttachment[];
-    existingSeq?: number;
-    force?: boolean;
-  }) => {
-    const attachments = opts?.attachments;
-    const trimmed = (opts?.content ?? draft).trim();
-    const display = formatOutboundContent(trimmed, attachments);
-    if (!trimmed && (!attachments || attachments.length === 0)) {
-      return;
-    }
-    if (!connected) {
-      return;
-    }
-
-    let toId = rootId;
-    if (!toId) {
-      try {
-        const root = await queryClient.fetchQuery({
-          queryKey: ROOT_AGENT_QUERY_KEY,
-          queryFn: () => dimaag.getRootAgent(),
-        });
-        toId = root.id;
-      } catch {
-        if (opts?.existingSeq !== undefined) {
-          markPendingNewChatMessageFailed(opts.existingSeq);
-        } else {
-          if (opts?.content === undefined) {
-            setDraft("");
-            clearDraftAttachments();
-          }
-          enqueuePendingNewChat(display, {
-            attachments,
-            outboundText: trimmed,
-          });
-          markPendingNewChatFailed();
-        }
-        logLine("error", "Dadi root agent could not be loaded.", "not_ready");
-        return;
-      }
-    }
-
-    const queueLocally = viewingProvisional && conversationBusy && !opts?.force;
-    if (opts?.existingSeq === undefined && opts?.content === undefined) {
-      setDraft("");
-      clearDraftAttachments();
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        const el = textareaRef.current;
-        if (el) {
-          el.style.height = "auto";
-        }
-      });
-    }
-
-    let tempSeq: number;
-    if (opts?.existingSeq !== undefined) {
-      markPendingNewChatMessagePending(opts.existingSeq);
-      tempSeq = opts.existingSeq;
-    } else {
-      tempSeq = enqueuePendingNewChat(display, {
-        queued: queueLocally,
-        attachments,
-        outboundText: trimmed,
-      });
-      openProvisional();
-    }
-
-    if (queueLocally) {
-      stickToBottomRef.current = true;
-      return;
-    }
-
-    clearNewChatTimer();
-    newChatTimerRef.current = setTimeout(() => {
-      markPendingNewChatFailed();
-      newChatTimerRef.current = null;
-    }, NEW_CHAT_TIMEOUT_MS);
-
-    stickToBottomRef.current = true;
-
-    try {
-      await dimaag.postMessage({
-        to_agent_id: toId,
-        content: trimmed,
-        attachments:
-          attachments && attachments.length > 0 ? attachments : undefined,
-      });
-    } catch {
-      markPendingNewChatMessageFailed(tempSeq);
-      if (
-        getChatState().pendingNewChat?.messages.every(
-          (m) => m.failed || m.queued,
-        )
-      ) {
-        clearNewChatTimer();
-      }
-    }
-  };
-
   const sendThread = async (
+    toId: string,
     content: string,
     existingTempSeq?: number,
     attachments?: MessageAttachment[],
@@ -412,21 +302,20 @@ export function ChatSidebar({
     const display = formatOutboundContent(trimmed, attachments);
     if (
       (!trimmed && (!attachments || attachments.length === 0)) ||
-      !connected ||
-      !openAgentId
+      !connected
     ) {
       return;
     }
 
-    const conversationHeld = running[openAgentId]?.conversation === true;
+    const conversationHeld = running[toId]?.conversation === true;
     const queueLocally = existingTempSeq === undefined && conversationHeld;
 
     let tempSeq: number;
     if (existingTempSeq !== undefined) {
-      markPending(openAgentId, existingTempSeq);
+      markPending(toId, existingTempSeq);
       tempSeq = existingTempSeq;
     } else {
-      tempSeq = addOptimistic(openAgentId, display, {
+      tempSeq = addOptimistic(toId, display, {
         queued: queueLocally,
         attachments,
         outboundText: trimmed,
@@ -451,14 +340,14 @@ export function ChatSidebar({
 
     try {
       const res = await dimaag.postMessage({
-        to_agent_id: openAgentId,
+        to_agent_id: toId,
         content: trimmed,
         attachments:
           attachments && attachments.length > 0 ? attachments : undefined,
       });
-      resolveOptimistic(openAgentId, tempSeq, res.seq, res.content);
+      resolveOptimistic(toId, tempSeq, res.seq, res.content);
     } catch {
-      markFailed(openAgentId, tempSeq);
+      markFailed(toId, tempSeq);
     }
   };
 
@@ -466,28 +355,18 @@ export function ChatSidebar({
     if (!connected) {
       return;
     }
-
-    if (rootId) {
-      const queued = listQueuedPendingNewChat();
-      for (const msg of queued) {
-        await sendNewChat({
-          content: msg.outboundText ?? msg.content,
-          attachments: msg.attachments,
-          existingSeq: msg.seq,
-          force: true,
-        });
-      }
+    const targetId = openAgentId ?? rootId;
+    if (!targetId) {
+      return;
     }
-
-    if (openAgentId) {
-      const queued = listQueuedThread(openAgentId);
-      for (const msg of queued) {
-        await sendThread(
-          msg.outboundText ?? msg.content,
-          msg.seq,
-          msg.attachments,
-        );
-      }
+    const queued = listQueuedThread(targetId);
+    for (const msg of queued) {
+      await sendThread(
+        targetId,
+        msg.outboundText ?? msg.content,
+        msg.seq,
+        msg.attachments,
+      );
     }
   });
 
@@ -504,24 +383,7 @@ export function ChatSidebar({
     void flushQueues();
   }, [conversationBusy]);
 
-  const retryNewChat = async (seq: number) => {
-    const msg = chat.pendingNewChat?.messages.find((m) => m.seq === seq);
-    if (!msg || !connected || !rootId) {
-      return;
-    }
-    await sendNewChat({
-      content: msg.outboundText ?? msg.content,
-      attachments: msg.attachments,
-      existingSeq: seq,
-      force: true,
-    });
-  };
-
   const cancelQueued = (seq: number) => {
-    if (viewingProvisional) {
-      removePendingNewChatMessage(seq);
-      return;
-    }
     if (openAgentId) {
       removeMessage(openAgentId, seq);
     }
@@ -562,17 +424,27 @@ export function ChatSidebar({
     });
   };
 
+  const resolveSendTarget = (): string | null => {
+    if (openAgentId) {
+      return openAgentId;
+    }
+    return rootId ?? null;
+  };
+
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     const attachments =
       draftAttachments.length > 0
         ? toMessageAttachments(draftAttachments)
         : undefined;
-    if (openAgentId) {
-      void sendThread(draft, undefined, attachments);
+    const toId = resolveSendTarget();
+    if (!toId) {
       return;
     }
-    void sendNewChat({ attachments });
+    if (!openAgentId) {
+      openAgent(toId);
+    }
+    void sendThread(toId, draft, undefined, attachments);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -591,9 +463,11 @@ export function ChatSidebar({
   };
 
   const startNewChat = () => {
-    openList();
     setDraft("");
     clearDraftAttachments();
+    if (!openDadi()) {
+      openList();
+    }
     onDrawerClose?.();
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
@@ -603,25 +477,15 @@ export function ChatSidebar({
     onDrawerClose?.();
   };
 
-  const selectProvisional = () => {
-    openProvisional();
-    onDrawerClose?.();
-  };
-
-  const headerTitle = viewingProvisional
-    ? "NEW CHAT"
+  const headerTitle = viewingDadi
+    ? (rootQuery.data?.name ?? "Dadi")
     : openAgentId
-      ? (openConversation?.agent_name ?? "CHAT").toUpperCase()
-      : isMobile
-        ? "દાદી"
-        : "CHAT";
+      ? (openConversation?.agent_name ??
+        agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
+        "Chat")
+      : "Dadi";
 
-  const viewKey =
-    chat.open.kind === "list"
-      ? "list"
-      : chat.open.kind === "provisional"
-        ? "provisional"
-        : chat.open.agentId;
+  const viewKey = chat.open.kind === "list" ? "list" : chat.open.agentId;
 
   const placeholder =
     connected && !openAgentId && !rootId
@@ -630,20 +494,19 @@ export function ChatSidebar({
         : "Waiting for Dadi…"
       : conversationBusy
         ? `Held for ${talkTargetName}…`
-        : `Talk to ${talkTargetName}`;
+        : `Message ${talkTargetName}`;
 
   const canSubmit =
     connected &&
     (draft.trim().length > 0 || draftAttachments.length > 0) &&
-    (openAgentId !== null || !!rootId);
+    resolveSendTarget() !== null;
   const composerPad =
     draftAttachments.length > 0 ? COMPOSER_PAD_WITH_ATTACH : COMPOSER_PAD;
 
   const { settled: settledMessages, queued: queuedMessages } = partitionByQueued(
-    viewingProvisional ? provisionalMessages : threadMessages,
+    threadMessages,
   );
 
-  /** Hold pulse before drafts; working pulse at thread end when only reasoning is busy. */
   const showHoldPulse = conversationBusy || queuedMessages.length > 0;
   const showWorkingPulse =
     reasoningBusy && !conversationBusy && queuedMessages.length === 0;
@@ -671,30 +534,55 @@ export function ChatSidebar({
   const showThreadMain = isMobile ? true : viewingThread;
   const showListInDrawer = isMobile;
   const showListInPanel = !isMobile && !viewingThread;
+  const showComposer = isMobile || viewingThread;
+
+  const dadiMessages = rootId ? (chat.threads[rootId] ?? []) : [];
+  const dadiPreview =
+    dadiMessages.length > 0
+      ? dadiMessages[dadiMessages.length - 1]!.content
+      : null;
+
+  const list = (
+    <ConversationList
+      conversations={chat.conversations}
+      selectedAgentId={openAgentId}
+      historyStatus={chat.historyStatus}
+      historyError={chat.historyError}
+      onOpenAgent={isMobile ? selectAgent : openAgent}
+      onDismissKeyboard={dismissKeyboard}
+      dadi={{
+        available: !!rootId,
+        selected: viewingDadi,
+        preview: dadiPreview,
+        busy: !!rootId && running[rootId]?.conversation === true,
+        onOpen: startNewChat,
+      }}
+    />
+  );
 
   return (
     <aside
       className={`relative flex h-full min-h-0 flex-col overflow-hidden ${
-        isMobile ? "" : "widget-surface"
+        isMobile ? "" : "chat-rail"
       } ${className ?? ""}`}
       data-agent-id={openAgentId ?? rootId ?? undefined}
       data-session-key={sessionKey}
       style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : undefined }}
     >
       {!isMobile ? (
-        <div className="relative z-10 flex h-10 shrink-0 items-center px-4">
+        <div className="relative z-10 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-(--chat-edge) px-3">
           {viewingThread ? (
             <button
               type="button"
               onClick={backToList}
-              className="flex min-w-0 items-center gap-1.5 text-sage-deep"
+              className="flex min-w-0 items-center gap-1.5 text-ink"
               aria-label="Back to conversations"
             >
               <span className="inline-flex size-3.5 shrink-0 [&_svg]:size-full">
                 <IconBack />
               </span>
               <motion.span
-                className="truncate text-[11px] font-medium tracking-[2.5px]"
+                className="truncate text-[14px] font-medium"
                 animate={
                   reasoningBusy || conversationBusy
                     ? { opacity: [0.55, 1, 0.55] }
@@ -710,10 +598,18 @@ export function ChatSidebar({
               </motion.span>
             </button>
           ) : (
-            <span className="text-[11px] font-medium tracking-[2.5px] text-sage-deep">
-              {headerTitle}
+            <span className="font-gujarati text-[22px] leading-none text-sage-text">
+              દાદી
             </span>
           )}
+          <IconButton
+            label="Talk to Dadi"
+            size="sm"
+            onClick={startNewChat}
+            className="border-transparent bg-transparent text-ink-muted shadow-none hover:bg-(--chat-hover) hover:text-ink"
+          >
+            <IconNewChat />
+          </IconButton>
         </div>
       ) : null}
 
@@ -748,14 +644,11 @@ export function ChatSidebar({
                 onRetry={(msg) => {
                   if (openAgentId) {
                     void sendThread(
+                      openAgentId,
                       msg.outboundText ?? msg.content,
                       msg.seq,
                       msg.attachments,
                     );
-                    return;
-                  }
-                  if (viewingProvisional) {
-                    void retryNewChat(msg.seq);
                   }
                 }}
                 onCancel={cancelQueued}
@@ -764,6 +657,11 @@ export function ChatSidebar({
                     scrollToBottom("auto");
                   }
                 }}
+                emptyHint={
+                  viewingDadi
+                    ? "Talk to Dadi — it will route you."
+                    : `Message ${talkTargetName}`
+                }
               />
             ) : (
               <motion.div
@@ -778,8 +676,8 @@ export function ChatSidebar({
                 <span className="font-gujarati text-[42px] leading-none text-sage-text">
                   દાદી
                 </span>
-                <p className="mt-4 max-w-[260px] text-center text-[14px] leading-relaxed text-ink-muted">
-                  Ask anything. Your conversations live in the sidebar.
+                <p className="mt-4 max-w-65 text-center text-[14px] leading-relaxed text-ink-muted">
+                  Ask anything. Dadi will route you, or pick a chat from the sidebar.
                 </p>
                 <button
                   type="button"
@@ -792,36 +690,29 @@ export function ChatSidebar({
             )
           ) : null}
 
-          {showListInPanel ? (
-            <ConversationList
-              conversations={chat.conversations}
-              pendingNewChat={chat.pendingNewChat}
-              awaitingRoute={awaitingRoute}
-              onOpenProvisional={openProvisional}
-              onOpenAgent={openAgent}
-              onDismissKeyboard={dismissKeyboard}
-              composerPad={composerPad}
-            />
-          ) : null}
+          {showListInPanel ? list : null}
         </AnimatePresence>
 
-        <FloatingComposer
-          connected={connected}
-          draft={draft}
-          setDraft={setDraft}
-          placeholder={placeholder}
-          canSubmit={canSubmit}
-          holdMode={conversationBusy}
-          workingMode={reasoningBusy && !conversationBusy}
-          textareaRef={textareaRef}
-          fileInputRef={fileInputRef}
-          cameraInputRef={cameraInputRef}
-          attachments={draftAttachments}
-          onRemoveAttachment={removeDraftAttachment}
-          onPickFiles={onPickFiles}
-          onSubmit={onSubmit}
-          onKeyDown={onKeyDown}
-        />
+        {showComposer ? (
+          <FloatingComposer
+            connected={connected}
+            draft={draft}
+            setDraft={setDraft}
+            placeholder={placeholder}
+            canSubmit={canSubmit}
+            holdMode={conversationBusy}
+            workingMode={reasoningBusy && !conversationBusy}
+            targetName={talkTargetName}
+            textareaRef={textareaRef}
+            fileInputRef={fileInputRef}
+            cameraInputRef={cameraInputRef}
+            attachments={draftAttachments}
+            onRemoveAttachment={removeDraftAttachment}
+            onPickFiles={onPickFiles}
+            onSubmit={onSubmit}
+            onKeyDown={onKeyDown}
+          />
+        ) : null}
       </div>
 
       {showListInDrawer ? (
@@ -839,42 +730,26 @@ export function ChatSidebar({
                 onClick={() => onDrawerClose?.()}
               />
               <motion.div
-                className="glass-sheet absolute inset-y-0 left-0 z-40 flex w-[min(100%,320px)] flex-col overflow-hidden rounded-r-[var(--radius-window)]"
+                className="chat-rail absolute inset-y-0 left-0 z-40 flex w-[min(100%,300px)] flex-col overflow-hidden rounded-r-2xl"
                 initial={{ x: "-100%" }}
                 animate={{ x: 0 }}
                 exit={{ x: "-100%" }}
                 transition={{ duration: SLOW_S, ease: EASE }}
               >
-                <div className="flex items-center justify-between gap-2 border-b border-rule px-3 py-3">
+                <div className="flex items-center justify-between gap-2 px-3 py-3">
                   <span className="font-gujarati text-[22px] leading-none text-sage-text">
                     દાદી
                   </span>
                   <IconButton
-                    label="New chat"
+                    label="Talk to Dadi"
                     size="sm"
                     onClick={startNewChat}
+                    className="border-transparent bg-transparent text-ink-muted shadow-none hover:bg-(--chat-hover) hover:text-ink"
                   >
                     <IconNewChat />
                   </IconButton>
                 </div>
-                <button
-                  type="button"
-                  onClick={startNewChat}
-                  className="mx-3 mt-3 rounded-[var(--radius)] border border-dashed border-sage-line bg-sage-fill/30 px-3 py-2.5 text-left text-[13px] text-ink transition-colors duration-slow ease-hath hover:bg-sage-active/40"
-                >
-                  New chat
-                </button>
-                <div className="relative min-h-0 flex-1">
-                  <ConversationList
-                    conversations={chat.conversations}
-                    pendingNewChat={chat.pendingNewChat}
-                    awaitingRoute={awaitingRoute}
-                    onOpenProvisional={selectProvisional}
-                    onOpenAgent={selectAgent}
-                    onDismissKeyboard={dismissKeyboard}
-                    composerPad={16}
-                  />
-                </div>
+                <div className="relative min-h-0 flex-1">{list}</div>
               </motion.div>
             </>
           ) : null}

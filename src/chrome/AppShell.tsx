@@ -70,7 +70,7 @@ export function AppShell() {
 
       <div className="relative flex min-h-0 flex-1">
         <motion.div
-          className="w-[min(340px,34%)] shrink-0 p-4 pr-2"
+          className="w-[min(300px,32%)] shrink-0"
           initial={{ opacity: 0, x: -28 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: SLOW_S, ease: EASE, delay: 0.12 }}
@@ -79,7 +79,7 @@ export function AppShell() {
         </motion.div>
 
         <motion.main
-          className="relative min-h-0 min-w-0 flex-1 overflow-hidden p-4 pl-2"
+          className="relative min-h-0 min-w-0 flex-1 overflow-hidden p-4"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: SLOW_S, ease: EASE, delay: 0.2 }}
