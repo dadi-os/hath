@@ -101,7 +101,13 @@ export type DimaagEvent =
       name: string;
       at: string;
     }
-  | { type: "agent_modified"; agent_id: string; active: boolean; at: string }
+  | {
+      type: "agent_modified";
+      agent_id: string;
+      name: string;
+      active: boolean;
+      at: string;
+    }
   | {
       type: "hath_command";
       command_id: string;
