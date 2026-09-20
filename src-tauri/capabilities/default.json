@@ -23,6 +23,7 @@
     "updater:default",
     "allow-net",
     "allow-device-get-battery",
+    "allow-device-get-location",
     "allow-device-write-download",
     {
       "identifier": "http:default",

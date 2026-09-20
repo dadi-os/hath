@@ -11,6 +11,15 @@ pub struct BatteryInfo {
     pub charging: bool,
 }
 
+/// Coordinates returned by `device_get_location`.
+#[derive(Debug, Serialize)]
+pub struct LocationInfo {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub accuracy: f64,
+    pub at: String,
+}
+
 /// Read battery percent and charging state from the host.
 #[tauri::command]
 pub fn device_get_battery() -> Result<BatteryInfo, String> {
@@ -33,6 +42,78 @@ pub fn device_get_battery() -> Result<BatteryInfo, String> {
         percent: (ratio as f64).round(),
         charging,
     })
+}
+
+/// Read current coordinates via CoreLocation (macOS) or report unsupported.
+#[tauri::command]
+pub fn device_get_location() -> Result<LocationInfo, String> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos_get_location();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("capability_unsupported: native location is only implemented on macOS".to_string())
+    }
+}
+
+/// Register for Location Services once at launch when authorization is undetermined.
+#[cfg(target_os = "macos")]
+pub fn prepare_location_authorization() {
+    unsafe extern "C" {
+        fn hath_location_prepare();
+    }
+    unsafe { hath_location_prepare() };
+}
+
+#[cfg(target_os = "macos")]
+fn macos_get_location() -> Result<LocationInfo, String> {
+    unsafe extern "C" {
+        fn hath_device_get_location(
+            lat: *mut f64,
+            lon: *mut f64,
+            accuracy_m: *mut f64,
+            at_out: *mut std::ffi::c_char,
+            at_len: usize,
+            err: *mut std::ffi::c_char,
+            err_len: usize,
+        ) -> i32;
+    }
+    let mut lat = 0.0_f64;
+    let mut lon = 0.0_f64;
+    let mut accuracy = 0.0_f64;
+    let mut at_buf = vec![0u8; 64];
+    let mut err = vec![0u8; 512];
+    let rc = unsafe {
+        hath_device_get_location(
+            &mut lat,
+            &mut lon,
+            &mut accuracy,
+            at_buf.as_mut_ptr() as *mut std::ffi::c_char,
+            at_buf.len(),
+            err.as_mut_ptr() as *mut std::ffi::c_char,
+            err.len(),
+        )
+    };
+    if rc == 0 {
+        let at = unsafe { std::ffi::CStr::from_ptr(at_buf.as_ptr() as *const std::ffi::c_char) }
+            .to_string_lossy()
+            .into_owned();
+        return Ok(LocationInfo {
+            latitude: lat,
+            longitude: lon,
+            accuracy,
+            at,
+        });
+    }
+    let message = unsafe { std::ffi::CStr::from_ptr(err.as_ptr() as *const std::ffi::c_char) }
+        .to_string_lossy()
+        .into_owned();
+    if message.is_empty() {
+        Err("internal_error: location failed".to_string())
+    } else {
+        Err(message)
+    }
 }
 
 /// Write base64 file bytes into the OS Downloads folder and return the absolute path.

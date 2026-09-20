@@ -35,6 +35,7 @@ pub fn run() {
             net::net_load_credentials,
             net::net_save_credentials,
             device::device_get_battery,
+            device::device_get_location,
             device::device_write_download,
         ]);
 
@@ -46,6 +47,13 @@ pub fn run() {
     }
 
     builder
+        .setup(|_app| {
+            #[cfg(target_os = "macos")]
+            {
+                device::prepare_location_authorization();
+            }
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, event| {

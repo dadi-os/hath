@@ -72,6 +72,17 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=SystemConfiguration");
     }
 
+    if desktop_apple {
+        println!("cargo:rustc-link-lib=framework=CoreLocation");
+        let loc = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/location.m");
+        println!("cargo:rerun-if-changed={}", loc.display());
+        cc::Build::new()
+            .file(&loc)
+            .flag("-fobjc-arc")
+            .flag("-mmacosx-version-min=11.0")
+            .compile("hath_location");
+    }
+
     if ios {
         println!("cargo:rustc-link-lib=framework=NetworkExtension");
         let stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -88,37 +88,27 @@ async function getBattery(): Promise<{ percent: number; charging: boolean }> {
   }
 }
 
-function getLocation(): Promise<{
+/**
+ * Read coordinates via native CoreLocation (macOS).
+ * Does not prompt from the tool path — accept Location once at Hath launch, or enable it in System Settings.
+ */
+async function getLocation(): Promise<{
   latitude: number;
   longitude: number;
   accuracy: number;
   at: string;
 }> {
-  if (!("geolocation" in navigator)) {
-    return Promise.reject(
-      new DeviceError("capability_unsupported", "geolocation is not available"),
-    );
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<{
+      latitude: number;
+      longitude: number;
+      accuracy: number;
+      at: string;
+    }>("device_get_location");
+  } catch (err) {
+    throw mapInvokeError(err);
   }
-  return new Promise((resolve, reject) => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        resolve({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-          at: new Date(pos.timestamp).toISOString(),
-        });
-      },
-      (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          reject(new DeviceError("permission_denied", err.message));
-          return;
-        }
-        reject(new DeviceError("internal_error", err.message));
-      },
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 },
-    );
-  });
 }
 
 async function getNetwork(): Promise<Record<string, unknown>> {
