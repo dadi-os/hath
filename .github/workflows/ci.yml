@@ -15,11 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: net/go.mod
+          cache-dependency-path: net/go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -114,11 +115,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: net/go.mod
+          cache-dependency-path: net/go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -260,7 +262,7 @@ jobs:
           ls -la release-assets updater-sigs
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: hath-${{ github.sha }}
           name: Hath ${{ github.sha }}
@@ -269,7 +271,7 @@ jobs:
           files: release-assets/*
 
       - name: Share updater signatures
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: updater-sig-${{ matrix.os }}
           path: updater-sigs/*
@@ -286,7 +288,7 @@ jobs:
       contents: write
     steps:
       - name: Download updater signatures
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: updater-sig-*
           merge-multiple: true
@@ -355,11 +357,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: net/go.mod
+          cache-dependency-path: net/go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -373,6 +376,28 @@ jobs:
 
       - name: npm ci
         run: npm ci
+
+      - name: Require iOS signing secrets
+        env:
+          APPLE_IOS_CERTIFICATE: ${{ secrets.APPLE_IOS_CERTIFICATE }}
+          APPLE_IOS_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_IOS_CERTIFICATE_PASSWORD }}
+          APPLE_IOS_PROVISIONING_PROFILE: ${{ secrets.APPLE_IOS_PROVISIONING_PROFILE }}
+          APPLE_IOS_SIGNING_IDENTITY: ${{ secrets.APPLE_IOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in APPLE_IOS_CERTIFICATE APPLE_IOS_CERTIFICATE_PASSWORD \
+                   APPLE_IOS_PROVISIONING_PROFILE APPLE_IOS_SIGNING_IDENTITY APPLE_TEAM_ID; do
+            eval "val=\${$v:-}"
+            if [ -z "$val" ]; then
+              echo "::error::Missing secret $v (base64 .p12 / profile / identity / team)."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Init iOS Xcode project
         run: npm run tauri ios init -- --ci
@@ -447,7 +472,7 @@ jobs:
           cp "$IPA" dist/hath-ios.ipa
 
       - name: Attach IPA to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: hath-${{ github.sha }}
           name: Hath ${{ github.sha }}

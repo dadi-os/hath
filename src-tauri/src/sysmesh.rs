@@ -11,7 +11,6 @@ use crate::logutil;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,10 +21,6 @@ const DAEMON_WAIT: Duration = Duration::from_secs(20);
 
 #[cfg(target_os = "macos")]
 const MAGIC_DNS_RESOLVER_INSTALL: &str = "/bin/mkdir -p /etc/resolver && /usr/bin/printf 'nameserver 100.100.100.100\\n' > /etc/resolver/dadi && /usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder 2>/dev/null; true";
-
-#[cfg(target_os = "macos")]
-
-static DAEMON_PID: Mutex<Option<u32>> = Mutex::new(None);
 
 struct Bins {
     tailscale: PathBuf,
@@ -307,9 +302,6 @@ fn spawn_daemon_process(
         .map_err(|e| {
             format!("failed to start tailscaled (TUN usually needs admin / CAP_NET_ADMIN): {e}")
         })?;
-    if let Ok(mut guard) = DAEMON_PID.lock() {
-        *guard = Some(child.id());
-    }
     std::mem::forget(child);
     Ok(())
 }
