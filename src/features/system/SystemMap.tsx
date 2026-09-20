@@ -1,9 +1,11 @@
+import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import { nas } from "../../shared/api";
 import type { NasStatus } from "../../shared/api/nas";
 import { ErrorLogCards } from "../logs/LogExplorer";
 import { useConnection } from "../../hooks/useConnection";
+import { useElementSize } from "./useElementSize";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 
@@ -21,6 +23,22 @@ const SERVICE_ORDER = [
   "nas",
   "hath",
 ] as const;
+
+/** Density breakpoints for the System widget body. */
+type SystemDensity = "pending" | "full" | "cards" | "inline";
+
+function densityFor(size: { width: number; height: number }): SystemDensity {
+  if (size.width === 0 || size.height === 0) {
+    return "pending";
+  }
+  if (size.height < 220 || size.width < 160) {
+    return "inline";
+  }
+  if (size.height < 320 || size.width < 220) {
+    return "cards";
+  }
+  return "full";
+}
 
 function formatBytes(n: number): string {
   if (n < 1024) {
@@ -234,13 +252,167 @@ function SystemPreview({
   }>;
   clientsPending?: boolean;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const size = useElementSize(rootRef);
+  const density = densityFor(size);
   const meters = resources
     .filter((r) => r.key === "cpu" || r.key === "memory" || r.key === "disk")
     .slice(0, 3);
   const mesh = clients.filter((c) => c.node_name && c.node_name !== "os");
+  const okCount = services.filter((s) => s.ok).length;
+
+  if (density === "pending") {
+    return (
+      <div
+        ref={rootRef}
+        className={`h-full min-h-0 w-full ${className ?? ""}`}
+        aria-hidden
+      />
+    );
+  }
+
+  if (density === "inline") {
+    return (
+      <div
+        ref={rootRef}
+        className={`flex h-full min-h-0 flex-col justify-between gap-2 overflow-hidden px-3 pb-2.5 pt-1 ${className ?? ""}`}
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-[11px] font-medium tracking-[1.2px] text-ink-ghost">
+            MODULES
+          </span>
+          <span className="text-[12px] tabular-nums text-ink">
+            {okCount}/{services.length}
+          </span>
+          <span className="text-ink-ghost">·</span>
+          {services.map((s) => (
+            <span
+              key={s.name}
+              className={`font-mono text-[11px] ${
+                s.ok ? "text-sage-deep" : "text-error"
+              }`}
+              title={s.ok ? "reachable" : "unreachable"}
+            >
+              {s.name}
+            </span>
+          ))}
+        </div>
+        <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
+          {meters.map((row) => (
+            <span
+              key={row.key}
+              className="inline-flex items-baseline gap-1 text-[12px] tabular-nums text-ink"
+            >
+              <span className="text-[10px] font-medium tracking-[1.2px] text-ink-ghost">
+                {row.kind.toLowerCase()}
+              </span>
+              {row.pct == null ? "—" : `${Math.round(row.pct)}%`}
+            </span>
+          ))}
+        </div>
+        {!clientsPending && mesh.length > 0 ? (
+          <p className="truncate text-[11px] text-ink-ghost">
+            {mesh.filter((c) => c.online).length}/{mesh.length} clients online
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (density === "cards") {
+    return (
+      <div
+        ref={rootRef}
+        className={`flex h-full min-h-0 flex-col gap-2.5 overflow-hidden px-3 pb-2.5 pt-1 ${className ?? ""}`}
+      >
+        <div className="min-w-0 rounded-[var(--radius)] border border-dashed border-rule/80 px-2.5 py-2">
+          <p className="mb-1.5 text-[10px] font-medium tracking-[1.2px] text-ink-ghost">
+            MODULES · {okCount}/{services.length}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {services.map((s) => (
+              <span
+                key={s.name}
+                className={`rounded-[3px] px-1.5 py-0.5 font-mono text-[11px] ${
+                  s.ok
+                    ? "bg-sage/15 text-sage-deep"
+                    : "bg-error/10 text-error"
+                }`}
+              >
+                {s.name}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="min-w-0 rounded-[var(--radius)] border border-dashed border-rule/80 px-2.5 py-2">
+          <p className="mb-1.5 text-[10px] font-medium tracking-[1.2px] text-ink-ghost">
+            CLIENTS
+          </p>
+          {clientsPending ? (
+            <p className="text-[12px] text-ink-ghost">Loading…</p>
+          ) : mesh.length === 0 ? (
+            <p className="text-[12px] text-ink-ghost">None on the mesh</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {mesh.map((c) => (
+                <span
+                  key={c.node_name}
+                  className="inline-flex items-center gap-1.5 rounded-[3px] bg-rule/60 px-1.5 py-0.5 text-[11px] text-ink"
+                >
+                  <span
+                    className={`size-1.5 shrink-0 rounded-full ${
+                      c.pending
+                        ? "bg-sage"
+                        : c.online
+                          ? "bg-ink"
+                          : "bg-ink-ghost"
+                    }`}
+                    aria-hidden
+                  />
+                  {c.node_name}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {meters.length > 0 ? (
+          <div className="mt-auto flex gap-2">
+            {meters.map((row) => (
+              <div
+                key={row.key}
+                className="min-w-0 flex-1 rounded-[var(--radius)] border border-dashed border-rule/80 px-2 py-1.5"
+              >
+                <div className="flex items-baseline justify-between gap-1">
+                  <span className="text-[10px] font-medium tracking-[1.2px] text-ink-ghost">
+                    {row.kind.toLowerCase()}
+                  </span>
+                  <span className="text-[11px] tabular-nums text-ink">
+                    {row.pct == null ? "—" : `${Math.round(row.pct)}%`}
+                  </span>
+                </div>
+                <div className="mt-1.5 h-[4px] overflow-hidden rounded-[2px] bg-rule">
+                  {row.pct != null ? (
+                    <div
+                      className="h-full rounded-[2px] bg-sage"
+                      style={{
+                        width: `${Math.min(100, Math.max(0, row.pct))}%`,
+                      }}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div
+      ref={rootRef}
       className={`flex h-full min-h-0 flex-col overflow-hidden px-3.5 pb-2.5 pt-1 ${className ?? ""}`}
     >
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -306,12 +478,14 @@ function SystemPreview({
                 </span>
               </div>
               <div className="h-[5px] overflow-hidden rounded-[3px] bg-rule">
-                <div
-                  className="h-full rounded-[3px] bg-sage"
-                  style={{
-                    width: `${Math.min(100, Math.max(0, row.pct ?? 0))}%`,
-                  }}
-                />
+                {row.pct != null ? (
+                  <div
+                    className="h-full rounded-[3px] bg-sage"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, row.pct))}%`,
+                    }}
+                  />
+                ) : null}
               </div>
             </div>
           ))}

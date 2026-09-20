@@ -9,8 +9,13 @@ export type AgentTreeNode = {
   children?: AgentTreeNode[];
 };
 
-/** Visual lane for a tree node: running glow, idle, or dormant. */
-export type NodeVisual = "running" | "idle" | "dormant";
+/** Visual lane for a tree node — shape encodes reasoning vs conversation. */
+export type NodeVisual =
+  | "dormant"
+  | "idle"
+  | "reasoning"
+  | "conversation"
+  | "both";
 
 /**
  * Build a forest from parent_agent_id. Every null or dangling parent is a root.
@@ -54,7 +59,8 @@ export function linkPath(link: HierarchyPointLink<AgentTreeNode>): string {
 
 /**
  * Map agent active + lane occupancy to a tree visual.
- * Prefers live `running` overrides when provided.
+ * Prefers live lane occupancy overrides when provided.
+ * Shape language (not color alone): diamond = reasoning, disc = conversation.
  */
 export function visualState(
   agent: AgentRecord,
@@ -64,10 +70,25 @@ export function visualState(
     return "dormant";
   }
   const lanes = running ?? agent.running;
-  if (lanes.reasoning || lanes.conversation) {
-    return "running";
+  if (lanes.reasoning && lanes.conversation) {
+    return "both";
+  }
+  if (lanes.reasoning) {
+    return "reasoning";
+  }
+  if (lanes.conversation) {
+    return "conversation";
   }
   return "idle";
+}
+
+/** True when the node is mid-flight on either lane. */
+export function isLiveVisual(visual: NodeVisual): boolean {
+  return (
+    visual === "reasoning" ||
+    visual === "conversation" ||
+    visual === "both"
+  );
 }
 
 /** Human-readable status for the agent popover / legend. */
@@ -78,7 +99,7 @@ export function statusLabel(
   if (visual === "dormant") {
     return "Inactive";
   }
-  if (visual === "running") {
+  if (isLiveVisual(visual)) {
     if (running.reasoning && running.conversation) {
       return "In flight · reasoning + conversation";
     }

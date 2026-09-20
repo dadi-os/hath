@@ -42,9 +42,9 @@ export function ConversationList({
       key="list"
       onClick={onDismissKeyboard}
       className="absolute inset-0 flex flex-col"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      initial={{ opacity: 0, x: -28 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -28 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">

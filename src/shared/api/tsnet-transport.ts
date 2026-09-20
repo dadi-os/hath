@@ -7,21 +7,27 @@ import {
 import { NotProvisionedError } from "./errors";
 import type { ConnectionState, Transport } from "./transport";
 import { consumeSseBuffer } from "./sse";
+import { logLine } from "../lib/platform/log";
 
 export { NotProvisionedError } from "./errors";
 
 /**
  * Legacy `mesh_start` port when desktop dialed `*.dadi` via the OS resolver.
- * Current desktop returns a local MagicDNS proxy port (`/@host`, same as iOS).
+ * Current desktop returns a local MagicDNS HTTP proxy port (`/@host`, same as iOS).
  */
 const SYSTEM_MESH_PORT = 0;
+
+const HEALTH_MS = 8_000;
+const RECOVER_INITIAL_MS = 1_000;
+const RECOVER_MAX_MS = 30_000;
 
 /**
  * Transport that dials Dimaag/Yaad/Nas through dadiMesh.
  *
  * Desktop: system Tailscale TUN + local `/@host` proxy (MagicDNS, not libc).
  * iOS: in-process dialer → `http://127.0.0.1:<port>/@host/...`.
- * Connection is explicit — no silent reconnect.
+ * Join/leave is explicit; after a successful join, tunnel flaps auto-recover
+ * with backoff until the user leaves.
  */
 export class MeshTransport implements Transport {
   private port: number | null = null;
@@ -31,6 +37,11 @@ export class MeshTransport implements Transport {
   private streamAbort: AbortController | null = null;
   private needsProvisioning = false;
   private readonly provisioningListeners = new Set<(needed: boolean) => void>();
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
+  private recoverTimer: ReturnType<typeof setTimeout> | null = null;
+  private recovering = false;
+  private recoverBackoff = RECOVER_INITIAL_MS;
+  private healthGen = 0;
 
   isActive(): boolean {
     return this.active;
@@ -77,7 +88,6 @@ export class MeshTransport implements Transport {
 
   /**
    * Start dadiMesh. Pass `override` during first-run provisioning.
-   * Does not schedule retries — leave/join is explicit (power control).
    * Onboarding stays up until `mesh_start` succeeds so a failed join does
    * not remount the scan/paste overlay.
    */
@@ -91,13 +101,16 @@ export class MeshTransport implements Transport {
       throw new NotProvisionedError();
     }
 
+    this.stopHealthWatch();
     this.active = true;
     this.setState("connecting");
 
     try {
       this.port = await this.startNode(credentials);
       this.setProvisioningNeeded(false);
+      this.recoverBackoff = RECOVER_INITIAL_MS;
       this.setState("connected");
+      this.startHealthWatch();
     } catch (err) {
       this.port = null;
       this.active = false;
@@ -108,6 +121,7 @@ export class MeshTransport implements Transport {
 
   async disconnect(): Promise<void> {
     this.active = false;
+    this.stopHealthWatch();
     this.streamAbort?.abort();
     this.streamAbort = null;
     try {
@@ -150,6 +164,8 @@ export class MeshTransport implements Transport {
         body,
       });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.scheduleRecover(`request transport error: ${message}`);
       throw err instanceof Error ? err : new Error(String(err));
     }
 
@@ -219,6 +235,139 @@ export class MeshTransport implements Transport {
     });
   }
 
+  private startHealthWatch(): void {
+    this.stopHealthWatchTimers();
+    this.healthGen += 1;
+    const gen = this.healthGen;
+    this.healthTimer = setInterval(() => {
+      if (gen !== this.healthGen) {
+        return;
+      }
+      void this.probeHealth();
+    }, HEALTH_MS);
+  }
+
+  private stopHealthWatch(): void {
+    this.healthGen += 1;
+    this.recovering = false;
+    this.stopHealthWatchTimers();
+  }
+
+  private stopHealthWatchTimers(): void {
+    if (this.healthTimer !== null) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
+    }
+    if (this.recoverTimer !== null) {
+      clearTimeout(this.recoverTimer);
+      this.recoverTimer = null;
+    }
+  }
+
+  /**
+   * Probe tunnel + local proxy port only.
+   * App-module health (Dimaag down) is not a mesh flap — do not recover on it.
+   */
+  private async probeHealth(): Promise<void> {
+    if (!this.active || this.recovering) {
+      return;
+    }
+    try {
+      const status = await invoke<number>("mesh_status");
+      if (!this.active) {
+        return;
+      }
+      if (status === 0) {
+        this.scheduleRecover("mesh_status offline");
+        return;
+      }
+      if (this.port === null) {
+        this.scheduleRecover("proxy port missing");
+        return;
+      }
+      this.markSuccess();
+    } catch (err) {
+      if (this.active) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.scheduleRecover(`mesh_status failed: ${message}`);
+      }
+    }
+  }
+
+  /** Debounce recover so a burst of failures shares one backoff loop. */
+  private scheduleRecover(reason: string): void {
+    if (!this.active || this.recovering || this.recoverTimer !== null) {
+      return;
+    }
+    logLine("warn", `mesh recover scheduled: ${reason}`, "mesh_recover_scheduled");
+    this.recoverTimer = setTimeout(() => {
+      this.recoverTimer = null;
+      void this.recover();
+    }, 400);
+  }
+
+  /**
+   * Re-run `mesh_start` with logged backoff while the user still wants to be joined.
+   * Leave (`disconnect`) cancels by clearing `active`.
+   */
+  private async recover(): Promise<void> {
+    if (!this.active || this.recovering) {
+      return;
+    }
+    this.recovering = true;
+    this.setState("connecting");
+    logLine("info", "mesh recover started", "mesh_recover_started");
+
+    try {
+      while (this.active) {
+        try {
+          const credentials = await loadCredentials();
+          if (!credentials) {
+            this.active = false;
+            this.port = null;
+            this.setProvisioningNeeded(true);
+            this.setState("disconnected");
+            logLine(
+              "error",
+              "mesh recover stopped: credentials missing",
+              "mesh_recover_unprovisioned",
+            );
+            return;
+          }
+          this.port = await this.startNode(credentials);
+          if (!this.active) {
+            return;
+          }
+          this.recoverBackoff = RECOVER_INITIAL_MS;
+          this.setState("connected");
+          this.startHealthWatch();
+          logLine("info", "mesh recover succeeded", "mesh_recover_ok");
+          return;
+        } catch (err) {
+          if (!this.active) {
+            return;
+          }
+          const message = err instanceof Error ? err.message : String(err);
+          logLine(
+            "error",
+            `mesh recover attempt failed (retry ${this.recoverBackoff}ms): ${message}`,
+            "mesh_recover_failed",
+          );
+          await sleep(this.recoverBackoff);
+          this.recoverBackoff = Math.min(
+            this.recoverBackoff * 2,
+            RECOVER_MAX_MS,
+          );
+        }
+      }
+    } finally {
+      this.recovering = false;
+      if (!this.active) {
+        this.setState("disconnected");
+      }
+    }
+  }
+
   private async readSse(
     baseUrl: string,
     path: string,
@@ -269,15 +418,17 @@ export class MeshTransport implements Transport {
       }
 
       closed();
-    } catch {
+    } catch (err) {
       if (!signal.aborted) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.scheduleRecover(`sse transport error: ${message}`);
         onClose?.();
       }
     }
   }
 
   private markSuccess(): void {
-    if (!this.active) {
+    if (!this.active || this.recovering) {
       return;
     }
     this.setState("connected");
@@ -310,4 +461,10 @@ function meshHost(baseUrl: string): string {
     throw new Error(`invalid mesh baseUrl: ${baseUrl}`);
   }
   return host;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

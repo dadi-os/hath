@@ -158,14 +158,64 @@ function prettyValue(value: unknown): string {
   }
 }
 
-function LaneMark({ lane }: { lane: Lane }) {
+/**
+ * Yield's tool_result is just `{"yielded":true}` — redundant next to the
+ * tool name. Hide empty / trivial success payloads for yield only.
+ */
+function isRedundantYieldResult(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return true;
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Object.keys(parsed).length === 1 &&
+      (parsed as { yielded?: unknown }).yielded === true
+    ) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Lane mark for the activity timetable.
+ * Shape — not color — carries reasoning vs conversation: diamond vs disc.
+ */
+function LaneNode({
+  lane,
+  tone = "idle",
+}: {
+  lane: Lane;
+  tone?: "idle" | "live" | "error";
+}) {
+  const label = lane === "reasoning" ? "Reasoning" : "Conversation";
+  const shape =
+    lane === "reasoning"
+      ? "rotate-45 rounded-[1px]"
+      : "rounded-full";
+  const fill =
+    tone === "error"
+      ? "bg-ink-muted"
+      : tone === "live"
+        ? "bg-sage"
+        : "bg-sage-line";
   return (
-    <span className="text-[10px] font-medium uppercase tracking-[1.5px] text-ink-ghost">
-      {lane === "reasoning" ? "reason" : "talk"}
-    </span>
+    <span
+      aria-label={label}
+      title={label}
+      className={`absolute left-0 top-1.5 block size-1.5 ${shape} ${fill}`}
+    />
   );
 }
 
+/** Two-tone parameter rows: muted name chip, ink value. */
 function ParamList({ input }: { input: Record<string, unknown> }) {
   const entries = Object.entries(input);
   if (entries.length === 0) {
@@ -174,26 +224,32 @@ function ParamList({ input }: { input: Record<string, unknown> }) {
     );
   }
   return (
-    <dl className="mt-1.5 space-y-1">
+    <ul className="mt-1.5 flex flex-col gap-1">
       {entries.map(([key, value]) => {
         const rendered = prettyValue(value);
         const multiline = rendered.includes("\n") || rendered.length > 72;
         return (
-          <div key={key} className="min-w-0">
-            <dt className="font-mono text-[10px] tracking-wide text-sage-deep">
+          <li
+            key={key}
+            className="flex min-w-0 items-start gap-0 overflow-hidden rounded-[4px] bg-rule/55"
+          >
+            <span className="shrink-0 bg-ink/[0.06] px-1.5 py-1 font-mono text-[10px] tracking-wide text-ink-ghost">
               {key}
-            </dt>
-            <dd
-              className={`mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-ink-muted ${
-                multiline ? "max-h-24 overflow-y-auto" : ""
+            </span>
+            <span
+              className={`min-w-0 flex-1 px-1.5 py-1 font-mono text-[11px] leading-snug text-ink ${
+                multiline
+                  ? "max-h-24 overflow-y-auto whitespace-pre-wrap break-words"
+                  : "truncate"
               }`}
+              title={rendered}
             >
               {rendered}
-            </dd>
-          </div>
+            </span>
+          </li>
         );
       })}
-    </dl>
+    </ul>
   );
 }
 
@@ -204,22 +260,16 @@ function ThoughtRow({ item }: { item: ThoughtItem }) {
 
   return (
     <li className="relative pl-4">
-      <span
-        aria-hidden
-        className="absolute left-0 top-1.5 size-1.5 rounded-full bg-sage-line"
-      />
+      <LaneNode lane={item.lane} tone="idle" />
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[11px] font-medium tracking-[1.5px] text-ink-faint">
           THINKING
         </span>
-        <div className="flex items-center gap-2">
-          <LaneMark lane={item.lane} />
-          <Tooltip content={formatAbsolute(item.at)}>
-            <span className="text-[10px] text-ink-ghost">
-              {formatRelative(item.at)}
-            </span>
-          </Tooltip>
-        </div>
+        <Tooltip content={formatAbsolute(item.at)}>
+          <span className="text-[10px] text-ink-ghost">
+            {formatRelative(item.at)}
+          </span>
+        </Tooltip>
       </div>
       {preview ? (
         <p className="mt-1 text-[12px] leading-relaxed text-ink-muted">
@@ -246,6 +296,9 @@ function ThoughtRow({ item }: { item: ThoughtItem }) {
 function ToolRow({ item }: { item: ToolItem }) {
   const [paramsOpen, setParamsOpen] = useState(item.name !== "yield");
   const hasParams = Object.keys(item.input).length > 0;
+  const showResult =
+    item.resultContent !== null &&
+    !(item.name === "yield" && !item.isError && isRedundantYieldResult(item.resultContent));
   const resultPreview =
     item.resultContent !== null
       ? truncate(item.resultContent, 160)
@@ -253,24 +306,19 @@ function ToolRow({ item }: { item: ToolItem }) {
 
   return (
     <li className="relative pl-4">
-      <span
-        aria-hidden
-        className={`absolute left-0 top-1.5 size-1.5 rounded-full ${
-          item.isError ? "bg-ink-muted" : "bg-sage"
-        }`}
+      <LaneNode
+        lane={item.lane}
+        tone={item.isError ? "error" : "live"}
       />
       <div className="flex items-baseline justify-between gap-2">
         <span className="font-mono text-[12px] font-medium text-ink">
           {item.name}
         </span>
-        <div className="flex items-center gap-2">
-          <LaneMark lane={item.lane} />
-          <Tooltip content={formatAbsolute(item.at)}>
-            <span className="text-[10px] text-ink-ghost">
-              {formatRelative(item.at)}
-            </span>
-          </Tooltip>
-        </div>
+        <Tooltip content={formatAbsolute(item.at)}>
+          <span className="text-[10px] text-ink-ghost">
+            {formatRelative(item.at)}
+          </span>
+        </Tooltip>
       </div>
 
       {hasParams && (
@@ -284,7 +332,7 @@ function ToolRow({ item }: { item: ToolItem }) {
       )}
       {paramsOpen && hasParams ? <ParamList input={item.input} /> : null}
 
-      {item.resultContent !== null && (
+      {showResult && (
         <div
           className={`mt-1.5 border-l-2 pl-2 text-[11px] leading-snug ${
             item.isError
@@ -328,9 +376,27 @@ export function AgentActivity({
 
   return (
     <section>
-      <h3 className="mb-2 text-[11px] font-medium tracking-[2px] text-ink-faint">
-        ACTIVITY
-      </h3>
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <h3 className="text-[11px] font-medium tracking-[2px] text-ink-faint">
+          ACTIVITY
+        </h3>
+        <p className="flex items-center gap-2 text-[10px] text-ink-ghost">
+          <span className="inline-flex items-center gap-1" title="Reasoning">
+            <span
+              aria-hidden
+              className="inline-block size-1.5 rotate-45 rounded-[1px] bg-sage-line"
+            />
+            reason
+          </span>
+          <span className="inline-flex items-center gap-1" title="Conversation">
+            <span
+              aria-hidden
+              className="inline-block size-1.5 rounded-full bg-sage-line"
+            />
+            talk
+          </span>
+        </p>
+      </div>
 
       {logsQuery.isLoading && (
         <p className="text-[13px] text-ink-muted">Loading activity…</p>

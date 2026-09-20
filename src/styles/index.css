@@ -328,7 +328,10 @@ body {
   stroke-opacity: 0.55;
 }
 
-.agent-node__core--running {
+/* Live cores share sage fill; shape (disc / diamond / both) carries the lane. */
+.agent-node__core--reasoning,
+.agent-node__core--conversation,
+.agent-node__core--both {
   fill: var(--sage);
   stroke: color-mix(in srgb, var(--sage-deep) 35%, var(--sage));
   stroke-width: 0.75;
@@ -336,6 +339,14 @@ body {
     drop-shadow(0 0 1.5px rgb(143 163 130 / 0.85))
     drop-shadow(0 0 4px rgb(143 163 130 / 0.4));
   animation: agent-core-glow var(--breath) ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.agent-node__core-inset {
+  fill: var(--bone);
+  stroke: none;
+  pointer-events: none;
 }
 
 @keyframes agent-core-glow {
@@ -357,7 +368,9 @@ body {
   stroke-width: 1.75;
 }
 
-.agent-node__core--running.is-selected {
+.agent-node__core--reasoning.is-selected,
+.agent-node__core--conversation.is-selected,
+.agent-node__core--both.is-selected {
   stroke: var(--sage-deep);
   stroke-width: 1.35;
 }

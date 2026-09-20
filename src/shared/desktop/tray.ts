@@ -45,6 +45,35 @@ export type TraySnapshot = {
 let tray: TrayIcon | null = null;
 let chain: Promise<void> = Promise.resolve();
 let queued: TraySnapshot | null = null;
+/** Last applied menu fingerprint — skip rebuilds that would dismiss an open menu. */
+let appliedKey: string | null = null;
+
+/**
+ * Stable string of menu-visible fields (no action closures).
+ * Disk free GiB is floored so sub-GiB Nas poll noise does not rebuild the menu.
+ */
+function snapshotKey(snapshot: TraySnapshot): string {
+  return JSON.stringify({
+    meshConnected: snapshot.meshConnected,
+    meshLabel: snapshot.meshLabel,
+    disk: diskFingerprint(snapshot.diskLabel),
+    agents: snapshot.agents,
+    browsers: snapshot.browsers,
+    updateVersion: snapshot.updateVersion,
+    updateInstalling: snapshot.updateInstalling,
+  });
+}
+
+/** Coarse disk key: used % + whole GiB free (or the raw label when unparsed). */
+function diskFingerprint(label: string): string {
+  const pct = label.match(/(\d+)%/);
+  const gib = label.match(/([\d.]+)\s*GiB/i);
+  if (!pct) {
+    return label;
+  }
+  const gibBucket = gib ? String(Math.floor(Number(gib[1]))) : "?";
+  return `${pct[1]}|${gibBucket}`;
+}
 
 /** True on desktop Tauri (not iOS/Android webview shells). */
 export async function isDesktopTrayHost(): Promise<boolean> {
@@ -86,8 +115,15 @@ async function drainTrayQueue(): Promise<void> {
 /**
  * Install the macOS app menu first, then the tray icon.
  * App menu must not depend on tray icon success.
+ * Skips when the snapshot's visible labels are unchanged — replacing an open
+ * macOS menu dismisses it (felt like the menu closing after ~1s).
  */
 async function applyDesktopShell(snapshot: TraySnapshot): Promise<void> {
+  const key = snapshotKey(snapshot);
+  if (key === appliedKey && tray !== null) {
+    return;
+  }
+
   const { type } = await import("@tauri-apps/plugin-os");
   const platform = type();
   const menu = await Menu.new({ items: menuBranches(snapshot) });
@@ -98,6 +134,7 @@ async function applyDesktopShell(snapshot: TraySnapshot): Promise<void> {
 
   try {
     await ensureTray(menu, platform);
+    appliedKey = key;
   } catch (err) {
     if (platform === "macos") {
       throw new Error(

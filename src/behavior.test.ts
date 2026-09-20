@@ -23,7 +23,7 @@ import {
 } from "./store/chat";
 import type { ChatMessage } from "./store/chat";
 import type { LogRecord } from "./shared/api/types";
-import { buildTree, visualState } from "./features/agents/tree";
+import { buildTree, isLiveVisual, statusLabel, visualState } from "./features/agents/tree";
 import {
   hasRememberedSessions,
   pickLiveBrowser,
@@ -346,11 +346,34 @@ describe("agent tree", () => {
     expect(forest.map((n) => n.id).sort()).toEqual(["orphan", "planner"]);
   });
 
-  it("marks running lanes", () => {
+  it("marks running lanes by shape key", () => {
     expect(visualState(planner, { reasoning: true, conversation: false })).toBe(
-      "running",
+      "reasoning",
+    );
+    expect(visualState(planner, { reasoning: false, conversation: true })).toBe(
+      "conversation",
+    );
+    expect(visualState(planner, { reasoning: true, conversation: true })).toBe(
+      "both",
     );
     expect(visualState({ ...planner, active: false }, undefined)).toBe("dormant");
+  });
+
+  it("labels live shapes and treats them as in-flight", () => {
+    expect(isLiveVisual("reasoning")).toBe(true);
+    expect(isLiveVisual("conversation")).toBe(true);
+    expect(isLiveVisual("both")).toBe(true);
+    expect(isLiveVisual("idle")).toBe(false);
+    expect(isLiveVisual("dormant")).toBe(false);
+    expect(
+      statusLabel("reasoning", { reasoning: true, conversation: false }),
+    ).toMatch(/reasoning/);
+    expect(
+      statusLabel("both", { reasoning: true, conversation: true }),
+    ).toMatch(/reasoning \+ conversation/);
+    expect(
+      statusLabel("idle", { reasoning: false, conversation: false }),
+    ).toBe("Idle");
   });
 
   it("returns an empty forest when there are no agents", () => {

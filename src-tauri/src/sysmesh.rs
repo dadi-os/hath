@@ -24,7 +24,6 @@ const DAEMON_WAIT: Duration = Duration::from_secs(20);
 const MAGIC_DNS_RESOLVER_INSTALL: &str = "/bin/mkdir -p /etc/resolver && /usr/bin/printf 'nameserver 100.100.100.100\\n' > /etc/resolver/dadi && /usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder 2>/dev/null; true";
 
 #[cfg(target_os = "macos")]
-const MAGIC_DNS_RESOLVER_REMOVE: &str = "/bin/rm -f /etc/resolver/dadi && /usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder 2>/dev/null; true";
 
 static DAEMON_PID: Mutex<Option<u32>> = Mutex::new(None);
 
@@ -62,7 +61,10 @@ pub fn start(
     Ok(port)
 }
 
-/// Leave the mesh (`tailscale down`) and stop the managed daemon when we started it.
+/// Leave the mesh (`tailscale down`) and stop the local HTTP proxy.
+///
+/// Keeps `tailscaled` and `/etc/resolver/dadi` so the next join does not
+/// re-prompt for macOS administrator privileges.
 pub fn stop(app: &AppHandle) -> Result<(), String> {
     let state_dir = sysmesh_dir(app)?;
     let socket = local_api_path(&state_dir);
@@ -76,11 +78,7 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
             .status();
     }
     crate::meshproxy::stop();
-    stop_daemon(&state_dir, &socket);
-    if let Err(e) = remove_magic_dns_resolver() {
-        logutil::emit("error", format!("sysmesh MagicDNS resolver: {e}"));
-    }
-    logutil::emit("info", "sysmesh down");
+    logutil::emit("info", "sysmesh down (daemon kept for rejoin)");
     Ok(())
 }
 
@@ -556,45 +554,6 @@ fn windows_daemon_ready_timeout(log_path: &Path) -> String {
     )
 }
 
-fn stop_daemon(state_dir: &Path, socket: &Path) {
-    if let Ok(mut guard) = DAEMON_PID.lock() {
-        if let Some(pid) = guard.take() {
-            let _ = Command::new(if cfg!(windows) { "taskkill" } else { "kill" })
-                .args(if cfg!(windows) {
-                    vec!["/PID".into(), pid.to_string(), "/F".into()]
-                } else {
-                    vec![pid.to_string()]
-                })
-                .status();
-        }
-    }
-    #[cfg(unix)]
-    {
-        if let Ok(output) = Command::new("lsof")
-            .args(["-t", &format!("--{}", socket.display())])
-            .output()
-        {
-            for pid in String::from_utf8_lossy(&output.stdout).split_whitespace() {
-                let _ = Command::new("kill").arg(pid).status();
-            }
-        }
-        let pidfile = state_dir.join("tailscaled.pid");
-        if let Ok(pid) = fs::read_to_string(&pidfile) {
-            let _ = Command::new("kill").arg(pid.trim()).status();
-        }
-        let _ = fs::remove_file(socket);
-    }
-    #[cfg(windows)]
-    {
-        let _ = socket;
-        let pidfile = state_dir.join("tailscaled.pid");
-        if let Ok(pid) = fs::read_to_string(&pidfile) {
-            let _ = Command::new("taskkill")
-                .args(["/PID", pid.trim(), "/F"])
-                .status();
-        }
-    }
-}
 
 fn tailscale_up(
     bins: &Bins,
@@ -677,19 +636,6 @@ fn ensure_magic_dns_resolver() -> Result<(), String> {
     }
 }
 
-fn remove_magic_dns_resolver() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        if !Path::new("/etc/resolver/dadi").exists() {
-            return Ok(());
-        }
-        run_osascript_admin(MAGIC_DNS_RESOLVER_REMOVE)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(())
-    }
-}
 
 #[cfg(target_os = "macos")]
 fn macos_magic_dns_resolver_ok() -> bool {

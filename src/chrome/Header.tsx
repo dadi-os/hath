@@ -4,7 +4,11 @@ import { isTauriRuntime } from "../shared/api/runtime";
 import { detectDesktopOs } from "../target";
 import { WindowControls } from "./WindowControls";
 
-/** Toggle maximize on the current Tauri window; no-op outside the desktop shell. */
+/**
+ * Toggle maximize on the current Tauri window.
+ * macOS Overlay titlebars already zoom on native double-click — do not also
+ * call `toggleMaximize` or the window maximizes then restores.
+ */
 function toggleMaximize() {
   if (!isTauriRuntime()) {
     return;
@@ -23,6 +27,8 @@ export function Header() {
       : frameless
         ? "pl-3 pr-0"
         : "px-4";
+  /** Only bind custom zoom on frameless shells; macOS uses native zoom. */
+  const onTitleDoubleClick = frameless ? toggleMaximize : undefined;
 
   return (
     <header
@@ -31,7 +37,7 @@ export function Header() {
       <div
         className="titlebar-drag min-h-0 min-w-[24px] flex-1"
         data-tauri-drag-region
-        onDoubleClick={toggleMaximize}
+        onDoubleClick={onTitleDoubleClick}
       />
       <button
         type="button"
@@ -46,7 +52,7 @@ export function Header() {
       <div
         className="titlebar-drag min-h-0 min-w-[24px] flex-1"
         data-tauri-drag-region
-        onDoubleClick={toggleMaximize}
+        onDoubleClick={onTitleDoubleClick}
       />
       {frameless ? <WindowControls /> : null}
     </header>

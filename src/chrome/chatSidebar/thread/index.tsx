@@ -60,9 +60,9 @@ export function ThreadView({
     <motion.div
       key={viewKey}
       className="absolute inset-0"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      initial={{ opacity: 0, x: 28 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 28 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
       <div

@@ -153,7 +153,23 @@ export function AgentPopover({
             </span>
           </Tooltip>
           <span className="text-ink-ghost">Status</span>
-          <span className="text-ink-muted">{status}</span>
+          <span className="inline-flex items-center gap-2 text-ink-muted">
+            {running.reasoning ? (
+              <span
+                className="inline-block size-1.5 rotate-45 rounded-[1px] bg-sage"
+                title="Reasoning"
+                aria-label="Reasoning"
+              />
+            ) : null}
+            {running.conversation ? (
+              <span
+                className="inline-block size-1.5 rounded-full bg-sage"
+                title="Conversation"
+                aria-label="Conversation"
+              />
+            ) : null}
+            {status}
+          </span>
           {parent ? (
             <>
               <span className="text-ink-ghost">Parent</span>

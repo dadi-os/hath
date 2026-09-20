@@ -27,9 +27,11 @@ import {
 } from "./sessions";
 import {
   buildTree,
+  isLiveVisual,
   linkPath,
   visualState,
   type AgentTreeNode,
+  type NodeVisual,
 } from "./tree";
 
 const PEEK_DELAY_MS = 350;
@@ -51,6 +53,67 @@ function clientToSvg(
   }
   const p = pt.matrixTransform(ctm.inverse());
   return { x: p.x, y: p.y };
+}
+
+/**
+ * Core glyph for an agent node.
+ * Disc = conversation / idle; diamond = reasoning; both = disc + inner diamond.
+ */
+function AgentNodeCore({
+  visual,
+  r,
+  className,
+  delay,
+}: {
+  visual: NodeVisual;
+  r: number;
+  className: string;
+  delay: number;
+}) {
+  const enter = {
+    initial: { opacity: 0, scale: 0 },
+    animate: { opacity: 1, scale: 1 },
+    transition: { duration: SLOW_S, ease: EASE, delay },
+  };
+
+  if (visual === "reasoning") {
+    const s = r * 1.35;
+    return (
+      <g transform="rotate(45)">
+        <motion.rect
+          className={className}
+          x={-s / 2}
+          y={-s / 2}
+          width={s}
+          height={s}
+          {...enter}
+        />
+      </g>
+    );
+  }
+
+  if (visual === "both") {
+    const s = r * 0.95;
+    return (
+      <g>
+        <motion.circle className={className} r={r} {...enter} />
+        <g transform="rotate(45)">
+          <motion.rect
+            className="agent-node__core-inset"
+            x={-s / 2}
+            y={-s / 2}
+            width={s}
+            height={s}
+            initial={{ opacity: 0, scale: 0 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: SLOW_S, ease: EASE, delay: delay + 0.04 }}
+          />
+        </g>
+      </g>
+    );
+  }
+
+  return <motion.circle className={className} r={r} {...enter} />;
 }
 
 export type AgentTreeProps = {
@@ -529,6 +592,7 @@ export function AgentTree({
             }
             const visual = visualState(agent, runningMap[agent.id]);
             const selected = selectedId === agent.id;
+            const live = isLiveVisual(visual);
             const r = visual === "dormant" ? rDormant : rIdle;
             const depth = node.depth;
             const delay = Math.min(depth * 0.03, 0.18);
@@ -564,7 +628,7 @@ export function AgentTree({
               >
                 <circle className="agent-node__hit" r={r + 10} />
 
-                {visual === "running" ? (
+                {live ? (
                   <>
                     <circle className="agent-node__glow" r={r * 1.55} />
                     <circle className="agent-node__halo" r={r * 1.65} />
@@ -575,11 +639,11 @@ export function AgentTree({
                   </>
                 ) : null}
 
-                <motion.circle
+                <AgentNodeCore
+                  visual={visual}
+                  r={r}
                   className={coreClass}
-                  initial={{ r: 0, opacity: 0 }}
-                  animate={{ r, opacity: 1 }}
-                  transition={{ duration: SLOW_S, ease: EASE, delay }}
+                  delay={delay}
                 />
 
                 {!hideLabels ? (

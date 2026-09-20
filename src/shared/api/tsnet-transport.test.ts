@@ -83,6 +83,15 @@ describe("MeshTransport.request", () => {
       if (cmd === "mesh_start") {
         return 4242;
       }
+      if (cmd === "mesh_status") {
+        return 1;
+      }
+      if (cmd === "mesh_load_credentials") {
+        return creds;
+      }
+      if (cmd === "mesh_stop") {
+        return;
+      }
       throw new Error(`unexpected invoke ${cmd}`);
     });
     vi.mocked(fetch).mockRejectedValue(new Error("connect failed"));
@@ -102,5 +111,99 @@ describe("MeshTransport.request", () => {
     );
     expect(transport.isActive()).toBe(true);
     expect(transport.connectionState()).toBe("connected");
+    await transport.disconnect();
   });
 });
+
+describe("MeshTransport tunnel recover", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    vi.mocked(fetch).mockReset();
+  });
+
+  it("re-runs mesh_start after a transport error while still joined", async () => {
+    let starts = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "mesh_start") {
+        starts += 1;
+        return 4242;
+      }
+      if (cmd === "mesh_status") {
+        return 1;
+      }
+      if (cmd === "mesh_load_credentials") {
+        return creds;
+      }
+      if (cmd === "mesh_stop") {
+        return;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    vi.mocked(fetch).mockRejectedValue(new Error("connect failed"));
+
+    const transport = new MeshTransport();
+    await transport.connect(creds);
+    expect(starts).toBe(1);
+
+    await expect(
+      transport.request({
+        baseUrl: DIMAAG,
+        path: "/agents",
+        method: "GET",
+      }),
+    ).rejects.toThrow(/connect failed/);
+
+    await waitMs(500);
+
+    expect(starts).toBe(2);
+    expect(transport.isActive()).toBe(true);
+    expect(transport.connectionState()).toBe("connected");
+    await transport.disconnect();
+  });
+
+  it("does not recover on application HTTP errors", async () => {
+    let starts = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "mesh_start") {
+        starts += 1;
+        return 4242;
+      }
+      if (cmd === "mesh_status") {
+        return 1;
+      }
+      if (cmd === "mesh_load_credentials") {
+        return creds;
+      }
+      if (cmd === "mesh_stop") {
+        return;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => "dimaag down",
+    } as Response);
+
+    const transport = new MeshTransport();
+    await transport.connect(creds);
+    await expect(
+      transport.request({
+        baseUrl: DIMAAG,
+        path: "/health",
+        method: "GET",
+      }),
+    ).rejects.toThrow(/HTTP 503/);
+
+    await waitMs(500);
+    expect(starts).toBe(1);
+    expect(transport.connectionState()).toBe("connected");
+    await transport.disconnect();
+  });
+});
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
