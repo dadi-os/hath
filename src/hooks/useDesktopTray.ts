@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { dimaag, nas } from "../shared/api";
+import { dimaag, isMeshOnline, nas } from "../shared/api";
 import { useConnection } from "./useConnection";
 import { useDesktopUpdate } from "./useDesktopUpdate";
 import { useTarget } from "./useTarget";
@@ -48,6 +48,7 @@ export function useDesktopTray(opts: {
   const navigate = useNavigate();
   const { state, disconnect } = useConnection();
   const update = useDesktopUpdate();
+  const online = isMeshOnline(state);
 
   const onProvision = useEffectEvent(opts.onProvision);
   const installUpdate = useEffectEvent(() => {
@@ -63,21 +64,21 @@ export function useDesktopTray(opts: {
       const { agents } = await dimaag.listAgents();
       return agents;
     },
-    enabled: target === "desktop" && state === "connected",
+    enabled: target === "desktop" && online,
     refetchInterval: TRAY_REFRESH_MS,
   });
 
   const statusQuery = useQuery({
     queryKey: ["nas", "status", "tray"],
     queryFn: () => nas.getStatus(),
-    enabled: target === "desktop" && state === "connected",
+    enabled: target === "desktop" && online,
     refetchInterval: POLL_MS,
   });
 
   const browsersQuery = useQuery({
     queryKey: ["nas", "browsers"],
     queryFn: () => nas.listBrowsers(),
-    enabled: target === "desktop" && state === "connected",
+    enabled: target === "desktop" && online,
     refetchInterval: TRAY_REFRESH_MS,
   });
 
@@ -126,13 +127,12 @@ export function useDesktopTray(opts: {
       agents.status === "ready"
         ? {
             status: "ready" as const,
-            items: agents.items
-              .map((a) => ({
-                id: a.id,
-                name: a.name,
-                active: a.active,
-                running: a.running,
-              })),
+            items: agents.items.map((a) => ({
+              id: a.id,
+              name: a.name,
+              active: a.active,
+              running: a.running,
+            })),
           }
         : agents;
 
@@ -153,19 +153,21 @@ export function useDesktopTray(opts: {
       ? "Disk · unavailable"
       : statusQuery.data
         ? formatDiskLabel(statusQuery.data.disk)
-        : state === "connected"
+        : online
           ? "Disk · …"
           : "Disk · —";
 
     const snapshot: TraySnapshot = {
-      meshConnected: state === "connected",
+      meshConnected: online,
       diskLabel,
       meshLabel:
         state === "connected"
           ? "Mesh · Online"
-          : state === "connecting"
-            ? "Mesh · Joining…"
-            : "Mesh · Offline",
+          : state === "reconnecting"
+            ? "Mesh · Reconnecting…"
+            : state === "connecting"
+              ? "Mesh · Joining…"
+              : "Mesh · Offline",
       agents: agentItems,
       browsers: browserItems,
       updateVersion: update.available ? update.version : null,
@@ -182,6 +184,7 @@ export function useDesktopTray(opts: {
   }, [
     target,
     state,
+    online,
     statusQuery.data,
     statusQuery.isError,
     agentsQuery.data,

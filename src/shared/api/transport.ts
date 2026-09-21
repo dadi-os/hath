@@ -1,5 +1,14 @@
-/** Mesh reachability for the shell chrome (header ONLINE/OFFLINE). */
-export type ConnectionState = "connected" | "connecting" | "disconnected";
+/** Mesh reachability for the shell chrome. */
+export type ConnectionState =
+  | "connected"
+  | "connecting"
+  | "reconnecting"
+  | "disconnected";
+
+/** True while the mesh is usable or mid-recover (not left / never joined). */
+export function isMeshOnline(state: ConnectionState): boolean {
+  return state === "connected" || state === "reconnecting";
+}
 
 /**
  * Wire abstraction for domain clients.
@@ -35,4 +44,9 @@ export interface Transport {
   onConnectionChange(listener: (state: ConnectionState) => void): () => void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  /**
+   * Immediate health probe (wake / focus). No-op when not joined.
+   * Optional — browser transport ignores it.
+   */
+  nudgeHealth?(): void;
 }

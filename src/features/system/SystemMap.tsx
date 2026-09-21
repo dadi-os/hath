@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import { nas } from "../../shared/api";
+import { isMeshOnline, nas } from "../../shared/api";
 import type { NasStatus } from "../../shared/api/nas";
 import { ErrorLogCards } from "../logs/LogExplorer";
 import { useConnection } from "../../hooks/useConnection";
@@ -136,7 +136,7 @@ function resourceRows(status: NasStatus): ResourceRow[] {
  */
 export function SystemMap({ mode, className }: SystemMapProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
   const preview = mode === "preview";
 
   const statusQuery = useQuery({

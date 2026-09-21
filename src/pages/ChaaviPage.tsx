@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
 import { useConnection } from "../hooks/useConnection";
-import { CHAAVI_VAULT, chaavi } from "../shared/api";
+import { CHAAVI_VAULT, chaavi, isMeshOnline } from "../shared/api";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 import { POLL_MS } from "../shared/lib/ux/poll";
 
@@ -12,7 +12,7 @@ import { POLL_MS } from "../shared/lib/ux/poll";
  */
 export function ChaaviPage() {
   const { state } = useConnection();
-  const connected = state === "connected";
+  const connected = isMeshOnline(state);
 
   const healthQuery = useQuery({
     queryKey: ["chaavi", "health"],

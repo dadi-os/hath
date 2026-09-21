@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { DIMAAG_URL, dimaag, transport } from "../shared/api";
 import type { AgentRecord, DimaagEvent } from "../shared/api/types";
+import type { ConnectionState } from "../shared/api/transport";
 import { subscribeConnection } from "../store/connection";
 import {
   hydrateFromLogs,
@@ -88,6 +89,7 @@ export function useEvents(): void {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let unwatchStream: (() => void) | null = null;
     let wasActive = false;
+    let prevConn: ConnectionState = transport.connectionState();
 
     const clearTimer = () => {
       if (timer !== null) {
@@ -214,9 +216,25 @@ export function useEvents(): void {
         if (gen !== generation) {
           return;
         }
-        if (state === "disconnected" && transport.isActive()) {
+        const prev = prevConn;
+        prevConn = state;
+        if (state === "reconnecting") {
           teardownStream();
-          scheduleReconnect(gen);
+          return;
+        }
+        if (
+          state === "connected" &&
+          prev === "reconnecting" &&
+          transport.isActive()
+        ) {
+          teardownStream();
+          clearTimer();
+          backoff = INITIAL_BACKOFF_MS;
+          void open(gen);
+          return;
+        }
+        if (state === "disconnected") {
+          teardownStream();
         }
       });
     };
@@ -227,6 +245,7 @@ export function useEvents(): void {
         wasActive = true;
         generation += 1;
         backoff = INITIAL_BACKOFF_MS;
+        prevConn = transport.connectionState();
         void open(generation);
         return;
       }

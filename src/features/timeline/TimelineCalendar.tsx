@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import { yaad } from "../../shared/api";
+import { isMeshOnline, yaad } from "../../shared/api";
 import type { NodeRecord, PlanDetail, PlanStatus } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
@@ -91,7 +91,7 @@ export function TimelineCalendar({
   hideIdeas = mode === "preview",
 }: TimelineCalendarProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
   const preview = mode === "preview";
 
   const [internalView, setInternalView] = useState<TimelineView>("week");

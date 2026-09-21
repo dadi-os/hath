@@ -84,7 +84,7 @@ describe("MeshTransport.request", () => {
         return 4242;
       }
       if (cmd === "mesh_status") {
-        return 1;
+        return 2;
       }
       if (cmd === "mesh_load_credentials") {
         return creds;
@@ -121,7 +121,51 @@ describe("MeshTransport tunnel recover", () => {
     vi.mocked(fetch).mockReset();
   });
 
-  it("re-runs mesh_start after a transport error while still joined", async () => {
+  it("re-runs mesh_start after consecutive mesh_status offline probes", async () => {
+    let starts = 0;
+    let statusCalls = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "mesh_start") {
+        starts += 1;
+        return 4242;
+      }
+      if (cmd === "mesh_status") {
+        statusCalls += 1;
+        // First two probes offline → recover; later probes healthy.
+        return statusCalls <= 2 ? 0 : 2;
+      }
+      if (cmd === "mesh_load_credentials") {
+        return creds;
+      }
+      if (cmd === "mesh_stop") {
+        return;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    const transport = new MeshTransport();
+    const states: string[] = [];
+    transport.onConnectionChange((s) => {
+      states.push(s);
+    });
+    await transport.connect(creds);
+    expect(starts).toBe(1);
+
+    transport.nudgeHealth();
+    await waitMs(50);
+    expect(transport.connectionState()).toBe("connected");
+
+    transport.nudgeHealth();
+    await waitMs(400);
+
+    expect(starts).toBe(2);
+    expect(transport.isActive()).toBe(true);
+    expect(transport.connectionState()).toBe("connected");
+    expect(states).toContain("reconnecting");
+    await transport.disconnect();
+  });
+
+  it("does not recover on a single request blip while mesh_status is up", async () => {
     let starts = 0;
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "mesh_start") {
@@ -129,7 +173,7 @@ describe("MeshTransport tunnel recover", () => {
         return 4242;
       }
       if (cmd === "mesh_status") {
-        return 1;
+        return 2;
       }
       if (cmd === "mesh_load_credentials") {
         return creds;
@@ -143,8 +187,6 @@ describe("MeshTransport tunnel recover", () => {
 
     const transport = new MeshTransport();
     await transport.connect(creds);
-    expect(starts).toBe(1);
-
     await expect(
       transport.request({
         baseUrl: DIMAAG,
@@ -154,9 +196,7 @@ describe("MeshTransport tunnel recover", () => {
     ).rejects.toThrow(/connect failed/);
 
     await waitMs(500);
-
-    expect(starts).toBe(2);
-    expect(transport.isActive()).toBe(true);
+    expect(starts).toBe(1);
     expect(transport.connectionState()).toBe("connected");
     await transport.disconnect();
   });
@@ -169,7 +209,7 @@ describe("MeshTransport tunnel recover", () => {
         return 4242;
       }
       if (cmd === "mesh_status") {
-        return 1;
+        return 2;
       }
       if (cmd === "mesh_load_credentials") {
         return creds;

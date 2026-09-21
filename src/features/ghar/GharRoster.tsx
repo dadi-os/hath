@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ghar } from "../../shared/api";
+import { ghar, isMeshOnline } from "../../shared/api";
 import type { GharDevice } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { POLL_MS } from "../../shared/lib/ux/poll";
@@ -40,7 +40,7 @@ function roomGroups(devices: GharDevice[]): Array<{
  */
 export function GharRoster({ mode, className }: GharRosterProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
   const queryClient = useQueryClient();
   const preview = mode === "preview";
 

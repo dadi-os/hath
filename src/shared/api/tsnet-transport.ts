@@ -17,9 +17,12 @@ export { NotProvisionedError } from "./errors";
  */
 const SYSTEM_MESH_PORT = 0;
 
-const HEALTH_MS = 8_000;
-const RECOVER_INITIAL_MS = 1_000;
-const RECOVER_MAX_MS = 30_000;
+/** Probe often so sleep/wake and brief flaps are caught quickly. */
+const HEALTH_MS = 2_000;
+/** Require consecutive bad probes before flipping to reconnecting. */
+const FAIL_STREAK_BEFORE_RECOVER = 2;
+const RECOVER_INITIAL_MS = 500;
+const RECOVER_MAX_MS = 15_000;
 
 /**
  * Transport that dials Dimaag/Yaad/Nas through dadiMesh.
@@ -27,7 +30,8 @@ const RECOVER_MAX_MS = 30_000;
  * Desktop: system Tailscale TUN + local `/@host` proxy (MagicDNS, not libc).
  * iOS: in-process dialer → `http://127.0.0.1:<port>/@host/...`.
  * Join/leave is explicit; after a successful join, tunnel flaps auto-recover
- * with backoff until the user leaves.
+ * with backoff until the user leaves. Recover uses `reconnecting` (not
+ * `connecting`) so the power overlay does not cover the shell.
  */
 export class MeshTransport implements Transport {
   private port: number | null = null;
@@ -42,6 +46,8 @@ export class MeshTransport implements Transport {
   private recovering = false;
   private recoverBackoff = RECOVER_INITIAL_MS;
   private healthGen = 0;
+  private failStreak = 0;
+  private wakeUnsub: (() => void) | null = null;
 
   isActive(): boolean {
     return this.active;
@@ -109,6 +115,7 @@ export class MeshTransport implements Transport {
       this.port = await this.startNode(credentials);
       this.setProvisioningNeeded(false);
       this.recoverBackoff = RECOVER_INITIAL_MS;
+      this.failStreak = 0;
       this.setState("connected");
       this.startHealthWatch();
     } catch (err) {
@@ -130,6 +137,14 @@ export class MeshTransport implements Transport {
       this.port = null;
       this.setState("disconnected");
     }
+  }
+
+  /** Immediate probe after laptop wake / window focus. */
+  nudgeHealth(): void {
+    if (!this.active || this.recovering) {
+      return;
+    }
+    void this.probeHealth();
   }
 
   async request<T>(opts: {
@@ -164,11 +179,11 @@ export class MeshTransport implements Transport {
         body,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.scheduleRecover(`request transport error: ${message}`);
+      void this.probeHealth();
       throw err instanceof Error ? err : new Error(String(err));
     }
 
+    this.failStreak = 0;
     this.markSuccess();
 
     if (!response.ok) {
@@ -245,12 +260,15 @@ export class MeshTransport implements Transport {
       }
       void this.probeHealth();
     }, HEALTH_MS);
+    this.bindWakeListeners();
   }
 
   private stopHealthWatch(): void {
     this.healthGen += 1;
     this.recovering = false;
+    this.failStreak = 0;
     this.stopHealthWatchTimers();
+    this.unbindWakeListeners();
   }
 
   private stopHealthWatchTimers(): void {
@@ -264,9 +282,36 @@ export class MeshTransport implements Transport {
     }
   }
 
+  /** Laptop lid / app focus — probe immediately instead of waiting for the interval. */
+  private bindWakeListeners(): void {
+    this.unbindWakeListeners();
+    if (typeof document === "undefined" || typeof window === "undefined") {
+      return;
+    }
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        this.nudgeHealth();
+      }
+    };
+    const onFocus = () => {
+      this.nudgeHealth();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    this.wakeUnsub = () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+    };
+  }
+
+  private unbindWakeListeners(): void {
+    this.wakeUnsub?.();
+    this.wakeUnsub = null;
+  }
+
   /**
-   * Probe tunnel + local proxy port only.
-   * App-module health (Dimaag down) is not a mesh flap — do not recover on it.
+   * Probe tunnel status only. App-module health is not a mesh flap.
+   * Needs consecutive failures before recover to ride brief sleep/wake noise.
    */
   private async probeHealth(): Promise<void> {
     if (!this.active || this.recovering) {
@@ -278,16 +323,27 @@ export class MeshTransport implements Transport {
         return;
       }
       if (status === 0) {
-        this.scheduleRecover("mesh_status offline");
+        this.failStreak += 1;
+        if (this.failStreak >= FAIL_STREAK_BEFORE_RECOVER) {
+          this.scheduleRecover("mesh_status offline");
+        }
         return;
       }
       if (this.port === null) {
-        this.scheduleRecover("proxy port missing");
+        this.failStreak += 1;
+        if (this.failStreak >= FAIL_STREAK_BEFORE_RECOVER) {
+          this.scheduleRecover("proxy port missing");
+        }
         return;
       }
+      this.failStreak = 0;
       this.markSuccess();
     } catch (err) {
-      if (this.active) {
+      if (!this.active) {
+        return;
+      }
+      this.failStreak += 1;
+      if (this.failStreak >= FAIL_STREAK_BEFORE_RECOVER) {
         const message = err instanceof Error ? err.message : String(err);
         this.scheduleRecover(`mesh_status failed: ${message}`);
       }
@@ -303,19 +359,19 @@ export class MeshTransport implements Transport {
     this.recoverTimer = setTimeout(() => {
       this.recoverTimer = null;
       void this.recover();
-    }, 400);
+    }, 200);
   }
 
   /**
    * Re-run `mesh_start` with logged backoff while the user still wants to be joined.
-   * Leave (`disconnect`) cancels by clearing `active`.
+   * Uses `reconnecting` so the shell stays interactive (no power overlay).
    */
   private async recover(): Promise<void> {
     if (!this.active || this.recovering) {
       return;
     }
     this.recovering = true;
-    this.setState("connecting");
+    this.setState("reconnecting");
     logLine("info", "mesh recover started", "mesh_recover_started");
 
     try {
@@ -339,6 +395,7 @@ export class MeshTransport implements Transport {
             return;
           }
           this.recoverBackoff = RECOVER_INITIAL_MS;
+          this.failStreak = 0;
           this.setState("connected");
           this.startHealthWatch();
           logLine("info", "mesh recover succeeded", "mesh_recover_ok");
@@ -418,10 +475,9 @@ export class MeshTransport implements Transport {
       }
 
       closed();
-    } catch (err) {
+    } catch {
       if (!signal.aborted) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.scheduleRecover(`sse transport error: ${message}`);
+        void this.probeHealth();
         onClose?.();
       }
     }

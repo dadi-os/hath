@@ -18,6 +18,7 @@ import {
 } from "../../features/agents/sessions";
 import { useConnection } from "../../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
+import { isMeshOnline } from "../../shared/api";
 import {
   addOptimistic,
   clearLiveChat,
@@ -97,7 +98,7 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const queryClient = useQueryClient();
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
   const chat = useSyncExternalStore(subscribeChat, getChatState, getChatState);
   const running = useSyncExternalStore(
     subscribeRunning,

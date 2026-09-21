@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import type { ReactNode } from "react";
-import { yaad } from "../../shared/api";
+import { isMeshOnline, yaad } from "../../shared/api";
 import type { NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
@@ -113,7 +113,7 @@ export type MemoryCountersProps = {
  */
 export function MemoryCounters({ className }: MemoryCountersProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
 
   const countsQuery = useQuery({
     queryKey: ["yaad", "memory-kind-counts"],

@@ -49,30 +49,48 @@ let queued: TraySnapshot | null = null;
 let appliedKey: string | null = null;
 
 /**
- * Stable string of menu-visible fields (no action closures).
- * Disk free GiB is floored so sub-GiB Nas poll noise does not rebuild the menu.
+ * Stable string of menu structure (no action closures).
+ * Omits high-churn fields (lane occupancy, disk %, browser healthy) so macOS
+ * does not rebuild and dismiss an open submenu on every poll.
  */
 function snapshotKey(snapshot: TraySnapshot): string {
   return JSON.stringify({
     meshConnected: snapshot.meshConnected,
-    meshLabel: snapshot.meshLabel,
-    disk: diskFingerprint(snapshot.diskLabel),
-    agents: snapshot.agents,
-    browsers: snapshot.browsers,
+    meshReconnecting: /Reconnecting/.test(snapshot.meshLabel),
+    agents: agentStructure(snapshot.agents),
+    browsers: browserStructure(snapshot.browsers),
     updateVersion: snapshot.updateVersion,
     updateInstalling: snapshot.updateInstalling,
   });
 }
 
-/** Coarse disk key: used % + whole GiB free (or the raw label when unparsed). */
-function diskFingerprint(label: string): string {
-  const pct = label.match(/(\d+)%/);
-  const gib = label.match(/([\d.]+)\s*GiB/i);
-  if (!pct) {
-    return label;
+/** Agent ids/names/active only — lane occupancy flickers too often for menus. */
+function agentStructure(agents: TrayListState<TrayAgent>) {
+  if (agents.status !== "ready") {
+    return { status: agents.status };
   }
-  const gibBucket = gib ? String(Math.floor(Number(gib[1]))) : "?";
-  return `${pct[1]}|${gibBucket}`;
+  return {
+    status: "ready" as const,
+    items: agents.items.map((a) => ({
+      id: a.id,
+      name: a.name,
+      active: a.active,
+    })),
+  };
+}
+
+/** Browser ids/display only. */
+function browserStructure(browsers: TrayListState<TrayBrowser>) {
+  if (browsers.status !== "ready") {
+    return { status: browsers.status };
+  }
+  return {
+    status: "ready" as const,
+    items: browsers.items.map((b) => ({
+      id: b.id,
+      display: b.display,
+    })),
+  };
 }
 
 /** True on desktop Tauri (not iOS/Android webview shells). */

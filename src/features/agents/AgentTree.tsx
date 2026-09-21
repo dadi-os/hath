@@ -11,7 +11,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { hierarchy, tree, type HierarchyPointNode } from "d3-hierarchy";
 import { motion } from "motion/react";
-import { dimaag, nas } from "../../shared/api";
+import { dimaag, isMeshOnline, nas } from "../../shared/api";
 import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
@@ -134,7 +134,7 @@ export function AgentTree({
   hideLabels = false,
 }: AgentTreeProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
   const runningMap = useSyncExternalStore(subscribeRunning, getRunning, getRunning);
   const interactive = mode === "full";
   const preview = mode === "preview";

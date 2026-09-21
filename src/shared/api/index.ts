@@ -22,6 +22,7 @@ export { CHAAVI, CHAAVI_VAULT, DIMAAG, YAAD, NAS, GHAR } from "./constants";
 export { isTauriRuntime, selectTransportKind } from "./runtime";
 export type { TransportKind } from "./runtime";
 export type { Transport, ConnectionState } from "./transport";
+export { isMeshOnline } from "./transport";
 
 /** Singleton transport — set by {@link initApi} before the app mounts. */
 export let transport!: Transport;

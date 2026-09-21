@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import { chaavi } from "../../shared/api";
+import { chaavi, isMeshOnline } from "../../shared/api";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
@@ -11,7 +11,7 @@ import { POLL_MS } from "../../shared/lib/ux/poll";
  */
 export function ChaaviCounts() {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
 
   const healthQuery = useQuery({
     queryKey: ["chaavi", "health"],

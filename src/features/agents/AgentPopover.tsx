@@ -1,6 +1,6 @@
 import { useEffect, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { dimaag } from "../../shared/api";
+import { dimaag, isMeshOnline } from "../../shared/api";
 import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { Popover } from "../../shared/components/Popover";
@@ -40,7 +40,7 @@ export function AgentPopover({
   onSelectParent,
 }: AgentPopoverProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
   const [promptOpen, setPromptOpen] = useState(false);
 
   const detailQuery = useQuery({

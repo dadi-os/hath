@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { DIMAAG_URL, dimaag, transport, usingTsnet } from "../shared/api";
 import { loadCredentials } from "../shared/api/credentials";
+import type { ConnectionState } from "../shared/api/transport";
 import {
   APP_VERSION,
   DeviceError,
@@ -62,6 +63,7 @@ export function useHathRemote(): void {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let presenceTimer: ReturnType<typeof setInterval> | null = null;
     let wasActive = false;
+    let prevConn: ConnectionState = transport.connectionState();
     let nodeName: string | null = null;
     let platformName: string | null = null;
 
@@ -193,9 +195,25 @@ export function useHathRemote(): void {
         if (gen !== generation) {
           return;
         }
-        if (state === "disconnected" && transport.isActive()) {
+        const prev = prevConn;
+        prevConn = state;
+        if (state === "reconnecting") {
           teardownStream();
-          scheduleReconnect(gen);
+          return;
+        }
+        if (
+          state === "connected" &&
+          prev === "reconnecting" &&
+          transport.isActive()
+        ) {
+          teardownStream();
+          clearTimer();
+          backoff = INITIAL_BACKOFF_MS;
+          void open(gen);
+          return;
+        }
+        if (state === "disconnected") {
+          teardownStream();
         }
       });
     };
@@ -206,6 +224,7 @@ export function useHathRemote(): void {
         wasActive = true;
         generation += 1;
         backoff = INITIAL_BACKOFF_MS;
+        prevConn = transport.connectionState();
         void open(generation);
         return;
       }

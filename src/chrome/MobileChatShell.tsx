@@ -14,7 +14,7 @@ import {
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 import { getChatState, openDadi, subscribeChat } from "../store/chat";
 import { disconnectTransport } from "../store/connection";
-import { usingTsnet } from "../shared/api";
+import { usingTsnet, isMeshOnline } from "../shared/api";
 
 /**
  * Mobile-only shell — ChatGPT-style chat app.
@@ -41,9 +41,11 @@ export function MobileChatShell() {
   const statusLabel =
     state === "connected"
       ? "ONLINE"
-      : state === "connecting"
-        ? "…"
-        : "OFFLINE";
+      : state === "reconnecting"
+        ? "RECONNECTING"
+        : state === "connecting"
+          ? "…"
+          : "OFFLINE";
 
   const startNew = () => {
     openDadi();
@@ -53,7 +55,9 @@ export function MobileChatShell() {
 
   const showOnboarding = usingTsnet && needsProvisioning;
   const showPower =
-    usingTsnet && !needsProvisioning && state !== "connected";
+    usingTsnet &&
+    !needsProvisioning &&
+    (state === "disconnected" || state === "connecting");
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-transparent">
@@ -87,7 +91,7 @@ export function MobileChatShell() {
           {statusLabel}
         </span>
 
-        {state === "connected" ? (
+        {isMeshOnline(state) ? (
           <IconButton
             label="Leave dadiMesh"
             size="sm"

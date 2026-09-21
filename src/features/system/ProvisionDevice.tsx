@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
-import { nas } from "../../shared/api";
+import { isMeshOnline, nas } from "../../shared/api";
 import { useConnection } from "../../hooks/useConnection";
 import { renderBrandedQr } from "../../shared/lib/qr/brandedQr";
 
@@ -10,7 +10,7 @@ import { renderBrandedQr } from "../../shared/lib/qr/brandedQr";
  */
 export function ProvisionDevice() {
   const { state } = useConnection();
-  const connected = state === "connected";
+  const connected = isMeshOnline(state);
   const [nodeName, setNodeName] = useState("");
   const [bundle, setBundle] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);

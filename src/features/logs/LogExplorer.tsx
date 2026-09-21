@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import { nas } from "../../shared/api";
+import { isMeshOnline, nas } from "../../shared/api";
 import type { NasLogEntry, NasLogLevel } from "../../shared/api/nas";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
@@ -259,7 +259,7 @@ function SeverityGlider({
  */
 export function LogExplorer({ className }: LogExplorerProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [level, setLevel] = useState<NasLogLevel | "">("");
@@ -439,7 +439,7 @@ export type ErrorLogCardsProps = {
  */
 export function ErrorLogCards({ className, limit = 8 }: ErrorLogCardsProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
 
   const errorsQuery = useQuery({
     queryKey: ["nas", "logs", "errors", limit],

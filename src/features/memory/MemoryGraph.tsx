@@ -19,7 +19,7 @@ import {
   type SimulationLinkDatum,
 } from "d3-force";
 import { motion } from "motion/react";
-import { yaad } from "../../shared/api";
+import { isMeshOnline, yaad } from "../../shared/api";
 import type { EdgeRecord, NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { Popover } from "../../shared/components/Popover";
@@ -142,7 +142,7 @@ export function MemoryGraph({
   className,
 }: MemoryGraphProps) {
   const { state: connection } = useConnection();
-  const connected = connection === "connected";
+  const connected = isMeshOnline(connection);
   const preview = mode === "preview";
   const cap = preview ? 18 : 40;
 
