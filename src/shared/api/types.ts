@@ -251,6 +251,8 @@ export type ChaaviItem = {
   username: string | null;
   /** Associated URIs. */
   uris: string[];
+  /** True when a login stores a FIDO2 passkey. */
+  hasPasskey: boolean;
 };
 
 /** GET /health — process is up; vault may still be unconfigured. */
@@ -284,7 +286,11 @@ export type GharDevice = {
   /** Matter product string. Quiet subtitle; the row `name` is the device's own label. */
   product_name: string | null;
   room: { id: string; name: string };
-  capabilities: Array<{ capability: GharCapabilityName }>;
+  capabilities: Array<{
+    capability: GharCapabilityName;
+    /** Capability config from Ghar, such as color `modes`. */
+    config?: Record<string, unknown>;
+  }>;
   online: boolean;
   last_seen_at: string | null;
   state: Record<string, GharAttributeState>;

@@ -4,22 +4,22 @@
  */
 
 import {
+  useEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
 } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LayoutGroup, motion } from "motion/react";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ghar, isMeshOnline } from "../../../shared/api";
 import { GHAR_DEVICES_KEY, GHAR_ROOMS_KEY } from "../../../shared/api/ghar";
 import type { GharDevice, GharRoom } from "../../../shared/api/types";
 import { useConnection } from "../../../hooks/useConnection";
 import { IconPlus } from "../../../shared/components/IconButton";
-import { EASE, SLOW_S } from "../../../shared/lib/ux/motion";
+import { Popover, type PopoverAnchor } from "../../../shared/components/Popover";
 import { POLL_MS } from "../../../shared/lib/ux/poll";
-import { shownError, roomTitle } from "../commission";
+import { shownError, roomTitle, UnplacedCommission } from "../commission";
 import { DeviceGlyph, glyphFor } from "./icons";
+import { DevicePopover } from "./inspector";
 
 export type GharHouseProps = {
   /** `preview` is the home widget: room tiles only. `full` is the page. */
@@ -42,10 +42,14 @@ type PointerSession = {
   dragging: boolean;
 };
 
-const DRAG_PX = 6;
+const DRAG_PX = 4;
+/** How long a toggle stays gray even when Ghar answers immediately. */
+const TOGGLE_HOLD_MS = 280;
+const HOVER_OPEN_MS = 160;
+const HOVER_CLOSE_MS = 320;
 
 const panel =
-  "flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius)] border border-dashed px-3 py-3 transition-[border-color,background-color,box-shadow] duration-slow ease-hath";
+  "flex min-h-0 min-w-0 flex-col rounded-[var(--radius)] border border-dashed px-3 py-3 transition-[border-color,background-color,box-shadow] duration-slow ease-hath";
 
 function isSwitchable(device: GharDevice): boolean {
   return device.capabilities.some((cap) => cap.capability === "switchable");
@@ -77,8 +81,35 @@ function panelTone(lit: boolean, hot: boolean): string {
 }
 
 /**
+ * Write confirmed attributes after Ghar accepts a command.
+ * The card stays on the previous reading until this runs.
+ */
+function confirmState(queryClient: QueryClient, id: string, values: Record<string, unknown>): void {
+  const changedAt = new Date().toISOString();
+  queryClient.setQueryData<{ devices: GharDevice[] }>(GHAR_DEVICES_KEY, (current) =>
+    current
+      ? {
+          devices: current.devices.map((device) =>
+            device.id === id
+              ? {
+                  ...device,
+                  state: {
+                    ...device.state,
+                    ...Object.fromEntries(
+                      Object.entries(values).map(([key, value]) => [key, { value, changed_at: changedAt }]),
+                    ),
+                  },
+                }
+              : device,
+          ),
+        }
+      : current,
+  );
+}
+
+/**
  * Rooms and devices. Preview tiles toggle a room and do not navigate.
- * Full mode: press a device, drag it into another room. The ghost stays here.
+ * Full mode: click a device to switch it, hover for its controls, drag it into a room.
  */
 export function GharHouse({ mode }: GharHouseProps) {
   const { state: connection } = useConnection();
@@ -86,9 +117,28 @@ export function GharHouse({ mode }: GharHouseProps) {
   const queryClient = useQueryClient();
   const canvasRef = useRef<HTMLDivElement>(null);
   const session = useRef<PointerSession | null>(null);
+  const openTimer = useRef<number | null>(null);
+  const closeTimer = useRef<number | null>(null);
   const [drag, setDrag] = useState<DragGhost | null>(null);
+  const [waiting, setWaiting] = useState<ReadonlySet<string>>(() => new Set());
+  const waitingRef = useRef<Set<string>>(new Set());
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<PopoverAnchor | null>(null);
   const [naming, setNaming] = useState(false);
+  const [roomAnchor, setRoomAnchor] = useState<PopoverAnchor | null>(null);
   const [roomDraft, setRoomDraft] = useState("");
+  const roomButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    return () => {
+      if (openTimer.current !== null) {
+        window.clearTimeout(openTimer.current);
+      }
+      if (closeTimer.current !== null) {
+        window.clearTimeout(closeTimer.current);
+      }
+    };
+  }, []);
 
   const devicesQuery = useQuery({
     queryKey: GHAR_DEVICES_KEY,
@@ -104,11 +154,81 @@ export function GharHouse({ mode }: GharHouseProps) {
 
   const toggle = useMutation({
     mutationFn: (ids: string[]) => Promise.all(ids.map((id) => ghar.toggleSwitch(id))),
+    onSuccess: (_data, ids) => {
+      const current = queryClient.getQueryData<{ devices: GharDevice[] }>(GHAR_DEVICES_KEY);
+      for (const id of ids) {
+        const device = current?.devices.find((item) => item.id === id);
+        confirmState(queryClient, id, { on: device?.state.on?.value !== true });
+      }
+    },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: GHAR_DEVICES_KEY });
     },
   });
-  const pendingIds = new Set(toggle.isPending ? (toggle.variables ?? []) : []);
+
+  const brightness = useMutation({
+    mutationFn: (input: { id: string; level: number }) => ghar.setBrightness(input.id, input.level),
+    onSuccess: (_data, input) => {
+      confirmState(queryClient, input.id, { brightness: input.level });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: GHAR_DEVICES_KEY });
+    },
+  });
+
+  const paint = useMutation({
+    mutationFn: (
+      input:
+        | { id: string; hue: number; saturation: number }
+        | { id: string; colorTemp: number },
+    ) =>
+      "colorTemp" in input
+        ? ghar.setColorTemp(input.id, input.colorTemp)
+        : ghar.setHue(input.id, input.hue, input.saturation),
+    onSuccess: (_data, input) => {
+      if ("colorTemp" in input) {
+        confirmState(queryClient, input.id, { color_temp: input.colorTemp });
+        return;
+      }
+      confirmState(queryClient, input.id, { hue: input.hue, saturation: input.saturation });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: GHAR_DEVICES_KEY });
+    },
+  });
+
+  const identify = useMutation({
+    mutationFn: (id: string) => ghar.identify(id),
+  });
+
+  const pendingIds = new Set<string>([
+    ...waiting,
+    ...(brightness.isPending && brightness.variables ? [brightness.variables.id] : []),
+    ...(paint.isPending && paint.variables ? [paint.variables.id] : []),
+    ...(identify.isPending && identify.variables ? [identify.variables] : []),
+  ]);
+
+  function beginToggle(ids: string[]): void {
+    if (ids.length === 0 || ids.some((id) => waitingRef.current.has(id))) {
+      return;
+    }
+    for (const id of ids) {
+      waitingRef.current.add(id);
+    }
+    setWaiting(new Set(waitingRef.current));
+    const started = Date.now();
+    toggle.mutate(ids, {
+      onSettled: () => {
+        const hold = Math.max(0, TOGGLE_HOLD_MS - (Date.now() - started));
+        window.setTimeout(() => {
+          for (const id of ids) {
+            waitingRef.current.delete(id);
+          }
+          setWaiting(new Set(waitingRef.current));
+        }, hold);
+      },
+    });
+  }
 
   const move = useMutation({
     mutationFn: (input: { id: string; room: RoomRef }) => ghar.moveDevice(input.id, input.room.id),
@@ -190,11 +310,15 @@ export function GharHouse({ mode }: GharHouseProps) {
     devices.find((device) => device.room.name === "unassigned")?.room ??
     null;
   const panels: RoomRef[] =
-    mode === "full" && unassigned ? [...named, unassigned] : named;
+    mode === "full" && unassigned ? [unassigned, ...named] : named;
   const dragged = devices.find((device) => device.id === drag?.id) ?? null;
+  const hovered = devices.find((device) => device.id === hoverId) ?? null;
 
   const trouble =
     (toggle.isError ? shownError(toggle.error) : null) ??
+    (brightness.isError ? shownError(brightness.error) : null) ??
+    (paint.isError ? shownError(paint.error) : null) ??
+    (identify.isError ? shownError(identify.error) : null) ??
     (move.isError ? shownError(move.error) : null) ??
     (rename.isError ? shownError(rename.error) : null) ??
     (create.isError ? shownError(create.error) : null) ??
@@ -241,19 +365,72 @@ export function GharHouse({ mode }: GharHouseProps) {
     }
     const anyOn = lights.some(isOn);
     const ids = (anyOn ? lights.filter(isOn) : lights).map((device) => device.id);
-    toggle.mutate(ids);
+    beginToggle(ids);
+  }
+
+  function clearOpenTimer(): void {
+    if (openTimer.current !== null) {
+      window.clearTimeout(openTimer.current);
+      openTimer.current = null;
+    }
+  }
+
+  function clearCloseTimer(): void {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }
+
+  function anchorFor(el: HTMLElement): PopoverAnchor {
+    const canvas = canvasRef.current?.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    if (!canvas) {
+      return { x: rect.right, y: rect.top + rect.height / 2 };
+    }
+    return {
+      x: rect.right - canvas.left,
+      y: rect.top - canvas.top + rect.height / 2,
+    };
+  }
+
+  function scheduleHover(deviceId: string, el: HTMLElement): void {
+    if (session.current?.dragging || drag) {
+      return;
+    }
+    clearCloseTimer();
+    if (hoverId === deviceId) {
+      setAnchor(anchorFor(el));
+      return;
+    }
+    clearOpenTimer();
+    openTimer.current = window.setTimeout(() => {
+      openTimer.current = null;
+      if (session.current?.dragging) {
+        return;
+      }
+      setHoverId(deviceId);
+      setAnchor(anchorFor(el));
+    }, HOVER_OPEN_MS);
+  }
+
+  function scheduleHoverClose(): void {
+    clearOpenTimer();
+    clearCloseTimer();
+    closeTimer.current = window.setTimeout(() => {
+      closeTimer.current = null;
+      setHoverId(null);
+      setAnchor(null);
+    }, HOVER_CLOSE_MS);
   }
 
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>, device: GharDevice): void {
     if (mode !== "full" || event.button !== 0 || !connected) {
       return;
     }
-    const target = event.target;
-    if (target instanceof Element && target.closest("[data-rename]")) {
-      return;
-    }
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    clearOpenTimer();
     session.current = {
       id: device.id,
       startX: event.clientX,
@@ -271,6 +448,12 @@ export function GharHouse({ mode }: GharHouseProps) {
     if (!current.dragging && distance < DRAG_PX) {
       return;
     }
+    if (!current.dragging) {
+      clearOpenTimer();
+      clearCloseTimer();
+      setHoverId(null);
+      setAnchor(null);
+    }
     current.dragging = true;
     const local = toLocal(event.clientX, event.clientY);
     setDrag({
@@ -281,10 +464,10 @@ export function GharHouse({ mode }: GharHouseProps) {
     });
   }
 
-  function onPointerUp(event: ReactPointerEvent<HTMLDivElement>, device: GharDevice): void {
+  function endPointer(event: ReactPointerEvent<HTMLDivElement>, device: GharDevice): void {
     const current = session.current;
     session.current = null;
-    if (!current) {
+    if (!current || current.id !== device.id) {
       return;
     }
     event.stopPropagation();
@@ -299,9 +482,20 @@ export function GharHouse({ mode }: GharHouseProps) {
       }
       return;
     }
+    setDrag(null);
     if (connected && device.online && isSwitchable(device) && !pendingIds.has(device.id)) {
-      toggle.mutate([device.id]);
+      beginToggle([device.id]);
     }
+    scheduleHover(device.id, event.currentTarget);
+  }
+
+  function openNewRoom(): void {
+    const button = roomButtonRef.current;
+    if (!button) {
+      return;
+    }
+    setRoomAnchor(anchorFor(button));
+    setNaming(true);
   }
 
   function submitRoom(): void {
@@ -321,75 +515,160 @@ export function GharHouse({ mode }: GharHouseProps) {
     <div ref={canvasRef} className="relative flex h-full min-h-0 flex-col">
       {!connected ? <p className="px-3 pt-1 text-[12px] text-ink-ghost">Ghar is offline</p> : null}
       {trouble ? <p className="px-3 pt-1 text-[12px] text-error">{trouble}</p> : null}
+      {mode === "full" ? (
+        <div className="flex items-center justify-end px-3 pt-1 pb-2">
+          <button
+            ref={roomButtonRef}
+            type="button"
+            onClick={openNewRoom}
+            className="inline-flex items-center gap-1.5 rounded-[7px] border border-dashed border-sage-line bg-[var(--glass-sheet)] px-3 py-1.5 text-[11px] font-medium tracking-[0.14em] text-sage-deep uppercase shadow-[var(--shadow)] transition-[border-color,background-color] duration-slow ease-hath hover:border-sage hover:bg-sage-active/50"
+          >
+            <IconPlus />
+            New room
+          </button>
+        </div>
+      ) : null}
       <div
-        className={`@container min-h-0 flex-1 ${mode === "full" ? "px-1 pb-1" : "px-2 pb-2.5 pt-0.5"}`}
+        className={`min-h-0 flex-1 [container-type:size] ${mode === "full" ? "px-3 pb-3" : "px-2 pb-2.5 pt-0.5"}`}
       >
-        {panels.length === 0 && !naming && mode === "preview" ? (
+        {panels.length === 0 && mode === "preview" ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-[13px] text-ink-ghost">{emptyLabel}</p>
           </div>
+        ) : panels.length === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-[13px] text-ink-ghost">No rooms yet</p>
+          </div>
         ) : (
-          <LayoutGroup>
-            <div
-              className={
-                mode === "preview"
-                  ? "grid h-full min-h-0 grid-cols-2 gap-1.5 @min-[420px]:grid-cols-3"
-                  : "grid h-full min-h-0 auto-rows-fr grid-cols-2 gap-2 @min-[640px]:grid-cols-3 @min-[880px]:grid-cols-4"
-              }
-            >
-              {panels.map((room, index) => {
-                const inRoom = devices.filter((device) => device.room.id === room.id);
-                const lit = inRoom.some(
-                  (device) => device.online && isSwitchable(device) && isOn(device),
-                );
-                const hot = drag?.overId === room.id;
-                if (mode === "preview") {
-                  return (
-                    <PreviewTile
-                      key={room.id}
-                      room={room}
-                      lit={lit}
-                      pending={inRoom.some((device) => pendingIds.has(device.id))}
-                      delay={index * 0.03}
-                      onToggle={() => toggleRoom(room.id)}
-                    />
-                  );
-                }
+          <div
+            className={
+              mode === "preview"
+                ? "grid h-full min-h-0 grid-cols-2 gap-1.5 @min-[420px]:grid-cols-3"
+                : "grid h-full min-h-0 grid-cols-3 gap-3 overflow-y-auto [grid-auto-rows:calc((100cqh-0.75rem)/2)]"
+            }
+          >
+            {panels.map((room) => {
+              const inRoom = devices.filter((device) => device.room.id === room.id);
+              const lit = inRoom.some(
+                (device) => device.online && isSwitchable(device) && isOn(device),
+              );
+              const hot = drag?.overId === room.id;
+              if (mode === "preview") {
                 return (
-                  <RoomPanel
+                  <PreviewTile
                     key={room.id}
                     room={room}
                     lit={lit}
-                    hot={hot}
-                    delay={index * 0.03}
-                    devices={inRoom}
-                    pendingIds={pendingIds}
-                    draggingId={drag?.id ?? null}
-                    onFloor={() => toggleRoom(room.id)}
-                    onPointerDown={onPointerDown}
-                    onPointerMove={onPointerMove}
-                    onPointerUp={onPointerUp}
-                    onRename={(id, name) => rename.mutate({ id, name })}
+                    pending={inRoom.some((device) => pendingIds.has(device.id))}
+                    onToggle={() => toggleRoom(room.id)}
                   />
                 );
-              })}
-              {mode === "full" ? (
-                <NewRoomPanel
-                  naming={naming}
-                  draft={roomDraft}
-                  onDraft={setRoomDraft}
-                  onStart={() => setNaming(true)}
-                  onCancel={() => {
-                    setNaming(false);
-                    setRoomDraft("");
-                  }}
-                  onSubmit={submitRoom}
+              }
+              return (
+                <RoomPanel
+                  key={room.id}
+                  room={room}
+                  lit={lit}
+                  hot={hot}
+                  devices={inRoom}
+                  pendingIds={pendingIds}
+                  draggingId={drag?.id ?? null}
+                  onFloor={() => toggleRoom(room.id)}
+                  onHover={scheduleHover}
+                  onHoverEnd={scheduleHoverClose}
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={endPointer}
+                  onPointerCancel={endPointer}
                 />
-              ) : null}
-            </div>
-          </LayoutGroup>
+              );
+            })}
+          </div>
         )}
       </div>
+      {mode === "full" && hovered && anchor ? (
+        <DevicePopover
+          device={hovered}
+          open
+          anchor={anchor}
+          containerRef={canvasRef}
+          pending={pendingIds.has(hovered.id)}
+          onClose={() => {
+            clearOpenTimer();
+            clearCloseTimer();
+            setHoverId(null);
+            setAnchor(null);
+          }}
+          onHoverStart={clearCloseTimer}
+          onHoverEnd={scheduleHoverClose}
+          onRename={(name) => rename.mutate({ id: hovered.id, name })}
+          onIdentify={() => {
+            if (!pendingIds.has(hovered.id)) {
+              identify.mutate(hovered.id);
+            }
+          }}
+          onBrightness={(level) => {
+            if (!pendingIds.has(hovered.id)) {
+              brightness.mutate({ id: hovered.id, level });
+            }
+          }}
+          onHue={(hue, saturation) => {
+            if (!pendingIds.has(hovered.id)) {
+              paint.mutate({ id: hovered.id, hue, saturation });
+            }
+          }}
+          onColorTemp={(mireds) => {
+            if (!pendingIds.has(hovered.id)) {
+              paint.mutate({ id: hovered.id, colorTemp: mireds });
+            }
+          }}
+        />
+      ) : null}
+      <Popover
+        open={naming && roomAnchor !== null}
+        onClose={() => {
+          setNaming(false);
+          setRoomDraft("");
+        }}
+        anchor={roomAnchor ?? { x: 0, y: 0 }}
+        containerRef={canvasRef}
+        aria-label="New room"
+        widthPx={240}
+        caret
+      >
+        <form
+          className="flex flex-col gap-3 px-3.5 py-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitRoom();
+          }}
+        >
+          <span className="text-[10px] font-medium tracking-[0.14em] text-sage-deep uppercase">
+            New room
+          </span>
+          <input
+            value={roomDraft}
+            autoFocus
+            placeholder="Name"
+            aria-label="Room name"
+            onChange={(event) => setRoomDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setNaming(false);
+                setRoomDraft("");
+              }
+            }}
+            className="border-b border-sage-line bg-transparent py-1 text-[14px] text-ink outline-none transition-colors duration-slow ease-hath placeholder:text-ink-ghost focus:border-sage"
+          />
+          <button
+            type="submit"
+            disabled={roomDraft.trim().length === 0 || create.isPending}
+            className="self-start rounded-full bg-sage-deep px-3 py-1.5 text-[12px] font-medium text-bone transition-opacity duration-slow ease-hath hover:bg-sage disabled:cursor-default disabled:opacity-40"
+          >
+            {create.isPending ? "Adding…" : "Add room"}
+          </button>
+        </form>
+      </Popover>
       {dragged && drag ? (
         <div
           className="pointer-events-none absolute z-20"
@@ -407,26 +686,19 @@ function PreviewTile({
   room,
   lit,
   pending,
-  delay,
   onToggle,
 }: {
   room: RoomRef;
   lit: boolean;
   pending: boolean;
-  delay: number;
   onToggle: () => void;
 }) {
   return (
-    <motion.button
+    <button
       type="button"
       aria-pressed={lit}
       aria-busy={pending}
       aria-label={`${roomTitle(room.name)} lights`}
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: SLOW_S, ease: EASE, delay }}
-      whileHover={pending ? undefined : { y: -1 }}
-      whileTap={pending ? undefined : { scale: 0.97 }}
       disabled={pending}
       onClick={(event) => {
         event.stopPropagation();
@@ -450,7 +722,7 @@ function PreviewTile({
         }`}
         aria-hidden
       />
-    </motion.button>
+    </button>
   );
 }
 
@@ -458,7 +730,9 @@ type DeviceHandlers = {
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>, device: GharDevice) => void;
   onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLDivElement>, device: GharDevice) => void;
-  onRename: (id: string, name: string) => void;
+  onPointerCancel: (event: ReactPointerEvent<HTMLDivElement>, device: GharDevice) => void;
+  onHover: (deviceId: string, el: HTMLElement) => void;
+  onHoverEnd: () => void;
 };
 
 /** One room — dashed glass, tracking label, devices you can press or drag. */
@@ -467,7 +741,6 @@ function RoomPanel({
   devices,
   lit,
   hot,
-  delay,
   pendingIds,
   draggingId,
   onFloor,
@@ -477,29 +750,26 @@ function RoomPanel({
   devices: GharDevice[];
   lit: boolean;
   hot: boolean;
-  delay: number;
   pendingIds: ReadonlySet<string>;
   draggingId: string | null;
   onFloor: () => void;
 }) {
   return (
-    <motion.section
+    <section
       data-room-id={room.id}
       aria-label={roomTitle(room.name)}
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: SLOW_S, ease: EASE, delay }}
-      className={`${panel} px-2.5 py-2.5 ${panelTone(lit, hot)}`}
       onClick={onFloor}
+      className={`${panel} min-h-0 cursor-pointer gap-3 px-3 py-3 ${panelTone(lit, hot)}`}
     >
       <span
-        className={`mb-2 shrink-0 text-[10px] font-medium tracking-[2px] ${
+        className={`shrink-0 self-start text-[11px] font-medium tracking-[2px] ${
           lit ? "text-sage-deep" : "text-ink-ghost"
         }`}
       >
         {roomTitle(room.name).toUpperCase()}
       </span>
-      <div className="flex min-h-0 flex-1 flex-wrap content-start gap-2 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+        {room.name === "unassigned" ? <UnplacedCommission /> : null}
         {devices.map((device) => (
           <DeviceMark
             key={device.id}
@@ -510,78 +780,12 @@ function RoomPanel({
           />
         ))}
       </div>
-    </motion.section>
-  );
-}
-
-/** Dashed empty panel — the same control language as a Timeline cell. */
-function NewRoomPanel({
-  naming,
-  draft,
-  onDraft,
-  onStart,
-  onCancel,
-  onSubmit,
-}: {
-  naming: boolean;
-  draft: string;
-  onDraft: (value: string) => void;
-  onStart: () => void;
-  onCancel: () => void;
-  onSubmit: () => void;
-}) {
-  if (naming) {
-    return (
-      <form
-        className={`${panel} border-sage bg-bone/40`}
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSubmit();
-        }}
-      >
-        <span className="mb-3 text-[11px] font-medium tracking-[2px] text-sage-deep">
-          NEW ROOM
-        </span>
-        <input
-          value={draft}
-          autoFocus
-          placeholder="Name"
-          onChange={(event) => onDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              onCancel();
-            }
-          }}
-          className="border-b border-sage bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-ghost"
-        />
-      </form>
-    );
-  }
-
-  return (
-    <motion.button
-      type="button"
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
-      whileHover={{ y: -1 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={onStart}
-      className={`group ${panel} items-start border-sage-line bg-bone/40 hover:border-sage`}
-    >
-      <span className="mb-3 text-[11px] font-medium tracking-[2px] text-ink-ghost">
-        NEW ROOM
-      </span>
-      <span className="inline-flex size-7 items-center justify-center rounded-[6px] border border-dashed border-sage-line bg-[var(--glass-sheet)] text-sage-deep shadow-[var(--shadow)] transition-[border-color,background-color] duration-slow ease-hath group-hover:border-sage group-hover:bg-sage-active/50">
-        <IconPlus />
-      </span>
-    </motion.button>
+    </section>
   );
 }
 
 /**
- * A device. Press to toggle; drag into another room; double-click the name to rename.
- * `layoutId` carries it across panels.
+ * A device row. Click switches it. Hover opens controls. A move drags it to another room.
  */
 function DeviceMark({
   device,
@@ -590,166 +794,100 @@ function DeviceMark({
   onPointerDown,
   onPointerMove,
   onPointerUp,
-  onRename,
-}: DeviceHandlers & { device: GharDevice; pending: boolean; dimmed: boolean }) {
-  const lit = device.online && isSwitchable(device) && isOn(device);
+  onPointerCancel,
+  onHover,
+  onHoverEnd,
+}: DeviceHandlers & {
+  device: GharDevice;
+  pending: boolean;
+  dimmed: boolean;
+}) {
   return (
-    <motion.div
-      layout
-      layoutId={device.id}
-      transition={{ layout: { duration: SLOW_S, ease: EASE } }}
+    <div
       onPointerDown={(event) => onPointerDown(event, device)}
       onPointerMove={onPointerMove}
       onPointerUp={(event) => onPointerUp(event, device)}
+      onPointerCancel={(event) => onPointerCancel(event, device)}
+      onMouseEnter={(event) => onHover(device.id, event.currentTarget)}
+      onMouseLeave={onHoverEnd}
       onClick={(event) => event.stopPropagation()}
-      className={dimmed ? "opacity-30" : undefined}
+      className={`touch-none ${dimmed ? "opacity-30" : ""}`}
     >
-      <DeviceTile
-        device={device}
-        pending={pending}
-        name={
-          <DeviceName
-            device={device}
-            lit={lit}
-            pending={pending}
-            onRename={onRename}
-          />
-        }
-      />
-    </motion.div>
+      <DeviceTile device={device} pending={pending} />
+    </div>
   );
 }
 
-/** Vertical glass card for a device — hover and tap match the rest of the chrome. */
+/** Horizontal device row. The icon sits beside the name. */
 function DeviceTile({
   device,
-  name,
   pending,
   ghost,
 }: {
   device: GharDevice;
-  name?: ReactNode;
   pending: boolean;
   ghost?: boolean;
 }) {
   const lit = !pending && device.online && isSwitchable(device) && isOn(device);
   const subtitle = productSubtitle(device);
+  const hue = device.state.hue?.value;
+  const saturation = device.state.saturation?.value;
+  const swatch =
+    typeof hue === "number"
+      ? `hsl(${Math.round((hue / 254) * 360)} ${Math.round(((typeof saturation === "number" ? saturation : 254) / 254) * 100)}% 52%)`
+      : null;
   return (
-    <motion.div
+    <div
       aria-busy={pending}
-      whileHover={ghost || pending ? undefined : { y: -1 }}
-      whileTap={ghost || pending ? undefined : { scale: 0.98 }}
-      transition={{ duration: 0.2, ease: EASE }}
-      className={`flex w-[5.75rem] flex-col items-center gap-1.5 rounded-[var(--radius)] border border-dashed px-1.5 py-2.5 shadow-[var(--shadow)] backdrop-blur-sm transition-[border-color,background-color,opacity] duration-slow ease-hath ${
+      className={`flex items-center gap-3 rounded-[var(--radius)] border border-dashed px-3 py-2.5 shadow-[var(--shadow)] backdrop-blur-sm ${
+        pending ? "transition-none" : "transition-[border-color,background-color,opacity] duration-200 ease-hath"
+      } ${ghost ? "w-64 cursor-grabbing" : "w-full cursor-grab"} ${
         pending
-          ? "border-rule bg-rule/50"
+          ? "border-ink-ghost/50 bg-ink-ghost/20 text-ink-ghost"
           : lit
-            ? "border-sage bg-sage-active"
+            ? "border-sage bg-sage-active hover:bg-sage-fill"
             : "border-sage-line bg-[var(--glass-sheet)] hover:border-sage hover:bg-sage-active/50"
       } ${device.online || pending ? "" : "opacity-50"}`}
     >
       <span
-        className={`flex size-7 shrink-0 items-center justify-center ${
-          pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink-muted"
+        className={`flex size-10 shrink-0 items-center justify-center rounded-[8px] border border-dashed ${
+          pending
+            ? "border-rule text-ink-ghost"
+            : lit
+              ? "border-sage bg-sage-faint text-sage-deep"
+              : "border-sage-line text-ink-muted"
         }`}
       >
-        <DeviceGlyph kind={glyphFor(device.capabilities)} lit={lit} />
+        <DeviceGlyph kind={glyphFor(device.capabilities)} lit={lit} className="size-7 shrink-0" />
       </span>
-      <span className="flex min-h-[2.1rem] w-full flex-col items-center justify-start">
-        {name ?? (
-          <span
-            className={`line-clamp-2 text-center text-[11px] leading-tight ${
-              pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink"
-            }`}
-          >
-            {device.name}
-          </span>
-        )}
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+        <span
+          className={`w-full truncate text-left text-[13px] leading-tight ${
+            pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink"
+          }`}
+        >
+          {device.name}
+        </span>
         {subtitle && !pending ? (
-          <span className="mt-0.5 w-full truncate text-center text-[9px] text-ink-ghost">
-            {subtitle}
-          </span>
+          <span className="w-full truncate text-left text-[11px] text-ink-ghost">{subtitle}</span>
         ) : null}
       </span>
       {isSwitchable(device) ? (
-        <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-            pending ? "animate-breath bg-ink-ghost" : lit ? "bg-sage" : "bg-ink-ghost"
-          }`}
-          aria-hidden
-        />
+        <span className="inline-flex items-center gap-1" aria-hidden>
+          <span
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+              pending ? "animate-breath bg-ink-ghost" : lit ? "bg-sage" : "bg-ink-ghost"
+            }`}
+          />
+          {swatch && !pending ? (
+            <span
+              className="h-1.5 w-1.5 shrink-0 rounded-full border border-sage-line"
+              style={{ background: swatch }}
+            />
+          ) : null}
+        </span>
       ) : null}
-    </motion.div>
-  );
-}
-
-/** In-place name. Double-click to edit so a press still toggles. */
-function DeviceName({
-  device,
-  lit,
-  pending,
-  onRename,
-}: {
-  device: GharDevice;
-  /** Matches the lit tile so the label stays sage when the lamp is on. */
-  lit: boolean;
-  pending: boolean;
-  onRename: (id: string, name: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(device.name);
-
-  function commit(next: string): void {
-    const trimmed = next.trim();
-    setEditing(false);
-    if (!trimmed || trimmed === device.name) {
-      setDraft(device.name);
-      return;
-    }
-    onRename(device.id, trimmed);
-  }
-
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        data-rename=""
-        onPointerDown={(event) => event.stopPropagation()}
-        onDoubleClick={(event) => {
-          event.stopPropagation();
-          setDraft(device.name);
-          setEditing(true);
-        }}
-        className={`line-clamp-2 w-full text-center text-[11px] leading-tight transition-colors duration-slow ease-hath ${
-          pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink hover:text-sage-deep"
-        }`}
-      >
-        {device.name}
-      </button>
-    );
-  }
-
-  return (
-    <input
-      data-rename=""
-      value={draft}
-      autoFocus
-      aria-label={`Rename ${device.name}`}
-      onPointerDown={(event) => event.stopPropagation()}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => commit(draft)}
-      onKeyDown={(event) => {
-        event.stopPropagation();
-        if (event.key === "Enter") {
-          event.currentTarget.blur();
-        }
-        if (event.key === "Escape") {
-          setDraft(device.name);
-          setEditing(false);
-        }
-      }}
-      className="w-full border-b border-sage bg-transparent text-center text-[11px] text-ink outline-none"
-    />
+    </div>
   );
 }
 

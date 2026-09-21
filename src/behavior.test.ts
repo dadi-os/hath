@@ -653,6 +653,10 @@ describe("ghar client", () => {
       radio: "network",
     });
     await client.getCommission("job-1");
+    await client.setBrightness("dev-1", 40);
+    await client.setHue("dev-1", 20, 200);
+    await client.setColorTemp("dev-1", 250);
+    await client.identify("dev-1");
     expect(calls.map((call) => [call.method, call.path, call.body])).toEqual([
       ["GET", "/rooms", undefined],
       ["POST", "/rooms", { name: "kitchen" }],
@@ -664,6 +668,30 @@ describe("ghar client", () => {
         { code: "34970112332", room_id: "room-1", radio: "network" },
       ],
       ["GET", "/commission/job-1", undefined],
+      [
+        "POST",
+        "/devices/dev-1/command",
+        { capability: "dimmable", params: { level: 40 }, cause: "user" },
+      ],
+      [
+        "POST",
+        "/devices/dev-1/command",
+        {
+          capability: "colorable",
+          params: { hue: 20, saturation: 200 },
+          cause: "user",
+        },
+      ],
+      [
+        "POST",
+        "/devices/dev-1/command",
+        {
+          capability: "colorable",
+          params: { color_temp: 250 },
+          cause: "user",
+        },
+      ],
+      ["POST", "/devices/dev-1/identify", undefined],
     ]);
   });
 });

@@ -32,12 +32,14 @@ export type DeviceGlyphProps = {
   kind: DeviceGlyphKind;
   /** Sage fill on a lamp that is on. */
   lit: boolean;
+  /** Tailwind size classes. Defaults to the 18px mark. */
+  className?: string;
 };
 
 /** One device mark. Color comes from the node around it. */
-export function DeviceGlyph({ kind, lit }: DeviceGlyphProps) {
+export function DeviceGlyph({ kind, lit, className = "size-[18px] shrink-0" }: DeviceGlyphProps) {
   return (
-    <svg viewBox="0 0 18 18" fill="none" aria-hidden className="size-[18px] shrink-0">
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden className={className}>
       {kind === "lamp" ? <Lamp lit={lit} /> : null}
       {kind === "lock" ? <Lock /> : null}
       {kind === "sensor" ? <Sensor /> : null}

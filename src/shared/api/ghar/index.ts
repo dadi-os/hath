@@ -89,6 +89,60 @@ export function createGharClient(transport: Transport, baseUrl: string) {
       });
     },
 
+    /** POST /devices/:id/command — dimmable level, 0–100. */
+    setBrightness(id: string, level: number): Promise<void> {
+      return transport.request({
+        baseUrl,
+        path: `/devices/${id}/command`,
+        method: "POST",
+        body: {
+          capability: "dimmable",
+          params: { level },
+          cause: "user",
+        },
+      });
+    },
+
+    /**
+     * POST /devices/:id/command — colorable hue and saturation.
+     * Both are Matter units, 0–254.
+     */
+    setHue(id: string, hue: number, saturation: number): Promise<void> {
+      return transport.request({
+        baseUrl,
+        path: `/devices/${id}/command`,
+        method: "POST",
+        body: {
+          capability: "colorable",
+          params: { hue, saturation },
+          cause: "user",
+        },
+      });
+    },
+
+    /** POST /devices/:id/command — colorable color temperature in mireds. */
+    setColorTemp(id: string, colorTemp: number): Promise<void> {
+      return transport.request({
+        baseUrl,
+        path: `/devices/${id}/command`,
+        method: "POST",
+        body: {
+          capability: "colorable",
+          params: { color_temp: colorTemp },
+          cause: "user",
+        },
+      });
+    },
+
+    /** POST /devices/:id/identify — blink the device. */
+    identify(id: string): Promise<void> {
+      return transport.request({
+        baseUrl,
+        path: `/devices/${id}/identify`,
+        method: "POST",
+      });
+    },
+
     /**
      * POST /commission — start a job.
      * `radio: "nearby"` uses this computer's Bluetooth and requires `wifi`.

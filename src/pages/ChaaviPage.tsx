@@ -122,7 +122,9 @@ export function ChaaviPage() {
                         {item.name}
                       </span>
                       <span className="shrink-0 text-[10px] font-medium tracking-[2px] text-sage-deep">
-                        {item.kind.toUpperCase()}
+                        {item.hasPasskey
+                          ? "PASSKEY"
+                          : item.kind.toUpperCase()}
                       </span>
                     </div>
                     {item.username ? (
