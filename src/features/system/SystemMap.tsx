@@ -54,14 +54,29 @@ function formatBytes(n: number): string {
   return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
 }
 
-function diskPct(status: NasStatus): number {
-  if (status.disk.total_bytes <= 0) {
+function diskVolumePct(free: number, total: number, usedPercent?: number): number {
+  if (typeof usedPercent === "number" && Number.isFinite(usedPercent)) {
+    return Math.min(100, Math.max(0, usedPercent));
+  }
+  if (total <= 0) {
     return 0;
   }
-  return Math.min(
-    100,
-    (1 - status.disk.free_bytes / status.disk.total_bytes) * 100,
-  );
+  return Math.min(100, (1 - free / total) * 100);
+}
+
+function diskDisplayName(d: {
+  name: string;
+  model?: string;
+  transport?: string;
+  mount: string;
+}): string {
+  if (d.model && d.model.trim()) {
+    return d.model.trim();
+  }
+  if (d.transport) {
+    return `${d.name} (${d.transport})`;
+  }
+  return d.name;
 }
 
 function serviceHealth(status: NasStatus): Array<{ name: string; ok: boolean }> {
@@ -118,16 +133,50 @@ function resourceRows(status: NasStatus): ResourceRow[] {
       pct: gpu.used_percent ?? null,
     });
   }
-  if (status.disk.total_bytes > 0) {
+  const volumes = status.disks?.length
+    ? status.disks
+    : status.disk.total_bytes > 0
+      ? [
+          {
+            name: "state",
+            mount: "/",
+            free_bytes: status.disk.free_bytes,
+            total_bytes: status.disk.total_bytes,
+            used_percent: status.disk.used_percent ?? diskVolumePct(status.disk.free_bytes, status.disk.total_bytes),
+          },
+        ]
+      : [];
+  for (const d of volumes) {
+    if (d.total_bytes <= 0) {
+      continue;
+    }
     rows.push({
-      key: "disk",
-      kind: "DISK",
-      name: "Root volume",
-      pct: diskPct(status),
-      detail: `${formatBytes(status.disk.free_bytes)} free of ${formatBytes(status.disk.total_bytes)}`,
+      key: `disk-${d.name}`,
+      kind: volumes.length > 1 ? shortDiskKind(d) : "DISK",
+      name: diskDisplayName(d),
+      pct: diskVolumePct(d.free_bytes, d.total_bytes, d.used_percent),
+      detail: `${formatBytes(d.free_bytes)} free of ${formatBytes(d.total_bytes)} · ${d.mount}`,
     });
   }
   return rows;
+}
+
+function shortDiskKind(d: {
+  name: string;
+  transport?: string;
+  mount: string;
+}): string {
+  if (d.mount === "/var/home" || d.mount === "/home") {
+    return "HOME";
+  }
+  if (d.mount === "/var" || d.mount === "/" || d.mount === "/sysroot") {
+    return "OS";
+  }
+  const t = (d.transport || "").toLowerCase();
+  if (t === "nvme" || d.name.startsWith("nvme")) {
+    return "NVME";
+  }
+  return d.name.slice(0, 8).toUpperCase();
 }
 
 /**
@@ -256,8 +305,11 @@ function SystemPreview({
   const size = useElementSize(rootRef);
   const density = densityFor(size);
   const meters = resources
-    .filter((r) => r.key === "cpu" || r.key === "memory" || r.key === "disk")
-    .slice(0, 3);
+    .filter(
+      (r) =>
+        r.key === "cpu" || r.key === "memory" || r.key.startsWith("disk"),
+    )
+    .slice(0, 4);
   const mesh = clients.filter((c) => c.node_name && c.node_name !== "os");
   const okCount = services.filter((s) => s.ok).length;
 

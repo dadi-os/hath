@@ -20,11 +20,25 @@ export type NasGpuStatus = {
   used_percent?: number;
 };
 
+/** One physical disk sample from Nas GET /status `disks`. */
+export type NasDiskVolume = {
+  name: string;
+  model?: string;
+  transport?: string;
+  mount: string;
+  free_bytes: number;
+  total_bytes: number;
+  used_percent: number;
+};
+
 /** Aggregate host + service health from Nas GET /status. */
 export type NasStatus = {
   uptime_seconds: number;
   services: Array<{ name: string; healthy: boolean }>;
-  disk: { free_bytes: number; total_bytes: number };
+  /** Writable state volume (legacy single meter). */
+  disk: { free_bytes: number; total_bytes: number; used_percent?: number };
+  /** Per physical disk capacities when available. */
+  disks?: NasDiskVolume[];
   cpu?: NasCpuStatus;
   memory?: NasMemoryStatus;
   gpu?: NasGpuStatus[];
