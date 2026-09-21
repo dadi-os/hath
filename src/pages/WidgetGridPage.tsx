@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 import { useTarget } from "../hooks/useTarget";
 import { AgentTree } from "../features/agents/AgentTree";
 import { ChaaviCounts } from "../features/chaavi/ChaaviCounts";
-import { GharRoster } from "../features/ghar/GharRoster";
+import { GharHouse } from "../features/ghar/house";
 import { MemoryCounters } from "../features/memory/MemoryCounters";
 import { SystemMap } from "../features/system/SystemMap";
 import { TimelineCalendar } from "../features/timeline/TimelineCalendar";
@@ -91,7 +91,7 @@ export function WidgetGridPage() {
         onKeyDown={onActivate("/ghar")}
         className={`${tile} md:col-span-2 md:col-start-1 md:row-start-4`}
       >
-        <GharRoster mode="preview" />
+        <GharHouse mode="preview" />
       </WidgetFrame>
 
       <WidgetFrame

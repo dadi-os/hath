@@ -19,7 +19,7 @@ export interface Transport {
   request<T>(opts: {
     baseUrl: string;
     path: string;
-    method: "GET" | "POST" | "PUT";
+    method: "GET" | "POST" | "PUT" | "PATCH";
     body?: unknown;
     /** When set, sent as text/plain instead of JSON.stringify(body). */
     bodyText?: string;

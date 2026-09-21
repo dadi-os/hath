@@ -1,6 +1,7 @@
 mod logutil;
 mod net;
 mod device;
+mod radio;
 
 #[cfg(target_os = "ios")]
 mod ios_vpn;
@@ -21,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(MeshState::default())
+        .manage(radio::RadioState::default())
         .invoke_handler(tauri::generate_handler![
             net::mesh_start,
             net::mesh_stop,
@@ -37,6 +39,12 @@ pub fn run() {
             device::device_get_battery,
             device::device_get_location,
             device::device_write_download,
+            radio::radio_start_scan,
+            radio::radio_stop_scan,
+            radio::radio_connect,
+            radio::radio_write,
+            radio::radio_subscribe,
+            radio::radio_disconnect,
         ]);
 
     #[cfg(desktop)]

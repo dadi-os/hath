@@ -47,7 +47,7 @@ export class BrowserTransport implements Transport {
   async request<T>(opts: {
     baseUrl: string;
     path: string;
-    method: "GET" | "POST" | "PUT";
+    method: "GET" | "POST" | "PUT" | "PATCH";
     body?: unknown;
     bodyText?: string;
     responseType?: "json" | "text" | "blob";

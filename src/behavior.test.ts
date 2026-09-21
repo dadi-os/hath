@@ -604,6 +604,68 @@ describe("ghar client", () => {
       },
     ]);
   });
+
+  it("lists rooms, moves a device, and starts commissioning", async () => {
+    const calls: Array<{ path: string; method: string; body?: unknown }> = [];
+    const transport = {
+      request: async (opts: {
+        path: string;
+        method: string;
+        body?: unknown;
+      }) => {
+        calls.push({
+          path: opts.path,
+          method: opts.method,
+          body: opts.body,
+        });
+        if (opts.path === "/rooms" && opts.method === "GET") {
+          return { rooms: [] };
+        }
+        if (opts.path === "/rooms") {
+          return { id: "room-1", name: "kitchen" };
+        }
+        if (opts.path === "/commission") {
+          return { job_id: "job-1" };
+        }
+        if (opts.path.startsWith("/commission/")) {
+          return {
+            id: "job-1",
+            status: "pending",
+            node_id: null,
+            device_ids: null,
+            error: null,
+            started_at: "2026-01-01T00:00:00.000Z",
+            finished_at: null,
+          };
+        }
+        return { id: "dev-1" };
+      },
+    } as unknown as Transport;
+    const { createGharClient } = await import("./shared/api/ghar");
+    const client = createGharClient(transport, GHAR);
+    await client.listRooms();
+    await client.createRoom("kitchen");
+    await client.moveDevice("dev-1", "room-1");
+    await client.renameDevice("dev-1", "Desk lamp");
+    await client.startCommission({
+      code: "34970112332",
+      room_id: "room-1",
+      radio: "network",
+    });
+    await client.getCommission("job-1");
+    expect(calls.map((call) => [call.method, call.path, call.body])).toEqual([
+      ["GET", "/rooms", undefined],
+      ["POST", "/rooms", { name: "kitchen" }],
+      ["PATCH", "/devices/dev-1", { room: "room-1" }],
+      ["PATCH", "/devices/dev-1", { name: "Desk lamp" }],
+      [
+        "POST",
+        "/commission",
+        { code: "34970112332", room_id: "room-1", radio: "network" },
+      ],
+      ["GET", "/commission/job-1", undefined],
+    ]);
+  });
 });
 
 describe("runtime outside Tauri", () => {
