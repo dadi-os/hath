@@ -7,8 +7,8 @@ export type BrowserFrameProps = {
   /** Nas browser id whose virtual display to poll. */
   browserId: number;
   className?: string;
-  /** `peek` is the tree hover thumbnail; `rail` is the chat overlay. */
-  variant: "peek" | "rail";
+  /** `peek` thumbnail, `rail` sidebar pin, `detail` the agent panel. */
+  variant: "peek" | "rail" | "detail";
 };
 
 /**
@@ -37,12 +37,18 @@ export function BrowserFrame({ browserId, className, variant }: BrowserFrameProp
   }, [url]);
 
   const size =
-    variant === "peek" ? "h-[96px] w-[170px]" : "h-[132px] w-full";
+    variant === "peek"
+      ? "h-[96px] w-[170px]"
+      : variant === "detail"
+        ? "h-[228px] w-full"
+        : "h-[148px] w-full";
+  const chrome =
+    variant === "peek"
+      ? "rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/80"
+      : "bg-sage-faint";
 
   return (
-    <div
-      className={`overflow-hidden rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/80 ${size} ${className ?? ""}`}
-    >
+    <div className={`overflow-hidden ${chrome} ${size} ${className ?? ""}`}>
       {url ? (
         <img
           src={url}

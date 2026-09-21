@@ -1,6 +1,7 @@
 import {
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -10,8 +11,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { dimaag, nas } from "../../shared/api";
-import { BrowserFrame } from "../../features/agents/BrowserFrame";
-import { TerminalChip } from "../../features/agents/TerminalChip";
+import { HostPin } from "./HostPin";
 import {
   pickLiveBrowser,
   pickLiveTerminal,
@@ -51,7 +51,7 @@ import {
   toMessageAttachments,
   type DraftAttachment,
 } from "../../shared/lib/content/attachments";
-import { IconBack, IconButton, IconNewChat } from "../../shared/components/IconButton";
+import { IconBack } from "../../shared/components/IconButton";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import { logLine } from "../../shared/lib/platform/log";
@@ -60,9 +60,11 @@ import {
   COMPOSER_PAD,
   COMPOSER_PAD_WITH_ATTACH,
   HISTORY_LOG_LIMIT,
+  HOST_PIN_PAD,
   NEAR_BOTTOM_PX,
   TEXTAREA_MAX_PX,
 } from "./constants";
+import { DadiHome } from "./DadiHome";
 import { partitionByQueued } from "./lanes";
 import { ConversationList } from "./list";
 import { ThreadView } from "./thread";
@@ -162,12 +164,6 @@ export function ChatSidebar({
     ? (chat.threads[openAgentId] ?? [])
     : [];
 
-  const talkTargetName = viewingThread
-    ? (openConversation?.agent_name ??
-      agentsQuery.data?.find((a) => a.id === openAgentId)?.name ??
-      "agent")
-    : "Dadi";
-
   const conversationBusy = viewingThread
     ? running[openAgentId!]?.conversation === true
     : dadiBusy;
@@ -188,11 +184,16 @@ export function ChatSidebar({
     scrollToBottom("auto");
   }, [sessionKey, chat.open]);
 
-  useEffect(() => {
-    if (viewingThread && stickToBottomRef.current) {
-      scrollToBottom("smooth");
+  useLayoutEffect(() => {
+    if (!viewingThread || !stickToBottomRef.current) {
+      return;
     }
-  }, [threadMessages, conversationBusy, viewingThread]);
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+  }, [threadMessages, conversationBusy, reasoningBusy, viewingThread]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -317,7 +318,6 @@ export function ChatSidebar({
     }
 
     stickToBottomRef.current = true;
-    scrollToBottom("smooth");
 
     if (queueLocally) {
       return;
@@ -502,7 +502,6 @@ export function ChatSidebar({
     clearDraftAttachments();
     openDadi();
     onDrawerClose?.();
-    requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const selectAgent = (agentId: string) => {
@@ -516,14 +515,13 @@ export function ChatSidebar({
       "Chat")
     : "Dadi";
 
-  const viewKey =
-    chat.open.kind === "agent" ? chat.open.agentId : chat.open.kind;
-
   const placeholder = !connected
     ? "Connect to message Dadi"
-    : conversationBusy
-      ? `Held for ${talkTargetName}…`
-      : `Message ${talkTargetName}`;
+    : viewingDadi
+      ? "Message Dadi…"
+      : conversationBusy
+        ? `Held for agent…`
+        : `Message agent`;
 
   const canSubmit =
     connected &&
@@ -560,28 +558,40 @@ export function ChatSidebar({
   const showHostOverlay =
     viewingThread && (liveBrowserId !== null || liveTerminal !== null);
 
-  const showThreadMain = isMobile ? true : viewingThread || viewingDadi;
   const showListInDrawer = isMobile;
-  const showListInPanel = !isMobile && !viewingThread && !viewingDadi;
   const showComposer = isMobile || viewingThread || viewingDadi;
 
-  const list = (
-    <ConversationList
-      conversations={chat.conversations}
-      selectedAgentId={openAgentId}
-      historyStatus={chat.historyStatus}
-      historyError={chat.historyError}
-      onOpenAgent={isMobile ? selectAgent : openAgent}
-      onDismissKeyboard={dismissKeyboard}
-      dadi={{
-        available: connected,
-        selected: viewingDadi,
-        preview: null,
-        busy: dadiBusy,
-        onOpen: startNewChat,
-      }}
-    />
-  );
+  const paneKey = viewingThread
+    ? `agent:${openAgentId ?? ""}`
+    : viewingDadi
+      ? "dadi"
+      : isMobile
+        ? "mobile-empty"
+        : "list";
+
+  const reducedMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const paneTransition = {
+    duration: reducedMotion ? 0 : 0.24,
+    ease: EASE,
+  };
+
+  const listProps = {
+    conversations: chat.conversations,
+    selectedAgentId: openAgentId,
+    historyStatus: chat.historyStatus,
+    historyError: chat.historyError,
+    onOpenAgent: isMobile ? selectAgent : openAgent,
+    onDismissKeyboard: dismissKeyboard,
+    dadi: {
+      available: connected,
+      selected: viewingDadi,
+      preview: null as string | null,
+      busy: dadiBusy,
+      onOpen: startNewChat,
+    },
+  };
 
   return (
     <aside
@@ -592,115 +602,148 @@ export function ChatSidebar({
       data-session-key={sessionKey}
       style={{ paddingBottom: keyboardInset > 0 ? keyboardInset : undefined }}
     >
-      {!isMobile ? (
-        <div className="relative z-10 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-(--chat-edge) px-3">
-          {viewingThread || viewingDadi ? (
-            <button
-              type="button"
-              onClick={backToList}
-              className="flex min-w-0 items-center gap-1.5 text-ink"
-              aria-label="Back to conversations"
-            >
-              <span className="inline-flex size-3.5 shrink-0 [&_svg]:size-full">
-                <IconBack />
-              </span>
-              <motion.span
-                className="truncate text-[14px] font-medium"
-                animate={
-                  reasoningBusy || conversationBusy
-                    ? { opacity: [0.55, 1, 0.55] }
-                    : { opacity: 1 }
-                }
-                transition={
-                  reasoningBusy || conversationBusy
-                    ? { duration: 2.2, repeat: Infinity, ease: EASE }
-                    : { duration: SLOW_S, ease: EASE }
-                }
-              >
-                {headerTitle}
-              </motion.span>
-            </button>
-          ) : (
-            <span className="font-gujarati text-[22px] leading-none text-sage-text">
-              દાદી
-            </span>
-          )}
-          <IconButton
-            label="Talk to Dadi"
-            size="sm"
-            onClick={startNewChat}
-            className="border-transparent bg-transparent text-ink-muted shadow-none hover:bg-(--chat-hover) hover:text-ink"
-          >
-            <IconNewChat />
-          </IconButton>
-        </div>
-      ) : null}
-
-      <div className="relative min-h-0 flex-1">
-        {showHostOverlay ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col items-stretch gap-1.5 px-4 pt-2">
-            {liveTerminal ? (
-              <TerminalChip
-                command={liveTerminal.last_command}
-                terminalId={liveTerminal.id}
-                className="self-start"
-              />
-            ) : null}
-            {liveBrowserId !== null ? (
-              <BrowserFrame browserId={liveBrowserId} variant="rail" />
-            ) : null}
-          </div>
-        ) : null}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
         <AnimatePresence mode="wait" initial={false}>
-          {showThreadMain && (viewingThread || viewingDadi || isMobile) ? (
-            viewingThread || viewingDadi ? (
-              <ThreadView
-                viewKey={viewKey}
-                scrollRef={scrollRef}
-                onScroll={onScroll}
-                onDismissKeyboard={dismissKeyboard}
-                composerPad={composerPad}
-                settledMessages={settledMessages}
-                queuedMessages={queuedMessages}
-                showHoldPulse={showHoldPulse}
-                showWorkingPulse={showWorkingPulse}
-                onRetry={(msg) => {
-                  if (openAgentId) {
-                    void sendThread(
-                      openAgentId,
-                      msg.outboundText ?? msg.content,
-                      msg.seq,
-                      msg.attachments,
-                    );
-                  }
-                }}
-                onCancel={cancelQueued}
-                onRevealTick={() => {
-                  if (stickToBottomRef.current) {
-                    scrollToBottom("auto");
-                  }
-                }}
-                emptyHint={
-                  viewingDadi
-                    ? "Talk to Dadi — it will route you."
-                    : `Message ${talkTargetName}`
-                }
-              />
-            ) : (
-              <motion.div
-                key="mobile-empty"
+          <motion.div
+            key={paneKey}
+            className="absolute inset-0 flex flex-col"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 18, pointerEvents: "none" }}
+            transition={paneTransition}
+          >
+            {paneKey === "list" ? (
+              <ConversationList {...listProps} />
+            ) : null}
+
+            {paneKey === "dadi" ? (
+              <>
+                {!isMobile ? (
+                  <div className="relative z-10 flex h-12 shrink-0 items-center gap-2 border-b border-(--chat-edge) px-3">
+                    <motion.button
+                      type="button"
+                      onClick={backToList}
+                      aria-label="Back to conversations"
+                      whileHover={{ x: -2 }}
+                      whileTap={{ scale: 0.97 }}
+                      transition={{ duration: 0.2, ease: EASE }}
+                      className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-ink-muted transition-colors duration-fast ease-hath hover:bg-sage-active/50 hover:text-ink [&_svg]:size-3.5"
+                    >
+                      <IconBack />
+                    </motion.button>
+                    <motion.span
+                      className="min-w-0 truncate text-[14px] font-medium text-ink"
+                      animate={
+                        reasoningBusy || conversationBusy
+                          ? { opacity: [0.55, 1, 0.55] }
+                          : { opacity: 1 }
+                      }
+                      transition={
+                        reasoningBusy || conversationBusy
+                          ? { duration: 2.2, repeat: Infinity, ease: EASE }
+                          : { duration: SLOW_S, ease: EASE }
+                      }
+                    >
+                      {headerTitle}
+                    </motion.span>
+                  </div>
+                ) : null}
+                <div className="relative min-h-0 flex-1">
+                  <DadiHome composerPad={composerPad} />
+                </div>
+              </>
+            ) : null}
+
+            {viewingThread ? (
+              <>
+                {!isMobile ? (
+                  <div className="relative z-10 flex h-12 shrink-0 items-center gap-2 border-b border-(--chat-edge) px-3">
+                    <motion.button
+                      type="button"
+                      onClick={backToList}
+                      aria-label="Back to conversations"
+                      whileHover={{ x: -2 }}
+                      whileTap={{ scale: 0.97 }}
+                      transition={{ duration: 0.2, ease: EASE }}
+                      className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-ink-muted transition-colors duration-fast ease-hath hover:bg-sage-active/50 hover:text-ink [&_svg]:size-3.5"
+                    >
+                      <IconBack />
+                    </motion.button>
+                    <motion.span
+                      className="min-w-0 truncate text-[14px] font-medium text-ink"
+                      animate={
+                        reasoningBusy || conversationBusy
+                          ? { opacity: [0.55, 1, 0.55] }
+                          : { opacity: 1 }
+                      }
+                      transition={
+                        reasoningBusy || conversationBusy
+                          ? { duration: 2.2, repeat: Infinity, ease: EASE }
+                          : { duration: SLOW_S, ease: EASE }
+                      }
+                    >
+                      {headerTitle}
+                    </motion.span>
+                  </div>
+                ) : null}
+                <div className="relative flex min-h-0 flex-1 flex-col">
+                  {showHostOverlay && liveBrowserId === null ? (
+                    <HostPin
+                      browserId={null}
+                      terminal={liveTerminal}
+                    />
+                  ) : null}
+                  <div className="relative min-h-0 flex-1">
+                    <ThreadView
+                      scrollRef={scrollRef}
+                      onScroll={onScroll}
+                      onDismissKeyboard={dismissKeyboard}
+                      composerPad={composerPad}
+                      hostPad={liveBrowserId !== null ? HOST_PIN_PAD : 0}
+                      settledMessages={settledMessages}
+                      queuedMessages={queuedMessages}
+                      showHoldPulse={showHoldPulse}
+                      showWorkingPulse={showWorkingPulse}
+                      onRetry={(msg) => {
+                        if (openAgentId) {
+                          void sendThread(
+                            openAgentId,
+                            msg.outboundText ?? msg.content,
+                            msg.seq,
+                            msg.attachments,
+                          );
+                        }
+                      }}
+                      onCancel={cancelQueued}
+                      onRevealTick={() => {
+                        if (stickToBottomRef.current) {
+                          scrollToBottom("auto");
+                        }
+                      }}
+                      emptyHint="Message agent"
+                    />
+                    {liveBrowserId !== null ? (
+                      <HostPin
+                        browserId={liveBrowserId}
+                        terminal={liveTerminal}
+                        floating
+                      />
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            ) : null}
+
+            {paneKey === "mobile-empty" ? (
+              <div
                 className="absolute inset-0 flex flex-col items-center justify-center px-8"
                 style={{ paddingBottom: composerPad }}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: SLOW_S, ease: EASE }}
               >
                 <span className="font-gujarati text-[42px] leading-none text-sage-text">
                   દાદી
                 </span>
                 <p className="mt-4 max-w-65 text-center text-[14px] leading-relaxed text-ink-muted">
-                  Ask anything. Dadi will route you, or pick a chat from the sidebar.
+                  Talk to Dadi about anything
                 </p>
                 <button
                   type="button"
@@ -709,72 +752,65 @@ export function ChatSidebar({
                 >
                   PREVIOUS CHATS
                 </button>
-              </motion.div>
-            )
-          ) : null}
-
-          {showListInPanel ? list : null}
+              </div>
+            ) : null}
+          </motion.div>
         </AnimatePresence>
 
-        {showComposer ? (
-          <FloatingComposer
-            connected={connected}
-            draft={draft}
-            setDraft={setDraft}
-            placeholder={placeholder}
-            canSubmit={canSubmit}
-            holdMode={conversationBusy}
-            workingMode={reasoningBusy && !conversationBusy}
-            targetName={talkTargetName}
-            textareaRef={textareaRef}
-            fileInputRef={fileInputRef}
-            cameraInputRef={cameraInputRef}
-            attachments={draftAttachments}
-            onRemoveAttachment={removeDraftAttachment}
-            onPickFiles={onPickFiles}
-            onSubmit={onSubmit}
-            onKeyDown={onKeyDown}
-          />
-        ) : null}
+        <AnimatePresence initial={false}>
+          {showComposer ? (
+            <FloatingComposer
+              key="composer"
+              connected={connected}
+              draft={draft}
+              setDraft={setDraft}
+              placeholder={placeholder}
+              canSubmit={canSubmit}
+              holdMode={conversationBusy}
+              workingMode={reasoningBusy && !conversationBusy}
+              textareaRef={textareaRef}
+              fileInputRef={fileInputRef}
+              cameraInputRef={cameraInputRef}
+              attachments={draftAttachments}
+              onRemoveAttachment={removeDraftAttachment}
+              onPickFiles={onPickFiles}
+              onSubmit={onSubmit}
+              onKeyDown={onKeyDown}
+              autoFocus={viewingDadi}
+            />
+          ) : null}
+        </AnimatePresence>
       </div>
 
       {showListInDrawer ? (
         <AnimatePresence>
           {drawerOpen ? (
-            <>
-              <motion.button
-                type="button"
-                aria-label="Close sidebar"
-                className="absolute inset-0 z-30 bg-ink/25"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: SLOW_S, ease: EASE }}
-                onClick={() => onDrawerClose?.()}
-              />
-              <motion.div
-                className="chat-rail absolute inset-y-0 left-0 z-40 flex w-[min(100%,300px)] flex-col overflow-hidden rounded-r-2xl"
-                initial={{ x: "-100%" }}
-                animate={{ x: 0 }}
-                exit={{ x: "-100%" }}
-                transition={{ duration: SLOW_S, ease: EASE }}
-              >
-                <div className="flex items-center justify-between gap-2 px-3 py-3">
-                  <span className="font-gujarati text-[22px] leading-none text-sage-text">
-                    દાદી
-                  </span>
-                  <IconButton
-                    label="Talk to Dadi"
-                    size="sm"
-                    onClick={startNewChat}
-                    className="border-transparent bg-transparent text-ink-muted shadow-none hover:bg-(--chat-hover) hover:text-ink"
-                  >
-                    <IconNewChat />
-                  </IconButton>
-                </div>
-                <div className="relative min-h-0 flex-1">{list}</div>
-              </motion.div>
-            </>
+            <motion.button
+              key="drawer-scrim"
+              type="button"
+              aria-label="Close sidebar"
+              className="absolute inset-0 z-30 bg-ink/25"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: SLOW_S, ease: EASE }}
+              onClick={() => onDrawerClose?.()}
+            />
+          ) : null}
+          {drawerOpen ? (
+            <motion.div
+              key="drawer-panel"
+              className="chat-rail absolute inset-y-0 left-0 z-40 flex w-[min(100%,300px)] flex-col overflow-hidden rounded-r-2xl"
+              initial={{ x: "-100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "-100%" }}
+              transition={{ duration: SLOW_S, ease: EASE }}
+            >
+              <div className="h-2 shrink-0" aria-hidden />
+              <div className="relative min-h-0 flex-1">
+                <ConversationList {...listProps} />
+              </div>
+            </motion.div>
           ) : null}
         </AnimatePresence>
       ) : null}

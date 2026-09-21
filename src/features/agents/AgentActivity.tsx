@@ -184,11 +184,7 @@ function isRedundantYieldResult(content: string): boolean {
   return false;
 }
 
-/**
- * Lane mark for the activity timetable.
- * Shape — not color — carries reasoning vs conversation: diamond vs disc.
- */
-function LaneNode({
+function LaneMark({
   lane,
   tone = "idle",
 }: {
@@ -196,10 +192,7 @@ function LaneNode({
   tone?: "idle" | "live" | "error";
 }) {
   const label = lane === "reasoning" ? "Reasoning" : "Conversation";
-  const shape =
-    lane === "reasoning"
-      ? "rotate-45 rounded-[1px]"
-      : "rounded-full";
+  const shape = lane === "reasoning" ? "rotate-45 rounded-[1px]" : "rounded-full";
   const fill =
     tone === "error"
       ? "bg-ink-muted"
@@ -210,8 +203,87 @@ function LaneNode({
     <span
       aria-label={label}
       title={label}
-      className={`absolute left-0 top-1.5 block size-1.5 ${shape} ${fill}`}
+      className={`mt-[5px] inline-block size-1.5 shrink-0 ${shape} ${fill}`}
     />
+  );
+}
+
+function ThoughtRow({ item }: { item: ThoughtItem }) {
+  const [open, setOpen] = useState(false);
+  const line = item.text
+    ? truncate(item.text, 72)
+    : `chose ${item.toolNames.join(", ")}`;
+  const expandable = Boolean(item.text && item.text.length > 72);
+
+  return (
+    <li>
+      <button
+        type="button"
+        className="flex w-full items-start gap-2 text-left"
+        onClick={() => {
+          if (expandable) {
+            setOpen((v) => !v);
+          }
+        }}
+      >
+        <LaneMark lane={item.lane} />
+        <span className="min-w-0 flex-1 truncate text-[12px] leading-snug text-ink-muted">
+          {line}
+        </span>
+        <Tooltip content={formatAbsolute(item.at)}>
+          <span className="shrink-0 text-[10px] text-ink-ghost">
+            {formatRelative(item.at)}
+          </span>
+        </Tooltip>
+      </button>
+      {open && item.text ? (
+        <p className="mt-1 pl-3.5 text-[12px] leading-snug text-ink-muted">
+          {item.text}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+function ToolRow({ item }: { item: ToolItem }) {
+  const [open, setOpen] = useState(false);
+  const hasParams = Object.keys(item.input).length > 0;
+  const showResult =
+    item.resultContent !== null &&
+    !(item.name === "yield" && !item.isError && isRedundantYieldResult(item.resultContent));
+
+  return (
+    <li>
+      <button
+        type="button"
+        className="flex w-full items-start gap-2 text-left"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <LaneMark lane={item.lane} tone={item.isError ? "error" : "live"} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[12px] leading-snug text-ink">
+          {item.name}
+        </span>
+        <Tooltip content={formatAbsolute(item.at)}>
+          <span className="shrink-0 text-[10px] text-ink-ghost">
+            {formatRelative(item.at)}
+          </span>
+        </Tooltip>
+      </button>
+      {open ? (
+        <div className="mt-1 pl-3.5">
+          {hasParams ? <ParamList input={item.input} /> : null}
+          {showResult && item.resultContent ? (
+            <p
+              className={`mt-1 text-[11px] leading-snug ${
+                item.isError ? "text-ink-muted" : "text-ink-ghost"
+              }`}
+            >
+              {truncate(item.resultContent, 180)}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
   );
 }
 
@@ -253,103 +325,6 @@ function ParamList({ input }: { input: Record<string, unknown> }) {
   );
 }
 
-function ThoughtRow({ item }: { item: ThoughtItem }) {
-  const [open, setOpen] = useState(false);
-  const preview = item.text ? truncate(item.text, 140) : null;
-  const long = Boolean(item.text && item.text.length > 140);
-
-  return (
-    <li className="relative pl-4">
-      <LaneNode lane={item.lane} tone="idle" />
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-medium tracking-[1.5px] text-ink-faint">
-          THINKING
-        </span>
-        <Tooltip content={formatAbsolute(item.at)}>
-          <span className="text-[10px] text-ink-ghost">
-            {formatRelative(item.at)}
-          </span>
-        </Tooltip>
-      </div>
-      {preview ? (
-        <p className="mt-1 text-[12px] leading-relaxed text-ink-muted">
-          {open && item.text ? item.text : preview}
-        </p>
-      ) : (
-        <p className="mt-1 text-[12px] italic text-ink-ghost">
-          chose {item.toolNames.join(", ")}
-        </p>
-      )}
-      {long && (
-        <button
-          type="button"
-          className="mt-0.5 text-[11px] text-sage-deep"
-          onClick={() => setOpen((v) => !v)}
-        >
-          {open ? "Less" : "More"}
-        </button>
-      )}
-    </li>
-  );
-}
-
-function ToolRow({ item }: { item: ToolItem }) {
-  const [paramsOpen, setParamsOpen] = useState(item.name !== "yield");
-  const hasParams = Object.keys(item.input).length > 0;
-  const showResult =
-    item.resultContent !== null &&
-    !(item.name === "yield" && !item.isError && isRedundantYieldResult(item.resultContent));
-  const resultPreview =
-    item.resultContent !== null
-      ? truncate(item.resultContent, 160)
-      : null;
-
-  return (
-    <li className="relative pl-4">
-      <LaneNode
-        lane={item.lane}
-        tone={item.isError ? "error" : "live"}
-      />
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="font-mono text-[12px] font-medium text-ink">
-          {item.name}
-        </span>
-        <Tooltip content={formatAbsolute(item.at)}>
-          <span className="text-[10px] text-ink-ghost">
-            {formatRelative(item.at)}
-          </span>
-        </Tooltip>
-      </div>
-
-      {hasParams && (
-        <button
-          type="button"
-          className="mt-1 text-[10px] font-medium tracking-[1.5px] text-ink-faint hover:text-sage-deep"
-          onClick={() => setParamsOpen((v) => !v)}
-        >
-          {paramsOpen ? "PARAMS ▴" : "PARAMS ▾"}
-        </button>
-      )}
-      {paramsOpen && hasParams ? <ParamList input={item.input} /> : null}
-
-      {showResult && (
-        <div
-          className={`mt-1.5 border-l-2 pl-2 text-[11px] leading-snug ${
-            item.isError
-              ? "border-ink-faint text-ink-muted"
-              : "border-sage-line text-ink-muted"
-          }`}
-        >
-          <span className="mr-1.5 text-[10px] font-medium tracking-[1.5px] text-ink-ghost">
-            {item.isError ? "ERROR" : "RESULT"}
-          </span>
-          {resultPreview}
-        </div>
-      )}
-    </li>
-  );
-}
-
 /**
  * Recent agent lane activity from durable logs — thinking, tool calls, results.
  * This is the log explorer slice for one agent, not the chat transcript.
@@ -373,6 +348,9 @@ export function AgentActivity({
     () => (logsQuery.data ? buildActivity(logsQuery.data) : []),
     [logsQuery.data],
   );
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? items : items.slice(0, 6);
+  const hidden = items.length - visible.length;
 
   return (
     <section>
@@ -409,15 +387,26 @@ export function AgentActivity({
       )}
 
       {items.length > 0 && (
-        <ol className="relative space-y-3.5 before:absolute before:bottom-1 before:left-[2px] before:top-1 before:w-px before:bg-rule">
-          {items.map((item) =>
-            item.kind === "thought" ? (
-              <ThoughtRow key={item.key} item={item} />
-            ) : (
-              <ToolRow key={item.key} item={item} />
-            ),
-          )}
-        </ol>
+        <>
+          <ol className="flex flex-col gap-1.5">
+            {visible.map((item) =>
+              item.kind === "thought" ? (
+                <ThoughtRow key={item.key} item={item} />
+              ) : (
+                <ToolRow key={item.key} item={item} />
+              ),
+            )}
+          </ol>
+          {hidden > 0 ? (
+            <button
+              type="button"
+              className="mt-2 text-[11px] text-sage-deep"
+              onClick={() => setShowAll(true)}
+            >
+              {hidden} more
+            </button>
+          ) : null}
+        </>
       )}
     </section>
   );

@@ -21,7 +21,7 @@ export function AgentsPage() {
     >
       <PageHeader
         title="AGENTS"
-        hint="Scroll to zoom · drag to pan · double-click to reset"
+        hint="Hover for details · click to open in chat · scroll to zoom"
       />
       <div className="min-h-0 flex-1 px-1 pb-1">
         <AgentTree mode="full" entranceKey={entranceKey} />

@@ -4,6 +4,8 @@ import type { GharDevice } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 
+const DEVICES_KEY = ["ghar", "devices"] as const;
+
 export type GharRosterProps = {
   mode: "preview" | "full";
   className?: string;
@@ -34,9 +36,25 @@ function roomGroups(devices: GharDevice[]): Array<{
   return [...byRoom.values()];
 }
 
+/** Flip `state.on` locally so a light card responds before Ghar answers. */
+function withToggledSwitch(device: GharDevice): GharDevice {
+  const current = device.state.on;
+  const nextOn = current?.value !== true;
+  return {
+    ...device,
+    state: {
+      ...device.state,
+      on: {
+        value: nextOn,
+        changed_at: current?.changed_at ?? new Date().toISOString(),
+      },
+    },
+  };
+}
+
 /**
- * Rooms and Matter devices. Preview matches the Nas crest: status lines,
- * room headers only when more than one room exists.
+ * Device cards. Switchable lights toggle in place; other devices stay quiet.
+ * Preview packs a short grid for the home widget. Full groups cards by room.
  */
 export function GharRoster({ mode, className }: GharRosterProps) {
   const { state: connection } = useConnection();
@@ -45,7 +63,7 @@ export function GharRoster({ mode, className }: GharRosterProps) {
   const preview = mode === "preview";
 
   const devicesQuery = useQuery({
-    queryKey: ["ghar", "devices"],
+    queryKey: DEVICES_KEY,
     queryFn: () => ghar.listDevices(),
     enabled: connected,
     refetchInterval: POLL_MS,
@@ -53,8 +71,30 @@ export function GharRoster({ mode, className }: GharRosterProps) {
 
   const toggle = useMutation({
     mutationFn: (id: string) => ghar.toggleSwitch(id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ghar", "devices"] });
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: DEVICES_KEY });
+      const previous = queryClient.getQueryData<{ devices: GharDevice[] }>(
+        DEVICES_KEY,
+      );
+      queryClient.setQueryData<{ devices: GharDevice[] }>(DEVICES_KEY, (current) => {
+        if (!current) {
+          return current;
+        }
+        return {
+          devices: current.devices.map((device) =>
+            device.id === id ? withToggledSwitch(device) : device,
+          ),
+        };
+      });
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(DEVICES_KEY, context.previous);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
 
@@ -111,51 +151,122 @@ export function GharRoster({ mode, className }: GharRosterProps) {
             : String(toggle.error)}
         </p>
       ) : null}
-      <div className="flex flex-col gap-3">
-        {groups.map((group) => (
-          <section key={group.name} className="flex flex-col gap-1.5">
-            {showRooms ? (
-              <p className="text-[11px] font-medium tracking-[1.2px] text-ink-ghost">
-                {group.name.toUpperCase()}
-              </p>
-            ) : null}
-            {group.devices.map((device) => {
-              const canSwitch = isSwitchable(device);
-              const on = isOn(device);
-              return (
-                <button
-                  key={device.id}
-                  type="button"
-                  disabled={!canSwitch || toggle.isPending}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!canSwitch) {
-                      return;
-                    }
-                    toggle.mutate(device.id);
-                  }}
-                  className="flex h-11 w-full items-center gap-2.5 text-left disabled:cursor-default"
-                >
-                  <span
-                    className={`size-[7px] shrink-0 rounded-full ${
-                      device.online ? "bg-ink" : "bg-ink-ghost"
-                    }`}
-                    aria-hidden
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
-                    {device.name}
-                  </span>
-                  {canSwitch ? (
-                    <span className="shrink-0 text-[12px] text-ink-ghost">
-                      {on ? "on" : "off"}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </section>
-        ))}
+      <div className={preview ? "grid grid-cols-2 gap-2" : "flex flex-col gap-4"}>
+        {preview
+          ? devices.map((device) => (
+              <DeviceCard
+                key={device.id}
+                device={device}
+                roomLabel={showRooms ? device.room.name : null}
+                pending={toggle.isPending && toggle.variables === device.id}
+                onToggle={() => toggle.mutate(device.id)}
+              />
+            ))
+          : groups.map((group) => (
+              <section key={group.name} className="flex flex-col gap-2">
+                {showRooms ? (
+                  <p className="text-[11px] font-medium tracking-[0.14em] text-ink-ghost">
+                    {group.name.toUpperCase()}
+                  </p>
+                ) : null}
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                  {group.devices.map((device) => (
+                    <DeviceCard
+                      key={device.id}
+                      device={device}
+                      roomLabel={null}
+                      pending={toggle.isPending && toggle.variables === device.id}
+                      onToggle={() => toggle.mutate(device.id)}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * One device. A switchable light is the control; other devices are labels only.
+ */
+function DeviceCard({
+  device,
+  roomLabel,
+  pending,
+  onToggle,
+}: {
+  device: GharDevice;
+  /** Room name when the preview grid is not already grouped. */
+  roomLabel: string | null;
+  pending: boolean;
+  onToggle: () => void;
+}) {
+  const switchable = isSwitchable(device);
+  const on = isOn(device);
+  const lit = switchable && device.online && on;
+  const status = !device.online
+    ? "Offline"
+    : switchable
+      ? on
+        ? "On"
+        : "Off"
+      : null;
+  const face = `flex min-h-[4.25rem] flex-col justify-between rounded-[14px] border px-2.5 py-2 text-left transition-colors duration-slow ease-hath ${
+    lit
+      ? "border-sage/50 bg-sage-active"
+      : "border-sage-line/50 bg-bone/45"
+  } ${pending ? "opacity-70" : device.online ? "" : "opacity-50"}`;
+
+  const body = (
+    <>
+      <span className="flex items-center justify-between gap-2">
+        <span
+          className={`size-1.5 shrink-0 rounded-full ${lit ? "bg-sage-deep" : "bg-ink-ghost"}`}
+          aria-hidden
+        />
+        {status ? (
+          <span
+            className={`text-[10px] font-medium tracking-[0.14em] uppercase ${
+              lit ? "text-sage-deep" : "text-ink-ghost"
+            }`}
+          >
+            {status}
+          </span>
+        ) : null}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[13px] font-medium text-ink">
+          {device.name}
+        </span>
+        {roomLabel ? (
+          <span className="mt-0.5 block truncate text-[11px] text-ink-ghost">
+            {roomLabel}
+          </span>
+        ) : null}
+      </span>
+    </>
+  );
+
+  if (!switchable) {
+    return <div className={face}>{body}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={!device.online || pending}
+      aria-pressed={on}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!device.online || pending) {
+          return;
+        }
+        onToggle();
+      }}
+      className={`${face} cursor-pointer enabled:hover:border-sage disabled:cursor-default`}
+    >
+      {body}
+    </button>
   );
 }

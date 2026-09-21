@@ -31,8 +31,31 @@ export function seedRunningFromAgents(agents: AgentRecord[]): void {
   for (const agent of agents) {
     next[agent.id] = { ...agent.running };
   }
+  if (runningMapsEqual(running, next)) {
+    return;
+  }
   running = next;
   emit();
+}
+
+function runningMapsEqual(a: RunningMap, b: RunningMap): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) {
+    return false;
+  }
+  for (const id of aKeys) {
+    const left = a[id];
+    const right = b[id];
+    if (
+      !right ||
+      left.reasoning !== right.reasoning ||
+      left.conversation !== right.conversation
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function setLaneRunning(

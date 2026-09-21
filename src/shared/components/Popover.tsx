@@ -30,6 +30,8 @@ export type PopoverProps = {
   containerRef?: RefObject<HTMLElement | null>;
   /** Small arrow pointing toward the anchor. */
   caret?: boolean;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
 };
 
 const PAD = 12;
@@ -49,6 +51,7 @@ type Placement = {
 /**
  * Anchored floating panel portaled to document.body.
  * Flips / clamps to stay in the viewport — never clipped by widgets.
+ * Clicks stay on the panel so they do not activate the widget that opened it.
  */
 export function Popover({
   open,
@@ -61,6 +64,8 @@ export function Popover({
   "aria-label": ariaLabel,
   containerRef,
   caret = false,
+  onMouseEnter,
+  onMouseLeave,
 }: PopoverProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<Placement>({
@@ -207,6 +212,9 @@ export function Popover({
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 2 }}
           transition={{ duration: SLOW_S, ease: EASE }}
+          onMouseEnter={onMouseEnter}
+          onMouseLeave={onMouseLeave}
+          onClick={(e) => e.stopPropagation()}
         >
           {caret ? <span aria-hidden style={caretStyle} /> : null}
           <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[inherit]">

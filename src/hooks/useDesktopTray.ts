@@ -1,13 +1,12 @@
-import { useEffect, useEffectEvent } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { dimaag, isMeshOnline, nas } from "../shared/api";
+import { dimaag, isMeshOnline } from "../shared/api";
 import { useConnection } from "./useConnection";
 import { useDesktopUpdate } from "./useDesktopUpdate";
-import { useTarget } from "./useTarget";
 import { AGENTS_QUERY_KEY } from "./useEvents";
+import { useTarget } from "./useTarget";
 import {
-  formatDiskLabel,
   syncDesktopTray,
   type TrayListState,
   type TraySnapshot,
@@ -15,9 +14,15 @@ import {
 import { logLine } from "../shared/lib/platform/log";
 import { openAgent } from "../store/chat";
 import { subscribeDesktopShell } from "../store/desktopShell";
-import { POLL_MS } from "../shared/lib/ux/poll";
+import {
+  getRunning,
+  seedRunningFromAgents,
+  subscribeRunning,
+  type RunningMap,
+} from "../store/running";
 
-const TRAY_REFRESH_MS = 5_000;
+/** Background agent roster cadence — patches the menu, never rebuilds it. */
+const TRAY_AGENTS_MS = 5_000;
 
 /**
  * Map a React Query result into an explicit tray list state (no silent empty arrays).
@@ -38,7 +43,9 @@ function trayListState<T>(query: {
 
 /**
  * Own the desktop tray + macOS app menu. No-op on browser / mobile.
- * Also routes tray actions into navigation, chat, mesh, and updates.
+ * Routes tray actions into navigation, mesh, and updates.
+ * Polls agents in the background; the menu tree stays installed and is patched
+ * in place so an open Agents submenu is not dismissed.
  */
 export function useDesktopTray(opts: {
   /** Open the provision client modal. */
@@ -49,10 +56,11 @@ export function useDesktopTray(opts: {
   const { state, disconnect } = useConnection();
   const update = useDesktopUpdate();
   const online = isMeshOnline(state);
+  const [running, setRunning] = useState<RunningMap>(() => getRunning());
 
   const onProvision = useEffectEvent(opts.onProvision);
-  const installUpdate = useEffectEvent(() => {
-    void update.install();
+  const checkUpdate = useEffectEvent(() => {
+    void update.check();
   });
   const leaveMesh = useEffectEvent(() => {
     void disconnect();
@@ -62,25 +70,14 @@ export function useDesktopTray(opts: {
     queryKey: AGENTS_QUERY_KEY,
     queryFn: async () => {
       const { agents } = await dimaag.listAgents();
+      seedRunningFromAgents(agents);
       return agents;
     },
     enabled: target === "desktop" && online,
-    refetchInterval: TRAY_REFRESH_MS,
+    refetchInterval: TRAY_AGENTS_MS,
   });
 
-  const statusQuery = useQuery({
-    queryKey: ["nas", "status", "tray"],
-    queryFn: () => nas.getStatus(),
-    enabled: target === "desktop" && online,
-    refetchInterval: POLL_MS,
-  });
-
-  const browsersQuery = useQuery({
-    queryKey: ["nas", "browsers"],
-    queryFn: () => nas.listBrowsers(),
-    enabled: target === "desktop" && online,
-    refetchInterval: TRAY_REFRESH_MS,
-  });
+  useEffect(() => subscribeRunning(setRunning), []);
 
   useEffect(() => {
     if (target !== "desktop") {
@@ -94,8 +91,11 @@ export function useDesktopTray(opts: {
         case "provision":
           onProvision();
           break;
+        case "check_update":
+          checkUpdate();
+          break;
         case "install_update":
-          installUpdate();
+          void update.install();
           break;
         case "leave_mesh":
           leaveMesh();
@@ -115,66 +115,34 @@ export function useDesktopTray(opts: {
         }
       }
     });
-  }, [target, navigate, onProvision, installUpdate, leaveMesh]);
+  }, [target, navigate, onProvision, checkUpdate, leaveMesh, update]);
 
   useEffect(() => {
     if (target !== "desktop") {
       return;
     }
 
-    const agents = trayListState(agentsQuery);
-    const agentItems =
-      agents.status === "ready"
+    const list = trayListState(agentsQuery);
+    const agents: TraySnapshot["agents"] =
+      list.status === "ready"
         ? {
-            status: "ready" as const,
-            items: agents.items.map((a) => ({
+            status: "ready",
+            items: list.items.map((a) => ({
               id: a.id,
               name: a.name,
               active: a.active,
-              running: a.running,
+              running: running[a.id] ?? a.running,
             })),
           }
-        : agents;
-
-    const browsers = trayListState(browsersQuery);
-    const browserItems =
-      browsers.status === "ready"
-        ? {
-            status: "ready" as const,
-            items: browsers.items.map((b) => ({
-              id: b.id,
-              display: b.display,
-              healthy: b.healthy,
-            })),
-          }
-        : browsers;
-
-    const diskLabel = statusQuery.isError
-      ? "Disk · unavailable"
-      : statusQuery.data
-        ? formatDiskLabel(statusQuery.data.disk)
         : online
-          ? "Disk · …"
-          : "Disk · —";
+          ? list
+          : { status: "pending" };
 
-    const snapshot: TraySnapshot = {
+    void syncDesktopTray({
       meshConnected: online,
-      diskLabel,
-      meshLabel:
-        state === "connected"
-          ? "Mesh · Online"
-          : state === "reconnecting"
-            ? "Mesh · Reconnecting…"
-            : state === "connecting"
-              ? "Mesh · Joining…"
-              : "Mesh · Offline",
-      agents: agentItems,
-      browsers: browserItems,
-      updateVersion: update.available ? update.version : null,
       updateInstalling: update.installing,
-    };
-
-    void syncDesktopTray(snapshot).catch((err) => {
+      agents,
+    }).catch((err) => {
       logLine(
         "error",
         `desktop tray update rejected: ${err instanceof Error ? err.message : String(err)}`,
@@ -183,18 +151,11 @@ export function useDesktopTray(opts: {
     });
   }, [
     target,
-    state,
     online,
-    statusQuery.data,
-    statusQuery.isError,
+    update.installing,
     agentsQuery.data,
     agentsQuery.isError,
     agentsQuery.isSuccess,
-    browsersQuery.data,
-    browsersQuery.isError,
-    browsersQuery.isSuccess,
-    update.available,
-    update.version,
-    update.installing,
+    running,
   ]);
 }

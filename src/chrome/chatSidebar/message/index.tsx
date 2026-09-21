@@ -1,5 +1,5 @@
+import { memo, useEffect } from "react";
 import { motion } from "motion/react";
-import { useEffect } from "react";
 import {
   IconDismiss,
   IconRetry,
@@ -114,10 +114,9 @@ function UserBubble({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 0 }}
       animate={{
         opacity: message.pending && !queued && !failed ? 0.7 : 1,
-        y: 0,
       }}
       exit={{ opacity: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
@@ -128,7 +127,10 @@ function UserBubble({
   );
 }
 
-/** Left-aligned agent row with markdown and typewriter reveal. */
+/**
+ * Left-aligned agent row. While revealing, paint plain text so we never
+ * reparse broken markdown each frame; settle into memoized MarkdownBody.
+ */
 function AgentBubble({
   message,
   live,
@@ -146,16 +148,16 @@ function AgentBubble({
     }
   }, [visible, done, onRevealTick]);
 
-  const inner = (
-    <>
-      <MarkdownBody content={visible} />
-      {!done ? (
-        <span
-          className="ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[2px] bg-sage/70 align-middle"
-          aria-hidden
-        />
-      ) : null}
-    </>
+  const inner = done ? (
+    <SettledMarkdown content={message.content} />
+  ) : (
+    <p className="chat-md m-0 whitespace-pre-wrap">
+      {visible}
+      <span
+        className="ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[2px] animate-pulse bg-sage/65 align-middle"
+        aria-hidden
+      />
+    </p>
   );
 
   const className =
@@ -167,7 +169,7 @@ function AgentBubble({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
@@ -177,3 +179,11 @@ function AgentBubble({
     </motion.div>
   );
 }
+
+const SettledMarkdown = memo(function SettledMarkdown({
+  content,
+}: {
+  content: string;
+}) {
+  return <MarkdownBody content={content} />;
+});

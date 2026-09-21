@@ -1,4 +1,3 @@
-import type { HierarchyPointLink } from "d3-hierarchy";
 import type { AgentRecord } from "../../shared/api/types";
 
 /** Hierarchy node for the agent forest SVG. */
@@ -50,11 +49,148 @@ export function buildTree(agents: AgentRecord[]): AgentTreeNode[] {
   return roots.map(toNode);
 }
 
-/** Cubic path from parent to child in the tree layout. */
-export function linkPath(link: HierarchyPointLink<AgentTreeNode>): string {
+/** Positioned agent on the ring layout. */
+export type LaidOutNode = {
+  data: AgentTreeNode;
+  x: number;
+  y: number;
+  depth: number;
+};
+
+/** Parent → child edge in the ring layout. */
+export type LaidOutLink = {
+  source: LaidOutNode;
+  target: LaidOutNode;
+};
+
+/**
+ * Place a forest on a circle with an empty center.
+ * Roots share one ring. A child steps outward on its parent's ray;
+ * siblings fan just enough to stay apart.
+ */
+export function layoutCircle(
+  forest: AgentTreeNode[],
+  ring: number,
+  step: number,
+): { nodes: LaidOutNode[]; links: LaidOutLink[] } {
+  const nodes: LaidOutNode[] = [];
+  const links: LaidOutLink[] = [];
+  const count = forest.length;
+  if (count === 0) {
+    return { nodes, links };
+  }
+
+  const sector = (Math.PI * 2) / count;
+
+  const place = (
+    data: AgentTreeNode,
+    angle: number,
+    radius: number,
+    depth: number,
+    parent: LaidOutNode | null,
+  ) => {
+    const node: LaidOutNode = {
+      data,
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+      depth,
+    };
+    nodes.push(node);
+    if (parent) {
+      links.push({ source: parent, target: node });
+    }
+    const kids = data.children ?? [];
+    const fan = Math.min(sector * 0.62, 0.7);
+    kids.forEach((child, index) => {
+      const spread =
+        kids.length === 1 ? 0 : (index - (kids.length - 1) / 2) * (fan / kids.length);
+      place(child, angle + spread, radius + step, depth + 1, node);
+    });
+  };
+
+  forest.forEach((root, index) => {
+    const angle = -Math.PI / 2 + index * sector;
+    place(root, angle, ring, 0, null);
+  });
+
+  return { nodes, links };
+}
+
+/** Straight segment between two laid-out nodes. */
+export function linkPath(link: LaidOutLink): string {
   const { source, target } = link;
-  const midY = (source.y + target.y) / 2;
-  return `M${source.x},${source.y} C${source.x},${midY} ${target.x},${midY} ${target.x},${target.y}`;
+  return `M${source.x},${source.y} L${target.x},${target.y}`;
+}
+
+export type LabelPlacement = {
+  /** Offset from the node origin. */
+  x: number;
+  y: number;
+  textAnchor: "start" | "middle" | "end";
+  dominantBaseline: "auto" | "middle" | "hanging";
+};
+
+/** Smallest absolute difference between two angles, in radians. */
+function angleGap(a: number, b: number): number {
+  const d = Math.abs(a - b) % (Math.PI * 2);
+  return d > Math.PI ? Math.PI * 2 - d : d;
+}
+
+/**
+ * Direction with the most room away from this node's links.
+ * Isolated nodes fall back to the outward ray.
+ */
+function clearestAngle(node: LaidOutNode, dirs: number[]): number {
+  if (dirs.length === 0) {
+    return Math.atan2(node.y, node.x);
+  }
+  let best = 0;
+  let bestScore = -1;
+  const steps = 32;
+  for (let i = 0; i < steps; i++) {
+    const angle = -Math.PI + (i * Math.PI * 2) / steps;
+    let score = Infinity;
+    for (const dir of dirs) {
+      score = Math.min(score, angleGap(angle, dir));
+    }
+    if (score > bestScore) {
+      best = angle;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * Hang the name off the links that touch this node.
+ * `gap` is the distance from the node origin to the text anchor, in SVG units.
+ */
+export function labelPlacement(
+  node: LaidOutNode,
+  links: LaidOutLink[],
+  gap: number,
+): LabelPlacement {
+  const dirs: number[] = [];
+  for (const link of links) {
+    if (link.source === node) {
+      dirs.push(Math.atan2(link.target.y - node.y, link.target.x - node.x));
+    } else if (link.target === node) {
+      dirs.push(Math.atan2(link.source.y - node.y, link.source.x - node.x));
+    }
+  }
+  const angle = clearestAngle(node, dirs);
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const textAnchor: LabelPlacement["textAnchor"] =
+    Math.abs(cos) < 0.45 ? "middle" : cos > 0 ? "start" : "end";
+  const dominantBaseline: LabelPlacement["dominantBaseline"] =
+    textAnchor !== "middle" ? "middle" : sin > 0 ? "hanging" : "auto";
+  return {
+    x: cos * gap,
+    y: sin * gap,
+    textAnchor,
+    dominantBaseline,
+  };
 }
 
 /**

@@ -13,8 +13,15 @@ export function partitionByQueued(messages: ChatMessage[]): {
   };
 }
 
-/** Stable row id for a thread message (historical and live seqs can collide). */
+/**
+ * Stable row id for a thread message.
+ * Optimistic sends keep `id` across seq promotion so the row does not remount.
+ * Historical and live seqs can still collide, so those fall back to seq plus time.
+ */
 export function messageKey(msg: ChatMessage): string {
+  if (msg.id) {
+    return msg.id;
+  }
   return `${msg.historical ? "h" : "l"}-${msg.seq}-${msg.at}`;
 }
 

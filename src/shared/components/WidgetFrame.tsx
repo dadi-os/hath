@@ -11,8 +11,8 @@ export type WidgetFrameProps = {
 };
 
 /**
- * Widget in a complete dashed frame, with a small nameplate centered on the
- * top edge — a label affixed to the case, not a hole cut in the border.
+ * Glass widget panel with a quiet title row — light type over the veil, no
+ * heavy chrome, so the frosted frame stays the visual lead.
  */
 export function WidgetFrame({
   title,
@@ -31,11 +31,9 @@ export function WidgetFrame({
       onKeyDown={onKeyDown}
       className={`widget-frame ${className ?? ""}`}
     >
-      <div className="widget-frame__crest">
-        <span className="widget-frame__ornament" aria-hidden />
+      <header className="widget-frame__chrome">
         <span className="widget-frame__title">{title}</span>
-        <span className="widget-frame__ornament" aria-hidden />
-      </div>
+      </header>
       <div className="widget-frame__body">{children}</div>
     </div>
   );

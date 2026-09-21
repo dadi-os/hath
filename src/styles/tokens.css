@@ -148,7 +148,7 @@
   background: var(--glass-veil);
   -webkit-backdrop-filter: blur(var(--glass-blur));
   backdrop-filter: blur(var(--glass-blur));
-  border: 1px dashed var(--sage-line);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-window);
   box-shadow: var(--shadow);
   overflow: hidden;
@@ -169,11 +169,11 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  overflow: visible;
+  overflow: hidden;
   background: var(--glass-veil);
   -webkit-backdrop-filter: blur(var(--glass-blur));
   backdrop-filter: blur(var(--glass-blur));
-  border: 1px dashed color-mix(in srgb, var(--sage-line) 75%, transparent);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-window);
   box-shadow: var(--shadow-deep);
 }
@@ -184,63 +184,30 @@
   position: absolute;
   inset: 0 0 auto 0;
   height: 1px;
-  border-radius: var(--radius-window) var(--radius-window) 0 0;
   background: var(--glass-rim-top);
-  z-index: 1;
+  z-index: 2;
 }
 
-.widget-frame__crest {
-  pointer-events: none;
-  position: absolute;
-  left: 50%;
-  top: 0;
-  z-index: 2;
+.widget-frame__chrome {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
   display: flex;
-  translate: -50% -50%;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.35rem 0.85rem;
-  background: radial-gradient(
-    ellipse 68% 70% at 50% 50%,
-    var(--bone) 0%,
-    var(--bone) 42%,
-    transparent 74%
-  );
+  justify-content: center;
+  padding: 0.55rem 0.85rem 0.15rem;
 }
 
 .widget-frame__title {
-  display: inline-block;
-  padding: 0.22rem 0.78rem 0.2rem;
-  border: 1px solid color-mix(in srgb, var(--sage-line) 88%, var(--sage-deep));
-  border-radius: 3px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bone) 92%, white) 0%,
-    var(--bone) 48%,
-    var(--bone-raised) 100%
-  );
-  box-shadow:
-    0 1px 2px color-mix(in srgb, var(--sage-deep) 12%, transparent),
-    inset 0 1px 0 var(--glass-rim-top);
-  color: var(--sage-deep);
+  color: var(--sage-text);
   font-size: 10px;
   font-weight: 500;
-  letter-spacing: 0.3em;
-  line-height: 1.2;
-  text-indent: 0.3em;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  text-indent: 0.14em;
   text-transform: uppercase;
   white-space: nowrap;
-}
-
-.widget-frame__ornament {
-  flex-shrink: 0;
-  width: 5px;
-  height: 5px;
-  rotate: 45deg;
-  border: 1px solid var(--sage-line);
-  background: color-mix(in srgb, var(--sage-faint) 55%, var(--bone));
-  box-shadow: inset 0 0 0 0.5px
-    color-mix(in srgb, var(--sage) 25%, transparent);
+  opacity: 0.85;
 }
 
 /* Chat rail — olive strip in light, charcoal strip in dark. Contrasts widgets either way. */
@@ -281,8 +248,11 @@
   --color-glass-sheet: #f4f6ee;
   --chat-hover: rgba(44, 48, 42, 0.05);
   --chat-active: rgba(44, 48, 42, 0.09);
-  --chat-edge: #d4dcc6;
-  background: #e4e8db;
+  --chat-edge: color-mix(in srgb, #c3cdb4 55%, transparent);
+  --composer-fade-solid: #f4f6f0;
+  background: color-mix(in srgb, #f4f6f0 68%, transparent);
+  -webkit-backdrop-filter: blur(28px);
+  backdrop-filter: blur(28px);
   color: #2c302a;
   border-right: 1px solid var(--chat-edge);
 }
@@ -325,18 +295,122 @@
     --color-glass-sheet: #22251f;
     --chat-hover: rgba(255, 255, 255, 0.055);
     --chat-active: rgba(255, 255, 255, 0.1);
-    --chat-edge: rgba(255, 255, 255, 0.06);
-    background: #171915;
+    --chat-edge: rgba(255, 255, 255, 0.08);
+    --composer-fade-solid: #161814;
+    background: color-mix(in srgb, #161814 62%, transparent);
     color: #eceee6;
   }
 }
 
+/* Frosted composer — same veil as the rail, no specular highlight. */
+.composer-fade {
+  pointer-events: none;
+  position: absolute;
+  inset: auto 0 0;
+  height: 8.5rem;
+  z-index: 0;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--composer-fade-solid) 72%, transparent) 0%,
+    color-mix(in srgb, var(--composer-fade-solid) 28%, transparent) 58%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to top,
+    #000 0%,
+    #000 34%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(to top, #000 0%, #000 34%, transparent 100%);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.composer-glass {
+  position: relative;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--sage-line) 42%, transparent);
+  background: color-mix(in srgb, var(--bone) 58%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+
+.composer-glass--held {
+  border-color: color-mix(in srgb, var(--sage-line) 28%, transparent);
+}
+
+.composer-glass--live {
+  border-color: color-mix(in srgb, var(--sage) 36%, transparent);
+}
+
+/* Attach choices sit above the plus control. Position is unlayered so it stays out of the row. */
+.composer-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  min-width: 11rem;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--sage-line) 42%, transparent);
+  background: color-mix(in srgb, var(--bone) 88%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+
+.host-pin {
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--sage-line) 42%, transparent);
+  background: color-mix(in srgb, var(--bone) 46%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.host-pin__live {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--sage);
+}
+
+/* Same dissolve as the composer, hanging under the floating browser. */
+.host-pin-fade {
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: calc(100% + 5.5rem);
+  z-index: 0;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--composer-fade-solid) 72%, transparent) 0%,
+    color-mix(in srgb, var(--composer-fade-solid) 72%, transparent) calc(100% - 5.5rem),
+    color-mix(in srgb, var(--composer-fade-solid) 28%, transparent) calc(100% - 2.2rem),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 calc(100% - 5.5rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 calc(100% - 5.5rem),
+    transparent 100%
+  );
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
 .widget-frame__body {
   position: relative;
+  z-index: 0;
   min-height: 0;
   flex: 1;
   overflow: hidden;
-  padding-top: 0.85rem;
-  border-radius: 0 0 var(--radius-window) var(--radius-window);
-  background: color-mix(in srgb, var(--glass-solid) 55%, transparent);
 }

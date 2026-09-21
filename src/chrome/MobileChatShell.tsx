@@ -8,11 +8,10 @@ import { useNeedsProvisioning } from "../hooks/useNeedsProvisioning";
 import {
   IconButton,
   IconMenu,
-  IconNewChat,
   IconPower,
 } from "../shared/components/IconButton";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
-import { getChatState, openDadi, subscribeChat } from "../store/chat";
+import { getChatState, subscribeChat } from "../store/chat";
 import { disconnectTransport } from "../store/connection";
 import { usingTsnet, isMeshOnline } from "../shared/api";
 
@@ -25,7 +24,7 @@ export function MobileChatShell() {
   const { state } = useConnection();
   const chat = useSyncExternalStore(subscribeChat, getChatState, getChatState);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [sessionKey, setSessionKey] = useState(0);
+  const sessionKey = 0;
   const needsProvisioning = useNeedsProvisioning();
 
   const openAgentId =
@@ -46,12 +45,6 @@ export function MobileChatShell() {
         : state === "connecting"
           ? "…"
           : "OFFLINE";
-
-  const startNew = () => {
-    openDadi();
-    setDrawerOpen(false);
-    setSessionKey((k) => k + 1);
-  };
 
   const showOnboarding = usingTsnet && needsProvisioning;
   const showPower =
@@ -102,9 +95,6 @@ export function MobileChatShell() {
             <IconPower />
           </IconButton>
         ) : null}
-        <IconButton label="New chat" size="sm" onClick={startNew}>
-          <IconNewChat />
-        </IconButton>
       </motion.header>
 
       <motion.div

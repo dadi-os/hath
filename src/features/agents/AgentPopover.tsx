@@ -7,6 +7,7 @@ import { Popover } from "../../shared/components/Popover";
 import { Tooltip } from "../../shared/components/Tooltip";
 import { getRunning } from "../../store/running";
 import { AgentActivity } from "./AgentActivity";
+import { BrowserFrame } from "./BrowserFrame";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import {
   formatAbsolute,
@@ -22,8 +23,15 @@ export type AgentPopoverProps = {
   runningMap: ReturnType<typeof getRunning>;
   anchor: { x: number; y: number } | null;
   containerRef: RefObject<HTMLElement | null>;
+  /** Live Nas browser for this agent, or null. */
+  browserId: number | null;
+  /** Live terminal caption, or null. */
+  terminal: { id: string; last_command: string | null } | null;
   onClose: () => void;
   onSelectParent: (id: string) => void;
+  /** Keep the panel open while the pointer is on it. */
+  onHoverStart?: () => void;
+  onHoverEnd?: () => void;
 };
 
 /**
@@ -36,8 +44,12 @@ export function AgentPopover({
   runningMap,
   anchor,
   containerRef,
+  browserId,
+  terminal,
   onClose,
   onSelectParent,
+  onHoverStart,
+  onHoverEnd,
 }: AgentPopoverProps) {
   const { state: connection } = useConnection();
   const connected = isMeshOnline(connection);
@@ -109,6 +121,13 @@ export function AgentPopover({
   const parentId = detail?.parent_agent_id ?? listAgent?.parent_agent_id ?? null;
   const parent = parentId ? agentsById.get(parentId) : undefined;
   const live = running.reasoning || running.conversation;
+  const command = terminal?.last_command?.replace(/\s+/g, " ").trim();
+  const hostCaption =
+    command && command.length > 0
+      ? command
+      : terminal
+        ? terminal.id
+        : null;
 
   return (
     <Popover
@@ -117,9 +136,12 @@ export function AgentPopover({
       anchor={anchor}
       containerRef={containerRef}
       aria-label={`${name} details`}
-      className="max-h-[min(78%,580px)]"
-      widthPx={380}
+      className="max-h-[min(86vh,760px)]"
+      style={{ maxHeight: "min(86vh, 760px)" }}
+      widthPx={460}
       caret
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
     >
       <div className="shrink-0 border-b border-rule/60 px-4 py-2.5">
         <div className="flex items-baseline justify-between gap-3">
@@ -133,6 +155,22 @@ export function AgentPopover({
           </button>
         </div>
       </div>
+
+      {browserId !== null ? (
+        <div className="shrink-0 border-b border-rule/60 px-3 py-3">
+          {hostCaption ? (
+            <p
+              className="mb-2 truncate font-mono text-[11px] text-ink-muted"
+              title={hostCaption}
+            >
+              {hostCaption}
+            </p>
+          ) : null}
+          <div className="overflow-hidden rounded-[12px] border border-sage-line/70">
+            <BrowserFrame browserId={browserId} variant="detail" />
+          </div>
+        </div>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <section className="mb-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[13px]">

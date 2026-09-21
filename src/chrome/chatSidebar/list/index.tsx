@@ -1,5 +1,5 @@
 import { motion } from "motion/react";
-import { EASE, SLOW_S } from "../../../shared/lib/ux/motion";
+import { EASE } from "../../../shared/lib/ux/motion";
 import type { Conversation, HistoryStatus } from "../../../store/chat";
 import { ActivityPulse } from "../ActivityPulse";
 import { groupConversations, truncateOneLine } from "../format";
@@ -13,7 +13,7 @@ export interface ConversationListProps {
   historyError: string | null;
   onOpenAgent: (agentId: string) => void;
   onDismissKeyboard: () => void;
-  /** Pinned Talk to Dadi row at the bottom of the ChatGPT-style list. */
+  /** Pinned Talk to Dadi control — the sole new-chat entry. */
   dadi: {
     available: boolean;
     selected: boolean;
@@ -23,7 +23,10 @@ export interface ConversationListProps {
   };
 }
 
-/** Conversation list pane: grouped threads, empty/error states, Talk to Dadi. */
+/**
+ * Conversation list pane. Enter/exit motion is owned by the sidebar stage —
+ * rows stay static so a parent transform can fall away as one surface.
+ */
 export function ConversationList({
   conversations,
   selectedAgentId,
@@ -38,14 +41,9 @@ export function ConversationList({
   const failed = historyStatus === "error" && conversations.length === 0;
 
   return (
-    <motion.div
-      key="list"
+    <div
       onClick={onDismissKeyboard}
       className="absolute inset-0 flex flex-col"
-      initial={{ opacity: 0, x: -28 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -28 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
     >
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
         {failed ? (
@@ -104,11 +102,14 @@ export function ConversationList({
       </div>
 
       <div className="shrink-0 border-t border-(--chat-edge) px-2 py-2">
-        <button
+        <motion.button
           type="button"
           onClick={dadi.onOpen}
           disabled={!dadi.available}
-          className={`flex w-full items-center gap-3 rounded-[10px] px-2.5 py-2.5 text-left transition-colors duration-fast ease-hath disabled:opacity-50 ${
+          whileHover={dadi.available ? { scale: 1.012 } : undefined}
+          whileTap={dadi.available ? { scale: 0.985 } : undefined}
+          transition={{ duration: 0.18, ease: EASE }}
+          className={`flex w-full items-center gap-3 rounded-[14px] px-2.5 py-2.5 text-left transition-colors duration-fast ease-hath disabled:opacity-50 ${
             dadi.selected
               ? "bg-(--chat-active)"
               : "hover:bg-(--chat-hover)"
@@ -124,12 +125,12 @@ export function ConversationList({
             <span className="block truncate text-[12px] text-ink-ghost">
               {dadi.preview
                 ? truncateOneLine(dadi.preview, 48)
-                : "Route a new conversation"}
+                : "Start something new"}
             </span>
           </span>
           {dadi.busy ? <ActivityPulse /> : null}
-        </button>
+        </motion.button>
       </div>
-    </motion.div>
+    </div>
   );
 }

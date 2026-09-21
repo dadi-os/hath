@@ -9,7 +9,6 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { hierarchy, tree, type HierarchyPointNode } from "d3-hierarchy";
 import { motion } from "motion/react";
 import { dimaag, isMeshOnline, nas } from "../../shared/api";
 import type { AgentRecord } from "../../shared/api/types";
@@ -17,25 +16,26 @@ import { useConnection } from "../../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
+import { openAgent } from "../../store/chat";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
 import { AgentPopover } from "./AgentPopover";
-import { SessionPeek } from "./SessionPeek";
 import {
-  hasRememberedSessions,
   pickLiveBrowser,
   pickLiveTerminal,
 } from "./sessions";
 import {
   buildTree,
   isLiveVisual,
+  layoutCircle,
+  labelPlacement,
   linkPath,
   visualState,
-  type AgentTreeNode,
+  type LaidOutNode,
   type NodeVisual,
 } from "./tree";
 
-const PEEK_DELAY_MS = 350;
-const FOREST_LAYOUT_ID = "__forest__";
+const DETAIL_DELAY_MS = 160;
+const DETAIL_CLOSE_MS = 320;
 
 type ViewTransform = { x: number; y: number; k: number };
 
@@ -124,8 +124,8 @@ export type AgentTreeProps = {
 };
 
 /**
- * Live agent tree. Positions use SVG transforms (not CSS on <g>) so nodes
- * cannot vanish while remaining clickable. Preview uses a tighter layout.
+ * Live agent ring. Roots sit on a circle; children step outward.
+ * Hover opens details. Click opens the agent in the sidebar.
  */
 export function AgentTree({
   mode,
@@ -192,21 +192,16 @@ export function AgentTree({
     if (forest.length === 0) {
       return null;
     }
-    const layoutRoot: AgentTreeNode = {
-      id: FOREST_LAYOUT_ID,
-      name: "",
-      active: true,
-      children: forest,
-    };
-    const root = hierarchy(layoutRoot);
-    const positioned = tree<AgentTreeNode>().nodeSize([spacingX, spacingY])(root);
-    const nodes = positioned
-      .descendants()
-      .filter((n) => n.data.id !== FOREST_LAYOUT_ID);
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
+    const ring = Math.max(
+      preview ? 108 : 168,
+      (forest.length * spacingX) / (Math.PI * 2),
+    );
+    const laid = layoutCircle(forest, ring, spacingY * 0.82);
+    const nodes = laid.nodes;
+    let minX = 0;
+    let maxX = 0;
+    let minY = 0;
+    let maxY = 0;
     for (const n of nodes) {
       minX = Math.min(minX, n.x);
       maxX = Math.max(maxX, n.x);
@@ -215,12 +210,12 @@ export function AgentTree({
     }
     const contentW = Math.max(maxX - minX, 0);
     const contentH = Math.max(maxY - minY, 0);
-    const labelPad = hideLabels ? 8 : 30;
-    const w = Math.max(contentW + viewPad * 2, minViewW);
-    const h = Math.max(contentH + viewPad * 2 + labelPad, minViewH);
+    const labelPad = hideLabels ? 0 : preview ? 20 : 44;
+    const w = Math.max(contentW + (viewPad + labelPad) * 2, minViewW);
+    const h = Math.max(contentH + (viewPad + labelPad) * 2, minViewH);
     return {
       nodes,
-      links: positioned.links().filter((l) => l.source.data.id !== FOREST_LAYOUT_ID),
+      links: laid.links,
       viewBox: {
         x: minX - (w - contentW) / 2,
         y: minY - (h - contentH) / 2,
@@ -228,7 +223,7 @@ export function AgentTree({
         h,
       },
     };
-  }, [agents, spacingX, spacingY, viewPad, hideLabels, minViewW, minViewH]);
+  }, [agents, spacingX, spacingY, viewPad, hideLabels, minViewW, minViewH, preview]);
 
   const knownIdsRef = useRef<Set<string>>(new Set());
   const bootstrappedRef = useRef(false);
@@ -270,34 +265,38 @@ export function AgentTree({
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
-  const [peekId, setPeekId] = useState<string | null>(null);
-  const [peekAnchor, setPeekAnchor] = useState<{ x: number; y: number } | null>(
-    null,
-  );
-  const peekTimerRef = useRef<number | null>(null);
+  const detailTimerRef = useRef<number | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
 
-  /** Cancel a pending hover-peek timer without clearing the visible peek. */
-  const clearPeekTimer = () => {
-    if (peekTimerRef.current !== null) {
-      window.clearTimeout(peekTimerRef.current);
-      peekTimerRef.current = null;
+  const clearDetailTimer = () => {
+    if (detailTimerRef.current !== null) {
+      window.clearTimeout(detailTimerRef.current);
+      detailTimerRef.current = null;
     }
   };
 
-  /** Hide the session peek and cancel any pending timer. */
-  const hidePeek = () => {
-    clearPeekTimer();
-    setPeekId(null);
-    setPeekAnchor(null);
+  const clearCloseTimer = () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
   };
 
-  useEffect(() => () => clearPeekTimer(), []);
+  const hideDetails = () => {
+    clearDetailTimer();
+    clearCloseTimer();
+    setSelectedId(null);
+    setAnchor(null);
+  };
+
+  useEffect(() => () => {
+    clearDetailTimer();
+    clearCloseTimer();
+  }, []);
 
   useEffect(() => {
     setView({ x: 0, y: 0, k: 1 });
-    setSelectedId(null);
-    setAnchor(null);
-    hidePeek();
+    hideDetails();
   }, [entranceKey]);
 
   const resetView = () => setView({ x: 0, y: 0, k: 1 });
@@ -330,7 +329,7 @@ export function AgentTree({
       return;
     }
     drag.moved = true;
-    hidePeek();
+    hideDetails();
     drag.lastX = e.clientX;
     drag.lastY = e.clientY;
     const svg = svgRef.current;
@@ -427,7 +426,7 @@ export function AgentTree({
     pinchRef.current = null;
   };
 
-  const nodeScreenAnchor = (node: HierarchyPointNode<AgentTreeNode>) => {
+  const nodeScreenAnchor = (node: LaidOutNode) => {
     const svg = svgRef.current;
     const root = rootRef.current;
     if (!svg || !root) {
@@ -445,52 +444,36 @@ export function AgentTree({
     return { x: screen.x - rect.left, y: screen.y - rect.top };
   };
 
-  /** Viewport (client) coordinates for a tree node — used to place the hover peek portal. */
-  const nodeViewportAnchor = (node: HierarchyPointNode<AgentTreeNode>) => {
-    const svg = svgRef.current;
-    if (!svg) {
-      return null;
-    }
-    const pt = svg.createSVGPoint();
-    pt.x = node.x * view.k + view.x;
-    pt.y = node.y * view.k + view.y;
-    const ctm = svg.getScreenCTM();
-    if (!ctm) {
-      return null;
-    }
-    const screen = pt.matrixTransform(ctm);
-    return { x: screen.x, y: screen.y };
-  };
-
-  /** After a short delay, show the host-session peek for a node with remembered sessions. */
-  const schedulePeek = (node: HierarchyPointNode<AgentTreeNode>) => {
-    if (dragRef.current.active || selectedId === node.data.id) {
+  /** After a short delay, open the detail panel for this node. */
+  const scheduleDetails = (node: LaidOutNode) => {
+    if (dragRef.current.active) {
       return;
     }
-    const agent = agentsById.get(node.data.id);
-    if (!agent || !hasRememberedSessions(agent.sessions)) {
+    clearCloseTimer();
+    if (selectedId === node.data.id) {
       return;
     }
-    clearPeekTimer();
-    peekTimerRef.current = window.setTimeout(() => {
-      if (dragRef.current.active || selectedId === node.data.id) {
+    clearDetailTimer();
+    detailTimerRef.current = window.setTimeout(() => {
+      if (dragRef.current.active) {
         return;
       }
-      setPeekId(node.data.id);
-      setPeekAnchor(nodeViewportAnchor(node));
-    }, PEEK_DELAY_MS);
+      setSelectedId(node.data.id);
+      setAnchor(nodeScreenAnchor(node));
+    }, DETAIL_DELAY_MS);
   };
 
-  const openNode = (node: HierarchyPointNode<AgentTreeNode>) => {
-    hidePeek();
-    setSelectedId(node.data.id);
-    const anchorPt = nodeScreenAnchor(node);
-    if (anchorPt) {
-      setAnchor(anchorPt);
-    }
+  const scheduleClose = () => {
+    clearDetailTimer();
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setSelectedId(null);
+      setAnchor(null);
+    }, DETAIL_CLOSE_MS);
   };
 
   const movePopoverToAgent = (agentId: string) => {
+    clearCloseTimer();
     setSelectedId(agentId);
     const node = layout?.nodes.find((n) => n.data.id === agentId);
     if (!node) {
@@ -535,20 +518,15 @@ export function AgentTree({
   }
 
   const { viewBox } = layout;
-  const peekAgent = peekId ? agentsById.get(peekId) : undefined;
-  const peekBrowserId =
-    peekAgent && browsersQuery.isSuccess
-      ? pickLiveBrowser(peekAgent.sessions.browsers, browsersQuery.data)
+  const detailAgent = selectedId ? agentsById.get(selectedId) : undefined;
+  const detailBrowserId =
+    detailAgent && browsersQuery.isSuccess
+      ? pickLiveBrowser(detailAgent.sessions.browsers, browsersQuery.data)
       : null;
-  const peekTerminal =
-    peekAgent && terminalsQuery.isSuccess
-      ? pickLiveTerminal(peekAgent.sessions.terminals, terminalsQuery.data)
+  const detailTerminal =
+    detailAgent && terminalsQuery.isSuccess
+      ? pickLiveTerminal(detailAgent.sessions.terminals, terminalsQuery.data)
       : null;
-  const peekOpen =
-    peekId !== null &&
-    peekAnchor !== null &&
-    peekId !== selectedId &&
-    (peekBrowserId !== null || peekTerminal !== null);
 
   return (
     <div ref={rootRef} className={`relative h-full min-h-0 w-full ${className ?? ""}`}>
@@ -613,17 +591,18 @@ export function AgentTree({
                   e.stopPropagation();
                 }}
                 onPointerEnter={() => {
-                  schedulePeek(node);
+                  scheduleDetails(node);
                 }}
                 onPointerLeave={() => {
-                  hidePeek();
+                  scheduleClose();
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (interactive && dragRef.current.moved) {
                     return;
                   }
-                  openNode(node);
+                  hideDetails();
+                  openAgent(agent.id);
                 }}
               >
                 <circle className="agent-node__hit" r={r + 10} />
@@ -654,8 +633,7 @@ export function AgentTree({
                     ]
                       .filter(Boolean)
                       .join(" ")}
-                    y={r + (preview ? 16 : 22)}
-                    textAnchor="middle"
+                    {...labelPlacement(node, layout.links, preview ? 14 : 20)}
                     fontSize={preview ? 7 : 9.5}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -681,17 +659,12 @@ export function AgentTree({
         runningMap={runningMap}
         anchor={anchor}
         containerRef={rootRef as RefObject<HTMLElement | null>}
-        onClose={() => {
-          setSelectedId(null);
-          setAnchor(null);
-        }}
+        browserId={detailBrowserId}
+        terminal={detailTerminal}
+        onHoverStart={clearCloseTimer}
+        onHoverEnd={scheduleClose}
+        onClose={hideDetails}
         onSelectParent={movePopoverToAgent}
-      />
-      <SessionPeek
-        open={peekOpen}
-        anchor={peekAnchor}
-        browserId={peekBrowserId}
-        terminal={peekTerminal}
       />
     </div>
   );

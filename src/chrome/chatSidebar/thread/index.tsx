@@ -1,23 +1,22 @@
-import { useRef, type RefObject, type UIEvent } from "react";
-import { AnimatePresence, motion } from "motion/react";
-import { EASE, SLOW_S } from "../../../shared/lib/ux/motion";
+import { useEffect, useRef, type RefObject, type UIEvent } from "react";
+import { AnimatePresence } from "motion/react";
 import type { ChatMessage } from "../../../store/chat";
-import { ActivityPulse } from "../ActivityPulse";
+import { HoldIndicator, ThinkingIndicator } from "../ActivityPulse";
 import { messageKey, trackIncoming } from "../lanes";
 import { MessageBubble } from "../message";
 
 export interface ThreadViewProps {
-  /** AnimatePresence key for thread transitions. */
-  viewKey: string;
   scrollRef: RefObject<HTMLDivElement | null>;
   onScroll: (e: UIEvent<HTMLDivElement>) => void;
   onDismissKeyboard: () => void;
   composerPad: number;
+  /** Space under a floating browser pin. Zero when the thread has no browser. */
+  hostPad: number;
   settledMessages: ChatMessage[];
   queuedMessages: ChatMessage[];
   /**
-   * Pulse before drafts = conversation held (queueing).
-   * Pulse at thread end with open composer = reasoning working.
+   * Hold indicator before drafts = conversation lane busy (queueing).
+   * Thinking indicator at thread end = reasoning working.
    */
   showHoldPulse: boolean;
   showWorkingPulse: boolean;
@@ -29,13 +28,13 @@ export interface ThreadViewProps {
   emptyHint?: string;
 }
 
-/** Open thread scroll pane: settled messages, hold pulse, queued drafts, working pulse. */
+/** Open thread scroll pane: settled messages, hold/thinking, queued drafts. */
 export function ThreadView({
-  viewKey,
   scrollRef,
   onScroll,
   onDismissKeyboard,
   composerPad,
+  hostPad,
   settledMessages,
   queuedMessages,
   showHoldPulse,
@@ -56,21 +55,25 @@ export function ThreadView({
   );
   seededRef.current = true;
 
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+  }, [scrollRef]);
+
   return (
-    <motion.div
-      key={viewKey}
-      className="absolute inset-0"
-      initial={{ opacity: 0, x: 28 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 28 }}
-      transition={{ duration: SLOW_S, ease: EASE }}
-    >
+    <div className="absolute inset-0">
       <div
         ref={scrollRef}
         onScroll={onScroll}
         onClick={onDismissKeyboard}
         className="h-full overflow-y-auto overscroll-contain px-3.5 py-4"
-        style={{ paddingBottom: composerPad }}
+        style={{
+          paddingBottom: composerPad,
+          paddingTop: hostPad > 0 ? hostPad : undefined,
+        }}
       >
         <div className="flex flex-col gap-4">
           {settledMessages.length === 0 &&
@@ -99,7 +102,9 @@ export function ThreadView({
               />
             ))}
           </AnimatePresence>
-          {showHoldPulse ? <ActivityPulse /> : null}
+          <AnimatePresence initial={false}>
+            {showHoldPulse ? <HoldIndicator key="hold" /> : null}
+          </AnimatePresence>
           <AnimatePresence initial={false}>
             {queuedMessages.map((msg) => (
               <MessageBubble
@@ -110,9 +115,11 @@ export function ThreadView({
               />
             ))}
           </AnimatePresence>
-          {showWorkingPulse ? <ActivityPulse /> : null}
+          <AnimatePresence initial={false}>
+            {showWorkingPulse ? <ThinkingIndicator key="thinking" /> : null}
+          </AnimatePresence>
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }

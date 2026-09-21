@@ -34,7 +34,7 @@ export function WidgetGridPage() {
 
   return (
     <motion.div
-      className="grid h-full min-h-0 grid-cols-1 gap-5 overflow-hidden px-2 pb-2 pt-5 auto-rows-[minmax(160px,1fr)] md:grid-cols-4 md:grid-rows-4 md:auto-rows-fr"
+      className="grid h-full min-h-0 grid-cols-1 gap-5 overflow-hidden px-2 py-2 auto-rows-[minmax(160px,1fr)] md:grid-cols-4 md:grid-rows-4 md:auto-rows-fr"
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}

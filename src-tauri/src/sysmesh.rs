@@ -3,6 +3,10 @@
 //! iOS keeps the in-process tsnet dialer; desktop joins the mesh the same way
 //! the Nas host does (`tailscale up --login-server …`) so Terminal can reach
 //! `os.dadi` and other MagicDNS names.
+//!
+//! On macOS, `tailscaled` runs as LaunchDaemon `com.dadi.hath.sysmesh` with
+//! KeepAlive so it outlives Hath quits, osascript teardown, and Wi‑Fi flaps.
+//! Leave mesh only runs `tailscale down` — the daemon stays loaded.
 
 #![cfg(not(target_os = "ios"))]
 
@@ -21,6 +25,12 @@ const DAEMON_WAIT: Duration = Duration::from_secs(20);
 
 #[cfg(target_os = "macos")]
 const MAGIC_DNS_RESOLVER_INSTALL: &str = "/bin/mkdir -p /etc/resolver && /usr/bin/printf 'nameserver 100.100.100.100\\n' > /etc/resolver/dadi && /usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder 2>/dev/null; true";
+
+#[cfg(target_os = "macos")]
+const SYSMESH_LAUNCHD_LABEL: &str = "com.dadi.hath.sysmesh";
+
+#[cfg(target_os = "macos")]
+const SYSMESH_LAUNCHD_PLIST: &str = "/Library/LaunchDaemons/com.dadi.hath.sysmesh.plist";
 
 struct Bins {
     tailscale: PathBuf,
@@ -59,8 +69,8 @@ pub fn start(
 
 /// Leave the mesh (`tailscale down`) and stop the local HTTP proxy.
 ///
-/// Keeps `tailscaled` and `/etc/resolver/dadi` so the next join does not
-/// re-prompt for macOS administrator privileges.
+/// Keeps `tailscaled` (LaunchDaemon on macOS) and `/etc/resolver/dadi` so the
+/// next join does not re-prompt for administrator privileges.
 pub fn stop(app: &AppHandle) -> Result<(), String> {
     let state_dir = sysmesh_dir(app)?;
     let socket = local_api_path(&state_dir);
@@ -307,7 +317,7 @@ fn spawn_daemon_process(
     Ok(())
 }
 
-/// Starts tailscaled via admin `osascript` and returns when the local API socket answers so `do shell script` cannot hold join on the daemon child.
+/// Starts `tailscaled` under LaunchDaemon KeepAlive (survives Hath + shell exit).
 #[cfg(target_os = "macos")]
 fn start_daemon_macos(
     bins: &Bins,
@@ -315,6 +325,15 @@ fn start_daemon_macos(
     socket: &Path,
     log_path: &Path,
 ) -> Result<(), String> {
+    if try_reuse_running_daemon(state_dir, socket) {
+        logutil::emit("info", "sysmesh reusing existing tailscaled");
+        return Ok(());
+    }
+    if try_launchd_revive(socket) {
+        logutil::emit("info", "sysmesh revived via launchd KeepAlive");
+        return Ok(());
+    }
+
     if !state_owned_by_root(state_dir) {
         if spawn_daemon_process(bins, state_dir, socket, log_path).is_ok() {
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -327,15 +346,68 @@ fn start_daemon_macos(
         }
     }
 
-    logutil::emit("info", "sysmesh requesting admin to start tailscaled");
+    install_macos_launchd_daemon(bins, state_dir, socket, log_path)
+}
+
+/// Wait for an already-installed LaunchDaemon to bring the socket back (no password).
+#[cfg(target_os = "macos")]
+fn try_launchd_revive(socket: &Path) -> bool {
+    if !Path::new(SYSMESH_LAUNCHD_PLIST).is_file() {
+        return false;
+    }
+    // KeepAlive restarts crashed jobs on its own; give it a moment.
+    if wait_socket_live(socket, Duration::from_secs(6)) {
+        return true;
+    }
+    let domain = format!("system/{SYSMESH_LAUNCHD_LABEL}");
+    let _ = Command::new("launchctl")
+        .args(["kickstart", "-k", &domain])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    wait_socket_live(socket, Duration::from_secs(8))
+}
+
+/// One-time (or repair) admin install: stable binary + LaunchDaemon + resolver.
+#[cfg(target_os = "macos")]
+fn install_macos_launchd_daemon(
+    bins: &Bins,
+    state_dir: &Path,
+    socket: &Path,
+    log_path: &Path,
+) -> Result<(), String> {
+    let daemon_bin = state_dir.join("bin").join("tailscaled");
+    let staged = stage_sysmesh_launchd_plist(&daemon_bin, state_dir, socket, log_path)?;
+    let resolver_bit = if macos_magic_dns_resolver_ok() {
+        "true"
+    } else {
+        MAGIC_DNS_RESOLVER_INSTALL
+    };
+
+    logutil::emit(
+        "info",
+        "sysmesh requesting admin to install LaunchDaemon com.dadi.hath.sysmesh",
+    );
+
+    // Copy a stable binary under statedir, install the plist, bootstrap + kickstart.
+    // launchd owns the process — not osascript — so Hath quit cannot SIGTERM it.
     let script = format!(
-        "/bin/mkdir -p {statedir} && /bin/rm -f {socket} && {tailscaled} --statedir={statedir} --socket={socket} --verbose=1 >{log} 2>&1 < /dev/null & echo $! >{pidfile}; /bin/sleep 1; /bin/chmod 666 {socket} 2>/dev/null; {resolver}; true",
-        resolver = MAGIC_DNS_RESOLVER_INSTALL,
-        statedir = sh_single_quote(&state_dir.to_string_lossy()),
+        "/bin/mkdir -p {bindir} && \
+/bin/cp -f {src} {daemon} && /bin/chmod 755 {daemon} && \
+/bin/cp -f {staged} {plist} && /bin/chmod 644 {plist} && \
+/bin/launchctl bootout system/{label} 2>/dev/null; \
+/bin/launchctl bootstrap system {plist} && \
+/bin/launchctl enable system/{label} && \
+/bin/launchctl kickstart -k system/{label}; \
+/bin/sleep 1; /bin/chmod 666 {socket} 2>/dev/null; {resolver}; true",
+        bindir = sh_single_quote(&state_dir.join("bin").to_string_lossy()),
+        src = sh_single_quote(&bins.tailscaled.to_string_lossy()),
+        daemon = sh_single_quote(&daemon_bin.to_string_lossy()),
+        staged = sh_single_quote(&staged.to_string_lossy()),
+        plist = sh_single_quote(SYSMESH_LAUNCHD_PLIST),
+        label = SYSMESH_LAUNCHD_LABEL,
         socket = sh_single_quote(&socket.to_string_lossy()),
-        tailscaled = sh_single_quote(&bins.tailscaled.to_string_lossy()),
-        log = sh_single_quote(&log_path.to_string_lossy()),
-        pidfile = sh_single_quote(&state_dir.join("tailscaled.pid").to_string_lossy()),
+        resolver = resolver_bit,
     );
 
     let apple = format!(
@@ -350,7 +422,7 @@ fn start_daemon_macos(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("osascript (admin TUN): {e}"))?;
+        .map_err(|e| format!("osascript (admin LaunchDaemon): {e}"))?;
 
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
@@ -359,6 +431,8 @@ fn start_daemon_macos(
                 .args(["666", &socket.to_string_lossy()])
                 .status();
             if socket_live(socket) {
+                // Do not leave osascript hanging — wait briefly for a clean exit.
+                let _ = child.try_wait();
                 return Ok(());
             }
         }
@@ -373,25 +447,21 @@ fn start_daemon_macos(
                     None => String::new(),
                 };
                 return Err(format!(
-                    "admin approval required to create the dadiMesh TUN: {err}"
+                    "admin approval required to install the dadiMesh LaunchDaemon: {err}"
                 ));
             }
             Ok(Some(_)) => {
-                let wait = Instant::now() + Duration::from_secs(3);
-                while Instant::now() < wait {
-                    if socket_live(socket) {
-                        return Ok(());
-                    }
-                    thread::sleep(Duration::from_millis(100));
+                if wait_socket_live(socket, Duration::from_secs(5)) {
+                    return Ok(());
                 }
                 let log = fs::read_to_string(log_path).unwrap_or_default();
                 return Err(format!(
-                    "tailscaled did not stay up after admin start — {}",
+                    "LaunchDaemon installed but tailscaled socket never came up — {}",
                     log.trim()
                 ));
             }
             Ok(None) => {}
-            Err(e) => return Err(format!("osascript (admin TUN): {e}")),
+            Err(e) => return Err(format!("osascript (admin LaunchDaemon): {e}")),
         }
         if Instant::now() >= deadline {
             return Err(
@@ -400,6 +470,77 @@ fn start_daemon_macos(
         }
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Stage a KeepAlive LaunchDaemon plist in a user-writable temp path.
+#[cfg(target_os = "macos")]
+fn stage_sysmesh_launchd_plist(
+    daemon_bin: &Path,
+    state_dir: &Path,
+    socket: &Path,
+    log_path: &Path,
+) -> Result<PathBuf, String> {
+    let staged = std::env::temp_dir().join("com.dadi.hath.sysmesh.plist");
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{daemon}</string>
+    <string>--statedir={statedir}</string>
+    <string>--socket={socket}</string>
+    <string>--verbose=1</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{log}</string>
+  <key>StandardErrorPath</key>
+  <string>{log}</string>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+</dict>
+</plist>
+"#,
+        label = SYSMESH_LAUNCHD_LABEL,
+        daemon = xml_escape(&daemon_bin.to_string_lossy()),
+        statedir = xml_escape(&state_dir.to_string_lossy()),
+        socket = xml_escape(&socket.to_string_lossy()),
+        log = xml_escape(&log_path.to_string_lossy()),
+    );
+    fs::write(&staged, xml).map_err(|e| format!("stage LaunchDaemon plist: {e}"))?;
+    Ok(staged)
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+#[cfg(target_os = "macos")]
+fn wait_socket_live(socket: &Path, budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        if socket.exists() {
+            let _ = Command::new("/bin/chmod")
+                .args(["666", &socket.to_string_lossy()])
+                .status();
+        }
+        if socket_live(socket) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -419,8 +560,9 @@ fn start_daemon_linux(
         }
     }
 
+    // nohup + redirect so the elevated shell exit cannot take the daemon with it.
     let script = format!(
-        "mkdir -p {statedir} && rm -f {socket} && {tailscaled} --statedir={statedir} --socket={socket} --verbose=1 >{log} 2>&1 & echo $! >{pidfile}; sleep 1; chmod 666 {socket} 2>/dev/null; true",
+        "mkdir -p {statedir} && rm -f {socket} && nohup {tailscaled} --statedir={statedir} --socket={socket} --verbose=1 >{log} 2>&1 </dev/null & echo $! >{pidfile}; sleep 1; chmod 666 {socket} 2>/dev/null; true",
         statedir = sh_single_quote(&state_dir.to_string_lossy()),
         socket = sh_single_quote(&socket.to_string_lossy()),
         tailscaled = sh_single_quote(&bins.tailscaled.to_string_lossy()),
@@ -645,7 +787,11 @@ fn ensure_mesh_ca(app: &AppHandle) -> Result<(), String> {
     };
     let ca_path = sysmesh_dir(app)?.join("mesh-ca.crt");
     fs::write(&ca_path, pem.as_bytes()).map_err(|e| format!("write mesh CA: {e}"))?;
-    install_mesh_ca(&ca_path)
+    if let Err(e) = install_mesh_ca(&ca_path) {
+        // Do not fail join — recover loops would re-prompt forever on cancel.
+        logutil::emit("warn", format!("sysmesh mesh CA install deferred: {e}"));
+    }
+    Ok(())
 }
 
 fn load_ca_pem(app: &AppHandle) -> Option<String> {
@@ -677,7 +823,11 @@ fn fetch_ca_pem_from_nas() -> Result<String, String> {
 fn install_mesh_ca(ca_path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        if mesh_ca_install_recorded(ca_path) {
+            return Ok(());
+        }
         if macos_mesh_ca_trusted(ca_path) {
+            let _ = record_mesh_ca_install(ca_path);
             return Ok(());
         }
         logutil::emit("info", "sysmesh installing mesh CA for https://chaavi.dadi");
@@ -686,6 +836,8 @@ fn install_mesh_ca(ca_path: &Path) -> Result<(), String> {
             "/usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '{path}'"
         );
         run_osascript_admin(&script)?;
+        // Keychain lookup can lag; stamp the PEM so recover/rejoin does not re-prompt.
+        record_mesh_ca_install(ca_path)?;
         Ok(())
     }
     #[cfg(target_os = "linux")]
@@ -755,6 +907,62 @@ fn macos_mesh_ca_trusted(_ca_path: &Path) -> bool {
         ])
         .output();
     matches!(output, Ok(o) if o.status.success())
+}
+
+/// True when a prior successful install stamped this exact PEM under sysmesh/.
+#[cfg(target_os = "macos")]
+fn mesh_ca_install_recorded(ca_path: &Path) -> bool {
+    let Some(stamp) = ca_path.parent().map(|p| p.join("mesh-ca.installed")) else {
+        return false;
+    };
+    match (fs::read(&stamp), fs::read(ca_path)) {
+        (Ok(a), Ok(b)) => !a.is_empty() && a == b,
+        _ => false,
+    }
+}
+
+/// Records the trusted PEM so later joins skip `osascript` even if keychain lookup lags.
+#[cfg(target_os = "macos")]
+fn record_mesh_ca_install(ca_path: &Path) -> Result<(), String> {
+    let stamp = ca_path
+        .parent()
+        .ok_or_else(|| "mesh CA path has no parent".to_string())?
+        .join("mesh-ca.installed");
+    fs::copy(ca_path, &stamp).map_err(|e| format!("stamp mesh CA install: {e}"))?;
+    Ok(())
+}
+
+/// Reattach to a still-running admin-started `tailscaled` without another password prompt.
+#[cfg(target_os = "macos")]
+fn try_reuse_running_daemon(state_dir: &Path, socket: &Path) -> bool {
+    let pid_path = state_dir.join("tailscaled.pid");
+    let Ok(raw) = fs::read_to_string(&pid_path) else {
+        return false;
+    };
+    let Ok(pid) = raw.trim().parse::<i32>() else {
+        return false;
+    };
+    let alive = Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !alive {
+        return false;
+    }
+    if socket.exists() {
+        let _ = Command::new("/bin/chmod")
+            .args(["666", &socket.to_string_lossy()])
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if socket_live(socket) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
 }
 
 #[cfg(target_os = "macos")]

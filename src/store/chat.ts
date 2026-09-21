@@ -3,6 +3,8 @@ import type { LogRecord, MessageAttachment } from "../shared/api/types";
 export type { MessageAttachment };
 
 export type ChatMessage = {
+  /** Stable row id for an optimistic send; kept when the server seq arrives. */
+  id?: string;
   /** Server sequence; optimistic messages use negative values. */
   seq: number;
   /** True when from_agent_id === null (human → agent). */
@@ -266,6 +268,7 @@ export function addOptimistic(
   nextTempSeq -= 1;
   const queued = Boolean(opts?.queued);
   const msg: ChatMessage = {
+    id: crypto.randomUUID(),
     seq,
     from_user: true,
     content,

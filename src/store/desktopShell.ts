@@ -3,6 +3,7 @@
 export type DesktopShellAction =
   | { type: "show_window" }
   | { type: "provision" }
+  | { type: "check_update" }
   | { type: "install_update" }
   | { type: "leave_mesh" }
   | { type: "navigate"; path: string }

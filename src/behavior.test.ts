@@ -23,7 +23,15 @@ import {
 } from "./store/chat";
 import type { ChatMessage } from "./store/chat";
 import type { LogRecord } from "./shared/api/types";
-import { buildTree, isLiveVisual, statusLabel, visualState } from "./features/agents/tree";
+import {
+  buildTree,
+  isLiveVisual,
+  labelPlacement,
+  layoutCircle,
+  linkPath,
+  statusLabel,
+  visualState,
+} from "./features/agents/tree";
 import {
   hasRememberedSessions,
   pickLiveBrowser,
@@ -379,7 +387,61 @@ describe("agent tree", () => {
   it("returns an empty forest when there are no agents", () => {
     expect(buildTree([])).toEqual([]);
   });
+
+  it("draws straight links and keeps names off those segments", () => {
+    const child: AgentRecord = {
+      ...planner,
+      id: "child",
+      name: "Worker",
+      parent_agent_id: "planner",
+    };
+    const grand: AgentRecord = {
+      ...planner,
+      id: "grand",
+      name: "Scout",
+      parent_agent_id: "child",
+    };
+    const { links } = layoutCircle(
+      buildTree([planner, child, grand]),
+      120,
+      48,
+    );
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      const path = linkPath(link);
+      expect(path).toContain("L");
+      expect(path).not.toContain("Q");
+      for (const node of [link.source, link.target]) {
+        const place = labelPlacement(node, links, 20);
+        expect(
+          distanceToSegment(
+            node.x + place.x,
+            node.y + place.y,
+            link.source,
+            link.target,
+          ),
+        ).toBeGreaterThan(14);
+      }
+    }
+  });
 });
+
+/** Distance from a point to a finite segment. */
+function distanceToSegment(
+  px: number,
+  py: number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) {
+    return Math.hypot(px - a.x, py - a.y);
+  }
+  const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len2));
+  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
 
 describe("agent host sessions", () => {
   it("picks the newest live browser and terminal", () => {
