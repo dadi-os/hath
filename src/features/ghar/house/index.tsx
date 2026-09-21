@@ -76,26 +76,6 @@ function panelTone(lit: boolean, hot: boolean): string {
   return "border-sage-line bg-bone/40 hover:border-sage";
 }
 
-/** Flip `state.on` for each id so the lamp answers before Ghar does. */
-function withToggled(devices: GharDevice[], ids: ReadonlySet<string>): GharDevice[] {
-  return devices.map((device) => {
-    if (!ids.has(device.id)) {
-      return device;
-    }
-    const current = device.state.on;
-    return {
-      ...device,
-      state: {
-        ...device.state,
-        on: {
-          value: current?.value !== true,
-          changed_at: current?.changed_at ?? new Date().toISOString(),
-        },
-      },
-    };
-  });
-}
-
 /**
  * Rooms and devices. Preview tiles toggle a room and do not navigate.
  * Full mode: press a device, drag it into another room. The ghost stays here.
@@ -124,24 +104,11 @@ export function GharHouse({ mode }: GharHouseProps) {
 
   const toggle = useMutation({
     mutationFn: (ids: string[]) => Promise.all(ids.map((id) => ghar.toggleSwitch(id))),
-    onMutate: async (ids) => {
-      await queryClient.cancelQueries({ queryKey: GHAR_DEVICES_KEY });
-      const previous = queryClient.getQueryData<{ devices: GharDevice[] }>(GHAR_DEVICES_KEY);
-      const idSet = new Set(ids);
-      queryClient.setQueryData<{ devices: GharDevice[] }>(GHAR_DEVICES_KEY, (current) =>
-        current ? { devices: withToggled(current.devices, idSet) } : current,
-      );
-      return { previous };
-    },
-    onError: (_err, _ids, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(GHAR_DEVICES_KEY, context.previous);
-      }
-    },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: GHAR_DEVICES_KEY });
     },
   });
+  const pendingIds = new Set(toggle.isPending ? (toggle.variables ?? []) : []);
 
   const move = useMutation({
     mutationFn: (input: { id: string; room: RoomRef }) => ghar.moveDevice(input.id, input.room.id),
@@ -269,6 +236,9 @@ export function GharHouse({ mode }: GharHouseProps) {
     if (lights.length === 0 || !connected) {
       return;
     }
+    if (lights.some((device) => pendingIds.has(device.id))) {
+      return;
+    }
     const anyOn = lights.some(isOn);
     const ids = (anyOn ? lights.filter(isOn) : lights).map((device) => device.id);
     toggle.mutate(ids);
@@ -329,7 +299,7 @@ export function GharHouse({ mode }: GharHouseProps) {
       }
       return;
     }
-    if (connected && device.online && isSwitchable(device)) {
+    if (connected && device.online && isSwitchable(device) && !pendingIds.has(device.id)) {
       toggle.mutate([device.id]);
     }
   }
@@ -363,8 +333,8 @@ export function GharHouse({ mode }: GharHouseProps) {
             <div
               className={
                 mode === "preview"
-                  ? "grid h-full min-h-0 grid-cols-2 gap-1.5"
-                  : "grid h-full min-h-0 grid-cols-1 gap-4 @min-[560px]:grid-cols-2 @min-[900px]:grid-cols-3"
+                  ? "grid h-full min-h-0 grid-cols-2 gap-1.5 @min-[420px]:grid-cols-3"
+                  : "grid h-full min-h-0 auto-rows-fr grid-cols-2 gap-2 @min-[640px]:grid-cols-3 @min-[880px]:grid-cols-4"
               }
             >
               {panels.map((room, index) => {
@@ -379,6 +349,7 @@ export function GharHouse({ mode }: GharHouseProps) {
                       key={room.id}
                       room={room}
                       lit={lit}
+                      pending={inRoom.some((device) => pendingIds.has(device.id))}
                       delay={index * 0.03}
                       onToggle={() => toggleRoom(room.id)}
                     />
@@ -392,6 +363,7 @@ export function GharHouse({ mode }: GharHouseProps) {
                     hot={hot}
                     delay={index * 0.03}
                     devices={inRoom}
+                    pendingIds={pendingIds}
                     draggingId={drag?.id ?? null}
                     onFloor={() => toggleRoom(room.id)}
                     onPointerDown={onPointerDown}
@@ -423,7 +395,7 @@ export function GharHouse({ mode }: GharHouseProps) {
           className="pointer-events-none absolute z-20"
           style={{ left: drag.x, top: drag.y, transform: "translate(-50%, -50%)" }}
         >
-          <DeviceTile device={dragged} ghost />
+          <DeviceTile device={dragged} ghost pending={false} />
         </div>
       ) : null}
     </div>
@@ -434,11 +406,13 @@ export function GharHouse({ mode }: GharHouseProps) {
 function PreviewTile({
   room,
   lit,
+  pending,
   delay,
   onToggle,
 }: {
   room: RoomRef;
   lit: boolean;
+  pending: boolean;
   delay: number;
   onToggle: () => void;
 }) {
@@ -446,28 +420,34 @@ function PreviewTile({
     <motion.button
       type="button"
       aria-pressed={lit}
+      aria-busy={pending}
       aria-label={`${roomTitle(room.name)} lights`}
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE, delay }}
-      whileHover={{ y: -1 }}
-      whileTap={{ scale: 0.97 }}
+      whileHover={pending ? undefined : { y: -1 }}
+      whileTap={pending ? undefined : { scale: 0.97 }}
+      disabled={pending}
       onClick={(event) => {
         event.stopPropagation();
         onToggle();
       }}
       onKeyDown={(event) => event.stopPropagation()}
-      className={`${panel} justify-between ${panelTone(lit, false)}`}
+      className={`${panel} justify-between ${
+        pending ? "border-rule bg-rule/50" : panelTone(lit, false)
+      }`}
     >
       <span
         className={`text-[10px] font-medium tracking-[1.2px] uppercase ${
-          lit ? "text-sage-deep" : "text-ink-ghost"
+          pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink-ghost"
         }`}
       >
         {roomTitle(room.name)}
       </span>
       <span
-        className={`h-1.5 w-1.5 rounded-full ${lit ? "bg-sage" : "bg-ink-ghost"}`}
+        className={`h-1.5 w-1.5 rounded-full ${
+          pending ? "animate-breath bg-ink-ghost" : lit ? "bg-sage" : "bg-ink-ghost"
+        }`}
         aria-hidden
       />
     </motion.button>
@@ -488,6 +468,7 @@ function RoomPanel({
   lit,
   hot,
   delay,
+  pendingIds,
   draggingId,
   onFloor,
   ...handlers
@@ -497,6 +478,7 @@ function RoomPanel({
   lit: boolean;
   hot: boolean;
   delay: number;
+  pendingIds: ReadonlySet<string>;
   draggingId: string | null;
   onFloor: () => void;
 }) {
@@ -507,21 +489,22 @@ function RoomPanel({
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE, delay }}
-      className={`${panel} ${panelTone(lit, hot)}`}
+      className={`${panel} px-2.5 py-2.5 ${panelTone(lit, hot)}`}
       onClick={onFloor}
     >
       <span
-        className={`mb-3 shrink-0 text-[11px] font-medium tracking-[2px] ${
+        className={`mb-2 shrink-0 text-[10px] font-medium tracking-[2px] ${
           lit ? "text-sage-deep" : "text-ink-ghost"
         }`}
       >
         {roomTitle(room.name).toUpperCase()}
       </span>
-      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-wrap content-start gap-2 overflow-y-auto">
         {devices.map((device) => (
           <DeviceMark
             key={device.id}
             device={device}
+            pending={pendingIds.has(device.id)}
             dimmed={draggingId === device.id}
             {...handlers}
           />
@@ -602,12 +585,14 @@ function NewRoomPanel({
  */
 function DeviceMark({
   device,
+  pending,
   dimmed,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onRename,
-}: DeviceHandlers & { device: GharDevice; dimmed: boolean }) {
+}: DeviceHandlers & { device: GharDevice; pending: boolean; dimmed: boolean }) {
+  const lit = device.online && isSwitchable(device) && isOn(device);
   return (
     <motion.div
       layout
@@ -621,10 +606,12 @@ function DeviceMark({
     >
       <DeviceTile
         device={device}
+        pending={pending}
         name={
           <DeviceName
             device={device}
-            lit={device.online && isSwitchable(device) && isOn(device)}
+            lit={lit}
+            pending={pending}
             onRename={onRename}
           />
         }
@@ -633,49 +620,62 @@ function DeviceMark({
   );
 }
 
-/** Glass row for a device — hover and tap match the rest of the chrome. */
+/** Vertical glass card for a device — hover and tap match the rest of the chrome. */
 function DeviceTile({
   device,
   name,
+  pending,
   ghost,
 }: {
   device: GharDevice;
   name?: ReactNode;
+  pending: boolean;
   ghost?: boolean;
 }) {
-  const lit = device.online && isSwitchable(device) && isOn(device);
+  const lit = !pending && device.online && isSwitchable(device) && isOn(device);
   const subtitle = productSubtitle(device);
   return (
     <motion.div
-      whileHover={ghost ? undefined : { y: -1 }}
-      whileTap={ghost ? undefined : { scale: 0.98 }}
+      aria-busy={pending}
+      whileHover={ghost || pending ? undefined : { y: -1 }}
+      whileTap={ghost || pending ? undefined : { scale: 0.98 }}
       transition={{ duration: 0.2, ease: EASE }}
-      className={`flex items-center gap-2.5 rounded-[var(--radius)] border border-dashed px-2.5 py-2 shadow-[var(--shadow)] backdrop-blur-sm transition-[border-color,background-color] duration-slow ease-hath ${
-        lit
-          ? "border-sage bg-sage-active"
-          : "border-sage-line bg-[var(--glass-sheet)] hover:border-sage hover:bg-sage-active/50"
-      } ${device.online ? "" : "opacity-50"}`}
+      className={`flex w-[5.75rem] flex-col items-center gap-1.5 rounded-[var(--radius)] border border-dashed px-1.5 py-2.5 shadow-[var(--shadow)] backdrop-blur-sm transition-[border-color,background-color,opacity] duration-slow ease-hath ${
+        pending
+          ? "border-rule bg-rule/50"
+          : lit
+            ? "border-sage bg-sage-active"
+            : "border-sage-line bg-[var(--glass-sheet)] hover:border-sage hover:bg-sage-active/50"
+      } ${device.online || pending ? "" : "opacity-50"}`}
     >
       <span
-        className={`flex size-7 shrink-0 items-center justify-center rounded-[6px] ${
-          lit ? "text-sage-deep" : "text-ink-muted"
+        className={`flex size-7 shrink-0 items-center justify-center ${
+          pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink-muted"
         }`}
       >
         <DeviceGlyph kind={glyphFor(device.capabilities)} lit={lit} />
       </span>
-      <span className="min-w-0 flex-1">
+      <span className="flex min-h-[2.1rem] w-full flex-col items-center justify-start">
         {name ?? (
-          <span className={`block truncate text-[13px] ${lit ? "text-sage-deep" : "text-ink"}`}>
+          <span
+            className={`line-clamp-2 text-center text-[11px] leading-tight ${
+              pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink"
+            }`}
+          >
             {device.name}
           </span>
         )}
-        {subtitle ? (
-          <span className="block truncate text-[11px] text-ink-ghost">{subtitle}</span>
+        {subtitle && !pending ? (
+          <span className="mt-0.5 w-full truncate text-center text-[9px] text-ink-ghost">
+            {subtitle}
+          </span>
         ) : null}
       </span>
       {isSwitchable(device) ? (
         <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${lit ? "bg-sage" : "bg-ink-ghost"}`}
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            pending ? "animate-breath bg-ink-ghost" : lit ? "bg-sage" : "bg-ink-ghost"
+          }`}
           aria-hidden
         />
       ) : null}
@@ -687,11 +687,13 @@ function DeviceTile({
 function DeviceName({
   device,
   lit,
+  pending,
   onRename,
 }: {
   device: GharDevice;
   /** Matches the lit tile so the label stays sage when the lamp is on. */
   lit: boolean;
+  pending: boolean;
   onRename: (id: string, name: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -718,8 +720,8 @@ function DeviceName({
           setDraft(device.name);
           setEditing(true);
         }}
-        className={`block max-w-full truncate text-left text-[13px] transition-colors duration-slow ease-hath ${
-          lit ? "text-sage-deep" : "text-ink hover:text-sage-deep"
+        className={`line-clamp-2 w-full text-center text-[11px] leading-tight transition-colors duration-slow ease-hath ${
+          pending ? "text-ink-ghost" : lit ? "text-sage-deep" : "text-ink hover:text-sage-deep"
         }`}
       >
         {device.name}
@@ -746,7 +748,7 @@ function DeviceName({
           setEditing(false);
         }
       }}
-      className="mt-1 w-full border-b border-sage bg-transparent text-[13px] text-ink outline-none"
+      className="w-full border-b border-sage bg-transparent text-center text-[11px] text-ink outline-none"
     />
   );
 }
