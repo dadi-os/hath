@@ -5,11 +5,14 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "motion/react";
 import { ghar, isMeshOnline } from "../../shared/api";
 import { GHAR_DEVICES_KEY, GHAR_ROOMS_KEY } from "../../shared/api/ghar";
 import { isTauriRuntime } from "../../shared/api/runtime";
 import type { GharCommissionJob, GharRoom } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
+import { IconButton, IconDismiss } from "../../shared/components/IconButton";
+import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { startHathRadio } from "./radio";
 
 export type CommissionSheetProps = {
@@ -19,6 +22,9 @@ export type CommissionSheetProps = {
 type RadioMode = "network" | "nearby";
 
 const EMPTY_ROOMS: GharRoom[] = [];
+
+const field =
+  "rounded-[var(--radius)] border border-dashed border-sage-line bg-[var(--glass-sheet)] px-3 py-2.5 text-ink outline-none transition-[border-color,background-color] duration-slow ease-hath placeholder:text-ink-ghost hover:border-sage focus:border-sage disabled:cursor-default disabled:opacity-50";
 
 /** Human label for a room. The seeded room is the unplaced pile. */
 export function roomTitle(name: string): string {
@@ -54,7 +60,7 @@ function jobLine(job: GharCommissionJob, roomName: string): string {
 
 /**
  * Side drawer: pairing code, destination room, and either the house network
- * or this computer's Bluetooth. The plan stays visible beside it.
+ * or this computer's Bluetooth. The rooms stay visible beside it.
  */
 export function CommissionSheet({ onClose }: CommissionSheetProps) {
   const { state: connection } = useConnection();
@@ -180,134 +186,188 @@ export function CommissionSheet({ onClose }: CommissionSheetProps) {
 
   return (
     <form
-      className="flex h-full w-80 flex-col gap-4 overflow-y-auto border-l border-[var(--glass-border)] bg-[var(--glass-veil)] px-4 py-4 backdrop-blur-[var(--glass-blur)]"
+      className="flex h-full w-80 flex-col gap-5 overflow-y-auto border-l border-dashed border-sage-line bg-bone/40 px-4 py-4"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-medium tracking-[0.16em] text-sage-deep uppercase">
-                  Commission
-                </p>
-                <p className="mt-1 text-[12px] text-ink-ghost">
-                  Pair a device and drop it into a room.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onClose}
-                className="text-[12px] text-ink-ghost"
-              >
-                Close
-              </button>
-            </div>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-medium tracking-[2px] text-sage-deep">
+            COMMISSION
+          </p>
+          <p className="mt-1 text-[12px] text-ink-ghost">
+            Pair a device and drop it into a room.
+          </p>
+        </div>
+        <IconButton label="Close" size="sm" onClick={onClose}>
+          <IconDismiss />
+        </IconButton>
+      </div>
 
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-medium tracking-[0.14em] text-ink-ghost uppercase">
-                Pairing code
-              </span>
-              <input
-                value={code}
-                disabled={running}
-                autoCapitalize="characters"
-                autoCorrect="off"
-                spellCheck={false}
-                placeholder="3497-011-2332"
-                onChange={(event) => setCode(event.target.value)}
-                className="rounded-[14px] border border-sage-line/60 bg-bone/70 px-3 py-2.5 font-mono text-[15px] tracking-[0.12em] text-ink outline-none placeholder:text-ink-ghost/70 focus:border-sage"
-              />
-            </label>
+      <label className="flex flex-col gap-1.5">
+        <span className="text-[10px] font-medium tracking-[0.14em] text-ink-ghost uppercase">
+          Pairing code
+        </span>
+        <input
+          value={code}
+          disabled={running}
+          autoCapitalize="characters"
+          autoCorrect="off"
+          spellCheck={false}
+          placeholder="3497-011-2332"
+          onChange={(event) => setCode(event.target.value)}
+          className={`${field} font-mono text-[15px] tracking-[0.12em]`}
+        />
+      </label>
 
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-medium tracking-[0.14em] text-ink-ghost uppercase">
-                Room
-              </span>
-              {roomsQuery.isError ? (
-                <p className="text-[12px] text-error">{shownError(roomsQuery.error)}</p>
-              ) : null}
-              <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-                {rooms.map((room) => (
-                  <RoomChip
-                    key={room.id}
-                    room={room}
-                    selected={selected?.id === room.id}
-                    disabled={running}
-                    onSelect={() => setRoomId(room.id)}
-                  />
-                ))}
-              </div>
-            </div>
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] font-medium tracking-[0.14em] text-ink-ghost uppercase">
+          Room
+        </span>
+        {roomsQuery.isError ? (
+          <p className="text-[12px] text-error">{shownError(roomsQuery.error)}</p>
+        ) : null}
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {rooms.map((room) => (
+            <RoomChip
+              key={room.id}
+              room={room}
+              selected={selected?.id === room.id}
+              disabled={running}
+              onSelect={() => setRoomId(room.id)}
+            />
+          ))}
+        </div>
+      </div>
 
-            <div className="grid grid-cols-2 gap-1.5 rounded-[14px] border border-sage-line/50 bg-bone/50 p-1">
-              <ModeButton
-                active={radio === "network"}
-                disabled={running}
-                label="On the network"
-                onSelect={() => setRadio("network")}
-              />
-              <ModeButton
-                active={radio === "nearby"}
-                disabled={running}
-                label="This computer"
-                onSelect={() => setRadio("nearby")}
-              />
-            </div>
+      <RadioGlider value={radio} disabled={running} onChange={setRadio} />
 
-            {radio === "nearby" ? (
-              <div className="flex flex-col gap-2">
-                <p className="text-[12px] text-ink-muted">
-                  {radioError ??
-                    (radioReady
-                      ? "Hold this computer next to the device. The password is sent once and not saved."
-                      : "Opening this computer's radio…")}
-                </p>
-                <input
-                  value={ssid}
-                  disabled={running}
-                  placeholder="Wi-Fi name"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  onChange={(event) => setSsid(event.target.value)}
-                  className="rounded-[14px] border border-sage-line/60 bg-bone/70 px-3 py-2 text-[13px] text-ink outline-none placeholder:text-ink-ghost focus:border-sage"
-                />
-                <input
-                  value={password}
-                  disabled={running}
-                  type="password"
-                  placeholder="Wi-Fi password"
-                  autoComplete="off"
-                  onChange={(event) => setPassword(event.target.value)}
-                  className="rounded-[14px] border border-sage-line/60 bg-bone/70 px-3 py-2 text-[13px] text-ink outline-none placeholder:text-ink-ghost focus:border-sage"
-                />
-              </div>
-            ) : (
-              <p className="text-[12px] text-ink-muted">
-                The device is already on the house network. Ghar finds it from the server.
-              </p>
-            )}
+      <AnimatePresence mode="wait" initial={false}>
+        {radio === "nearby" ? (
+          <motion.div
+            key="nearby"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: SLOW_S, ease: EASE }}
+            className="flex flex-col gap-2"
+          >
+            <p className="text-[12px] text-ink-muted">
+              {radioError ??
+                (radioReady
+                  ? "Hold this computer next to the device. The password is sent once and not saved."
+                  : "Opening this computer's radio…")}
+            </p>
+            <input
+              value={ssid}
+              disabled={running}
+              placeholder="Wi-Fi name"
+              autoCapitalize="none"
+              autoCorrect="off"
+              onChange={(event) => setSsid(event.target.value)}
+              className={`${field} text-[13px]`}
+            />
+            <input
+              value={password}
+              disabled={running}
+              type="password"
+              placeholder="Wi-Fi password"
+              autoComplete="off"
+              onChange={(event) => setPassword(event.target.value)}
+              className={`${field} text-[13px]`}
+            />
+          </motion.div>
+        ) : (
+          <motion.p
+            key="network"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: SLOW_S, ease: EASE }}
+            className="text-[12px] text-ink-muted"
+          >
+            The device is already on the house network. Ghar finds it from the server.
+          </motion.p>
+        )}
+      </AnimatePresence>
 
-            {status ? (
-              <p
-                className={`text-[13px] ${
-                  job?.status === "failed" || submitError || jobQuery.isError
-                    ? "text-error"
-                    : "text-sage-deep"
-                }`}
-              >
-                {status}
-              </p>
-            ) : null}
+      {status ? (
+        <p
+          className={`text-[13px] ${
+            job?.status === "failed" || submitError || jobQuery.isError
+              ? "text-error"
+              : "text-sage-deep"
+          }`}
+        >
+          {status}
+        </p>
+      ) : null}
 
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className="rounded-[14px] bg-sage-deep px-3 py-2.5 text-[13px] font-medium text-bone disabled:opacity-40"
-            >
-              {running ? "Pairing…" : "Commission"}
-            </button>
+      <motion.button
+        type="submit"
+        disabled={!canSubmit}
+        whileTap={canSubmit ? { scale: 0.98 } : undefined}
+        transition={{ duration: 0.2, ease: EASE }}
+        className="rounded-[var(--radius)] bg-sage-deep px-3 py-2.5 text-[13px] font-medium text-bone transition-[opacity,background-color] duration-slow ease-hath hover:bg-sage disabled:cursor-default disabled:opacity-40 disabled:hover:bg-sage-deep"
+      >
+        {running ? "Pairing…" : "Commission"}
+      </motion.button>
     </form>
+  );
+}
+
+/** Sliding track — same glider as log severity. */
+function RadioGlider({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: RadioMode;
+  disabled: boolean;
+  onChange: (value: RadioMode) => void;
+}) {
+  const index = value === "network" ? 0 : 1;
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Radio"
+      className="relative grid grid-cols-2 rounded-full bg-sage-fill p-0.5"
+    >
+      <motion.div
+        className="absolute inset-y-0.5 rounded-full bg-bone shadow-[var(--shadow)] ring-1 ring-sage-line/80"
+        initial={false}
+        animate={{
+          left: `calc(${index} * 50% + 2px)`,
+          width: "calc(50% - 4px)",
+        }}
+        transition={{ duration: SLOW_S, ease: EASE }}
+      />
+      {(
+        [
+          ["network", "On the network"],
+          ["nearby", "This computer"],
+        ] as const
+      ).map(([mode, label]) => {
+        const on = value === mode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            disabled={disabled}
+            onClick={() => onChange(mode)}
+            className={`relative z-10 px-2.5 py-1.5 text-[12px] tracking-wide transition-colors duration-slow ease-hath ${
+              on ? "text-sage-deep" : "text-ink-ghost hover:text-ink-muted"
+            } disabled:cursor-default`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -326,36 +386,13 @@ function RoomChip({ room, selected, disabled, onSelect }: RoomChipProps) {
       type="button"
       disabled={disabled}
       onClick={onSelect}
-      className={`shrink-0 rounded-full border px-3 py-1 text-[12px] ${
+      className={`shrink-0 rounded-full border border-dashed px-3 py-1 text-[12px] transition-colors duration-slow ease-hath ${
         selected
           ? "border-sage bg-sage-active text-sage-deep"
-          : "border-sage-line/50 text-ink-muted"
-      }`}
+          : "border-rule text-ink-ghost hover:border-sage-line hover:text-ink-muted"
+      } disabled:cursor-default`}
     >
       {roomTitle(room.name)}
-    </button>
-  );
-}
-
-type ModeButtonProps = {
-  active: boolean;
-  disabled: boolean;
-  label: string;
-  onSelect: () => void;
-};
-
-/** Network or this computer. */
-function ModeButton({ active, disabled, label, onSelect }: ModeButtonProps) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onSelect}
-      className={`rounded-[11px] px-2 py-1.5 text-[12px] ${
-        active ? "bg-sage-active text-sage-deep" : "text-ink-muted"
-      }`}
-    >
-      {label}
     </button>
   );
 }

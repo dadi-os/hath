@@ -5,7 +5,7 @@ import { CommissionSheet } from "../features/ghar/commission";
 import { GharHouse } from "../features/ghar/house";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
-/** Full Ghar page — a house plan, and commissioning in a drawer beside it. */
+/** Full Ghar page — rooms as glass panels, commissioning in a drawer beside them. */
 export function GharPage() {
   const [commissioning, setCommissioning] = useState(false);
 
@@ -18,15 +18,17 @@ export function GharPage() {
     >
       <PageHeader
         title="GHAR"
-        hint="Press a lamp · drag it into a room"
+        hint="Press a device · drag it into a room"
         trailing={
-          <button
+          <motion.button
             type="button"
             onClick={() => setCommissioning(true)}
-            className="rounded-[7px] border border-dashed border-sage-line bg-[var(--glass-sheet)] px-3 py-1.5 text-[11px] font-medium tracking-[0.14em] text-sage-deep uppercase shadow-[var(--shadow)] backdrop-blur-sm"
+            whileTap={{ scale: 0.96 }}
+            transition={{ duration: 0.2, ease: EASE }}
+            className="rounded-[7px] border border-dashed border-sage-line bg-[var(--glass-sheet)] px-3 py-1.5 text-[11px] font-medium tracking-[0.14em] text-sage-deep uppercase shadow-[var(--shadow)] backdrop-blur-sm transition-[color,border-color,background-color] duration-slow ease-hath hover:border-sage hover:bg-sage-active/50"
           >
             Commission
-          </button>
+          </motion.button>
         }
       />
       <div className="flex min-h-0 flex-1">

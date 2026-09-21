@@ -1,10 +1,14 @@
 /**
- * House plan shared by the Ghar page and the home widget.
- * Named rooms are chambers under one roof. Unplaced devices sit on the stoop.
- * The widget draws each room as a window: the glass toggles that room's lights.
+ * Ghar rooms — the same dashed glass panels as System, shared by the page
+ * and the home widget. Widget tiles toggle a room and do not navigate.
  */
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LayoutGroup, motion } from "motion/react";
 import { ghar, isMeshOnline } from "../../../shared/api";
@@ -18,7 +22,7 @@ import { shownError, roomTitle } from "../commission";
 import { DeviceGlyph, glyphFor } from "./icons";
 
 export type GharHouseProps = {
-  /** `preview` is the home widget: windows only. `full` is the page. */
+  /** `preview` is the home widget: room tiles only. `full` is the page. */
   mode: "preview" | "full";
 };
 
@@ -40,22 +44,8 @@ type PointerSession = {
 
 const DRAG_PX = 6;
 
-/** Columns for `count` chambers, wide enough that a short last row can span instead of leaving a blank room. */
-function chamberGrid(count: number): { cols: number } {
-  if (count <= 1) {
-    return { cols: 1 };
-  }
-  return { cols: Math.ceil(Math.sqrt(count)) };
-}
-
-/** How many columns the last chamber spans so the plan has no empty cell. */
-function lastSpan(index: number, count: number, cols: number): number {
-  const remainder = count % cols;
-  if (remainder !== 0 && index === count - 1) {
-    return cols - remainder + 1;
-  }
-  return 1;
-}
+const panel =
+  "flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius)] border border-dashed px-3 py-3 transition-[border-color,background-color,box-shadow] duration-slow ease-hath";
 
 function isSwitchable(device: GharDevice): boolean {
   return device.capabilities.some((cap) => cap.capability === "switchable");
@@ -74,6 +64,16 @@ function productSubtitle(device: GharDevice): string | null {
     return null;
   }
   return product;
+}
+
+function panelTone(lit: boolean, hot: boolean): string {
+  if (hot) {
+    return "border-sage bg-sage-active/50";
+  }
+  if (lit) {
+    return "border-sage bg-sage-faint/70";
+  }
+  return "border-sage-line bg-bone/40 hover:border-sage";
 }
 
 /** Flip `state.on` for each id so the lamp answers before Ghar does. */
@@ -97,8 +97,8 @@ function withToggled(devices: GharDevice[], ids: ReadonlySet<string>): GharDevic
 }
 
 /**
- * The house. Preview windows toggle a room and do not navigate.
- * Full mode: press a lamp, drag it into another chamber. The ghost stays here.
+ * Rooms and devices. Preview tiles toggle a room and do not navigate.
+ * Full mode: press a device, drag it into another room. The ghost stays here.
  */
 export function GharHouse({ mode }: GharHouseProps) {
   const { state: connection } = useConnection();
@@ -203,30 +203,27 @@ export function GharHouse({ mode }: GharHouseProps) {
   });
 
   if (!connected && !devicesQuery.data) {
-    return <HouseNote>Ghar is offline</HouseNote>;
+    return <StatusNote>Ghar is offline</StatusNote>;
   }
   if (devicesQuery.isError && !devicesQuery.data) {
-    return <HouseNote tone="error">{shownError(devicesQuery.error)}</HouseNote>;
+    return <StatusNote tone="error">{shownError(devicesQuery.error)}</StatusNote>;
   }
-  if (roomsQuery.isError && !roomsQuery.data) {
-    return <HouseNote tone="error">{shownError(roomsQuery.error)}</HouseNote>;
+  if (mode === "full" && roomsQuery.isError && !roomsQuery.data) {
+    return <StatusNote tone="error">{shownError(roomsQuery.error)}</StatusNote>;
   }
-  if (!devicesQuery.data || !roomsQuery.data) {
-    if (!connected) {
-      return <HouseNote>Ghar is offline</HouseNote>;
-    }
-    return <HouseNote>Loading…</HouseNote>;
+  if (!devicesQuery.data || (!roomsQuery.data && roomsQuery.isLoading)) {
+    return <StatusNote>Loading…</StatusNote>;
   }
 
   const devices = devicesQuery.data.devices;
-  const rooms = roomsQuery.data.rooms;
+  const rooms = roomsQuery.data?.rooms ?? [];
   const named = namedRooms(rooms, devices);
   const unassigned =
     rooms.find((room) => room.name === "unassigned") ??
     devices.find((device) => device.room.name === "unassigned")?.room ??
     null;
-  const unplaced = devices.filter((device) => device.room.name === "unassigned");
-  const { cols } = chamberGrid(named.length);
+  const panels: RoomRef[] =
+    mode === "full" && unassigned ? [...named, unassigned] : named;
   const dragged = devices.find((device) => device.id === drag?.id) ?? null;
 
   const trouble =
@@ -347,177 +344,133 @@ export function GharHouse({ mode }: GharHouseProps) {
     create.mutate(name);
   }
 
+  const emptyLabel =
+    devices.length === 0 ? "No devices" : mode === "preview" ? "Unplaced" : null;
+
   return (
-    <div ref={canvasRef} className="ghar">
+    <div ref={canvasRef} className="relative flex h-full min-h-0 flex-col">
       {!connected ? <p className="px-3 pt-1 text-[12px] text-ink-ghost">Ghar is offline</p> : null}
       {trouble ? <p className="px-3 pt-1 text-[12px] text-error">{trouble}</p> : null}
       <div
-        className={`flex min-h-0 flex-1 flex-col ${mode === "full" ? "px-3 pb-3 pt-1" : "px-2 pb-2 pt-0.5"}`}
+        className={`@container min-h-0 flex-1 ${mode === "full" ? "px-1 pb-1" : "px-2 pb-2.5 pt-0.5"}`}
       >
-        <div className={`ghar__canvas ${mode === "preview" ? "ghar__canvas--preview" : ""}`}>
-          {mode === "full" ? (
-            <div className="ghar-new">
-              {naming ? (
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    submitRoom();
-                  }}
-                >
-                  <input
-                    value={roomDraft}
-                    autoFocus
-                    placeholder="Room name"
-                    onChange={(event) => setRoomDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        setNaming(false);
-                        setRoomDraft("");
-                      }
-                    }}
-                    className="ghar-new__field"
-                  />
-                </form>
-              ) : (
-                <button
-                  type="button"
-                  aria-label="New room"
-                  onClick={() => setNaming(true)}
-                  className="inline-flex size-7 items-center justify-center text-sage-deep"
-                >
-                  <IconPlus />
-                </button>
-              )}
-            </div>
-          ) : null}
-          <HouseRoof preview={mode === "preview"} />
+        {panels.length === 0 && !naming && mode === "preview" ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-[13px] text-ink-ghost">{emptyLabel}</p>
+          </div>
+        ) : (
           <LayoutGroup>
-            {named.length === 0 ? (
-              <div className="ghar-body ghar-body--empty">
-                {devices.length === 0 ? (
-                  <p className="text-[13px] text-ink-ghost">No devices</p>
-                ) : mode === "preview" ? (
-                  <p className="text-[13px] text-ink-ghost">Unplaced</p>
-                ) : null}
-              </div>
-            ) : (
-              <div
-                className="ghar-body"
-                style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
-              >
-                {named.map((room, index) => {
-                  const span = lastSpan(index, named.length, cols);
-                  const inRoom = devices.filter((device) => device.room.id === room.id);
-                  const lit = inRoom.some(
-                    (device) => device.online && isSwitchable(device) && isOn(device),
-                  );
-                  const hot = drag?.overId === room.id;
-                  if (mode === "preview") {
-                    return (
-                      <Window
-                        key={room.id}
-                        room={room}
-                        lit={lit}
-                        span={span}
-                        onToggle={() => toggleRoom(room.id)}
-                      />
-                    );
-                  }
+            <div
+              className={
+                mode === "preview"
+                  ? "grid h-full min-h-0 grid-cols-2 gap-1.5"
+                  : "grid h-full min-h-0 grid-cols-1 gap-4 @min-[560px]:grid-cols-2 @min-[900px]:grid-cols-3"
+              }
+            >
+              {panels.map((room, index) => {
+                const inRoom = devices.filter((device) => device.room.id === room.id);
+                const lit = inRoom.some(
+                  (device) => device.online && isSwitchable(device) && isOn(device),
+                );
+                const hot = drag?.overId === room.id;
+                if (mode === "preview") {
                   return (
-                    <Chamber
+                    <PreviewTile
                       key={room.id}
                       room={room}
                       lit={lit}
-                      hot={hot}
-                      span={span}
-                      devices={inRoom}
-                      draggingId={drag?.id ?? null}
-                      onFloor={() => toggleRoom(room.id)}
-                      onPointerDown={onPointerDown}
-                      onPointerMove={onPointerMove}
-                      onPointerUp={onPointerUp}
-                      onRename={(id, name) => rename.mutate({ id, name })}
+                      delay={index * 0.03}
+                      onToggle={() => toggleRoom(room.id)}
                     />
                   );
-                })}
-              </div>
-            )}
-            {mode === "full" && unassigned ? (
-              <Stoop
-                room={unassigned}
-                devices={unplaced}
-                hot={drag?.overId === unassigned.id}
-                draggingId={drag?.id ?? null}
-                onPointerDown={onPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onRename={(id, name) => rename.mutate({ id, name })}
-              />
-            ) : mode === "preview" ? (
-              <span className="ghar-stoop__door mx-auto" aria-hidden />
-            ) : null}
+                }
+                return (
+                  <RoomPanel
+                    key={room.id}
+                    room={room}
+                    lit={lit}
+                    hot={hot}
+                    delay={index * 0.03}
+                    devices={inRoom}
+                    draggingId={drag?.id ?? null}
+                    onFloor={() => toggleRoom(room.id)}
+                    onPointerDown={onPointerDown}
+                    onPointerMove={onPointerMove}
+                    onPointerUp={onPointerUp}
+                    onRename={(id, name) => rename.mutate({ id, name })}
+                  />
+                );
+              })}
+              {mode === "full" ? (
+                <NewRoomPanel
+                  naming={naming}
+                  draft={roomDraft}
+                  onDraft={setRoomDraft}
+                  onStart={() => setNaming(true)}
+                  onCancel={() => {
+                    setNaming(false);
+                    setRoomDraft("");
+                  }}
+                  onSubmit={submitRoom}
+                />
+              ) : null}
+            </div>
           </LayoutGroup>
-        </div>
+        )}
       </div>
       {dragged && drag ? (
         <div
-          className="ghar-ghost"
-          style={{ left: drag.x, top: drag.y, transform: "translate(-50%, -70%)" }}
+          className="pointer-events-none absolute z-20"
+          style={{ left: drag.x, top: drag.y, transform: "translate(-50%, -50%)" }}
         >
-          <DeviceNode device={dragged} />
+          <DeviceTile device={dragged} ghost />
         </div>
       ) : null}
     </div>
   );
 }
 
-/** Roof, eaves, and chimney. Stroke stays 1.5px while the drawing stretches. */
-function HouseRoof({ preview }: { preview: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 400 64"
-      preserveAspectRatio="none"
-      aria-hidden
-      className={`ghar-roof ${preview ? "ghar-roof--preview" : ""}`}
-    >
-      <path className="ghar-roof__face" d="M28 60 L200 10 L372 60 Z" />
-      <path className="ghar-roof__edge" d="M8 60 L200 6 L392 60" />
-      <rect className="ghar-roof__chimney" x="302" y="14" width="16" height="22" />
-    </svg>
-  );
-}
-
-/** Widget window. Click toggles the room and does not open the page. */
-function Window({
+/** Home widget tile. Click toggles the room and does not open the page. */
+function PreviewTile({
   room,
   lit,
-  span,
+  delay,
   onToggle,
 }: {
   room: RoomRef;
   lit: boolean;
-  span: number;
+  delay: number;
   onToggle: () => void;
 }) {
   return (
-    <button
+    <motion.button
       type="button"
       aria-pressed={lit}
       aria-label={`${roomTitle(room.name)} lights`}
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: SLOW_S, ease: EASE, delay }}
+      whileHover={{ y: -1 }}
+      whileTap={{ scale: 0.97 }}
       onClick={(event) => {
         event.stopPropagation();
         onToggle();
       }}
       onKeyDown={(event) => event.stopPropagation()}
-      className={`ghar-window ${lit ? "is-lit" : ""}`}
-      style={span > 1 ? { gridColumn: `span ${span}` } : undefined}
+      className={`${panel} justify-between ${panelTone(lit, false)}`}
     >
-      <span className="ghar-window__glass">
-        <span className="ghar-window__mullion ghar-window__mullion--v" />
-        <span className="ghar-window__mullion ghar-window__mullion--h" />
-        <span className="ghar-window__name">{roomTitle(room.name)}</span>
+      <span
+        className={`text-[10px] font-medium tracking-[1.2px] uppercase ${
+          lit ? "text-sage-deep" : "text-ink-ghost"
+        }`}
+      >
+        {roomTitle(room.name)}
       </span>
-    </button>
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${lit ? "bg-sage" : "bg-ink-ghost"}`}
+        aria-hidden
+      />
+    </motion.button>
   );
 }
 
@@ -528,13 +481,13 @@ type DeviceHandlers = {
   onRename: (id: string, name: string) => void;
 };
 
-/** One room on the page: shared walls, lamps on the floor, a drop target. */
-function Chamber({
+/** One room — dashed glass, tracking label, devices you can press or drag. */
+function RoomPanel({
   room,
   devices,
   lit,
   hot,
-  span,
+  delay,
   draggingId,
   onFloor,
   ...handlers
@@ -543,21 +496,28 @@ function Chamber({
   devices: GharDevice[];
   lit: boolean;
   hot: boolean;
-  span: number;
+  delay: number;
   draggingId: string | null;
   onFloor: () => void;
 }) {
   return (
-    <section
+    <motion.section
       data-room-id={room.id}
       aria-label={roomTitle(room.name)}
-      className={`ghar-room ${lit ? "is-lit" : ""} ${hot ? "is-hot" : ""}`}
-      style={span > 1 ? { gridColumn: `span ${span}` } : undefined}
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: SLOW_S, ease: EASE, delay }}
+      className={`${panel} ${panelTone(lit, hot)}`}
       onClick={onFloor}
     >
-      <span className="ghar-room__floor" aria-hidden />
-      <p className="ghar-room__name">{roomTitle(room.name)}</p>
-      <div className="ghar-room__field">
+      <span
+        className={`mb-3 shrink-0 text-[11px] font-medium tracking-[2px] ${
+          lit ? "text-sage-deep" : "text-ink-ghost"
+        }`}
+      >
+        {roomTitle(room.name).toUpperCase()}
+      </span>
+      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
         {devices.map((device) => (
           <DeviceMark
             key={device.id}
@@ -567,48 +527,78 @@ function Chamber({
           />
         ))}
       </div>
-    </section>
+    </motion.section>
   );
 }
 
-/** Porch outside the outline for devices that have no room yet. */
-function Stoop({
-  room,
-  devices,
-  hot,
-  draggingId,
-  ...handlers
-}: DeviceHandlers & {
-  room: RoomRef;
-  devices: GharDevice[];
-  hot: boolean;
-  draggingId: string | null;
+/** Dashed empty panel — the same control language as a Timeline cell. */
+function NewRoomPanel({
+  naming,
+  draft,
+  onDraft,
+  onStart,
+  onCancel,
+  onSubmit,
+}: {
+  naming: boolean;
+  draft: string;
+  onDraft: (value: string) => void;
+  onStart: () => void;
+  onCancel: () => void;
+  onSubmit: () => void;
 }) {
+  if (naming) {
+    return (
+      <form
+        className={`${panel} border-sage bg-bone/40`}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <span className="mb-3 text-[11px] font-medium tracking-[2px] text-sage-deep">
+          NEW ROOM
+        </span>
+        <input
+          value={draft}
+          autoFocus
+          placeholder="Name"
+          onChange={(event) => onDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              onCancel();
+            }
+          }}
+          className="border-b border-sage bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-ghost"
+        />
+      </form>
+    );
+  }
+
   return (
-    <section
-      data-room-id={room.id}
-      aria-label="Unplaced"
-      className={`ghar-stoop ${hot ? "is-hot" : ""}`}
+    <motion.button
+      type="button"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: SLOW_S, ease: EASE }}
+      whileHover={{ y: -1 }}
+      whileTap={{ scale: 0.98 }}
+      onClick={onStart}
+      className={`group ${panel} items-start border-sage-line bg-bone/40 hover:border-sage`}
     >
-      <span className="ghar-stoop__door" aria-hidden />
-      <p className="ghar-stoop__label">Unplaced</p>
-      <div className="ghar-stoop__field">
-        {devices.map((device) => (
-          <DeviceMark
-            key={device.id}
-            device={device}
-            dimmed={draggingId === device.id}
-            {...handlers}
-          />
-        ))}
-      </div>
-    </section>
+      <span className="mb-3 text-[11px] font-medium tracking-[2px] text-ink-ghost">
+        NEW ROOM
+      </span>
+      <span className="inline-flex size-7 items-center justify-center rounded-[6px] border border-dashed border-sage-line bg-[var(--glass-sheet)] text-sage-deep shadow-[var(--shadow)] transition-[border-color,background-color] duration-slow ease-hath group-hover:border-sage group-hover:bg-sage-active/50">
+        <IconPlus />
+      </span>
+    </motion.button>
   );
 }
 
 /**
- * A device on the plan. Press the disc to toggle; drag it between chambers.
- * Double-click the name to rename. `layoutId` carries it into the next room.
+ * A device. Press to toggle; drag into another room; double-click the name to rename.
+ * `layoutId` carries it across panels.
  */
 function DeviceMark({
   device,
@@ -618,8 +608,6 @@ function DeviceMark({
   onPointerUp,
   onRename,
 }: DeviceHandlers & { device: GharDevice; dimmed: boolean }) {
-  const lit = device.online && isSwitchable(device) && isOn(device);
-  const subtitle = productSubtitle(device);
   return (
     <motion.div
       layout
@@ -629,47 +617,81 @@ function DeviceMark({
       onPointerMove={onPointerMove}
       onPointerUp={(event) => onPointerUp(event, device)}
       onClick={(event) => event.stopPropagation()}
-      className={`ghar-device ${lit ? "is-lit" : ""} ${device.online ? "" : "is-offline"} ${
-        dimmed ? "is-ghosted" : ""
-      }`}
+      className={dimmed ? "opacity-30" : undefined}
     >
-      <motion.span
-        className="ghar-device__core"
-        whileHover={{ scale: 1.08 }}
-        whileTap={{ scale: 0.94 }}
-        transition={{ duration: 0.2, ease: EASE }}
-        aria-pressed={isSwitchable(device) ? isOn(device) : undefined}
-        role={isSwitchable(device) ? "button" : undefined}
-        aria-label={device.name}
-      >
-        <span className="ghar-device__halo" aria-hidden />
-        <span className="ghar-device__halo ghar-device__halo--delay" aria-hidden />
-        <DeviceGlyph kind={glyphFor(device.capabilities)} lit={lit} />
-      </motion.span>
-      <DeviceName device={device} onRename={onRename} />
-      {subtitle ? <span className="ghar-device__product">{subtitle}</span> : null}
+      <DeviceTile
+        device={device}
+        name={
+          <DeviceName
+            device={device}
+            lit={device.online && isSwitchable(device) && isOn(device)}
+            onRename={onRename}
+          />
+        }
+      />
     </motion.div>
   );
 }
 
-/** Ghost under the pointer. Positioned by the canvas, never the viewport. */
-function DeviceNode({ device }: { device: GharDevice }) {
+/** Glass row for a device — hover and tap match the rest of the chrome. */
+function DeviceTile({
+  device,
+  name,
+  ghost,
+}: {
+  device: GharDevice;
+  name?: ReactNode;
+  ghost?: boolean;
+}) {
   const lit = device.online && isSwitchable(device) && isOn(device);
+  const subtitle = productSubtitle(device);
   return (
-    <div className={`ghar-device ${lit ? "is-lit" : ""}`}>
-      <span className="ghar-device__core">
+    <motion.div
+      whileHover={ghost ? undefined : { y: -1 }}
+      whileTap={ghost ? undefined : { scale: 0.98 }}
+      transition={{ duration: 0.2, ease: EASE }}
+      className={`flex items-center gap-2.5 rounded-[var(--radius)] border border-dashed px-2.5 py-2 shadow-[var(--shadow)] backdrop-blur-sm transition-[border-color,background-color] duration-slow ease-hath ${
+        lit
+          ? "border-sage bg-sage-active"
+          : "border-sage-line bg-[var(--glass-sheet)] hover:border-sage hover:bg-sage-active/50"
+      } ${device.online ? "" : "opacity-50"}`}
+    >
+      <span
+        className={`flex size-7 shrink-0 items-center justify-center rounded-[6px] ${
+          lit ? "text-sage-deep" : "text-ink-muted"
+        }`}
+      >
         <DeviceGlyph kind={glyphFor(device.capabilities)} lit={lit} />
       </span>
-    </div>
+      <span className="min-w-0 flex-1">
+        {name ?? (
+          <span className={`block truncate text-[13px] ${lit ? "text-sage-deep" : "text-ink"}`}>
+            {device.name}
+          </span>
+        )}
+        {subtitle ? (
+          <span className="block truncate text-[11px] text-ink-ghost">{subtitle}</span>
+        ) : null}
+      </span>
+      {isSwitchable(device) ? (
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${lit ? "bg-sage" : "bg-ink-ghost"}`}
+          aria-hidden
+        />
+      ) : null}
+    </motion.div>
   );
 }
 
-/** In-place name. Double-click to edit so a press still toggles the lamp. */
+/** In-place name. Double-click to edit so a press still toggles. */
 function DeviceName({
   device,
+  lit,
   onRename,
 }: {
   device: GharDevice;
+  /** Matches the lit tile so the label stays sage when the lamp is on. */
+  lit: boolean;
   onRename: (id: string, name: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -685,49 +707,51 @@ function DeviceName({
     onRename(device.id, trimmed);
   }
 
-  if (editing) {
+  if (!editing) {
     return (
-      <input
+      <button
+        type="button"
         data-rename=""
-        value={draft}
-        autoFocus
-        aria-label={`Rename ${device.name}`}
         onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={() => commit(draft)}
-        onKeyDown={(event) => {
+        onDoubleClick={(event) => {
           event.stopPropagation();
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-          if (event.key === "Escape") {
-            setDraft(device.name);
-            setEditing(false);
-          }
+          setDraft(device.name);
+          setEditing(true);
         }}
-        className="ghar-device__name ghar-device__name--edit"
-      />
+        className={`block max-w-full truncate text-left text-[13px] transition-colors duration-slow ease-hath ${
+          lit ? "text-sage-deep" : "text-ink hover:text-sage-deep"
+        }`}
+      >
+        {device.name}
+      </button>
     );
   }
 
   return (
-    <button
-      type="button"
+    <input
       data-rename=""
+      value={draft}
+      autoFocus
+      aria-label={`Rename ${device.name}`}
       onPointerDown={(event) => event.stopPropagation()}
-      onDoubleClick={(event) => {
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => commit(draft)}
+      onKeyDown={(event) => {
         event.stopPropagation();
-        setDraft(device.name);
-        setEditing(true);
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+        if (event.key === "Escape") {
+          setDraft(device.name);
+          setEditing(false);
+        }
       }}
-      className="ghar-device__name"
-    >
-      {device.name}
-    </button>
+      className="mt-1 w-full border-b border-sage bg-transparent text-[13px] text-ink outline-none"
+    />
   );
 }
 
-function HouseNote({
+function StatusNote({
   children,
   tone = "quiet",
 }: {
