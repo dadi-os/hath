@@ -2,13 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
 import { useConnection } from "../hooks/useConnection";
-import { CHAAVI, chaavi } from "../shared/api";
+import { CHAAVI_VAULT, chaavi } from "../shared/api";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 import { POLL_MS } from "../shared/lib/ux/poll";
 
 /**
  * Chaavi catalog: vault item metadata and Bitwarden extension URL.
- * Not a password manager — fill happens in the extension at {@link CHAAVI}.
+ * Not a password manager — fill happens in the extension at {@link CHAAVI_VAULT}.
  */
 export function ChaaviPage() {
   const { state } = useConnection();
@@ -39,7 +39,7 @@ export function ChaaviPage() {
     >
       <PageHeader
         title="CHAAVI"
-        hint={`Catalog only — fill passwords in the Bitwarden extension at ${CHAAVI}.`}
+        hint={`Catalog only — fill passwords in the Bitwarden extension at ${CHAAVI_VAULT}.`}
       />
 
       <div className="min-h-0 flex-1 px-1 pb-1">
@@ -67,8 +67,8 @@ export function ChaaviPage() {
             )}
             <p className="mt-2 text-[11px] leading-relaxed text-ink-ghost">
               Point the Bitwarden browser extension at{" "}
-              <span className="text-ink-muted">{CHAAVI}</span>. Hath never shows
-              or copies passwords.
+              <span className="text-ink-muted">{CHAAVI_VAULT}</span>. Hath never
+              shows or copies passwords.
             </p>
           </div>
 

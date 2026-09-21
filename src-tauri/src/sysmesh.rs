@@ -48,6 +48,7 @@ pub fn start(
     }
     let port = crate::meshproxy::start()?;
     ensure_magic_dns_resolver()?;
+    ensure_mesh_ca(app)?;
 
     logutil::emit(
         "info",
@@ -628,6 +629,133 @@ fn ensure_magic_dns_resolver() -> Result<(), String> {
     }
 }
 
+/// Trust the mesh CA so Bitwarden can use https://chaavi.dadi.
+///
+/// Prefers `ca_pem` from saved credentials; otherwise fetches `GET /ca` from nas.dadi.
+fn ensure_mesh_ca(app: &AppHandle) -> Result<(), String> {
+    let pem = match load_ca_pem(app) {
+        Some(p) if p.contains("BEGIN CERTIFICATE") => p,
+        _ => match fetch_ca_pem_from_nas() {
+            Ok(p) => p,
+            Err(e) => {
+                logutil::emit("warn", format!("sysmesh mesh CA unavailable: {e}"));
+                return Ok(());
+            }
+        },
+    };
+    let ca_path = sysmesh_dir(app)?.join("mesh-ca.crt");
+    fs::write(&ca_path, pem.as_bytes()).map_err(|e| format!("write mesh CA: {e}"))?;
+    install_mesh_ca(&ca_path)
+}
+
+fn load_ca_pem(app: &AppHandle) -> Option<String> {
+    let path = app.path().app_data_dir().ok()?.join("credentials.json");
+    let raw = fs::read_to_string(path).ok()?;
+    let creds: crate::net::Credentials = serde_json::from_str(raw.trim()).ok()?;
+    creds.ca_pem.filter(|p| p.contains("BEGIN CERTIFICATE"))
+}
+
+fn fetch_ca_pem_from_nas() -> Result<String, String> {
+    // After MagicDNS resolver install, nas.dadi resolves on the mesh.
+    let output = Command::new("curl")
+        .args(["-fsS", "-m", "5", "http://nas.dadi/ca"])
+        .output()
+        .map_err(|e| format!("curl mesh CA: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "GET /ca failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let body = String::from_utf8(output.stdout).map_err(|e| format!("CA utf8: {e}"))?;
+    if !body.contains("BEGIN CERTIFICATE") {
+        return Err("GET /ca did not return a PEM certificate".into());
+    }
+    Ok(body)
+}
+
+fn install_mesh_ca(ca_path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if macos_mesh_ca_trusted(ca_path) {
+            return Ok(());
+        }
+        logutil::emit("info", "sysmesh installing mesh CA for https://chaavi.dadi");
+        let path = ca_path.to_string_lossy().replace('\'', "'\\''");
+        let script = format!(
+            "/usr/bin/security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '{path}'"
+        );
+        run_osascript_admin(&script)?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dest = PathBuf::from("/usr/local/share/ca-certificates/dadi-mesh.crt");
+        if dest.is_file() {
+            if let (Ok(a), Ok(b)) = (fs::read(ca_path), fs::read(&dest)) {
+                if a == b {
+                    return Ok(());
+                }
+            }
+        }
+        let src = sh_single_quote(&ca_path.to_string_lossy());
+        let script = format!(
+            "mkdir -p /usr/local/share/ca-certificates && cp {src} /usr/local/share/ca-certificates/dadi-mesh.crt && update-ca-certificates"
+        );
+        let elevators = [
+            ("pkexec", vec!["/bin/sh".into(), "-c".into(), script.clone()]),
+            ("sudo", vec!["-n".into(), "/bin/sh".into(), "-c".into(), script]),
+        ];
+        let mut last = String::from("no pkexec/sudo");
+        for (bin, args) in elevators {
+            match Command::new(bin).args(&args).output() {
+                Ok(o) if o.status.success() => return Ok(()),
+                Ok(o) => {
+                    last = format!(
+                        "{bin}: {}",
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    );
+                }
+                Err(e) => last = format!("{bin}: {e}"),
+            }
+        }
+        Err(format!("admin approval required to trust mesh CA: {last}"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let path = ca_path.to_string_lossy();
+        let ps = format!("certutil -addstore -f Root {}", ps_quote(&path));
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .map_err(|e| format!("certutil: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "admin approval required to trust mesh CA: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = ca_path;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_mesh_ca_trusted(_ca_path: &Path) -> bool {
+    let output = Command::new("/usr/bin/security")
+        .args([
+            "find-certificate",
+            "-c",
+            "dadi mesh CA",
+            "/Library/Keychains/System.keychain",
+        ])
+        .output();
+    matches!(output, Ok(o) if o.status.success())
+}
 
 #[cfg(target_os = "macos")]
 fn macos_magic_dns_resolver_ok() -> bool {

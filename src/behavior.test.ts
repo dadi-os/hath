@@ -38,7 +38,7 @@ import {
 import { consumeSseBuffer, joinUrl } from "./shared/api/sse";
 import { createChaaviClient } from "./shared/api/chaavi";
 import { createNasClient } from "./shared/api/nas";
-import { YAAD, DIMAAG, NAS, CHAAVI, GHAR } from "./shared/api/constants";
+import { YAAD, DIMAAG, NAS, CHAAVI, CHAAVI_VAULT, GHAR } from "./shared/api/constants";
 import type { Transport } from "./shared/api/transport";
 import type { AgentRecord } from "./shared/api/types";
 
@@ -457,6 +457,7 @@ describe("mesh constants", () => {
     expect(DIMAAG).toBe("http://dimaag.dadi");
     expect(NAS).toBe("http://nas.dadi");
     expect(CHAAVI).toBe("http://chaavi.dadi");
+    expect(CHAAVI_VAULT).toBe("https://chaavi.dadi");
     expect(GHAR).toBe("http://ghar.dadi");
   });
 });

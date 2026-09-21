@@ -12,12 +12,13 @@ export { createChaaviClient, type ChaaviClient } from "./chaavi";
 export { createGharClient, type GharClient } from "./ghar";
 export {
   CHAAVI as CHAAVI_URL,
+  CHAAVI_VAULT as CHAAVI_VAULT_URL,
   DIMAAG as DIMAAG_URL,
   YAAD as YAAD_URL,
   NAS as NAS_URL,
   GHAR as GHAR_URL,
 } from "./constants";
-export { CHAAVI, DIMAAG, YAAD, NAS, GHAR } from "./constants";
+export { CHAAVI, CHAAVI_VAULT, DIMAAG, YAAD, NAS, GHAR } from "./constants";
 export { isTauriRuntime, selectTransportKind } from "./runtime";
 export type { TransportKind } from "./runtime";
 export type { Transport, ConnectionState } from "./transport";

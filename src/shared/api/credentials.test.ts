@@ -19,6 +19,14 @@ describe("decodeProvisioningBundle", () => {
     expect(decodeProvisioningBundle(`  ${encode(valid)}  \n`)).toEqual(valid);
   });
 
+  it("keeps optional ca_pem from the bundle", () => {
+    const withCa = {
+      ...valid,
+      ca_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+    };
+    expect(decodeProvisioningBundle(encode(withCa))).toEqual(withCa);
+  });
+
   it("rejects empty, truncated, and incomplete bundles", () => {
     expect(() => decodeProvisioningBundle("")).toThrow(BundleDecodeError);
     expect(() => decodeProvisioningBundle("%%%")).toThrow(BundleDecodeError);

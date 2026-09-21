@@ -54,6 +54,8 @@ pub struct Credentials {
     pub control_url: String,
     pub auth_key: String,
     pub node_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_pem: Option<String>,
 }
 
 #[cfg(target_os = "ios")]

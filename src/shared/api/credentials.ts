@@ -3,6 +3,8 @@ export type Credentials = {
   control_url: string;
   auth_key: string;
   node_name: string;
+  /** Mesh CA PEM for https://chaavi.dadi (optional on older bundles). */
+  ca_pem?: string;
 };
 
 /** Thrown when a pasted setup code cannot be decoded into credentials. */
@@ -63,12 +65,17 @@ export function decodeProvisioningBundle(raw: string): Credentials {
   const control_url = asNonEmptyString(record.control_url);
   const auth_key = asNonEmptyString(record.auth_key);
   const node_name = asNonEmptyString(record.node_name);
+  const ca_pem = asOptionalPem(record.ca_pem);
 
   if (!control_url || !auth_key || !node_name) {
     throw new BundleDecodeError("Couldn't read that code. Check you copied the whole thing.");
   }
 
-  return { control_url, auth_key, node_name };
+  const creds: Credentials = { control_url, auth_key, node_name };
+  if (ca_pem) {
+    creds.ca_pem = ca_pem;
+  }
+  return creds;
 }
 
 function asNonEmptyString(value: unknown): string | null {
@@ -77,4 +84,16 @@ function asNonEmptyString(value: unknown): string | null {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Optional PEM block from the bundle; empty/missing is fine for older QR codes. */
+function asOptionalPem(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed.includes("BEGIN CERTIFICATE")) {
+    return undefined;
+  }
+  return trimmed;
 }
