@@ -3,7 +3,7 @@ export type Credentials = {
   control_url: string;
   auth_key: string;
   node_name: string;
-  /** Mesh CA PEM for https://chaavi.dadi (optional on older bundles). */
+  /** Mesh CA PEM if present; new bundles omit it — Tauri fetches GET /ca after join. */
   ca_pem?: string;
 };
 
@@ -86,7 +86,7 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-/** Optional PEM block from the bundle; empty/missing is fine for older QR codes. */
+/** Optional PEM block from the bundle; empty/missing is normal (CA comes from GET /ca). */
 function asOptionalPem(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;

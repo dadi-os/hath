@@ -15,11 +15,11 @@ function encode(payload: unknown): string {
 }
 
 describe("decodeProvisioningBundle", () => {
-  it("decodes a base64 credentials bundle", () => {
+  it("decodes a base64 credentials bundle without ca_pem", () => {
     expect(decodeProvisioningBundle(`  ${encode(valid)}  \n`)).toEqual(valid);
   });
 
-  it("keeps optional ca_pem from the bundle", () => {
+  it("keeps optional ca_pem from older bundles", () => {
     const withCa = {
       ...valid,
       ca_pem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
