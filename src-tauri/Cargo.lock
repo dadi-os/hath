@@ -1865,8 +1865,10 @@ dependencies = [
  "tauri-plugin-os",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "time",
  "tokio",
  "uuid",
+ "windows",
 ]
 
 [[package]]

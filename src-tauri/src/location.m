@@ -1,5 +1,6 @@
 #import <CoreLocation/CoreLocation.h>
 #import <Foundation/Foundation.h>
+#import <TargetConditionals.h>
 #import <stdio.h>
 #import <string.h>
 
@@ -8,6 +9,7 @@
 @property(nonatomic, strong) CLLocation *fix;
 @property(nonatomic, strong) NSError *error;
 @property(nonatomic, assign) BOOL done;
+@property(nonatomic, assign) BOOL authSettled;
 @end
 
 @implementation HathLocationProbe
@@ -31,51 +33,78 @@
 
 - (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager {
   (void)manager;
+  self.authSettled = YES;
 }
 
 @end
 
 static BOOL hath_location_is_authorized(CLAuthorizationStatus status) {
+#if TARGET_OS_IPHONE
+  return status == kCLAuthorizationStatusAuthorizedWhenInUse ||
+         status == kCLAuthorizationStatusAuthorizedAlways;
+#else
   return status == kCLAuthorizationStatusAuthorizedAlways;
+#endif
 }
 
-/** Retained so requestAlwaysAuthorization outlives the prepare call. */
-static CLLocationManager *gHathLocationPrepareManager;
+static void hath_location_request_auth(CLLocationManager *manager) {
+#if TARGET_OS_IPHONE
+  [manager requestWhenInUseAuthorization];
+#else
+  [manager requestAlwaysAuthorization];
+#endif
+}
+
+/** Build a single-line address from a placemark; empty string if nothing useful. */
+static NSString *hath_format_placemark(CLPlacemark *mark) {
+  if (mark == nil) {
+    return @"";
+  }
+  NSMutableArray<NSString *> *parts = [NSMutableArray new];
+  if (mark.subThoroughfare.length > 0 && mark.thoroughfare.length > 0) {
+    [parts addObject:[NSString stringWithFormat:@"%@ %@", mark.subThoroughfare, mark.thoroughfare]];
+  } else if (mark.thoroughfare.length > 0) {
+    [parts addObject:mark.thoroughfare];
+  }
+  if (mark.locality.length > 0) {
+    [parts addObject:mark.locality];
+  }
+  if (mark.administrativeArea.length > 0) {
+    [parts addObject:mark.administrativeArea];
+  }
+  if (mark.postalCode.length > 0) {
+    [parts addObject:mark.postalCode];
+  }
+  if (mark.country.length > 0) {
+    [parts addObject:mark.country];
+  }
+  if (parts.count == 0 && mark.name.length > 0) {
+    [parts addObject:mark.name];
+  }
+  return [parts componentsJoinedByString:@", "];
+}
 
 /**
- * hath_location_prepare registers Hath for Location Services when status is
- * undetermined so the app appears in System Settings. Safe to call at launch;
- * does not block and does not run from agent tool paths.
+ * hath_location_prepare is a no-op retained for ABI stability. Authorization is
+ * requested on demand in hath_device_get_location so app launches do not prompt.
  */
-void hath_location_prepare(void) {
-  dispatch_async(dispatch_get_main_queue(), ^{
-    @autoreleasepool {
-      if (gHathLocationPrepareManager == nil) {
-        gHathLocationPrepareManager = [CLLocationManager new];
-      }
-      CLAuthorizationStatus status = gHathLocationPrepareManager.authorizationStatus;
-      if (status != kCLAuthorizationStatusNotDetermined) {
-        return;
-      }
-      [gHathLocationPrepareManager requestAlwaysAuthorization];
-    }
-  });
-}
+void hath_location_prepare(void) {}
 
 /**
- * hath_device_get_location performs a one-shot CoreLocation read. It does not
- * present a permission dialog — enable Location for Hath in System Settings
- * first (or accept the one-time launch prompt from hath_location_prepare).
- * On success writes lat/lon/accuracy and an ISO-8601 UTC timestamp into at_out.
+ * hath_device_get_location performs a one-shot CoreLocation read, then reverse
+ * geocodes via CLGeocoder. address_out may be empty when geocode fails; coords
+ * still succeed. Auth: When-In-Use on iOS, Always on macOS.
  */
 int hath_device_get_location(double *lat, double *lon, double *accuracy_m, char *at_out,
-                             size_t at_len, char *err, size_t err_len) {
+                             size_t at_len, char *address_out, size_t address_len, char *err,
+                             size_t err_len) {
   if (lat == NULL || lon == NULL || accuracy_m == NULL || at_out == NULL || at_len == 0 ||
-      err == NULL || err_len == 0) {
+      address_out == NULL || address_len == 0 || err == NULL || err_len == 0) {
     return -1;
   }
   err[0] = '\0';
   at_out[0] = '\0';
+  address_out[0] = '\0';
 
   __block int rc = -1;
   void (^finish)(void) = ^{
@@ -87,9 +116,18 @@ int hath_device_get_location(double *lat, double *lon, double *accuracy_m, char 
 
       CLAuthorizationStatus status = manager.authorizationStatus;
       if (status == kCLAuthorizationStatusNotDetermined) {
-        snprintf(err, err_len,
-                 "permission_denied: enable Location for Hath in System Settings "
-                 "(or relaunch Hath once to register)");
+        probe.authSettled = NO;
+        hath_location_request_auth(manager);
+        NSDate *authDeadline = [NSDate dateWithTimeIntervalSinceNow:20.0];
+        while (!probe.authSettled && [authDeadline timeIntervalSinceNow] > 0) {
+          [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                   beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        }
+        status = manager.authorizationStatus;
+      }
+
+      if (status == kCLAuthorizationStatusNotDetermined) {
+        snprintf(err, err_len, "permission_denied: location permission timed out");
         return;
       }
       if (status == kCLAuthorizationStatusRestricted) {
@@ -110,32 +148,64 @@ int hath_device_get_location(double *lat, double *lon, double *accuracy_m, char 
                                  beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
       }
 
-      if (probe.fix != nil) {
-        if (probe.fix.horizontalAccuracy < 0) {
-          snprintf(err, err_len, "internal_error: location fix is invalid");
+      if (probe.fix == nil) {
+        if (probe.error != nil) {
+          NSString *msg = probe.error.localizedDescription;
+          if (msg.length == 0) {
+            msg = @"location failed";
+          }
+          if (probe.error.code == kCLErrorDenied) {
+            snprintf(err, err_len, "permission_denied: %s", msg.UTF8String);
+          } else {
+            snprintf(err, err_len, "internal_error: %s", msg.UTF8String);
+          }
           return;
         }
-        *lat = probe.fix.coordinate.latitude;
-        *lon = probe.fix.coordinate.longitude;
-        *accuracy_m = probe.fix.horizontalAccuracy;
-        NSISO8601DateFormatter *fmt = [NSISO8601DateFormatter new];
-        fmt.formatOptions = NSISO8601DateFormatWithInternetDateTime;
-        fmt.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
-        NSString *iso = [fmt stringFromDate:probe.fix.timestamp] ?: @"";
-        snprintf(at_out, at_len, "%s", iso.UTF8String);
-        rc = 0;
+        snprintf(err, err_len, "internal_error: location timed out");
         return;
       }
-      if (probe.error != nil) {
-        NSString *msg = probe.error.localizedDescription ?: @"location failed";
-        if (probe.error.code == kCLErrorDenied) {
-          snprintf(err, err_len, "permission_denied: %s", msg.UTF8String);
-        } else {
-          snprintf(err, err_len, "internal_error: %s", msg.UTF8String);
-        }
+      if (probe.fix.horizontalAccuracy < 0) {
+        snprintf(err, err_len, "internal_error: location fix is invalid");
         return;
       }
-      snprintf(err, err_len, "internal_error: location timed out");
+
+      *lat = probe.fix.coordinate.latitude;
+      *lon = probe.fix.coordinate.longitude;
+      *accuracy_m = probe.fix.horizontalAccuracy;
+      NSISO8601DateFormatter *fmt = [NSISO8601DateFormatter new];
+      fmt.formatOptions = NSISO8601DateFormatWithInternetDateTime;
+      fmt.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+      NSString *iso = [fmt stringFromDate:probe.fix.timestamp];
+      if (iso.length == 0) {
+        snprintf(err, err_len, "internal_error: location timestamp unavailable");
+        return;
+      }
+      snprintf(at_out, at_len, "%s", iso.UTF8String);
+
+      __block NSArray<CLPlacemark *> *placemarks = nil;
+      __block BOOL geoDone = NO;
+      __block NSError *geoErr = nil;
+      CLGeocoder *geocoder = [CLGeocoder new];
+      [geocoder reverseGeocodeLocation:probe.fix
+                     completionHandler:^(NSArray<CLPlacemark *> *marks, NSError *geoError) {
+                       placemarks = marks;
+                       geoErr = geoError;
+                       geoDone = YES;
+                     }];
+      NSDate *geoDeadline = [NSDate dateWithTimeIntervalSinceNow:15.0];
+      while (!geoDone && [geoDeadline timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+      }
+      if (geoErr != nil) {
+        NSLog(@"hath reverse geocode failed: %@", geoErr.localizedDescription);
+      }
+      NSString *address = hath_format_placemark(placemarks.firstObject);
+      if (address.length > 0) {
+        snprintf(address_out, address_len, "%s", address.UTF8String);
+      }
+
+      rc = 0;
     }
   };
 

@@ -16,19 +16,20 @@ import {
   laneChipLabel,
 } from "./chrome/chatSidebar/toolStatus";
 import {
+  addOptimistic,
   clearLiveChat,
   formatOutboundContent,
   getChatState,
-  hydrateFromLogs,
+  hydrateThreadMessages,
   ingestLiveMessage,
   isUserThreadMessage,
-  syncDimaagEpoch,
+  resetChatStore,
+  seedConversations,
   threadAgentId,
   upsertConversation,
-  userThreadFromLog,
 } from "./store/chat";
 import type { ChatMessage } from "./store/chat";
-import type { LogRecord } from "./shared/api/types";
+import type { DurableMessage, LogRecord } from "./shared/api/types";
 import {
   buildTree,
   isLiveVisual,
@@ -252,25 +253,20 @@ describe("conversationBucket", () => {
   });
 });
 
-function messageLog(partial: {
-  agent_id: string;
+function durableMessage(partial: {
+  id?: string;
+  seq: number;
   from: string | null;
   to: string | null;
   content: string;
-  seq: number;
   at: string;
-}): LogRecord {
+}): DurableMessage {
   return {
-    id: `${partial.agent_id}-${partial.seq}-${partial.at}`,
-    agent_id: partial.agent_id,
-    lane: "conversation",
-    event: "message",
-    payload: {
-      from_agent_id: partial.from,
-      to_agent_id: partial.to,
-      content: partial.content,
-      seq: partial.seq,
-    },
+    id: partial.id ?? `msg-${partial.seq}`,
+    seq: partial.seq,
+    from_agent_id: partial.from,
+    to_agent_id: partial.to,
+    content: partial.content,
     created_at: partial.at,
   };
 }
@@ -285,164 +281,107 @@ describe("user-thread history", () => {
     expect(threadAgentId("a", "b")).toBeNull();
   });
 
-  it("parses user-thread logs and ignores agent↔agent traffic", () => {
-    const user = userThreadFromLog(
-      messageLog({
+  it("seeds conversations from GET /threads summaries", () => {
+    resetChatStore();
+    seedConversations([
+      {
         agent_id: "planner",
-        from: null,
-        to: "planner",
-        content: "plan dinner",
-        seq: 4,
-        at: "2026-03-10T12:00:00Z",
-      }),
-    );
-    expect(user?.agent_id).toBe("planner");
-    expect(user?.message.from_user).toBe(true);
-    expect(user?.message.historical).toBe(true);
-
-    const reply = userThreadFromLog(
-      messageLog({
-        agent_id: "planner",
-        from: "planner",
-        to: null,
-        content: "ok",
-        seq: 5,
-        at: "2026-03-10T12:00:01Z",
-      }),
-    );
-    expect(reply?.agent_id).toBe("planner");
-    expect(reply?.message.from_user).toBe(false);
-
-    expect(
-      userThreadFromLog(
-        messageLog({
-          agent_id: "planner",
-          from: "root",
-          to: "planner",
-          content: "internal",
-          seq: 6,
-          at: "2026-03-10T12:00:02Z",
-        }),
-      ),
-    ).toBeNull();
+        agent_name: "Planner",
+        last_message: "on it",
+        last_at: "2026-03-10T11:00:03Z",
+        from_user: false,
+      },
+    ]);
+    const snap = getChatState();
+    expect(snap.conversations.map((c) => c.agent_id)).toEqual(["planner"]);
+    expect(snap.conversations[0]!.last_message).toBe("on it");
+    resetChatStore();
   });
 
-  it("hydrates user-thread logs onto agent threads", () => {
-    clearLiveChat();
-    syncDimaagEpoch("2026-03-10T10:00:00.000Z");
-    hydrateFromLogs(
-      [
-        messageLog({
-          agent_id: "planner",
-          from: null,
-          to: "planner",
-          content: "plan the week",
-          seq: 2,
-          at: "2026-03-10T11:00:02Z",
-        }),
-        messageLog({
-          agent_id: "planner",
-          from: "planner",
-          to: null,
-          content: "on it",
-          seq: 3,
-          at: "2026-03-10T11:00:03Z",
-        }),
-      ],
-      { planner: "Planner" },
-    );
+  it("hydrates durable messages onto an agent thread", () => {
+    resetChatStore();
+    hydrateThreadMessages("planner", [
+      durableMessage({
+        from: null,
+        to: "planner",
+        content: "plan the week",
+        seq: 2,
+        at: "2026-03-10T11:00:02Z",
+      }),
+      durableMessage({
+        from: "planner",
+        to: null,
+        content: "on it",
+        seq: 3,
+        at: "2026-03-10T11:00:03Z",
+      }),
+    ]);
     const snap = getChatState();
     expect(snap.threads.planner?.map((m) => m.content)).toEqual([
       "plan the week",
       "on it",
     ]);
-    expect(snap.conversations.map((c) => c.agent_id)).toEqual(["planner"]);
-    expect(snap.conversations[0]!.last_message).toBe("on it");
-    clearLiveChat();
+    expect(snap.threads.planner?.every((m) => m.historical === true)).toBe(true);
+    resetChatStore();
   });
 
-  it("skips durable logs older than the Dimaag process start", () => {
-    clearLiveChat();
-    syncDimaagEpoch("2026-03-10T12:00:00.000Z");
-    hydrateFromLogs(
-      [
-        messageLog({
-          agent_id: "planner",
-          from: null,
-          to: "planner",
-          content: "before reboot",
-          seq: 1,
-          at: "2026-03-10T11:00:00Z",
-        }),
-        messageLog({
-          agent_id: "planner",
-          from: null,
-          to: "planner",
-          content: "after reboot",
-          seq: 1,
-          at: "2026-03-10T12:00:01Z",
-        }),
-      ],
-      { planner: "Planner" },
-    );
-    expect(getChatState().threads.planner?.map((m) => m.content)).toEqual([
-      "after reboot",
+  it("clearLiveChat drops optimistic rows but keeps durable history", () => {
+    resetChatStore();
+    hydrateThreadMessages("planner", [
+      durableMessage({
+        from: null,
+        to: "planner",
+        content: "kept",
+        seq: 1,
+        at: "2026-03-10T11:00:00Z",
+      }),
     ]);
-    clearLiveChat();
-  });
-
-  it("wipes chat when Dimaag started_at changes", () => {
-    clearLiveChat();
-    syncDimaagEpoch("2026-03-10T10:00:00.000Z");
-    hydrateFromLogs(
-      [
-        messageLog({
-          agent_id: "planner",
-          from: null,
-          to: "planner",
-          content: "old process",
-          seq: 1,
-          at: "2026-03-10T11:00:00Z",
-        }),
-      ],
-      { planner: "Planner" },
-    );
-    expect(getChatState().threads.planner).toHaveLength(1);
-    expect(syncDimaagEpoch("2026-03-10T15:00:00.000Z")).toBe(true);
-    expect(getChatState().threads.planner).toBeUndefined();
-    expect(getChatState().conversations).toEqual([]);
-    clearLiveChat();
-  });
-
-  it("does not drop a live message when a historical row reuses the same seq", () => {
-    clearLiveChat();
-    syncDimaagEpoch("2026-03-01T00:00:00.000Z");
-    ingestLiveMessage("planner", {
-      seq: 1,
+    upsertConversation({
+      agent_id: "planner",
+      agent_name: "Planner",
+      last_message: "kept",
+      last_at: "2026-03-10T11:00:00Z",
       from_user: true,
-      content: "new process",
+    });
+    addOptimistic("planner", "pending send");
+    expect(getChatState().threads.planner?.some((m) => m.pending)).toBe(true);
+    clearLiveChat();
+    expect(getChatState().threads.planner?.map((m) => m.content)).toEqual(["kept"]);
+    expect(getChatState().conversations).toHaveLength(1);
+    resetChatStore();
+  });
+
+  it("merges durable hydrate with a live seq already present", () => {
+    resetChatStore();
+    ingestLiveMessage("planner", {
+      seq: 2,
+      from_user: true,
+      content: "live first",
       at: "2026-03-10T15:00:00Z",
     });
-    hydrateFromLogs(
-      [
-        messageLog({
-          agent_id: "planner",
-          from: null,
-          to: "planner",
-          content: "old process",
-          seq: 1,
-          at: "2026-03-01T00:00:00Z",
-        }),
-      ],
-      { planner: "Planner" },
-    );
+    hydrateThreadMessages("planner", [
+      durableMessage({
+        from: null,
+        to: "planner",
+        content: "live first",
+        seq: 2,
+        at: "2026-03-10T15:00:00Z",
+      }),
+      durableMessage({
+        from: "planner",
+        to: null,
+        content: "older durable",
+        seq: 1,
+        at: "2026-03-10T14:00:00Z",
+      }),
+    ]);
     const contents = getChatState().threads.planner?.map((m) => m.content);
-    expect(contents).toEqual(["old process", "new process"]);
-    clearLiveChat();
+    expect(contents).toEqual(["older durable", "live first"]);
+    resetChatStore();
   });
 
   it("keeps a resolved agent name when a later upsert only has the id", () => {
-    clearLiveChat();
+    resetChatStore();
     upsertConversation({
       agent_id: "planner",
       agent_name: "Planner",
@@ -459,7 +398,7 @@ describe("user-thread history", () => {
     });
     expect(getChatState().conversations[0]!.agent_name).toBe("Planner");
     expect(getChatState().conversations[0]!.last_message).toBe("later");
-    clearLiveChat();
+    resetChatStore();
   });
 });
 

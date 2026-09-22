@@ -11,13 +11,16 @@ pub struct BatteryInfo {
     pub charging: bool,
 }
 
-/// Coordinates returned by `device_get_location`.
+/// Fix returned by `device_get_location` (coords always; address when geocoded).
 #[derive(Debug, Serialize)]
 pub struct LocationInfo {
     pub latitude: f64,
     pub longitude: f64,
     pub accuracy: f64,
     pub at: String,
+    /// Street or civic address when reverse geocode / civic data is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 /// Read battery percent and charging state from the host.
@@ -44,30 +47,28 @@ pub fn device_get_battery() -> Result<BatteryInfo, String> {
     })
 }
 
-/// Read current coordinates via CoreLocation (macOS) or report unsupported.
+/// Read coordinates (and address when available) via the platform location API.
 #[tauri::command]
 pub fn device_get_location() -> Result<LocationInfo, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        return macos_get_location();
+        return apple_get_location();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        Err("capability_unsupported: native location is only implemented on macOS".to_string())
+        return crate::device_location_windows::get_location();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "ios", windows)))]
+    {
+        Err(
+            "capability_unsupported: native location is only implemented on macOS, iOS, and Windows"
+                .to_string(),
+        )
     }
 }
 
-/// Register for Location Services once at launch when authorization is undetermined.
-#[cfg(target_os = "macos")]
-pub fn prepare_location_authorization() {
-    unsafe extern "C" {
-        fn hath_location_prepare();
-    }
-    unsafe { hath_location_prepare() };
-}
-
-#[cfg(target_os = "macos")]
-fn macos_get_location() -> Result<LocationInfo, String> {
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn apple_get_location() -> Result<LocationInfo, String> {
     unsafe extern "C" {
         fn hath_device_get_location(
             lat: *mut f64,
@@ -75,6 +76,8 @@ fn macos_get_location() -> Result<LocationInfo, String> {
             accuracy_m: *mut f64,
             at_out: *mut std::ffi::c_char,
             at_len: usize,
+            address_out: *mut std::ffi::c_char,
+            address_len: usize,
             err: *mut std::ffi::c_char,
             err_len: usize,
         ) -> i32;
@@ -83,6 +86,7 @@ fn macos_get_location() -> Result<LocationInfo, String> {
     let mut lon = 0.0_f64;
     let mut accuracy = 0.0_f64;
     let mut at_buf = vec![0u8; 64];
+    let mut address_buf = vec![0u8; 512];
     let mut err = vec![0u8; 512];
     let rc = unsafe {
         hath_device_get_location(
@@ -91,6 +95,8 @@ fn macos_get_location() -> Result<LocationInfo, String> {
             &mut accuracy,
             at_buf.as_mut_ptr() as *mut std::ffi::c_char,
             at_buf.len(),
+            address_buf.as_mut_ptr() as *mut std::ffi::c_char,
+            address_buf.len(),
             err.as_mut_ptr() as *mut std::ffi::c_char,
             err.len(),
         )
@@ -99,11 +105,24 @@ fn macos_get_location() -> Result<LocationInfo, String> {
         let at = unsafe { std::ffi::CStr::from_ptr(at_buf.as_ptr() as *const std::ffi::c_char) }
             .to_string_lossy()
             .into_owned();
+        let address_raw =
+            unsafe { std::ffi::CStr::from_ptr(address_buf.as_ptr() as *const std::ffi::c_char) }
+                .to_string_lossy()
+                .into_owned();
+        let address = {
+            let trimmed = address_raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        };
         return Ok(LocationInfo {
             latitude: lat,
             longitude: lon,
             accuracy,
             at,
+            address,
         });
     }
     let message = unsafe { std::ffi::CStr::from_ptr(err.as_ptr() as *const std::ffi::c_char) }

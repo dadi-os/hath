@@ -10,6 +10,8 @@
 	<string>Scan a Dadi setup QR to join the mesh.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Dadi uses your location when an agent asks where this device is.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Dadi uses your location when an agent asks where this device is.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>Dadi uses your location when an agent asks where this device is.</string>
 </dict>

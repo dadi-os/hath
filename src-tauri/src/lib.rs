@@ -3,6 +3,9 @@ mod net;
 mod device;
 mod radio;
 
+#[cfg(windows)]
+mod device_location_windows;
+
 #[cfg(target_os = "ios")]
 mod ios_vpn;
 
@@ -55,10 +58,18 @@ pub fn run() {
     }
 
     builder
-        .setup(|_app| {
-            #[cfg(target_os = "macos")]
+        .setup(|app| {
+            #[cfg(desktop)]
             {
-                device::prepare_location_authorization();
+                let icon = app.default_window_icon().ok_or_else(|| {
+                    tauri::Error::AssetNotFound("default window icon is missing for tray".into())
+                })?;
+                use tauri::tray::TrayIconBuilder;
+                TrayIconBuilder::with_id("dadi-tray")
+                    .icon(icon.clone())
+                    .tooltip("Dadi")
+                    .show_menu_on_left_click(true)
+                    .build(app)?;
             }
             Ok(())
         })

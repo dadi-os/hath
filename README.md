@@ -87,6 +87,8 @@ npm run tauri ios dev
 
 Uses a simulator or connected device per the Tauri iOS CLI prompts.
 
+After `ios init`, ensure the app `Info.plist` includes `NSLocationWhenInUseUsageDescription` (same copy as [src-tauri/Info.plist](src-tauri/Info.plist)) so `hath_get_location` can prompt. macOS uses Always (+ `NSLocationAlwaysAndWhenInUseUsageDescription`); Windows uses WinRT Geolocator (coords + coarse civic address, no Maps API key).
+
 ## Dockerfile
 
 | Target | Role |
@@ -196,7 +198,7 @@ iOS cannot run `tailscaled` as a system daemon, so join uses the in-process dial
 
 ## Agents / chat / memory
 
-`/agents` is a live d3 hierarchy (desktop). Chat sidebar is conversation list + thread; dual-lane busy rules and provisional new-chat routing are documented in code under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api` (`yaad` client; paths live in `shared/api/yaad`). `/chaavi` is the login password manager (search, reveal/copy, create, edit, delete) over `http://chaavi.dadi/v1`; Vaultwarden remains the encrypted store. Browser autofill uses the Bitwarden extension at `https://chaavi.dadi`. Desktop join fetches `GET /ca` from nas.dadi and installs the mesh CA so the extension trusts that HTTPS endpoint.
+`/agents` is a live d3 hierarchy (desktop). Chat sidebar loads durable human↔agent history from Dimaag `GET /threads` and `GET /agents/:id/messages`, then keeps the open thread live via SSE. Dual-lane busy rules and provisional new-chat routing live under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api` (`yaad` client; paths live in `shared/api/yaad`). `/chaavi` is the login password manager (search, reveal/copy, create, edit, delete) over `http://chaavi.dadi/v1`; Vaultwarden remains the encrypted store. Browser autofill uses the Bitwarden extension at `https://chaavi.dadi`. Desktop join fetches `GET /ca` from nas.dadi and installs the mesh CA so the extension trusts that HTTPS endpoint.
 
 ## Design tokens
 

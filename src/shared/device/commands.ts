@@ -89,14 +89,15 @@ async function getBattery(): Promise<{ percent: number; charging: boolean }> {
 }
 
 /**
- * Read coordinates via native CoreLocation (macOS).
- * Does not prompt from the tool path — accept Location once at Hath launch, or enable it in System Settings.
+ * Read coordinates (+ optional address) via native location APIs.
+ * Prompts once if undetermined when an agent asks; not on every app launch.
  */
 async function getLocation(): Promise<{
   latitude: number;
   longitude: number;
   accuracy: number;
   at: string;
+  address?: string;
 }> {
   const { invoke } = await import("@tauri-apps/api/core");
   try {
@@ -105,6 +106,7 @@ async function getLocation(): Promise<{
       longitude: number;
       accuracy: number;
       at: string;
+      address?: string;
     }>("device_get_location");
   } catch (err) {
     throw mapInvokeError(err);

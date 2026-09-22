@@ -24,8 +24,7 @@ import {
   clearLiveChat,
   formatOutboundContent,
   getChatState,
-  getDimaagStartedAt,
-  hydrateFromLogs,
+  hydrateThreadMessages,
   ingestLiveMessage,
   listQueuedThread,
   markFailed,
@@ -35,6 +34,7 @@ import {
   openList,
   removeMessage,
   resolveOptimistic,
+  setHistoryState,
   subscribeChat,
   type MessageAttachment,
 } from "../../store/chat";
@@ -90,7 +90,7 @@ export interface ChatSidebarProps {
 
 /**
  * Conversation list + thread views. Live messages arrive via SSE; history is
- * hydrated from Dimaag `agent_logs` for the current process only (`started_at`).
+ * loaded from durable Dimaag `GET /threads` and `GET /agents/:id/messages`.
  * Talk to Dadi is a composer onto POST /dadi.
  */
 export function ChatSidebar({
@@ -239,27 +239,22 @@ export function ChatSidebar({
     if (!connected || !openAgentId) {
       return;
     }
-    if (!getDimaagStartedAt()) {
-      return;
-    }
     let cancelled = false;
     void dimaag
-      .getAgentLogs(openAgentId, { event: "message", limit: HISTORY_LOG_LIMIT })
-      .then(({ logs }) => {
+      .listMessages(openAgentId, { limit: HISTORY_LOG_LIMIT })
+      .then(({ messages }) => {
         if (cancelled) {
           return;
         }
-        const names = Object.fromEntries(
-          (agentsQuery.data ?? []).map((a) => [a.id, a.name]),
-        );
-        hydrateFromLogs(logs, names);
+        hydrateThreadMessages(openAgentId, messages);
       })
       .catch((err: unknown) => {
-        logLine(
-          "error",
-          err instanceof Error ? err.message : String(err),
-          "thread_history_failed",
-        );
+        if (cancelled) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        logLine("error", message, "thread_history_failed");
+        setHistoryState("error", message);
       });
     return () => {
       cancelled = true;

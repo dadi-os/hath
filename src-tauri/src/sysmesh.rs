@@ -77,7 +77,9 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
     if let Ok(bins) = resolve_bins(app) {
         let mut args = socket_cli_args(&socket);
         args.push("down".into());
-        let _ = Command::new(&bins.tailscale)
+        let mut cmd = Command::new(&bins.tailscale);
+        hide_console(&mut cmd);
+        let _ = cmd
             .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -236,7 +238,8 @@ fn socket_live(socket: &Path) -> bool {
 }
 
 fn ensure_daemon(bins: &Bins, state_dir: &Path, socket: &Path) -> Result<(), String> {
-    if socket_live(socket) {
+    // Windows has no Unix socket probe; LocalAPI JSON is the readiness signal.
+    if socket_live(socket) || daemon_reports_via_cli(bins, socket) {
         return Ok(());
     }
     start_daemon(bins, state_dir, socket)?;
@@ -254,16 +257,36 @@ fn ensure_daemon(bins: &Bins, state_dir: &Path, socket: &Path) -> Result<(), Str
     ))
 }
 
+/// True when LocalAPI is reachable. `tailscale status` exits 1 while Logged out /
+/// NeedsLogin, so readiness must not require a successful exit — only status JSON.
 fn daemon_reports_via_cli(bins: &Bins, socket: &Path) -> bool {
     let mut args = socket_cli_args(socket);
-    args.push("status".into());
-    Command::new(&bins.tailscale)
-        .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    args.extend(["status".into(), "--json".into()]);
+    let mut cmd = Command::new(&bins.tailscale);
+    hide_console(&mut cmd);
+    let Ok(output) = cmd.args(&args).output() else {
+        return false;
+    };
+    local_api_status_json_ok(&output.stdout)
+}
+
+/// True when `tailscale status --json` stdout shows any BackendState (daemon up).
+fn local_api_status_json_ok(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout).contains("\"BackendState\"")
+}
+
+/// Suppress console flashes for short-lived CLI probes on Windows.
+fn hide_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
 }
 
 fn start_daemon(bins: &Bins, state_dir: &Path, socket: &Path) -> Result<(), String> {
@@ -655,7 +678,9 @@ fn start_daemon_windows(
         ps_quote(&format!("--socket={sock}")),
         ps_quote("--verbose=1"),
     );
-    let output = Command::new("powershell")
+    let mut ps = Command::new("powershell");
+    hide_console(&mut ps);
+    let output = ps
         .args(["-NoProfile", "-Command", &elevate])
         .output()
         .map_err(|e| format!("elevated tailscaled (UAC): {e}"))?;
@@ -707,7 +732,9 @@ fn tailscale_up(
         "--accept-dns=true".into(),
         "--reset".into(),
     ]);
-    let output = Command::new(&bins.tailscale)
+    let mut cmd = Command::new(&bins.tailscale);
+    hide_console(&mut cmd);
+    let output = cmd
         .args(&args)
         .output()
         .map_err(|e| format!("tailscale up: {e}"))?;
@@ -738,14 +765,13 @@ fn wait_until_running(bins: &Bins, socket: &Path) -> Result<(), String> {
 fn backend_running(bins: &Bins, socket: &Path) -> bool {
     let mut args = socket_cli_args(socket);
     args.extend(["status".into(), "--json".into()]);
-    let output = Command::new(&bins.tailscale).args(&args).output();
-    let Ok(output) = output else {
+    let mut cmd = Command::new(&bins.tailscale);
+    hide_console(&mut cmd);
+    let Ok(output) = cmd.args(&args).output() else {
         return false;
     };
-    if !output.status.success() {
-        return false;
-    }
     let body = String::from_utf8_lossy(&output.stdout);
+    // Exit code is often non-zero before Running; trust JSON BackendState only.
     body.contains("\"BackendState\":\"Running\"")
         || body.contains("\"BackendState\": \"Running\"")
 }
@@ -1004,4 +1030,21 @@ fn ps_quote(s: &str) -> String {
 #[cfg(target_os = "macos")]
 fn apple_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_api_status_json_ok;
+
+    #[test]
+    fn local_api_ready_when_logged_out_json() {
+        let stdout = br#"{"BackendState":"NeedsLogin","AuthURL":""}"#;
+        assert!(local_api_status_json_ok(stdout));
+    }
+
+    #[test]
+    fn local_api_not_ready_on_connection_noise() {
+        let stdout = b"failed to connect to local tailscaled\n";
+        assert!(!local_api_status_json_ok(stdout));
+    }
 }

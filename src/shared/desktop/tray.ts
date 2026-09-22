@@ -112,6 +112,7 @@ async function drainTrayQueue(): Promise<void> {
 async function applyDesktopShell(snapshot: TraySnapshot): Promise<void> {
   const { type } = await import("@tauri-apps/plugin-os");
   const platform = type();
+  const flatTray = platform === "windows" || platform === "linux";
 
   if (!installed) {
     if (platform === "macos") {
@@ -120,7 +121,7 @@ async function applyDesktopShell(snapshot: TraySnapshot): Promise<void> {
       appLive = built.live;
       await appMenu.setAsAppMenu();
     }
-    const trayBuilt = await buildMenu(snapshot, false);
+    const trayBuilt = await buildMenu(snapshot, false, flatTray);
     trayMenu = trayBuilt.menu;
     trayLive = trayBuilt.live;
     await ensureTray(trayMenu, platform);
@@ -292,24 +293,44 @@ function liveFingerprint(snapshot: TraySnapshot): string {
 /**
  * Build one menu tree and keep the items that change.
  * `withEdit` is the macOS app menu (adds Edit). Tray omits it.
+ * `flat` puts Dadi actions at the tray root (Windows/Linux) so Updates is one click.
  */
 async function buildMenu(
   snapshot: TraySnapshot,
   withEdit: boolean,
+  flat = false,
 ): Promise<{ menu: Menu; live: LiveItems }> {
   const live = await createLiveItems(snapshot);
-  const branches = [
-    live.dadi,
-    ...(withEdit ? [editSubmenu()] : []),
-    live.agentsMenu,
-    viewSubmenu(),
-  ];
+  const branches = flat
+    ? [
+        live.show,
+        live.provision,
+        live.update,
+        { item: "Separator" as const },
+        live.mesh,
+        { item: "Separator" as const },
+        live.agentsMenu,
+        viewSubmenu(),
+        { item: "Separator" as const },
+        live.quit,
+      ]
+    : [
+        live.dadi,
+        ...(withEdit ? [editSubmenu()] : []),
+        live.agentsMenu,
+        viewSubmenu(),
+      ];
   const menu = await Menu.new({ items: branches });
   return { menu, live: live.items };
 }
 
 async function createLiveItems(snapshot: TraySnapshot): Promise<{
   dadi: Submenu;
+  show: MenuItem;
+  provision: MenuItem;
+  update: MenuItem;
+  mesh: MenuItem;
+  quit: MenuItem;
   agentsMenu: Submenu;
   items: LiveItems;
 }> {
@@ -395,6 +416,11 @@ async function createLiveItems(snapshot: TraySnapshot): Promise<{
 
   return {
     dadi,
+    show,
+    provision,
+    update,
+    mesh,
+    quit,
     agentsMenu,
     items: { provision, mesh, update, agentsStatus, agentsMenu, agentRows },
   };
