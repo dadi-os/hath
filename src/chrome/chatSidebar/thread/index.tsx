@@ -1,9 +1,9 @@
 import { useEffect, useRef, type RefObject, type UIEvent } from "react";
 import { AnimatePresence } from "motion/react";
 import type { ChatMessage } from "../../../store/chat";
-import { HoldIndicator, ThinkingIndicator } from "../ActivityPulse";
 import { messageKey, trackIncoming } from "../lanes";
 import { MessageBubble } from "../message";
+import { ToolPreview } from "../ToolPreview";
 
 export interface ThreadViewProps {
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -14,12 +14,10 @@ export interface ThreadViewProps {
   hostPad: number;
   settledMessages: ChatMessage[];
   queuedMessages: ChatMessage[];
-  /**
-   * Hold indicator before drafts = conversation lane busy (queueing).
-   * Thinking indicator at thread end = reasoning working.
-   */
-  showHoldPulse: boolean;
-  showWorkingPulse: boolean;
+  /** Open agent id for live tool-preview log polls. */
+  agentId: string;
+  /** Either lane busy — show tool preview or ellipses. */
+  laneBusy: boolean;
   onRetry: (msg: ChatMessage) => void;
   onCancel: (seq: number) => void;
   /** Keep the thread pinned while agent typewriter content grows. */
@@ -28,7 +26,7 @@ export interface ThreadViewProps {
   emptyHint?: string;
 }
 
-/** Open thread scroll pane: settled messages, hold/thinking, queued drafts. */
+/** Open thread scroll pane: settled messages, queued sends, tool preview. */
 export function ThreadView({
   scrollRef,
   onScroll,
@@ -37,8 +35,8 @@ export function ThreadView({
   hostPad,
   settledMessages,
   queuedMessages,
-  showHoldPulse,
-  showWorkingPulse,
+  agentId,
+  laneBusy,
   onRetry,
   onCancel,
   onRevealTick,
@@ -78,8 +76,7 @@ export function ThreadView({
         <div className="flex flex-col gap-4">
           {settledMessages.length === 0 &&
           queuedMessages.length === 0 &&
-          !showHoldPulse &&
-          !showWorkingPulse ? (
+          !laneBusy ? (
             <div className="flex min-h-[36vh] items-center justify-center">
               <p className="text-center text-[13px] text-ink-ghost">
                 {emptyHint}
@@ -103,9 +100,6 @@ export function ThreadView({
             ))}
           </AnimatePresence>
           <AnimatePresence initial={false}>
-            {showHoldPulse ? <HoldIndicator key="hold" /> : null}
-          </AnimatePresence>
-          <AnimatePresence initial={false}>
             {queuedMessages.map((msg) => (
               <MessageBubble
                 key={messageKey(msg)}
@@ -115,9 +109,7 @@ export function ThreadView({
               />
             ))}
           </AnimatePresence>
-          <AnimatePresence initial={false}>
-            {showWorkingPulse ? <ThinkingIndicator key="thinking" /> : null}
-          </AnimatePresence>
+          <ToolPreview agentId={agentId} active={laneBusy} />
         </div>
       </div>
     </div>

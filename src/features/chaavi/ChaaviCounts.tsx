@@ -4,10 +4,10 @@ import { chaavi, isMeshOnline } from "../../shared/api";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
+import { countNoun } from "../../shared/lib/ux/plural";
 
 /**
  * Home Chaavi tile — login vs secret catalog counts. Notes count as secrets.
- * Never shows password bodies.
  */
 export function ChaaviCounts() {
   const { state: connection } = useConnection();
@@ -91,12 +91,12 @@ export function ChaaviCounts() {
     <div className="flex h-full min-h-0 items-stretch px-2 pb-2.5 pt-0.5">
       {(
         [
-          { label: "PASSWORDS", value: passwords },
-          { label: "SECRETS", value: secrets },
+          { key: "passwords", label: countNoun(passwords, "PASSWORD"), value: passwords },
+          { key: "secrets", label: countNoun(secrets, "SECRET"), value: secrets },
         ] as const
       ).map((col, i) => (
         <motion.div
-          key={col.label}
+          key={col.key}
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: SLOW_S, ease: EASE, delay: i * 0.04 }}

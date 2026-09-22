@@ -13,7 +13,8 @@ export class BrowserTransport implements Transport {
   private active = false;
   private readonly listeners = new Set<(state: ConnectionState) => void>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private eventSource: EventSource | null = null;
+  /** Live EventSources — concurrent `stream()` callers must not clobber each other. */
+  private readonly eventSources = new Set<EventSource>();
 
   isActive(): boolean {
     return this.active;
@@ -40,14 +41,14 @@ export class BrowserTransport implements Transport {
   async disconnect(): Promise<void> {
     this.active = false;
     this.stopPolling();
-    this.closeEventSource();
+    this.closeAllEventSources();
     this.setState("disconnected");
   }
 
   async request<T>(opts: {
     baseUrl: string;
     path: string;
-    method: "GET" | "POST" | "PUT" | "PATCH";
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
     body?: unknown;
     bodyText?: string;
     responseType?: "json" | "text" | "blob";
@@ -84,7 +85,14 @@ export class BrowserTransport implements Transport {
     if (opts.responseType === "blob") {
       return (await response.blob()) as T;
     }
-    return (await response.json()) as T;
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    const text = await response.text();
+    if (text.length === 0) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
   }
 
   stream(opts: {
@@ -97,10 +105,9 @@ export class BrowserTransport implements Transport {
       return () => {};
     }
 
-    this.closeEventSource();
     const url = joinUrl(opts.baseUrl, opts.path);
     const es = new EventSource(url);
-    this.eventSource = es;
+    this.eventSources.add(es);
 
     es.onmessage = (event) => {
       const raw = event.data?.trim();
@@ -116,15 +123,14 @@ export class BrowserTransport implements Transport {
 
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
+        this.eventSources.delete(es);
         opts.onClose?.();
       }
     };
 
     return () => {
       es.close();
-      if (this.eventSource === es) {
-        this.eventSource = null;
-      }
+      this.eventSources.delete(es);
     };
   }
 
@@ -159,9 +165,11 @@ export class BrowserTransport implements Transport {
     }
   }
 
-  private closeEventSource(): void {
-    this.eventSource?.close();
-    this.eventSource = null;
+  private closeAllEventSources(): void {
+    for (const es of this.eventSources) {
+      es.close();
+    }
+    this.eventSources.clear();
   }
 
   private setState(next: ConnectionState): void {

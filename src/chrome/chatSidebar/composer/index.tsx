@@ -11,6 +11,7 @@ import {
 import type { DraftAttachment } from "../../../shared/lib/content/attachments";
 import { EASE, SLOW_S } from "../../../shared/lib/ux/motion";
 import { TEXTAREA_MAX_PX } from "../constants";
+import { LaneChip, type LaneChipLabel } from "../LaneChip";
 
 export interface FloatingComposerProps {
   connected: boolean;
@@ -18,10 +19,12 @@ export interface FloatingComposerProps {
   setDraft: (v: string) => void;
   placeholder: string;
   canSubmit: boolean;
-  /** Conversation lane held — sends go to the local draft queue. */
-  holdMode: boolean;
-  /** Reasoning working; conversation free — send is live. */
+  /** Conversation busy (thinking) — sends go to the local queue. */
+  thinkingMode: boolean;
+  /** Reasoning only (working); conversation free — send is live. */
   workingMode: boolean;
+  /** Floating lane chip above the field; null when idle. */
+  laneLabel: LaneChipLabel | null;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   fileInputRef: RefObject<HTMLInputElement | null>;
   cameraInputRef: RefObject<HTMLInputElement | null>;
@@ -43,8 +46,9 @@ export function FloatingComposer({
   setDraft,
   placeholder,
   canSubmit,
-  holdMode,
+  thinkingMode,
   workingMode,
+  laneLabel,
   textareaRef,
   fileInputRef,
   cameraInputRef,
@@ -100,6 +104,7 @@ export function FloatingComposer({
     >
       <div className="composer-fade" aria-hidden />
       <div className="relative z-10 px-3">
+        <LaneChip label={laneLabel} />
         {status ? (
           <p className="pointer-events-none mb-1.5 px-1 text-center text-[11px] text-ink-ghost">
             {status}
@@ -108,8 +113,8 @@ export function FloatingComposer({
         <form
           onSubmit={onSubmit}
           className={`composer-glass pointer-events-auto flex flex-col gap-2 px-2 py-2 transition-[opacity,box-shadow] duration-slow ease-hath ${
-            workingMode && !holdMode ? "composer-glass--live" : ""
-          } ${holdMode ? "composer-glass--held" : ""} ${
+            workingMode && !thinkingMode ? "composer-glass--live" : ""
+          } ${thinkingMode ? "composer-glass--thinking" : ""} ${
             connected ? "" : "opacity-70"
           }`}
         >
@@ -219,14 +224,14 @@ export function FloatingComposer({
             disabled={!connected}
             placeholder={connected ? placeholder : "Connect to message agent"}
             className={`block max-h-[160px] min-h-[40px] w-full flex-1 resize-none overflow-y-auto bg-transparent px-1 py-2.5 text-[15px] leading-snug outline-none placeholder:text-ink-ghost disabled:cursor-default ${
-              holdMode ? "text-ink/70" : "text-ink"
+              thinkingMode ? "text-ink/70" : "text-ink"
             }`}
             style={{ maxHeight: TEXTAREA_MAX_PX }}
           />
           <motion.button
             type="submit"
-            aria-label={holdMode ? "Queue message" : "Send"}
-            title={holdMode ? "Queue message" : "Send"}
+            aria-label={thinkingMode ? "Queue message" : "Send"}
+            title={thinkingMode ? "Queue message" : "Send"}
             disabled={!canSubmit}
             whileTap={canSubmit ? { scale: 0.94 } : undefined}
             transition={{ duration: 0.2, ease: EASE }}

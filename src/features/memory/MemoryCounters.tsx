@@ -6,12 +6,18 @@ import type { NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
+import { countNoun } from "../../shared/lib/ux/plural";
 
-const KINDS: Array<{ kind: NodeKind; label: string; icon: ReactNode }> = [
-  { kind: "person", label: "People", icon: <IconPerson /> },
-  { kind: "memory", label: "Memories", icon: <IconMemory /> },
-  { kind: "place", label: "Places", icon: <IconPlace /> },
-  { kind: "plan", label: "Plans", icon: <IconPlan /> },
+const KINDS: Array<{
+  kind: NodeKind;
+  singular: string;
+  plural: string;
+  icon: ReactNode;
+}> = [
+  { kind: "person", singular: "PERSON", plural: "PEOPLE", icon: <IconPerson /> },
+  { kind: "memory", singular: "MEMORY", plural: "MEMORIES", icon: <IconMemory /> },
+  { kind: "place", singular: "PLACE", plural: "PLACES", icon: <IconPlace /> },
+  { kind: "plan", singular: "PLAN", plural: "PLANS", icon: <IconPlan /> },
 ];
 
 const PAGE = 200;
@@ -163,7 +169,7 @@ export function MemoryCounters({ className }: MemoryCountersProps) {
     <div
       className={`flex h-full min-h-0 items-stretch px-2 pb-2.5 pt-0.5 ${className ?? ""}`}
     >
-      {KINDS.map(({ kind, label, icon }, i) => (
+      {KINDS.map(({ kind, singular, plural, icon }, i) => (
         <motion.div
           key={kind}
           initial={{ opacity: 0, y: 4 }}
@@ -179,7 +185,7 @@ export function MemoryCounters({ className }: MemoryCountersProps) {
           <span className="inline-flex items-center gap-1 text-sage-deep">
             {icon}
             <span className="text-[10px] font-medium tracking-[2px]">
-              {label.toUpperCase()}
+              {countNoun(counts[kind], singular, plural)}
             </span>
           </span>
         </motion.div>

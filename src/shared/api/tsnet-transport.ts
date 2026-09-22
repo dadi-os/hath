@@ -38,7 +38,8 @@ export class MeshTransport implements Transport {
   private state: ConnectionState = "disconnected";
   private active = false;
   private readonly listeners = new Set<(state: ConnectionState) => void>();
-  private streamAbort: AbortController | null = null;
+  /** Live SSE abort controllers — concurrent `stream()` callers must not clobber each other. */
+  private readonly streamAborts = new Set<AbortController>();
   private needsProvisioning = false;
   private readonly provisioningListeners = new Set<(needed: boolean) => void>();
   private healthTimer: ReturnType<typeof setInterval> | null = null;
@@ -129,8 +130,10 @@ export class MeshTransport implements Transport {
   async disconnect(): Promise<void> {
     this.active = false;
     this.stopHealthWatch();
-    this.streamAbort?.abort();
-    this.streamAbort = null;
+    for (const abort of this.streamAborts) {
+      abort.abort();
+    }
+    this.streamAborts.clear();
     try {
       await invoke("mesh_stop");
     } finally {
@@ -150,7 +153,7 @@ export class MeshTransport implements Transport {
   async request<T>(opts: {
     baseUrl: string;
     path: string;
-    method: "GET" | "POST" | "PUT" | "PATCH";
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
     body?: unknown;
     bodyText?: string;
     responseType?: "json" | "text" | "blob";
@@ -199,7 +202,14 @@ export class MeshTransport implements Transport {
     if (opts.responseType === "blob") {
       return (await response.blob()) as T;
     }
-    return (await response.json()) as T;
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    const text = await response.text();
+    if (text.length === 0) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
   }
 
   stream(opts: {
@@ -212,9 +222,8 @@ export class MeshTransport implements Transport {
       return () => {};
     }
 
-    this.streamAbort?.abort();
     const abort = new AbortController();
-    this.streamAbort = abort;
+    this.streamAborts.add(abort);
 
     void this.readSse(
       opts.baseUrl,
@@ -226,9 +235,7 @@ export class MeshTransport implements Transport {
 
     return () => {
       abort.abort();
-      if (this.streamAbort === abort) {
-        this.streamAbort = null;
-      }
+      this.streamAborts.delete(abort);
     };
   }
 

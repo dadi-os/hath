@@ -1,5 +1,12 @@
 import type { Transport } from "../transport";
-import type { ChaaviHealth, ChaaviItem, ChaaviItemKind } from "../types";
+import type {
+  ChaaviCreateLogin,
+  ChaaviHealth,
+  ChaaviItem,
+  ChaaviItemKind,
+  ChaaviLoginCredential,
+  ChaaviUpdateLogin,
+} from "../types";
 
 /** Optional filters for Chaavi GET /v1/items. */
 export type ChaaviItemsQuery = {
@@ -12,7 +19,8 @@ export type ChaaviItemsQuery = {
 };
 
 /**
- * Chaavi HTTP client — vault health and item catalog (metadata only).
+ * Chaavi HTTP client — vault health, login CRUD, and decrypt-on-demand reveal.
+ * List/detail never embed secrets; callers must call {@link revealLogin} explicitly.
  * Paths live here; callers pass only domain args.
  */
 export function createChaaviClient(transport: Transport, baseUrl: string) {
@@ -32,6 +40,53 @@ export function createChaaviClient(transport: Transport, baseUrl: string) {
         baseUrl,
         path: `/v1/items${toQuery(query)}`,
         method: "GET",
+      });
+    },
+
+    /** GET /v1/items/:id — one catalog row; never passwords. */
+    getItem(id: string): Promise<ChaaviItem> {
+      return transport.request({
+        baseUrl,
+        path: `/v1/items/${encodeURIComponent(id)}`,
+        method: "GET",
+      });
+    },
+
+    /** POST /v1/logins — create a login; returns metadata only. */
+    createLogin(body: ChaaviCreateLogin): Promise<ChaaviItem> {
+      return transport.request({
+        baseUrl,
+        path: "/v1/logins",
+        method: "POST",
+        body,
+      });
+    },
+
+    /** PATCH /v1/items/:id — update a login; returns metadata only. */
+    updateLogin(id: string, body: ChaaviUpdateLogin): Promise<ChaaviItem> {
+      return transport.request({
+        baseUrl,
+        path: `/v1/items/${encodeURIComponent(id)}`,
+        method: "PATCH",
+        body,
+      });
+    },
+
+    /** DELETE /v1/items/:id — remove a login. */
+    deleteItem(id: string): Promise<void> {
+      return transport.request({
+        baseUrl,
+        path: `/v1/items/${encodeURIComponent(id)}`,
+        method: "DELETE",
+      });
+    },
+
+    /** POST /v1/items/:id/login — decrypt username/password on demand. */
+    revealLogin(id: string): Promise<ChaaviLoginCredential> {
+      return transport.request({
+        baseUrl,
+        path: `/v1/items/${encodeURIComponent(id)}/login`,
+        method: "POST",
       });
     },
   };

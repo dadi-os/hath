@@ -19,7 +19,7 @@ export interface Transport {
   request<T>(opts: {
     baseUrl: string;
     path: string;
-    method: "GET" | "POST" | "PUT" | "PATCH";
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
     body?: unknown;
     /** When set, sent as text/plain instead of JSON.stringify(body). */
     bodyText?: string;
@@ -29,6 +29,7 @@ export interface Transport {
 
   /**
    * Open an SSE subscription. Returns an abort function.
+   * Concurrent callers each get their own connection; one must not abort another.
    * No-op unsubscribe when not connected.
    */
   stream(opts: {

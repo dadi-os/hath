@@ -71,6 +71,13 @@ export type LogRecord = {
   created_at: string;
 };
 
+/** GET /health — process liveness and start time for live-transcript alignment. */
+export type DimaagHealth = {
+  status: string;
+  /** ISO time this Dimaag process started; chat older than this is not in the live transcript. */
+  started_at: string;
+};
+
 /** Dimaag SSE event envelope. */
 export type DimaagEvent =
   | {
@@ -238,7 +245,7 @@ export type ChaaviItemKind = "login" | "note" | "secret";
 
 /**
  * Catalog row from Chaavi GET /v1/items.
- * Metadata only — never a password or secret body.
+ * Metadata only — never a password or secret body (use revealLogin).
  */
 export type ChaaviItem = {
   /** Vault item id. */
@@ -253,6 +260,32 @@ export type ChaaviItem = {
   uris: string[];
   /** True when a login stores a FIDO2 passkey. */
   hasPasskey: boolean;
+};
+
+/** Body for Chaavi POST /v1/logins. */
+export type ChaaviCreateLogin = {
+  name: string;
+  username: string;
+  uri?: string;
+  /** When omitted, Chaavi generates a password. */
+  password?: string;
+  length?: number;
+  special?: boolean;
+};
+
+/** Body for Chaavi PATCH /v1/items/:id (login). At least one field required. */
+export type ChaaviUpdateLogin = {
+  name?: string;
+  username?: string;
+  /** Empty string clears websites. */
+  uri?: string;
+  password?: string;
+};
+
+/** Decrypt-on-demand login from Chaavi POST /v1/items/:id/login. */
+export type ChaaviLoginCredential = {
+  username: string;
+  password: string;
 };
 
 /** GET /health — process is up; vault may still be unconfigured. */

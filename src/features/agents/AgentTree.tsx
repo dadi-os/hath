@@ -56,8 +56,8 @@ function clientToSvg(
 }
 
 /**
- * Core glyph for an agent node.
- * Disc = conversation / idle; diamond = reasoning; both = disc + inner diamond.
+ * Core glyph for an agent node — always a disc; fill weight carries the lane
+ * (solid = conversation, soft = reasoning, solid + bone core = both).
  */
 function AgentNodeCore({
   visual,
@@ -76,39 +76,17 @@ function AgentNodeCore({
     transition: { duration: SLOW_S, ease: EASE, delay },
   };
 
-  if (visual === "reasoning") {
-    const s = r * 1.35;
-    return (
-      <g transform="rotate(45)">
-        <motion.rect
-          className={className}
-          x={-s / 2}
-          y={-s / 2}
-          width={s}
-          height={s}
-          {...enter}
-        />
-      </g>
-    );
-  }
-
   if (visual === "both") {
-    const s = r * 0.95;
     return (
       <g>
         <motion.circle className={className} r={r} {...enter} />
-        <g transform="rotate(45)">
-          <motion.rect
-            className="agent-node__core-inset"
-            x={-s / 2}
-            y={-s / 2}
-            width={s}
-            height={s}
-            initial={{ opacity: 0, scale: 0 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: SLOW_S, ease: EASE, delay: delay + 0.04 }}
-          />
-        </g>
+        <motion.circle
+          className="agent-node__core-inset"
+          r={r * 0.42}
+          initial={{ opacity: 0, scale: 0 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: SLOW_S, ease: EASE, delay: delay + 0.04 }}
+        />
       </g>
     );
   }

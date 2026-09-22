@@ -7,7 +7,7 @@ The sole UI client for dadi. One codebase, two form factors — desktop and mobi
 - Nas (`http://nas.dadi`) — provision, status, logs, module config
 - Dimaag (`http://dimaag.dadi`) — agents, messages, events
 - Yaad (`http://yaad.dadi`) — memory graph
-- Chaavi (`http://chaavi.dadi` API, `https://chaavi.dadi` Bitwarden) — vault item catalog + extension URL (not a password manager UI)
+- Chaavi (`http://chaavi.dadi` API, `https://chaavi.dadi` Bitwarden) — login password manager over the Chaavi adapter; extension for browser autofill
 - Ghar (`http://ghar.dadi`) — rooms and Matter devices
 - Dwar (indirect via Dimaag/Yaad)
 - dadiMesh (desktop: system `tailscaled` TUN + MagicDNS; iOS: Go tsnet dialer + Network Extension)
@@ -196,7 +196,7 @@ iOS cannot run `tailscaled` as a system daemon, so join uses the in-process dial
 
 ## Agents / chat / memory
 
-`/agents` is a live d3 hierarchy (desktop). Chat sidebar is conversation list + thread; dual-lane busy rules and provisional new-chat routing are documented in code under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api` (`yaad` client; paths live in `shared/api/yaad`). `/chaavi` is a catalog of vault item metadata plus the Bitwarden self-hosted URL (`https://chaavi.dadi`) — Hath never shows or copies passwords; human fill is the Bitwarden extension on the mesh. Desktop join installs the mesh CA so the extension trusts that HTTPS endpoint.
+`/agents` is a live d3 hierarchy (desktop). Chat sidebar is conversation list + thread; dual-lane busy rules and provisional new-chat routing are documented in code under `chrome/chatSidebar/` and `store/chat.ts`. Memory/timeline call Yaad via `shared/api` (`yaad` client; paths live in `shared/api/yaad`). `/chaavi` is the login password manager (search, reveal/copy, create, edit, delete) over `http://chaavi.dadi/v1`; Vaultwarden remains the encrypted store. Browser autofill uses the Bitwarden extension at `https://chaavi.dadi`. Desktop join installs the mesh CA so the extension trusts that HTTPS endpoint.
 
 ## Design tokens
 

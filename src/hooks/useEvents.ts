@@ -9,6 +9,7 @@ import {
   ingestLiveMessage,
   isUserThreadMessage,
   setHistoryState,
+  syncDimaagEpoch,
   upsertConversation,
 } from "../store/chat";
 import { seedRunningFromAgents, setDadiBusy, setLaneRunning } from "../store/running";
@@ -58,10 +59,15 @@ function agentNames(queryClient: QueryClient): Record<string, string> {
   return Object.fromEntries(agents.map((a) => [a.id, a.name]));
 }
 
-/** Pull durable user-thread messages from agent_logs into the chat store. */
+/** Pull current-process user-thread messages from agent_logs into the chat store. */
 async function hydrateHistory(queryClient: QueryClient): Promise<void> {
   setHistoryState("loading");
   try {
+    const health = await dimaag.getHealth();
+    if (typeof health.started_at !== "string" || health.started_at.length === 0) {
+      throw new Error("dimaag /health missing started_at");
+    }
+    syncDimaagEpoch(health.started_at);
     const { logs } = await dimaag.getLogs({
       event: "message",
       limit: HISTORY_LOG_LIMIT,

@@ -8,7 +8,7 @@ export type AgentTreeNode = {
   children?: AgentTreeNode[];
 };
 
-/** Visual lane for a tree node — shape encodes reasoning vs conversation. */
+/** Visual lane for a tree node — fill weight encodes reasoning vs conversation. */
 export type NodeVisual =
   | "dormant"
   | "idle"
@@ -196,7 +196,7 @@ export function labelPlacement(
 /**
  * Map agent active + lane occupancy to a tree visual.
  * Prefers live lane occupancy overrides when provided.
- * Shape language (not color alone): diamond = reasoning, disc = conversation.
+ * Fill language: soft = reasoning, solid = conversation, solid+core = both.
  */
 export function visualState(
   agent: AgentRecord,
@@ -237,13 +237,13 @@ export function statusLabel(
   }
   if (isLiveVisual(visual)) {
     if (running.reasoning && running.conversation) {
-      return "In flight · reasoning + conversation";
+      return "In flight · thinking + working";
     }
     if (running.reasoning) {
-      return "In flight · reasoning";
+      return "In flight · working";
     }
     if (running.conversation) {
-      return "In flight · conversation";
+      return "In flight · thinking";
     }
     return "In flight";
   }

@@ -24,6 +24,7 @@ import {
   clearLiveChat,
   formatOutboundContent,
   getChatState,
+  getDimaagStartedAt,
   hydrateFromLogs,
   ingestLiveMessage,
   listQueuedThread,
@@ -68,6 +69,7 @@ import { DadiHome } from "./DadiHome";
 import { partitionByQueued } from "./lanes";
 import { ConversationList } from "./list";
 import { ThreadView } from "./thread";
+import { laneChipLabel } from "./toolStatus";
 
 export interface ChatSidebarProps {
   /** Bumps when chat opens; scrolls the thread to the bottom. */
@@ -88,7 +90,8 @@ export interface ChatSidebarProps {
 
 /**
  * Conversation list + thread views. Live messages arrive via SSE; history is
- * hydrated from Dimaag `agent_logs`. Talk to Dadi is a composer onto POST /dadi.
+ * hydrated from Dimaag `agent_logs` for the current process only (`started_at`).
+ * Talk to Dadi is a composer onto POST /dadi.
  */
 export function ChatSidebar({
   sessionKey,
@@ -164,12 +167,14 @@ export function ChatSidebar({
     ? (chat.threads[openAgentId] ?? [])
     : [];
 
-  const conversationBusy = viewingThread
-    ? running[openAgentId!]?.conversation === true
-    : dadiBusy;
-  const reasoningBusy = viewingThread
-    ? running[openAgentId!]?.reasoning === true
-    : false;
+  const conversationBusy =
+    viewingThread && openAgentId
+      ? running[openAgentId]?.conversation === true
+      : dadiBusy;
+  const reasoningBusy =
+    viewingThread && openAgentId
+      ? running[openAgentId]?.reasoning === true
+      : false;
 
   const scrollToBottom = useEffectEvent((behavior: ScrollBehavior = "auto") => {
     const el = scrollRef.current;
@@ -234,6 +239,9 @@ export function ChatSidebar({
     if (!connected || !openAgentId) {
       return;
     }
+    if (!getDimaagStartedAt()) {
+      return;
+    }
     let cancelled = false;
     void dimaag
       .getAgentLogs(openAgentId, { event: "message", limit: HISTORY_LOG_LIMIT })
@@ -256,7 +264,7 @@ export function ChatSidebar({
     return () => {
       cancelled = true;
     };
-  }, [connected, openAgentId]);
+  }, [connected, openAgentId, chat.historyStatus]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -520,7 +528,7 @@ export function ChatSidebar({
     : viewingDadi
       ? "Message Dadi…"
       : conversationBusy
-        ? `Held for agent…`
+        ? `Thinking…`
         : `Message agent`;
 
   const canSubmit =
@@ -534,9 +542,8 @@ export function ChatSidebar({
     threadMessages,
   );
 
-  const showHoldPulse = conversationBusy || queuedMessages.length > 0;
-  const showWorkingPulse =
-    reasoningBusy && !conversationBusy && queuedMessages.length === 0;
+  const laneBusy = conversationBusy || reasoningBusy;
+  const laneLabel = laneChipLabel(conversationBusy, reasoningBusy);
 
   const openAgentRecord = openAgentId
     ? agentsQuery.data?.find((a) => a.id === openAgentId)
@@ -694,6 +701,7 @@ export function ChatSidebar({
                     />
                   ) : null}
                   <div className="relative min-h-0 flex-1">
+                    {openAgentId ? (
                     <ThreadView
                       scrollRef={scrollRef}
                       onScroll={onScroll}
@@ -702,17 +710,15 @@ export function ChatSidebar({
                       hostPad={liveBrowserId !== null ? HOST_PIN_PAD : 0}
                       settledMessages={settledMessages}
                       queuedMessages={queuedMessages}
-                      showHoldPulse={showHoldPulse}
-                      showWorkingPulse={showWorkingPulse}
+                      agentId={openAgentId}
+                      laneBusy={laneBusy}
                       onRetry={(msg) => {
-                        if (openAgentId) {
-                          void sendThread(
-                            openAgentId,
-                            msg.outboundText ?? msg.content,
-                            msg.seq,
-                            msg.attachments,
-                          );
-                        }
+                        void sendThread(
+                          openAgentId,
+                          msg.outboundText ?? msg.content,
+                          msg.seq,
+                          msg.attachments,
+                        );
                       }}
                       onCancel={cancelQueued}
                       onRevealTick={() => {
@@ -722,6 +728,7 @@ export function ChatSidebar({
                       }}
                       emptyHint="Message agent"
                     />
+                    ) : null}
                     {liveBrowserId !== null ? (
                       <HostPin
                         browserId={liveBrowserId}
@@ -766,8 +773,9 @@ export function ChatSidebar({
               setDraft={setDraft}
               placeholder={placeholder}
               canSubmit={canSubmit}
-              holdMode={conversationBusy}
+              thinkingMode={conversationBusy}
               workingMode={reasoningBusy && !conversationBusy}
+              laneLabel={laneLabel}
               textareaRef={textareaRef}
               fileInputRef={fileInputRef}
               cameraInputRef={cameraInputRef}

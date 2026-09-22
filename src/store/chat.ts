@@ -67,6 +67,12 @@ let state: ChatState = {
 };
 const listeners = new Set<Listener>();
 let nextTempSeq = -1;
+/**
+ * Dimaag process start ISO from GET /health.
+ * Chat hydrate must not import agent_logs older than this — those survive reboot;
+ * the live transcript does not.
+ */
+let dimaagStartedAt: string | null = null;
 
 function emit(): void {
   for (const listener of listeners) {
@@ -186,8 +192,9 @@ export function setHistoryState(
   emit();
 }
 
-/** Drop live chat when the mesh drops — transcript dies with Dimaag; don't ghost it. */
+/** Drop live chat when the mesh drops or recovers — transcript dies with Dimaag; don't ghost it. */
 export function clearLiveChat(): void {
+  dimaagStartedAt = null;
   state = {
     threads: {},
     conversations: [],
@@ -196,6 +203,33 @@ export function clearLiveChat(): void {
     historyError: null,
   };
   emit();
+}
+
+/** Current Dimaag process start ISO, or null before the first successful sync. */
+export function getDimaagStartedAt(): string | null {
+  return dimaagStartedAt;
+}
+
+/**
+ * Align the chat store with a Dimaag process lifetime.
+ * When `started_at` changes (reboot / new container), wipe threads so durable
+ * agent_logs cannot ghost a transcript the agent no longer has.
+ * Returns whether the epoch changed.
+ */
+export function syncDimaagEpoch(startedAt: string): boolean {
+  if (dimaagStartedAt === startedAt) {
+    return false;
+  }
+  dimaagStartedAt = startedAt;
+  state = {
+    threads: {},
+    conversations: [],
+    open: { kind: "list" },
+    historyStatus: "idle",
+    historyError: null,
+  };
+  emit();
+  return true;
 }
 
 /** Insert or refresh a conversation summary if `last_at` is newer than what we have. */
@@ -463,15 +497,27 @@ export function userThreadFromLog(log: LogRecord): {
   };
 }
 
-/** Load user-thread history from message logs into threads and the conversation list. */
+/**
+ * Load user-thread history from message logs into threads and the conversation list.
+ * Only rows at or after {@link syncDimaagEpoch}'s `started_at` are imported — older
+ * durable logs are audit history, not the live transcript.
+ * No-op (and leaves state unchanged) until an epoch has been synced.
+ */
 export function hydrateFromLogs(
   logs: LogRecord[],
   names: Record<string, string>,
 ): void {
+  if (!dimaagStartedAt) {
+    return;
+  }
+  const since = dimaagStartedAt;
   let changed = false;
   for (const log of logs) {
     const parsed = userThreadFromLog(log);
     if (!parsed) {
+      continue;
+    }
+    if (parsed.message.at < since) {
       continue;
     }
     if (importHistoryMessage(parsed.agent_id, parsed.message, true)) {

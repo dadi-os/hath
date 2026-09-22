@@ -335,12 +335,20 @@
   backdrop-filter: blur(20px);
 }
 
-.composer-glass--held {
+.composer-glass--thinking {
   border-color: color-mix(in srgb, var(--sage-line) 28%, transparent);
 }
 
 .composer-glass--live {
   border-color: color-mix(in srgb, var(--sage) 36%, transparent);
+}
+
+.lane-chip {
+  border: 1px solid color-mix(in srgb, var(--sage-line) 48%, transparent);
+  background: color-mix(in srgb, var(--bone) 72%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 1px 2px rgb(92 107 82 / 0.06);
 }
 
 /* Attach choices sit above the plus control. Position is unlayered so it stays out of the row. */

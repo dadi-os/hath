@@ -11,12 +11,18 @@ import {
   trackIncoming,
 } from "./chrome/chatSidebar/lanes";
 import {
+  findActiveTool,
+  formatToolSignature,
+  laneChipLabel,
+} from "./chrome/chatSidebar/toolStatus";
+import {
   clearLiveChat,
   formatOutboundContent,
   getChatState,
   hydrateFromLogs,
   ingestLiveMessage,
   isUserThreadMessage,
+  syncDimaagEpoch,
   threadAgentId,
   upsertConversation,
   userThreadFromLog,
@@ -129,6 +135,96 @@ describe("chatSidebar lanes", () => {
   });
 });
 
+describe("toolStatus", () => {
+  const baseLog = {
+    agent_id: "a1",
+    lane: "conversation" as const,
+    created_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("maps lane occupancy to chip labels", () => {
+    expect(laneChipLabel(false, false)).toBeNull();
+    expect(laneChipLabel(true, false)).toBe("thinking");
+    expect(laneChipLabel(false, true)).toBe("working");
+    expect(laneChipLabel(true, true)).toBe("thinking + working");
+  });
+
+  it("formats a compact tool signature", () => {
+    expect(
+      formatToolSignature("browser_navigate", { url: "https://x.test/path" }),
+    ).toBe('browser_navigate(url: "https://x.test/path")');
+    expect(formatToolSignature("noop", {})).toBe("noop()");
+  });
+
+  it("picks the first unfinished tool_use from thoughts", () => {
+    const logs: LogRecord[] = [
+      {
+        ...baseLog,
+        id: "r1",
+        event: "tool_result",
+        payload: { tool_use_id: "t1", content: "ok", is_error: false },
+        created_at: "2026-01-01T00:00:02Z",
+      },
+      {
+        ...baseLog,
+        id: "c1",
+        event: "tool_call",
+        payload: { id: "t1", name: "read_file", input: { path: "a.ts" } },
+        created_at: "2026-01-01T00:00:02Z",
+      },
+      {
+        ...baseLog,
+        id: "th1",
+        event: "thought",
+        payload: {
+          content: [
+            {
+              type: "tool_use",
+              id: "t1",
+              name: "read_file",
+              input: { path: "a.ts" },
+            },
+            {
+              type: "tool_use",
+              id: "t2",
+              name: "write_file",
+              input: { path: "b.ts" },
+            },
+          ],
+        },
+        created_at: "2026-01-01T00:00:01Z",
+      },
+    ];
+    expect(findActiveTool(logs)).toEqual({
+      id: "t2",
+      name: "write_file",
+      input: { path: "b.ts" },
+    });
+  });
+
+  it("skips yield and returns null when every tool has a result", () => {
+    const logs: LogRecord[] = [
+      {
+        ...baseLog,
+        id: "r1",
+        event: "tool_result",
+        payload: { tool_use_id: "t1", content: "{}", is_error: false },
+        created_at: "2026-01-01T00:00:02Z",
+      },
+      {
+        ...baseLog,
+        id: "th1",
+        event: "thought",
+        payload: {
+          content: [{ type: "tool_use", id: "t1", name: "yield", input: {} }],
+        },
+        created_at: "2026-01-01T00:00:01Z",
+      },
+    ];
+    expect(findActiveTool(logs)).toBeNull();
+  });
+});
+
 describe("conversationBucket", () => {
   const now = new Date(2026, 2, 10, 15, 0, 0).getTime();
   const today = new Date(2026, 2, 10, 10, 0, 0).toISOString();
@@ -233,6 +329,7 @@ describe("user-thread history", () => {
 
   it("hydrates user-thread logs onto agent threads", () => {
     clearLiveChat();
+    syncDimaagEpoch("2026-03-10T10:00:00.000Z");
     hydrateFromLogs(
       [
         messageLog({
@@ -264,8 +361,62 @@ describe("user-thread history", () => {
     clearLiveChat();
   });
 
+  it("skips durable logs older than the Dimaag process start", () => {
+    clearLiveChat();
+    syncDimaagEpoch("2026-03-10T12:00:00.000Z");
+    hydrateFromLogs(
+      [
+        messageLog({
+          agent_id: "planner",
+          from: null,
+          to: "planner",
+          content: "before reboot",
+          seq: 1,
+          at: "2026-03-10T11:00:00Z",
+        }),
+        messageLog({
+          agent_id: "planner",
+          from: null,
+          to: "planner",
+          content: "after reboot",
+          seq: 1,
+          at: "2026-03-10T12:00:01Z",
+        }),
+      ],
+      { planner: "Planner" },
+    );
+    expect(getChatState().threads.planner?.map((m) => m.content)).toEqual([
+      "after reboot",
+    ]);
+    clearLiveChat();
+  });
+
+  it("wipes chat when Dimaag started_at changes", () => {
+    clearLiveChat();
+    syncDimaagEpoch("2026-03-10T10:00:00.000Z");
+    hydrateFromLogs(
+      [
+        messageLog({
+          agent_id: "planner",
+          from: null,
+          to: "planner",
+          content: "old process",
+          seq: 1,
+          at: "2026-03-10T11:00:00Z",
+        }),
+      ],
+      { planner: "Planner" },
+    );
+    expect(getChatState().threads.planner).toHaveLength(1);
+    expect(syncDimaagEpoch("2026-03-10T15:00:00.000Z")).toBe(true);
+    expect(getChatState().threads.planner).toBeUndefined();
+    expect(getChatState().conversations).toEqual([]);
+    clearLiveChat();
+  });
+
   it("does not drop a live message when a historical row reuses the same seq", () => {
     clearLiveChat();
+    syncDimaagEpoch("2026-03-01T00:00:00.000Z");
     ingestLiveMessage("planner", {
       seq: 1,
       from_user: true,
@@ -354,7 +505,7 @@ describe("agent tree", () => {
     expect(forest.map((n) => n.id).sort()).toEqual(["orphan", "planner"]);
   });
 
-  it("marks running lanes by shape key", () => {
+  it("marks running lanes by fill key", () => {
     expect(visualState(planner, { reasoning: true, conversation: false })).toBe(
       "reasoning",
     );
@@ -367,7 +518,7 @@ describe("agent tree", () => {
     expect(visualState({ ...planner, active: false }, undefined)).toBe("dormant");
   });
 
-  it("labels live shapes and treats them as in-flight", () => {
+  it("labels live fills and treats them as in-flight", () => {
     expect(isLiveVisual("reasoning")).toBe(true);
     expect(isLiveVisual("conversation")).toBe(true);
     expect(isLiveVisual("both")).toBe(true);
@@ -375,10 +526,10 @@ describe("agent tree", () => {
     expect(isLiveVisual("dormant")).toBe(false);
     expect(
       statusLabel("reasoning", { reasoning: true, conversation: false }),
-    ).toMatch(/reasoning/);
+    ).toMatch(/working/);
     expect(
       statusLabel("both", { reasoning: true, conversation: true }),
-    ).toMatch(/reasoning \+ conversation/);
+    ).toMatch(/thinking \+ working/);
     expect(
       statusLabel("idle", { reasoning: false, conversation: false }),
     ).toBe("Idle");
@@ -541,28 +692,86 @@ describe("nas log services", () => {
 });
 
 describe("chaavi client", () => {
-  it("calls /health and /v1/items with query params", async () => {
-    const calls: Array<{ path: string; method: string }> = [];
+  it("calls health, catalog, CRUD, and reveal routes", async () => {
+    const calls: Array<{ path: string; method: string; body?: unknown }> = [];
     const transport = {
-      request: async (opts: { path: string; method: string }) => {
-        calls.push({ path: opts.path, method: opts.method });
+      request: async (opts: {
+        path: string;
+        method: string;
+        body?: unknown;
+      }) => {
+        calls.push({
+          path: opts.path,
+          method: opts.method,
+          body: opts.body,
+        });
         if (opts.path === "/health") {
           return { status: "ok", vault: "ready" };
         }
-        return { items: [] };
+        if (opts.path.endsWith("/login")) {
+          return { username: "ada", password: "secret" };
+        }
+        if (opts.method === "DELETE") {
+          return undefined;
+        }
+        return {
+          id: "11111111-1111-1111-1111-111111111111",
+          name: "GitHub",
+          kind: "login",
+          username: "octocat",
+          uris: ["https://github.com"],
+          hasPasskey: false,
+        };
       },
     } as unknown as Transport;
     const client = createChaaviClient(transport, CHAAVI);
     await client.getHealth();
     await client.listItems({ q: "bank", uri: "https://ex.test", kind: "login" });
     await client.listItems();
+    await client.getItem("11111111-1111-1111-1111-111111111111");
+    await client.createLogin({
+      name: "X",
+      username: "u",
+      password: "p",
+    });
+    await client.updateLogin("11111111-1111-1111-1111-111111111111", {
+      name: "Y",
+    });
+    await client.revealLogin("11111111-1111-1111-1111-111111111111");
+    await client.deleteItem("11111111-1111-1111-1111-111111111111");
     expect(calls).toEqual([
-      { path: "/health", method: "GET" },
+      { path: "/health", method: "GET", body: undefined },
       {
         path: "/v1/items?q=bank&uri=https%3A%2F%2Fex.test&kind=login",
         method: "GET",
+        body: undefined,
       },
-      { path: "/v1/items", method: "GET" },
+      { path: "/v1/items", method: "GET", body: undefined },
+      {
+        path: "/v1/items/11111111-1111-1111-1111-111111111111",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        path: "/v1/logins",
+        method: "POST",
+        body: { name: "X", username: "u", password: "p" },
+      },
+      {
+        path: "/v1/items/11111111-1111-1111-1111-111111111111",
+        method: "PATCH",
+        body: { name: "Y" },
+      },
+      {
+        path: "/v1/items/11111111-1111-1111-1111-111111111111/login",
+        method: "POST",
+        body: undefined,
+      },
+      {
+        path: "/v1/items/11111111-1111-1111-1111-111111111111",
+        method: "DELETE",
+        body: undefined,
+      },
     ]);
   });
 });
@@ -739,5 +948,18 @@ describe("transport selection", () => {
     } finally {
       delete g.isTauri;
     }
+  });
+});
+
+describe("countNoun", () => {
+  it("uses singular only when count is 1", async () => {
+    const { countNoun } = await import("./shared/lib/ux/plural");
+    expect(countNoun(1, "PASSWORD")).toBe("PASSWORD");
+    expect(countNoun(0, "PASSWORD")).toBe("PASSWORDS");
+    expect(countNoun(2, "PASSWORD")).toBe("PASSWORDS");
+    expect(countNoun(1, "MEMORY", "MEMORIES")).toBe("MEMORY");
+    expect(countNoun(3, "MEMORY", "MEMORIES")).toBe("MEMORIES");
+    expect(countNoun(1, "PERSON", "PEOPLE")).toBe("PERSON");
+    expect(countNoun(0, "PERSON", "PEOPLE")).toBe("PEOPLE");
   });
 });

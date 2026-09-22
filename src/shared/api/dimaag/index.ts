@@ -2,6 +2,7 @@ import type { Transport } from "../transport";
 import type {
   AgentDetail,
   AgentRecord,
+  DimaagHealth,
   LogEvent,
   LogRecord,
   MessageAttachment,
@@ -15,6 +16,15 @@ import type {
  */
 export function createDimaagClient(transport: Transport, baseUrl: string) {
   return {
+    /** GET /health — process liveness and `started_at` for live-transcript alignment. */
+    getHealth(): Promise<DimaagHealth> {
+      return transport.request({
+        baseUrl,
+        path: "/health",
+        method: "GET",
+      });
+    },
+
     /** POST /messages — human → agent. */
     postMessage(body: {
       to_agent_id: string;

@@ -192,18 +192,21 @@ function LaneMark({
   tone?: "idle" | "live" | "error";
 }) {
   const label = lane === "reasoning" ? "Reasoning" : "Conversation";
-  const shape = lane === "reasoning" ? "rotate-45 rounded-[1px]" : "rounded-full";
   const fill =
     tone === "error"
       ? "bg-ink-muted"
       : tone === "live"
-        ? "bg-sage"
-        : "bg-sage-line";
+        ? lane === "reasoning"
+          ? "bg-sage/40"
+          : "bg-sage"
+        : lane === "reasoning"
+          ? "bg-sage-line/55"
+          : "bg-sage-line";
   return (
     <span
       aria-label={label}
       title={label}
-      className={`mt-[5px] inline-block size-1.5 shrink-0 ${shape} ${fill}`}
+      className={`mt-[5px] inline-block size-1.5 shrink-0 rounded-full ${fill}`}
     />
   );
 }
@@ -362,16 +365,16 @@ export function AgentActivity({
           <span className="inline-flex items-center gap-1" title="Reasoning">
             <span
               aria-hidden
-              className="inline-block size-1.5 rotate-45 rounded-[1px] bg-sage-line"
+              className="inline-block size-1.5 rounded-full bg-sage-line/55"
             />
-            reason
+            work
           </span>
           <span className="inline-flex items-center gap-1" title="Conversation">
             <span
               aria-hidden
               className="inline-block size-1.5 rounded-full bg-sage-line"
             />
-            talk
+            think
           </span>
         </p>
       </div>

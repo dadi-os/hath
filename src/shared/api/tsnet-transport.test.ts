@@ -242,6 +242,80 @@ describe("MeshTransport tunnel recover", () => {
   });
 });
 
+describe("MeshTransport.stream concurrency", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    vi.mocked(fetch).mockReset();
+  });
+
+  it("keeps an earlier SSE open when a second stream starts", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "mesh_start") {
+        return 4242;
+      }
+      if (cmd === "mesh_status") {
+        return 2;
+      }
+      if (cmd === "mesh_load_credentials") {
+        return creds;
+      }
+      if (cmd === "mesh_stop") {
+        return;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    const signals: AbortSignal[] = [];
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const signal = init?.signal;
+      if (!signal) {
+        throw new Error("expected abort signal");
+      }
+      signals.push(signal);
+      return {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: () =>
+              new Promise<{ done: boolean; value?: Uint8Array }>(() => {
+                /* hold open until aborted */
+              }),
+          }),
+        },
+      } as Response;
+    });
+
+    const transport = new MeshTransport();
+    await transport.connect(creds);
+
+    const stopA = transport.stream({
+      baseUrl: DIMAAG,
+      path: "/events",
+      onEvent: () => {},
+    });
+    await waitMs(20);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+
+    const stopB = transport.stream({
+      baseUrl: DIMAAG,
+      path: "/events",
+      onEvent: () => {},
+    });
+    await waitMs(20);
+    expect(signals).toHaveLength(2);
+    expect(signals[0]?.aborted).toBe(false);
+    expect(signals[1]?.aborted).toBe(false);
+
+    stopA();
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(false);
+
+    stopB();
+    await transport.disconnect();
+  });
+});
+
 function waitMs(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
