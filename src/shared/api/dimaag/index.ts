@@ -3,11 +3,13 @@ import type {
   AgentDetail,
   AgentRecord,
   DimaagHealth,
+  DurableMessage,
   LogEvent,
   LogRecord,
   MessageAttachment,
   PostDadiResponse,
   PostMessageResponse,
+  ThreadSummary,
 } from "../types";
 
 /**
@@ -16,11 +18,32 @@ import type {
  */
 export function createDimaagClient(transport: Transport, baseUrl: string) {
   return {
-    /** GET /health — process liveness and `started_at` for live-transcript alignment. */
+    /** GET /health — process liveness (`started_at` is identity only, not chat epoch). */
     getHealth(): Promise<DimaagHealth> {
       return transport.request({
         baseUrl,
         path: "/health",
+        method: "GET",
+      });
+    },
+
+    /** GET /threads — human↔agent conversation summaries. */
+    listThreads(): Promise<{ threads: ThreadSummary[] }> {
+      return transport.request({
+        baseUrl,
+        path: "/threads",
+        method: "GET",
+      });
+    },
+
+    /** GET /agents/:id/messages — durable human-thread history. */
+    listMessages(
+      agentId: string,
+      query?: { since_seq?: number; limit?: number },
+    ): Promise<{ messages: DurableMessage[] }> {
+      return transport.request({
+        baseUrl,
+        path: `/agents/${agentId}/messages${messagesQuery(query)}`,
         method: "GET",
       });
     },
@@ -140,6 +163,21 @@ function toQuery(query?: { event?: LogEvent; limit?: number }): string {
   const params = new URLSearchParams();
   if (query.event !== undefined) {
     params.set("event", query.event);
+  }
+  if (query.limit !== undefined) {
+    params.set("limit", String(query.limit));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : "";
+}
+
+function messagesQuery(query?: { since_seq?: number; limit?: number }): string {
+  if (!query) {
+    return "";
+  }
+  const params = new URLSearchParams();
+  if (query.since_seq !== undefined) {
+    params.set("since_seq", String(query.since_seq));
   }
   if (query.limit !== undefined) {
     params.set("limit", String(query.limit));

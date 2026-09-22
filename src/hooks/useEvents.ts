@@ -5,16 +5,14 @@ import type { AgentRecord, DimaagEvent } from "../shared/api/types";
 import type { ConnectionState } from "../shared/api/transport";
 import { subscribeConnection } from "../store/connection";
 import {
-  hydrateFromLogs,
   ingestLiveMessage,
   isUserThreadMessage,
+  seedConversations,
   setHistoryState,
-  syncDimaagEpoch,
   upsertConversation,
 } from "../store/chat";
 import { seedRunningFromAgents, setDadiBusy, setLaneRunning } from "../store/running";
 import { logLine } from "../shared/lib/platform/log";
-import { HISTORY_LOG_LIMIT } from "../chrome/chatSidebar/constants";
 
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
@@ -54,25 +52,12 @@ async function refetchAgents(queryClient: QueryClient): Promise<void> {
   queryClient.setQueryData(AGENTS_QUERY_KEY, agents);
 }
 
-function agentNames(queryClient: QueryClient): Record<string, string> {
-  const agents = queryClient.getQueryData<AgentRecord[]>(AGENTS_QUERY_KEY) ?? [];
-  return Object.fromEntries(agents.map((a) => [a.id, a.name]));
-}
-
-/** Pull current-process user-thread messages from agent_logs into the chat store. */
-async function hydrateHistory(queryClient: QueryClient): Promise<void> {
+/** Seed conversation list from durable GET /threads. */
+async function hydrateHistory(): Promise<void> {
   setHistoryState("loading");
   try {
-    const health = await dimaag.getHealth();
-    if (typeof health.started_at !== "string" || health.started_at.length === 0) {
-      throw new Error("dimaag /health missing started_at");
-    }
-    syncDimaagEpoch(health.started_at);
-    const { logs } = await dimaag.getLogs({
-      event: "message",
-      limit: HISTORY_LOG_LIMIT,
-    });
-    hydrateFromLogs(logs, agentNames(queryClient));
+    const { threads } = await dimaag.listThreads();
+    seedConversations(threads);
     setHistoryState("ready");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -83,7 +68,7 @@ async function hydrateHistory(queryClient: QueryClient): Promise<void> {
 
 /**
  * Subscribe to Dimaag SSE. Reconnects with backoff on drop and refetches
- * GET /agents plus user-thread message logs on reconnect (the stream has no replay).
+ * GET /agents plus GET /threads on reconnect (the stream has no replay).
  */
 export function useEvents(): void {
   const queryClient = useQueryClient();
@@ -204,7 +189,7 @@ export function useEvents(): void {
       }
 
       teardownStream();
-      void hydrateHistory(queryClient);
+      void hydrateHistory();
       stopStream = transport.stream({
         baseUrl: DIMAAG_URL,
         path: "/events",

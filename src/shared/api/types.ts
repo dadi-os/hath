@@ -19,6 +19,25 @@ export type PostMessageResponse = {
   created_at: string;
 };
 
+/** One human↔agent conversation summary from GET /threads. */
+export type ThreadSummary = {
+  agent_id: string;
+  agent_name: string;
+  last_message: string;
+  last_at: string;
+  from_user: boolean;
+};
+
+/** One durable human-thread message from GET /agents/:id/messages. */
+export type DurableMessage = {
+  id: string;
+  seq: number;
+  from_agent_id: string | null;
+  to_agent_id: string | null;
+  content: string;
+  created_at: string;
+};
+
 /** Response from Dimaag POST /dadi. */
 export type PostDadiResponse =
   | {
@@ -71,10 +90,10 @@ export type LogRecord = {
   created_at: string;
 };
 
-/** GET /health — process liveness and start time for live-transcript alignment. */
+/** GET /health — process liveness. `started_at` is process identity, not a chat epoch. */
 export type DimaagHealth = {
   status: string;
-  /** ISO time this Dimaag process started; chat older than this is not in the live transcript. */
+  /** ISO time this Dimaag process started. */
   started_at: string;
 };
 

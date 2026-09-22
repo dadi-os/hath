@@ -1,4 +1,4 @@
-import type { LogRecord, MessageAttachment } from "../shared/api/types";
+import type { DurableMessage, MessageAttachment, ThreadSummary } from "../shared/api/types";
 
 export type { MessageAttachment };
 
@@ -27,7 +27,7 @@ export type ChatMessage = {
    * (e.g. with `[Image: …]` placeholders before describe-patch).
    */
   outboundText?: string;
-  /** Loaded from agent_logs; skip typewriter and never collide with live seqs. */
+  /** Loaded from durable REST history; skip typewriter on open. */
   historical?: boolean;
 };
 
@@ -67,12 +67,6 @@ let state: ChatState = {
 };
 const listeners = new Set<Listener>();
 let nextTempSeq = -1;
-/**
- * Dimaag process start ISO from GET /health.
- * Chat hydrate must not import agent_logs older than this — those survive reboot;
- * the live transcript does not.
- */
-let dimaagStartedAt: string | null = null;
 
 function emit(): void {
   for (const listener of listeners) {
@@ -126,18 +120,8 @@ function setThread(agentId: string, messages: ChatMessage[]): void {
   };
 }
 
-function hasLiveSeq(list: ChatMessage[], seq: number): boolean {
-  return list.some((m) => !m.historical && m.seq === seq);
-}
-
-function hasHistoricalTwin(list: ChatMessage[], msg: ChatMessage): boolean {
-  return list.some(
-    (m) =>
-      m.historical === true &&
-      m.seq === msg.seq &&
-      m.at === msg.at &&
-      m.content === msg.content,
-  );
+function hasConfirmedSeq(list: ChatMessage[], seq: number): boolean {
+  return list.some((m) => m.seq === seq && m.seq >= 0 && !m.pending);
 }
 
 /** Snapshot of chat store state (threads, list, open view, history). */
@@ -192,35 +176,29 @@ export function setHistoryState(
   emit();
 }
 
-/** Drop live chat when the mesh drops or recovers — transcript dies with Dimaag; don't ghost it. */
-export function clearLiveChat(): void {
-  dimaagStartedAt = null;
-  state = {
-    threads: {},
-    conversations: [],
-    open: { kind: "list" },
-    historyStatus: "idle",
-    historyError: null,
-  };
-  emit();
-}
-
-/** Current Dimaag process start ISO, or null before the first successful sync. */
-export function getDimaagStartedAt(): string | null {
-  return dimaagStartedAt;
-}
-
 /**
- * Align the chat store with a Dimaag process lifetime.
- * When `started_at` changes (reboot / new container), wipe threads so durable
- * agent_logs cannot ghost a transcript the agent no longer has.
- * Returns whether the epoch changed.
+ * On mesh disconnect: drop optimistic/pending/queued only.
+ * Durable history stays — messages survive Dimaag restart.
  */
-export function syncDimaagEpoch(startedAt: string): boolean {
-  if (dimaagStartedAt === startedAt) {
-    return false;
+export function clearLiveChat(): void {
+  const threads: Record<string, ChatMessage[]> = {};
+  for (const [agentId, msgs] of Object.entries(state.threads)) {
+    const kept = msgs.filter((m) => m.seq >= 0 && !m.pending && !m.queued && !m.failed);
+    if (kept.length > 0) {
+      threads[agentId] = kept;
+    }
   }
-  dimaagStartedAt = startedAt;
+  state = {
+    ...state,
+    threads,
+    historyStatus: "idle",
+    historyError: null,
+  };
+  emit();
+}
+
+/** Wipe threads and conversations (tests / full local reset). */
+export function resetChatStore(): void {
   state = {
     threads: {},
     conversations: [],
@@ -229,7 +207,15 @@ export function syncDimaagEpoch(startedAt: string): boolean {
     historyError: null,
   };
   emit();
-  return true;
+}
+
+/** Replace conversation list from GET /threads. */
+export function seedConversations(threads: ThreadSummary[]): void {
+  state = {
+    ...state,
+    conversations: sortConversations(threads.map((t) => ({ ...t }))),
+  };
+  emit();
 }
 
 /** Insert or refresh a conversation summary if `last_at` is newer than what we have. */
@@ -253,14 +239,10 @@ export function upsertConversation(conv: Conversation): void {
   emit();
 }
 
-/** Append if this live/optimistic seq is new; no-op on duplicate live seq. */
+/** Append if this live/optimistic seq is new; no-op on duplicate confirmed seq. */
 export function appendMessage(agentId: string, msg: ChatMessage): void {
   const current = threadOf(agentId);
-  if (msg.historical) {
-    if (hasHistoricalTwin(current, msg)) {
-      return;
-    }
-  } else if (hasLiveSeq(current, msg.seq)) {
+  if (msg.seq >= 0 && hasConfirmedSeq(current, msg.seq)) {
     return;
   }
   setThread(agentId, sortMessages([...current, msg]));
@@ -325,7 +307,7 @@ export function resolveOptimistic(
   content?: string,
 ): void {
   const current = threadOf(agentId);
-  if (hasLiveSeq(current, realSeq)) {
+  if (hasConfirmedSeq(current, realSeq)) {
     setThread(
       agentId,
       sortMessages(current.filter((m) => m.seq !== tempSeq)),
@@ -421,137 +403,35 @@ export function threadAgentId(
 }
 
 /**
- * Merge a durable agent_logs message into a thread.
- * Historical rows never collide with live seqs from a later Dimaag process.
- * Returns whether the thread changed. Pass `silent` to batch emits (hydrate).
+ * Merge durable GET /agents/:id/messages into a thread.
+ * Preserves in-flight optimistic rows; confirmed seqs are replaced by durable rows.
  */
-export function importHistoryMessage(
+export function hydrateThreadMessages(
   agentId: string,
-  msg: ChatMessage,
-  silent = false,
-): boolean {
-  const current = threadOf(agentId);
-  if (hasHistoricalTwin(current, msg)) {
-    return false;
-  }
-  if (
-    current.some(
-      (m) =>
-        !m.historical &&
-        m.seq >= 0 &&
-        !m.pending &&
-        m.seq === msg.seq &&
-        m.content === msg.content &&
-        m.from_user === msg.from_user,
-    )
-  ) {
-    return false;
-  }
-  setThread(agentId, sortMessages([...current, { ...msg, historical: true }]));
-  if (!silent) {
-    emit();
-  }
-  return true;
-}
-
-/**
- * Parse a Dimaag message log into a user-thread row.
- * Returns null for agent↔agent traffic or a payload missing seq/content.
- */
-export function userThreadFromLog(log: LogRecord): {
-  agent_id: string;
-  message: ChatMessage;
-} | null {
-  if (log.event !== "message") {
-    return null;
-  }
-  const from = log.payload.from_agent_id;
-  const to = log.payload.to_agent_id;
-  const content = log.payload.content;
-  const seq = log.payload.seq;
-  if (from !== null && typeof from !== "string") {
-    return null;
-  }
-  if (to !== null && typeof to !== "string") {
-    return null;
-  }
-  if (typeof content !== "string" || typeof seq !== "number" || !Number.isInteger(seq)) {
-    return null;
-  }
-  if (!isUserThreadMessage(from, to)) {
-    return null;
-  }
-  const agentId = threadAgentId(from, to);
-  if (!agentId) {
-    return null;
-  }
-  return {
-    agent_id: agentId,
-    message: {
-      seq,
-      from_user: from === null,
-      content,
-      at: log.created_at,
-      historical: true,
-    },
-  };
-}
-
-/**
- * Load user-thread history from message logs into threads and the conversation list.
- * Only rows at or after {@link syncDimaagEpoch}'s `started_at` are imported — older
- * durable logs are audit history, not the live transcript.
- * No-op (and leaves state unchanged) until an epoch has been synced.
- */
-export function hydrateFromLogs(
-  logs: LogRecord[],
-  names: Record<string, string>,
+  messages: DurableMessage[],
 ): void {
-  if (!dimaagStartedAt) {
-    return;
+  const current = threadOf(agentId);
+  const pending = current.filter(
+    (m) => m.seq < 0 || m.pending || m.queued || m.failed,
+  );
+  const bySeq = new Map<number, ChatMessage>();
+  for (const row of messages) {
+    bySeq.set(row.seq, {
+      id: row.id,
+      seq: row.seq,
+      from_user: row.from_agent_id === null,
+      content: row.content,
+      at: row.created_at,
+      historical: true,
+    });
   }
-  const since = dimaagStartedAt;
-  let changed = false;
-  for (const log of logs) {
-    const parsed = userThreadFromLog(log);
-    if (!parsed) {
-      continue;
+  for (const m of current) {
+    if (m.seq >= 0 && !m.pending && !m.queued && !m.failed && !bySeq.has(m.seq)) {
+      bySeq.set(m.seq, m);
     }
-    if (parsed.message.at < since) {
-      continue;
-    }
-    if (importHistoryMessage(parsed.agent_id, parsed.message, true)) {
-      changed = true;
-    }
-    const existing = state.conversations.find(
-      (c) => c.agent_id === parsed.agent_id,
-    );
-    if (existing && existing.last_at > parsed.message.at) {
-      continue;
-    }
-    const rest = state.conversations.filter(
-      (c) => c.agent_id !== parsed.agent_id,
-    );
-    const existingName = existing?.agent_name;
-    const named = names[parsed.agent_id];
-    state = {
-      ...state,
-      conversations: sortConversations([
-        {
-          agent_id: parsed.agent_id,
-          agent_name: named ?? existingName ?? parsed.agent_id,
-          last_message: parsed.message.content,
-          last_at: parsed.message.at,
-          from_user: parsed.message.from_user,
-        },
-        ...rest,
-      ]),
-    };
-    changed = true;
   }
-  if (changed) {
-    emit();
-  }
+  setThread(agentId, sortMessages([...bySeq.values(), ...pending]));
+  emit();
 }
 
 /**
@@ -561,7 +441,7 @@ export function hydrateFromLogs(
  */
 export function ingestLiveMessage(agentId: string, msg: ChatMessage): void {
   const current = threadOf(agentId);
-  if (hasLiveSeq(current, msg.seq)) {
+  if (hasConfirmedSeq(current, msg.seq)) {
     return;
   }
   if (msg.from_user) {
