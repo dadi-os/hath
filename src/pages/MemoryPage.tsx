@@ -20,7 +20,7 @@ export function MemoryPage() {
     >
       <PageHeader
         title="MEMORY"
-        hint="Scroll to zoom · drag to pan · click a node to expand"
+        hint="Drag to orbit · scroll to zoom · click a node to expand"
       />
       <div className="min-h-0 flex-1 px-1 pb-1">
         <MemoryGraph mode="full" entranceKey={entranceKey} />

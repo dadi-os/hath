@@ -34,8 +34,9 @@ import {
   buildTree,
   isLiveVisual,
   labelPlacement,
-  layoutCircle,
+  layoutForest3d,
   linkPath,
+  projectForest2d,
   statusLabel,
   visualState,
 } from "./features/agents/tree";
@@ -491,10 +492,8 @@ describe("agent tree", () => {
       name: "Scout",
       parent_agent_id: "child",
     };
-    const { links } = layoutCircle(
-      buildTree([planner, child, grand]),
-      120,
-      48,
+    const { links } = projectForest2d(
+      layoutForest3d(buildTree([planner, child, grand]), 28, 42),
     );
     expect(links).toHaveLength(2);
     for (const link of links) {

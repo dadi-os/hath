@@ -21,7 +21,7 @@ export function AgentsPage() {
     >
       <PageHeader
         title="AGENTS"
-        hint="Hover for details · click to open in chat · scroll to zoom"
+        hint="Drag to orbit · scroll to zoom · hover for details · click to open in chat"
       />
       <div className="min-h-0 flex-1 px-1 pb-1">
         <AgentTree mode="full" entranceKey={entranceKey} />

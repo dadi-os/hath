@@ -4,9 +4,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type PointerEvent as ReactPointerEvent,
   type RefObject,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
@@ -18,17 +16,16 @@ import { EASE, SLOW_S } from "../../shared/lib/ux/motion";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import { openAgent } from "../../store/chat";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
+import { AgentGraph3D } from "./AgentGraph3D";
 import { AgentPopover } from "./AgentPopover";
-import {
-  pickLiveBrowser,
-  pickLiveTerminal,
-} from "./sessions";
+import { pickLiveBrowser, pickLiveTerminal } from "./sessions";
 import {
   buildTree,
   isLiveVisual,
-  layoutCircle,
   labelPlacement,
+  layoutForest3d,
   linkPath,
+  projectForest2d,
   visualState,
   type LaidOutNode,
   type NodeVisual,
@@ -36,24 +33,6 @@ import {
 
 const DETAIL_DELAY_MS = 160;
 const DETAIL_CLOSE_MS = 320;
-
-type ViewTransform = { x: number; y: number; k: number };
-
-function clientToSvg(
-  svg: SVGSVGElement,
-  clientX: number,
-  clientY: number,
-): { x: number; y: number } {
-  const pt = svg.createSVGPoint();
-  pt.x = clientX;
-  pt.y = clientY;
-  const ctm = svg.getScreenCTM();
-  if (!ctm) {
-    return { x: 0, y: 0 };
-  }
-  const p = pt.matrixTransform(ctm.inverse());
-  return { x: p.x, y: p.y };
-}
 
 /**
  * Core glyph for an agent node — always a disc; fill weight carries the lane
@@ -102,8 +81,7 @@ export type AgentTreeProps = {
 };
 
 /**
- * Live agent ring. Roots sit on a circle; children step outward.
- * Hover opens details. Click opens the agent in the sidebar.
+ * Agents surface: full page is a 3D forest; home preview is a cheap SVG projection.
  */
 export function AgentTree({
   mode,
@@ -111,20 +89,41 @@ export function AgentTree({
   className,
   hideLabels = false,
 }: AgentTreeProps) {
+  if (mode === "full") {
+    return <AgentGraph3D entranceKey={entranceKey} className={className} />;
+  }
+  return (
+    <AgentTreePreview
+      entranceKey={entranceKey}
+      className={className}
+      hideLabels={hideLabels}
+    />
+  );
+}
+
+/**
+ * Non-WebGL home-tile preview of the agent forest (XZ projected to SVG).
+ */
+function AgentTreePreview({
+  entranceKey,
+  className,
+  hideLabels,
+}: {
+  entranceKey: string;
+  className?: string;
+  hideLabels: boolean;
+}) {
   const { state: connection } = useConnection();
   const connected = isMeshOnline(connection);
   const runningMap = useSyncExternalStore(subscribeRunning, getRunning, getRunning);
-  const interactive = mode === "full";
-  const preview = mode === "preview";
 
-  const spacingX = preview ? 72 : 120;
-  const spacingY = preview ? 64 : 96;
-  const viewPad = preview ? 36 : 48;
-  const rIdle = preview ? 3.25 : 4.5;
-  const rDormant = preview ? 2.25 : 3;
-  /** Floor so sparse trees do not balloon to fill the widget. */
-  const minViewW = preview ? 200 : 320;
-  const minViewH = preview ? 150 : 240;
+  const spacingX = 72;
+  const spacingY = 64;
+  const viewPad = 36;
+  const rIdle = 3.25;
+  const rDormant = 2.25;
+  const minViewW = 200;
+  const minViewH = 150;
 
   const agentsQuery = useQuery({
     queryKey: AGENTS_QUERY_KEY,
@@ -170,11 +169,7 @@ export function AgentTree({
     if (forest.length === 0) {
       return null;
     }
-    const ring = Math.max(
-      preview ? 108 : 168,
-      (forest.length * spacingX) / (Math.PI * 2),
-    );
-    const laid = layoutCircle(forest, ring, spacingY * 0.82);
+    const laid = projectForest2d(layoutForest3d(forest, spacingX * 0.55, spacingY * 0.82));
     const nodes = laid.nodes;
     let minX = 0;
     let maxX = 0;
@@ -188,7 +183,7 @@ export function AgentTree({
     }
     const contentW = Math.max(maxX - minX, 0);
     const contentH = Math.max(maxY - minY, 0);
-    const labelPad = hideLabels ? 0 : preview ? 20 : 44;
+    const labelPad = hideLabels ? 0 : 20;
     const w = Math.max(contentW + (viewPad + labelPad) * 2, minViewW);
     const h = Math.max(contentH + (viewPad + labelPad) * 2, minViewH);
     return {
@@ -201,48 +196,12 @@ export function AgentTree({
         h,
       },
     };
-  }, [agents, spacingX, spacingY, viewPad, hideLabels, minViewW, minViewH, preview]);
-
-  const knownIdsRef = useRef<Set<string>>(new Set());
-  const bootstrappedRef = useRef(false);
-
-  useEffect(() => {
-    knownIdsRef.current = new Set();
-    bootstrappedRef.current = false;
-  }, [entranceKey]);
-
-  useEffect(() => {
-    if (!agents) {
-      return;
-    }
-    if (!bootstrappedRef.current) {
-      knownIdsRef.current = new Set(agents.map((a) => a.id));
-      bootstrappedRef.current = true;
-      return;
-    }
-    for (const a of agents) {
-      knownIdsRef.current.add(a.id);
-    }
-  }, [agents]);
-
-  const [view, setView] = useState<ViewTransform>({ x: 0, y: 0, k: 1 });
-  const svgRef = useRef<SVGSVGElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{
-    active: boolean;
-    moved: boolean;
-    lastX: number;
-    lastY: number;
-    pointerId: number | null;
-  }>({ active: false, moved: false, lastX: 0, lastY: 0, pointerId: null });
-  const pinchRef = useRef<{
-    dist: number;
-    midX: number;
-    midY: number;
-  } | null>(null);
+  }, [agents, hideLabels]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const detailTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
 
@@ -273,136 +232,8 @@ export function AgentTree({
   }, []);
 
   useEffect(() => {
-    setView({ x: 0, y: 0, k: 1 });
     hideDetails();
   }, [entranceKey]);
-
-  const resetView = () => setView({ x: 0, y: 0, k: 1 });
-
-  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (!interactive || e.button !== 0) {
-      return;
-    }
-    dragRef.current = {
-      active: true,
-      moved: false,
-      lastX: e.clientX,
-      lastY: e.clientY,
-      pointerId: e.pointerId,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
-    if (!interactive) {
-      return;
-    }
-    const drag = dragRef.current;
-    if (!drag.active) {
-      return;
-    }
-    const dx = e.clientX - drag.lastX;
-    const dy = e.clientY - drag.lastY;
-    if (!drag.moved && Math.hypot(dx, dy) < 3) {
-      return;
-    }
-    drag.moved = true;
-    hideDetails();
-    drag.lastX = e.clientX;
-    drag.lastY = e.clientY;
-    const svg = svgRef.current;
-    const layoutBox = layout?.viewBox;
-    if (!svg || !layoutBox) {
-      return;
-    }
-    const rect = svg.getBoundingClientRect();
-    const scaleX = layoutBox.w / rect.width;
-    const scaleY = layoutBox.h / rect.height;
-    setView((v) => ({
-      ...v,
-      x: v.x + dx * scaleX,
-      y: v.y + dy * scaleY,
-    }));
-  };
-
-  const onPointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
-    const drag = dragRef.current;
-    if (drag.pointerId === e.pointerId) {
-      drag.active = false;
-      drag.pointerId = null;
-    }
-  };
-
-  const onWheel = (e: ReactWheelEvent<SVGSVGElement>) => {
-    if (!interactive) {
-      return;
-    }
-    e.preventDefault();
-    const svg = svgRef.current;
-    if (!svg) {
-      return;
-    }
-    const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
-    const pt = clientToSvg(svg, e.clientX, e.clientY);
-    setView((v) => {
-      const k = Math.min(4, Math.max(0.25, v.k * factor));
-      return {
-        k,
-        x: pt.x - ((pt.x - v.x) / v.k) * k,
-        y: pt.y - ((pt.y - v.y) / v.k) * k,
-      };
-    });
-  };
-
-  const onTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
-    if (!interactive) {
-      return;
-    }
-    if (e.touches.length !== 2) {
-      pinchRef.current = null;
-      return;
-    }
-    const a = e.touches[0];
-    const b = e.touches[1];
-    pinchRef.current = {
-      dist: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY),
-      midX: (a.clientX + b.clientX) / 2,
-      midY: (a.clientY + b.clientY) / 2,
-    };
-  };
-
-  const onTouchMove = (e: React.TouchEvent<SVGSVGElement>) => {
-    if (!interactive || e.touches.length !== 2 || !pinchRef.current || !svgRef.current) {
-      return;
-    }
-    e.preventDefault();
-    const a = e.touches[0];
-    const b = e.touches[1];
-    const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
-    const factor = dist / pinchRef.current.dist;
-    pinchRef.current = {
-      dist,
-      midX: (a.clientX + b.clientX) / 2,
-      midY: (a.clientY + b.clientY) / 2,
-    };
-    const pt = clientToSvg(
-      svgRef.current,
-      pinchRef.current.midX,
-      pinchRef.current.midY,
-    );
-    setView((v) => {
-      const k = Math.min(4, Math.max(0.25, v.k * factor));
-      return {
-        k,
-        x: pt.x - ((pt.x - v.x) / v.k) * k,
-        y: pt.y - ((pt.y - v.y) / v.k) * k,
-      };
-    });
-  };
-
-  const onTouchEnd = () => {
-    pinchRef.current = null;
-  };
 
   const nodeScreenAnchor = (node: LaidOutNode) => {
     const svg = svgRef.current;
@@ -411,8 +242,8 @@ export function AgentTree({
       return null;
     }
     const pt = svg.createSVGPoint();
-    pt.x = node.x * view.k + view.x;
-    pt.y = node.y * view.k + view.y;
+    pt.x = node.x;
+    pt.y = node.y;
     const ctm = svg.getScreenCTM();
     if (!ctm) {
       return null;
@@ -422,20 +253,13 @@ export function AgentTree({
     return { x: screen.x - rect.left, y: screen.y - rect.top };
   };
 
-  /** After a short delay, open the detail panel for this node. */
   const scheduleDetails = (node: LaidOutNode) => {
-    if (dragRef.current.active) {
-      return;
-    }
     clearCloseTimer();
     if (selectedId === node.data.id) {
       return;
     }
     clearDetailTimer();
     detailTimerRef.current = window.setTimeout(() => {
-      if (dragRef.current.active) {
-        return;
-      }
       setSelectedId(node.data.id);
       setAnchor(nodeScreenAnchor(node));
     }, DETAIL_DELAY_MS);
@@ -511,26 +335,17 @@ export function AgentTree({
       <svg
         key={entranceKey}
         ref={svgRef}
-        className={`h-full w-full ${interactive ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
+        className="h-full w-full"
         viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
         preserveAspectRatio="xMidYMid meet"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onWheel={interactive ? onWheel : undefined}
-        onDoubleClick={interactive ? resetView : undefined}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
       >
-        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+        <g>
           {layout.links.map((link, i) => (
             <motion.path
               key={`${link.source.data.id}-${link.target.data.id}`}
               className="agent-tree__link"
               d={linkPath(link)}
-              strokeWidth={preview ? 0.9 : 1.05}
+              strokeWidth={0.9}
               initial={{ opacity: 0 }}
               animate={{ opacity: 0.55 }}
               transition={{
@@ -544,7 +359,7 @@ export function AgentTree({
           {layout.nodes.map((node) => {
             const agent = agentsById.get(node.data.id);
             if (!agent) {
-              return null;
+              throw new Error(`layout node missing agent record: ${node.data.id}`);
             }
             const visual = visualState(agent, runningMap[agent.id]);
             const selected = selectedId === agent.id;
@@ -565,9 +380,6 @@ export function AgentTree({
                 key={agent.id}
                 className="agent-node"
                 transform={`translate(${node.x},${node.y})`}
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                }}
                 onPointerEnter={() => {
                   scheduleDetails(node);
                 }}
@@ -576,9 +388,6 @@ export function AgentTree({
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (interactive && dragRef.current.moved) {
-                    return;
-                  }
                   hideDetails();
                   openAgent(agent.id);
                 }}
@@ -611,8 +420,8 @@ export function AgentTree({
                     ]
                       .filter(Boolean)
                       .join(" ")}
-                    {...labelPlacement(node, layout.links, preview ? 14 : 20)}
-                    fontSize={preview ? 7 : 9.5}
+                    {...labelPlacement(node, layout.links, 14)}
+                    fontSize={7}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{
