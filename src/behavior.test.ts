@@ -29,6 +29,7 @@ import {
   upsertConversation,
 } from "./store/chat";
 import type { ChatMessage } from "./store/chat";
+import { monogram } from "./chrome/chatSidebar/thread/ThreadEmpty";
 import type { DurableMessage, LogRecord } from "./shared/api/types";
 import {
   buildTree,
@@ -325,6 +326,52 @@ describe("user-thread history", () => {
     ]);
     expect(snap.threads.planner?.every((m) => m.historical === true)).toBe(true);
     resetChatStore();
+  });
+
+  it("refresh keeps on-screen row keys and animates only missed rows", () => {
+    resetChatStore();
+    ingestLiveMessage("planner", {
+      seq: 3,
+      from_user: false,
+      content: "on it",
+      at: "2026-03-10T11:00:03Z",
+    });
+    const liveKey = messageKey(getChatState().threads.planner![0]!);
+    hydrateThreadMessages(
+      "planner",
+      [
+        durableMessage({ from: "planner", to: null, content: "on it", seq: 3, at: "2026-03-10T11:00:03Z" }),
+        durableMessage({ from: "planner", to: null, content: "done", seq: 4, at: "2026-03-10T11:00:04Z" }),
+      ],
+      { live: true },
+    );
+    const thread = getChatState().threads.planner!;
+    expect(thread.map((m) => m.content)).toEqual(["on it", "done"]);
+    expect(messageKey(thread[0]!)).toBe(liveKey);
+    expect(thread[1]!.historical).toBeUndefined();
+    resetChatStore();
+  });
+
+  it("refresh adopts an in-flight send instead of duplicating it", () => {
+    resetChatStore();
+    addOptimistic("planner", "ship it");
+    const pendingKey = messageKey(getChatState().threads.planner![0]!);
+    hydrateThreadMessages(
+      "planner",
+      [durableMessage({ from: null, to: "planner", content: "ship it", seq: 7, at: "2026-03-10T11:00:07Z" })],
+      { live: true },
+    );
+    const thread = getChatState().threads.planner!;
+    expect(thread).toHaveLength(1);
+    expect(thread[0]!.seq).toBe(7);
+    expect(messageKey(thread[0]!)).toBe(pendingKey);
+    resetChatStore();
+  });
+
+  it("monogram takes up to two initials", () => {
+    expect(monogram("research-bot")).toBe("RB");
+    expect(monogram("Planner")).toBe("P");
+    expect(monogram("  ")).toBe("·");
   });
 
   it("clearLiveChat drops optimistic rows but keeps durable history", () => {

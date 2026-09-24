@@ -41,7 +41,7 @@ export function BrowserFrame({ browserId, className, variant }: BrowserFrameProp
       ? "h-[96px] w-[170px]"
       : variant === "detail"
         ? "h-[228px] w-full"
-        : "h-[148px] w-full";
+        : "aspect-[16/10] w-full";
   const chrome =
     variant === "peek"
       ? "rounded-[var(--radius)] border border-dashed border-sage-line bg-bone/80"

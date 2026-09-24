@@ -38,6 +38,7 @@ import {
   subscribeChat,
   type MessageAttachment,
 } from "../../store/chat";
+import { DADI_DRAFT_KEY, loadDraft, saveDraft } from "../../store/drafts";
 import {
   getRunning,
   isDadiBusy,
@@ -61,14 +62,16 @@ import {
   COMPOSER_PAD,
   COMPOSER_PAD_WITH_ATTACH,
   HISTORY_LOG_LIMIT,
-  HOST_PIN_PAD,
+  HOST_PIN_GAP,
   NEAR_BOTTOM_PX,
   TEXTAREA_MAX_PX,
+  THREAD_REFRESH_MS,
 } from "./constants";
-import { DadiHome } from "./DadiHome";
+import { DadiHome, type DadiRouting } from "./DadiHome";
 import { partitionByQueued } from "./lanes";
 import { ConversationList } from "./list";
 import { ThreadView } from "./thread";
+import { ThreadEmpty } from "./thread/ThreadEmpty";
 import { laneChipLabel } from "./toolStatus";
 
 export interface ChatSidebarProps {
@@ -111,7 +114,6 @@ export function ChatSidebar({
     getRunning,
   );
 
-  const [draft, setDraft] = useState("");
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>(
     [],
   );
@@ -121,6 +123,14 @@ export function ChatSidebar({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const stickToBottomRef = useRef(true);
   const [keyboardInset, setKeyboardInset] = useState(0);
+  /** Talk to Dadi send in flight: the text being routed, until a thread opens. */
+  const [routing, setRouting] = useState<DadiRouting | null>(null);
+  const [routeFailed, setRouteFailed] = useState(false);
+  /** Agent whose history fetch has settled, so the empty state never flashes. */
+  const [loadedAgentId, setLoadedAgentId] = useState<string | null>(null);
+  /** Measured floating browser pin height (0 when none). */
+  const [hostPinHeight, setHostPinHeight] = useState(0);
+  const refreshThreadRef = useRef<(() => void) | null>(null);
 
   const dadiBusy = isDadiBusy();
 
@@ -166,6 +176,29 @@ export function ChatSidebar({
   const threadMessages = openAgentId
     ? (chat.threads[openAgentId] ?? [])
     : [];
+
+  // One on-device draft per agent; every non-thread composer talks to Dadi.
+  const draftKey = openAgentId ?? DADI_DRAFT_KEY;
+  const draftKeyRef = useRef(draftKey);
+  const [draft, setDraftText] = useState(() => loadDraft(draftKey));
+  const setDraft = (text: string) => {
+    setDraftText(text);
+    saveDraft(draftKeyRef.current, text);
+    if (routeFailed) {
+      setRouteFailed(false);
+    }
+  };
+  useLayoutEffect(() => {
+    if (draftKeyRef.current === draftKey) {
+      return;
+    }
+    draftKeyRef.current = draftKey;
+    setDraftText(loadDraft(draftKey));
+    setDraftAttachments((prev) => {
+      revokeDraftPreviews(prev);
+      return [];
+    });
+  }, [draftKey]);
 
   const conversationBusy =
     viewingThread && openAgentId
@@ -235,29 +268,63 @@ export function ChatSidebar({
     };
   }, []);
 
+  /**
+   * Load the open thread, then keep it fresh. SSE has no replay, so a dropped
+   * stream or tunnel flap would otherwise hide replies until the thread is
+   * reopened. Refreshes run on an interval, when the agent's conversation lane
+   * goes idle, and when the window regains focus.
+   */
   useEffect(() => {
     if (!connected || !openAgentId) {
       return;
     }
     let cancelled = false;
-    void dimaag
-      .listMessages(openAgentId, { limit: HISTORY_LOG_LIMIT })
-      .then(({ messages }) => {
-        if (cancelled) {
-          return;
-        }
-        hydrateThreadMessages(openAgentId, messages);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) {
-          return;
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        logLine("error", message, "thread_history_failed");
-        setHistoryState("error", message);
-      });
+    let inFlight = false;
+    let first = true;
+    const load = () => {
+      if (inFlight || cancelled) {
+        return;
+      }
+      inFlight = true;
+      const live = !first;
+      void dimaag
+        .listMessages(openAgentId, { limit: HISTORY_LOG_LIMIT })
+        .then(({ messages }) => {
+          if (cancelled) {
+            return;
+          }
+          first = false;
+          hydrateThreadMessages(openAgentId, messages, { live });
+          setLoadedAgentId(openAgentId);
+        })
+        .catch((err: unknown) => {
+          if (cancelled || live) {
+            return;
+          }
+          const message = err instanceof Error ? err.message : String(err);
+          logLine("error", message, "thread_history_failed");
+          setHistoryState("error", message);
+          setLoadedAgentId(openAgentId);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    load();
+    refreshThreadRef.current = load;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        load();
+      }
+    }, THREAD_REFRESH_MS);
+    window.addEventListener("focus", load);
     return () => {
       cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", load);
+      if (refreshThreadRef.current === load) {
+        refreshThreadRef.current = null;
+      }
     };
   }, [connected, openAgentId, chat.historyStatus]);
 
@@ -368,6 +435,7 @@ export function ChatSidebar({
       return;
     }
     wasBusyRef.current = false;
+    refreshThreadRef.current?.();
     void flushQueues();
   }, [conversationBusy]);
 
@@ -428,6 +496,8 @@ export function ChatSidebar({
     const savedDraft = draft;
     const savedAttachments = draftAttachments;
     setDraft("");
+    setRouteFailed(false);
+    setRouting({ text: trimmed, attachments: attachments?.length ?? 0 });
     setDadiBusy(true);
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
@@ -460,14 +530,19 @@ export function ChatSidebar({
       const _exhaustive: never = res;
       void _exhaustive;
     } catch (err: unknown) {
-      setDraft(savedDraft);
-      setDraftAttachments(savedAttachments);
+      saveDraft(DADI_DRAFT_KEY, savedDraft);
+      if (draftKeyRef.current === DADI_DRAFT_KEY) {
+        setDraftText(savedDraft);
+        setDraftAttachments(savedAttachments);
+        setRouteFailed(true);
+      }
       logLine(
         "error",
         err instanceof Error ? err.message : String(err),
         "dadi_send_failed",
       );
     } finally {
+      setRouting(null);
       setDadiBusy(false);
     }
   };
@@ -496,13 +571,13 @@ export function ChatSidebar({
 
   const backToList = () => {
     openList();
-    setDraft("");
     clearDraftAttachments();
+    setRouteFailed(false);
   };
 
   const startNewChat = () => {
-    setDraft("");
     clearDraftAttachments();
+    setRouteFailed(false);
     openDadi();
     onDrawerClose?.();
   };
@@ -651,7 +726,11 @@ export function ChatSidebar({
                   </div>
                 ) : null}
                 <div className="relative min-h-0 flex-1">
-                  <DadiHome composerPad={composerPad} />
+                  <DadiHome
+                    composerPad={composerPad}
+                    routing={routing}
+                    failed={routeFailed}
+                  />
                 </div>
               </>
             ) : null}
@@ -702,7 +781,11 @@ export function ChatSidebar({
                       onScroll={onScroll}
                       onDismissKeyboard={dismissKeyboard}
                       composerPad={composerPad}
-                      hostPad={liveBrowserId !== null ? HOST_PIN_PAD : 0}
+                      hostPad={
+                        liveBrowserId !== null && hostPinHeight > 0
+                          ? hostPinHeight + HOST_PIN_GAP
+                          : 0
+                      }
                       settledMessages={settledMessages}
                       queuedMessages={queuedMessages}
                       agentId={openAgentId}
@@ -721,7 +804,20 @@ export function ChatSidebar({
                           scrollToBottom("auto");
                         }
                       }}
-                      emptyHint="Message agent"
+                      empty={
+                        loadedAgentId === openAgentId || !connected ? (
+                          <ThreadEmpty
+                            name={headerTitle}
+                            agent={openAgentRecord}
+                            onSuggest={(text) => {
+                              setDraft(text);
+                              requestAnimationFrame(() => {
+                                textareaRef.current?.focus();
+                              });
+                            }}
+                          />
+                        ) : null
+                      }
                     />
                     ) : null}
                     {liveBrowserId !== null ? (
@@ -729,6 +825,7 @@ export function ChatSidebar({
                         browserId={liveBrowserId}
                         terminal={liveTerminal}
                         floating
+                        onHeight={setHostPinHeight}
                       />
                     ) : null}
                   </div>
@@ -736,7 +833,15 @@ export function ChatSidebar({
               </>
             ) : null}
 
-            {paneKey === "mobile-empty" ? (
+            {paneKey === "mobile-empty" && (routing || routeFailed) ? (
+              <DadiHome
+                composerPad={composerPad}
+                routing={routing}
+                failed={routeFailed}
+              />
+            ) : null}
+
+            {paneKey === "mobile-empty" && !routing && !routeFailed ? (
               <div
                 className="absolute inset-0 flex flex-col items-center justify-center px-8"
                 style={{ paddingBottom: composerPad }}

@@ -7,6 +7,7 @@ import { subscribeConnection } from "../store/connection";
 import {
   ingestLiveMessage,
   isUserThreadMessage,
+  openAgent,
   seedConversations,
   setHistoryState,
   upsertConversation,
@@ -119,6 +120,10 @@ export function useEvents(): void {
           last_at: data.at,
           from_user: data.from_agent_id === null,
         });
+        // An agent reaching out opens its thread; drafts are kept per agent.
+        if (data.from_agent_id !== null) {
+          openAgent(data.agent_id);
+        }
         return;
       }
 

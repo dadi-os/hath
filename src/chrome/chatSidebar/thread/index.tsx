@@ -1,4 +1,10 @@
-import { useEffect, useRef, type RefObject, type UIEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  type ReactNode,
+  type RefObject,
+  type UIEvent,
+} from "react";
 import { AnimatePresence } from "motion/react";
 import type { ChatMessage } from "../../../store/chat";
 import { messageKey, trackIncoming } from "../lanes";
@@ -22,8 +28,8 @@ export interface ThreadViewProps {
   onCancel: (seq: number) => void;
   /** Keep the thread pinned while agent typewriter content grows. */
   onRevealTick?: () => void;
-  /** Copy when the thread has no messages yet. */
-  emptyHint?: string;
+  /** Centered placeholder when the thread has no messages (null while loading). */
+  empty?: ReactNode;
 }
 
 /** Open thread scroll pane: settled messages, queued sends, tool preview. */
@@ -40,7 +46,7 @@ export function ThreadView({
   onRetry,
   onCancel,
   onRevealTick,
-  emptyHint = "Send a message",
+  empty = null,
 }: ThreadViewProps) {
   const knownRef = useRef<Set<string>>(new Set());
   const liveRef = useRef<Set<string>>(new Set());
@@ -61,8 +67,19 @@ export function ThreadView({
     el.scrollTop = el.scrollHeight;
   }, [scrollRef]);
 
+  const isEmpty =
+    settledMessages.length === 0 && queuedMessages.length === 0 && !laneBusy;
+
   return (
     <div className="absolute inset-0">
+      {isEmpty && empty ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center px-8 [&>*]:pointer-events-auto"
+          style={{ paddingBottom: composerPad, paddingTop: hostPad }}
+        >
+          {empty}
+        </div>
+      ) : null}
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -74,15 +91,6 @@ export function ThreadView({
         }}
       >
         <div className="flex flex-col gap-4">
-          {settledMessages.length === 0 &&
-          queuedMessages.length === 0 &&
-          !laneBusy ? (
-            <div className="flex min-h-[36vh] items-center justify-center">
-              <p className="text-center text-[13px] text-ink-ghost">
-                {emptyHint}
-              </p>
-            </div>
-          ) : null}
           <AnimatePresence initial={false}>
             {settledMessages.map((msg) => (
               <MessageBubble

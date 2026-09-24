@@ -405,33 +405,70 @@ export function threadAgentId(
 /**
  * Merge durable GET /agents/:id/messages into a thread.
  * Preserves in-flight optimistic rows; confirmed seqs are replaced by durable rows.
+ *
+ * Rows already on screen keep their row key so a refresh never remounts them.
+ * With `live`, rows we had not seen yet (missed SSE) enter like live messages;
+ * otherwise they are historical and render static.
  */
 export function hydrateThreadMessages(
   agentId: string,
   messages: DurableMessage[],
+  opts?: { live?: boolean },
 ): void {
   const current = threadOf(agentId);
-  const pending = current.filter(
+  let pending = current.filter(
     (m) => m.seq < 0 || m.pending || m.queued || m.failed,
   );
+  const confirmed = new Map<number, ChatMessage>();
+  for (const m of current) {
+    if (m.seq >= 0 && !m.pending && !m.queued && !m.failed) {
+      confirmed.set(m.seq, m);
+    }
+  }
+  let changed = !state.threads[agentId];
   const bySeq = new Map<number, ChatMessage>();
   for (const row of messages) {
+    const seen = confirmed.get(row.seq);
+    if (seen && seen.content === row.content) {
+      bySeq.set(row.seq, seen);
+      continue;
+    }
+    changed = true;
+    // A refresh can land before POST resolves: adopt the in-flight bubble.
+    const inFlight =
+      !seen && row.from_agent_id === null
+        ? pending.find(
+            (m) =>
+              m.pending && m.from_user && !m.queued && m.content === row.content,
+          )
+        : undefined;
+    if (inFlight) {
+      pending = pending.filter((m) => m !== inFlight);
+    }
     bySeq.set(row.seq, {
-      id: row.id,
+      id: inFlight ? stableRowId(inFlight) : seen ? stableRowId(seen) : row.id,
       seq: row.seq,
       from_user: row.from_agent_id === null,
       content: row.content,
       at: row.created_at,
-      historical: true,
+      historical: seen ? seen.historical : opts?.live ? undefined : true,
     });
   }
-  for (const m of current) {
-    if (m.seq >= 0 && !m.pending && !m.queued && !m.failed && !bySeq.has(m.seq)) {
-      bySeq.set(m.seq, m);
+  for (const [seq, m] of confirmed) {
+    if (!bySeq.has(seq)) {
+      bySeq.set(seq, m);
     }
+  }
+  if (!changed) {
+    return;
   }
   setThread(agentId, sortMessages([...bySeq.values(), ...pending]));
   emit();
+}
+
+/** Mirrors `messageKey` in the sidebar so a hydrated row keeps its React key. */
+function stableRowId(m: ChatMessage): string {
+  return m.id ?? `${m.historical ? "h" : "l"}-${m.seq}-${m.at}`;
 }
 
 /**

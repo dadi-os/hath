@@ -6,5 +6,7 @@ export const TEXTAREA_MAX_PX = 160;
 export const HISTORY_LOG_LIMIT = 200;
 export const COMPOSER_PAD = 152;
 export const COMPOSER_PAD_WITH_ATTACH = 212;
-/** Clears the floating rail browser so the first line starts under the glass. */
-export const HOST_PIN_PAD = 196;
+/** Breathing room between the floating browser pin and the first message. */
+export const HOST_PIN_GAP = 14;
+/** Fallback refresh for the open thread when SSE misses a message. */
+export const THREAD_REFRESH_MS = 3_000;
