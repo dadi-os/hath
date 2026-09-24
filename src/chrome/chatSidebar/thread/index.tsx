@@ -1,15 +1,11 @@
-import {
-  useEffect,
-  useRef,
-  type ReactNode,
-  type RefObject,
-  type UIEvent,
-} from "react";
+import { useEffect, useRef, type RefObject, type UIEvent } from "react";
 import { AnimatePresence } from "motion/react";
-import type { ChatMessage } from "../../../store/chat";
-import { messageKey, trackIncoming } from "../lanes";
+import type { AgentRecord } from "../../../shared/api/types";
+import { messageKey, type ChatMessage } from "../../../store/chat";
+import { trackIncoming } from "../lanes";
 import { MessageBubble } from "../message";
 import { ToolPreview } from "../ToolPreview";
+import { ThreadEmpty } from "./ThreadEmpty";
 
 export interface ThreadViewProps {
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -28,8 +24,17 @@ export interface ThreadViewProps {
   onCancel: (seq: number) => void;
   /** Keep the thread pinned while agent typewriter content grows. */
   onRevealTick?: () => void;
-  /** Centered placeholder when the thread has no messages (null while loading). */
-  empty?: ReactNode;
+  /** Display name of the open agent, for the empty state. */
+  agentName: string;
+  /** Open agent's record once loaded; adds spawn time to the empty state. */
+  agent?: AgentRecord;
+  /**
+   * History fetch outcome for this thread: null while loading, then either
+   * settled (`error` null) or failed with the server message.
+   */
+  load: { error: string | null } | null;
+  /** Fill the composer with an empty-state starter prompt. */
+  onSuggest: (text: string) => void;
 }
 
 /** Open thread scroll pane: settled messages, queued sends, tool preview. */
@@ -46,7 +51,10 @@ export function ThreadView({
   onRetry,
   onCancel,
   onRevealTick,
-  empty = null,
+  agentName,
+  agent,
+  load,
+  onSuggest,
 }: ThreadViewProps) {
   const knownRef = useRef<Set<string>>(new Set());
   const liveRef = useRef<Set<string>>(new Set());
@@ -72,12 +80,18 @@ export function ThreadView({
 
   return (
     <div className="absolute inset-0">
-      {isEmpty && empty ? (
+      {isEmpty && load ? (
         <div
           className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center px-8 [&>*]:pointer-events-auto"
           style={{ paddingBottom: composerPad, paddingTop: hostPad }}
         >
-          {empty}
+          {load.error ? (
+            <p role="alert" className="max-w-[16rem] text-center text-[13px] leading-relaxed text-error">
+              Couldn't load messages. {load.error}
+            </p>
+          ) : (
+            <ThreadEmpty name={agentName} agent={agent} onSuggest={onSuggest} />
+          )}
         </div>
       ) : null}
       <div

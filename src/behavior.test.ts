@@ -6,7 +6,6 @@ import {
   truncateOneLine,
 } from "./chrome/chatSidebar/format";
 import {
-  messageKey,
   partitionByQueued,
   trackIncoming,
 } from "./chrome/chatSidebar/lanes";
@@ -23,13 +22,13 @@ import {
   hydrateThreadMessages,
   ingestLiveMessage,
   isUserThreadMessage,
+  messageKey,
   resetChatStore,
   seedConversations,
   threadAgentId,
   upsertConversation,
 } from "./store/chat";
 import type { ChatMessage } from "./store/chat";
-import { monogram } from "./chrome/chatSidebar/thread/ThreadEmpty";
 import type { DurableMessage, LogRecord } from "./shared/api/types";
 import {
   buildTree,
@@ -366,12 +365,6 @@ describe("user-thread history", () => {
     expect(thread[0]!.seq).toBe(7);
     expect(messageKey(thread[0]!)).toBe(pendingKey);
     resetChatStore();
-  });
-
-  it("monogram takes up to two initials", () => {
-    expect(monogram("research-bot")).toBe("RB");
-    expect(monogram("Planner")).toBe("P");
-    expect(monogram("  ")).toBe("·");
   });
 
   it("clearLiveChat drops optimistic rows but keeps durable history", () => {

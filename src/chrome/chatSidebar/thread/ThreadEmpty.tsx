@@ -74,7 +74,7 @@ export function ThreadEmpty({ name, agent, onSuggest }: ThreadEmptyProps) {
 }
 
 /** Up to two initials from the agent name ("research-bot" → "RB"). */
-export function monogram(name: string): string {
+function monogram(name: string): string {
   const words = name
     .split(/[\s_\-.]+/)
     .map((w) => w.trim())

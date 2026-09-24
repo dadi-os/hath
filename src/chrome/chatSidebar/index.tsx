@@ -71,7 +71,6 @@ import { DadiHome, type DadiRouting } from "./DadiHome";
 import { partitionByQueued } from "./lanes";
 import { ConversationList } from "./list";
 import { ThreadView } from "./thread";
-import { ThreadEmpty } from "./thread/ThreadEmpty";
 import { laneChipLabel } from "./toolStatus";
 
 export interface ChatSidebarProps {
@@ -125,9 +124,13 @@ export function ChatSidebar({
   const [keyboardInset, setKeyboardInset] = useState(0);
   /** Talk to Dadi send in flight: the text being routed, until a thread opens. */
   const [routing, setRouting] = useState<DadiRouting | null>(null);
-  const [routeFailed, setRouteFailed] = useState(false);
-  /** Agent whose history fetch has settled, so the empty state never flashes. */
-  const [loadedAgentId, setLoadedAgentId] = useState<string | null>(null);
+  /** Server message from the last failed Talk to Dadi send. */
+  const [routeError, setRouteError] = useState<string | null>(null);
+  /** First history fetch outcome per open thread; the empty state waits on it. */
+  const [threadLoad, setThreadLoad] = useState<{
+    agentId: string;
+    error: string | null;
+  } | null>(null);
   /** Measured floating browser pin height (0 when none). */
   const [hostPinHeight, setHostPinHeight] = useState(0);
   const refreshThreadRef = useRef<(() => void) | null>(null);
@@ -177,15 +180,14 @@ export function ChatSidebar({
     ? (chat.threads[openAgentId] ?? [])
     : [];
 
-  // One on-device draft per agent; every non-thread composer talks to Dadi.
   const draftKey = openAgentId ?? DADI_DRAFT_KEY;
   const draftKeyRef = useRef(draftKey);
   const [draft, setDraftText] = useState(() => loadDraft(draftKey));
   const setDraft = (text: string) => {
     setDraftText(text);
     saveDraft(draftKeyRef.current, text);
-    if (routeFailed) {
-      setRouteFailed(false);
+    if (routeError) {
+      setRouteError(null);
     }
   };
   useLayoutEffect(() => {
@@ -295,16 +297,20 @@ export function ChatSidebar({
           }
           first = false;
           hydrateThreadMessages(openAgentId, messages, { live });
-          setLoadedAgentId(openAgentId);
+          setThreadLoad({ agentId: openAgentId, error: null });
         })
         .catch((err: unknown) => {
-          if (cancelled || live) {
+          if (cancelled) {
             return;
           }
           const message = err instanceof Error ? err.message : String(err);
+          if (live) {
+            logLine("warn", message, "thread_refresh_failed");
+            return;
+          }
           logLine("error", message, "thread_history_failed");
           setHistoryState("error", message);
-          setLoadedAgentId(openAgentId);
+          setThreadLoad({ agentId: openAgentId, error: message });
         })
         .finally(() => {
           inFlight = false;
@@ -496,7 +502,7 @@ export function ChatSidebar({
     const savedDraft = draft;
     const savedAttachments = draftAttachments;
     setDraft("");
-    setRouteFailed(false);
+    setRouteError(null);
     setRouting({ text: trimmed, attachments: attachments?.length ?? 0 });
     setDadiBusy(true);
     requestAnimationFrame(() => {
@@ -530,17 +536,14 @@ export function ChatSidebar({
       const _exhaustive: never = res;
       void _exhaustive;
     } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
       saveDraft(DADI_DRAFT_KEY, savedDraft);
       if (draftKeyRef.current === DADI_DRAFT_KEY) {
         setDraftText(savedDraft);
         setDraftAttachments(savedAttachments);
-        setRouteFailed(true);
+        setRouteError(message);
       }
-      logLine(
-        "error",
-        err instanceof Error ? err.message : String(err),
-        "dadi_send_failed",
-      );
+      logLine("error", message, "dadi_send_failed");
     } finally {
       setRouting(null);
       setDadiBusy(false);
@@ -572,12 +575,12 @@ export function ChatSidebar({
   const backToList = () => {
     openList();
     clearDraftAttachments();
-    setRouteFailed(false);
+    setRouteError(null);
   };
 
   const startNewChat = () => {
     clearDraftAttachments();
-    setRouteFailed(false);
+    setRouteError(null);
     openDadi();
     onDrawerClose?.();
   };
@@ -729,7 +732,7 @@ export function ChatSidebar({
                   <DadiHome
                     composerPad={composerPad}
                     routing={routing}
-                    failed={routeFailed}
+                    error={routeError}
                   />
                 </div>
               </>
@@ -804,20 +807,17 @@ export function ChatSidebar({
                           scrollToBottom("auto");
                         }
                       }}
-                      empty={
-                        loadedAgentId === openAgentId || !connected ? (
-                          <ThreadEmpty
-                            name={headerTitle}
-                            agent={openAgentRecord}
-                            onSuggest={(text) => {
-                              setDraft(text);
-                              requestAnimationFrame(() => {
-                                textareaRef.current?.focus();
-                              });
-                            }}
-                          />
-                        ) : null
+                      agentName={headerTitle}
+                      agent={openAgentRecord}
+                      load={
+                        threadLoad?.agentId === openAgentId ? threadLoad : null
                       }
+                      onSuggest={(text) => {
+                        setDraft(text);
+                        requestAnimationFrame(() => {
+                          textareaRef.current?.focus();
+                        });
+                      }}
                     />
                     ) : null}
                     {liveBrowserId !== null ? (
@@ -833,15 +833,15 @@ export function ChatSidebar({
               </>
             ) : null}
 
-            {paneKey === "mobile-empty" && (routing || routeFailed) ? (
+            {paneKey === "mobile-empty" && (routing || routeError) ? (
               <DadiHome
                 composerPad={composerPad}
                 routing={routing}
-                failed={routeFailed}
+                error={routeError}
               />
             ) : null}
 
-            {paneKey === "mobile-empty" && !routing && !routeFailed ? (
+            {paneKey === "mobile-empty" && !routing && !routeError ? (
               <div
                 className="absolute inset-0 flex flex-col items-center justify-center px-8"
                 style={{ paddingBottom: composerPad }}

@@ -124,6 +124,18 @@ function hasConfirmedSeq(list: ChatMessage[], seq: number): boolean {
   return list.some((m) => m.seq === seq && m.seq >= 0 && !m.pending);
 }
 
+/**
+ * Stable row id for a thread message.
+ * Optimistic sends keep `id` across seq promotion so the row does not remount.
+ * Historical and live seqs can still collide, so those fall back to seq plus time.
+ */
+export function messageKey(msg: ChatMessage): string {
+  if (msg.id) {
+    return msg.id;
+  }
+  return `${msg.historical ? "h" : "l"}-${msg.seq}-${msg.at}`;
+}
+
 /** Snapshot of chat store state (threads, list, open view, history). */
 export function getChatState(): ChatState {
   return state;
@@ -406,9 +418,10 @@ export function threadAgentId(
  * Merge durable GET /agents/:id/messages into a thread.
  * Preserves in-flight optimistic rows; confirmed seqs are replaced by durable rows.
  *
- * Rows already on screen keep their row key so a refresh never remounts them.
- * With `live`, rows we had not seen yet (missed SSE) enter like live messages;
- * otherwise they are historical and render static.
+ * Rows already on screen keep their row key so a refresh never remounts them,
+ * and a durable user row that lands before its POST resolves adopts the
+ * in-flight bubble. With `live`, rows we had not seen yet (missed SSE) enter
+ * like live messages; otherwise they are historical and render static.
  */
 export function hydrateThreadMessages(
   agentId: string,
@@ -434,7 +447,6 @@ export function hydrateThreadMessages(
       continue;
     }
     changed = true;
-    // A refresh can land before POST resolves: adopt the in-flight bubble.
     const inFlight =
       !seen && row.from_agent_id === null
         ? pending.find(
@@ -446,7 +458,7 @@ export function hydrateThreadMessages(
       pending = pending.filter((m) => m !== inFlight);
     }
     bySeq.set(row.seq, {
-      id: inFlight ? stableRowId(inFlight) : seen ? stableRowId(seen) : row.id,
+      id: inFlight ? messageKey(inFlight) : seen ? messageKey(seen) : row.id,
       seq: row.seq,
       from_user: row.from_agent_id === null,
       content: row.content,
@@ -466,10 +478,6 @@ export function hydrateThreadMessages(
   emit();
 }
 
-/** Mirrors `messageKey` in the sidebar so a hydrated row keeps its React key. */
-function stableRowId(m: ChatMessage): string {
-  return m.id ?? `${m.historical ? "h" : "l"}-${m.seq}-${m.at}`;
-}
 
 /**
  * If a pending optimistic row has the same content, resolve it to realSeq.

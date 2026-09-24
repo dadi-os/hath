@@ -70,6 +70,7 @@ async function hydrateHistory(): Promise<void> {
 /**
  * Subscribe to Dimaag SSE. Reconnects with backoff on drop and refetches
  * GET /agents plus GET /threads on reconnect (the stream has no replay).
+ * An agent → user message opens that agent's thread.
  */
 export function useEvents(): void {
   const queryClient = useQueryClient();
@@ -120,7 +121,6 @@ export function useEvents(): void {
           last_at: data.at,
           from_user: data.from_agent_id === null,
         });
-        // An agent reaching out opens its thread; drafts are kept per agent.
         if (data.from_agent_id !== null) {
           openAgent(data.agent_id);
         }

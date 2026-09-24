@@ -15,8 +15,8 @@ export type DadiHomeProps = {
   composerPad: number;
   /** Set while Dadi decides where the message goes. */
   routing?: DadiRouting | null;
-  /** Last send failed; the draft is back in the composer. */
-  failed?: boolean;
+  /** Server message from the last failed send; the draft is back in the composer. */
+  error?: string | null;
 };
 
 /** Status copy while routing, with when each line takes over (ms). */
@@ -36,7 +36,7 @@ const ROUTING_PHASES: Array<{ at: number; label: string }> = [
 export function DadiHome({
   composerPad,
   routing = null,
-  failed = false,
+  error = null,
 }: DadiHomeProps) {
   const reduced = useReducedMotion() ?? false;
   const busy = routing !== null;
@@ -69,18 +69,18 @@ export function DadiHome({
           <RoutingTrail key="routing" routing={routing} reduced={reduced} />
         ) : (
           <motion.p
-            key={failed ? "failed" : "idle"}
-            role={failed ? "alert" : undefined}
+            key={error ? "error" : "idle"}
+            role={error ? "alert" : undefined}
             className={`mt-5 max-w-[15rem] text-center text-[13px] leading-relaxed tracking-[0.04em] ${
-              failed ? "text-error" : "text-ink-muted"
+              error ? "text-error" : "text-ink-muted"
             }`}
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: SLOW_S, ease: EASE }}
           >
-            {failed
-              ? "Dadi couldn't place that message. It's back in the composer."
+            {error
+              ? `Dadi couldn't route that. ${error}`
               : "Talk to Dadi about anything"}
           </motion.p>
         )}
@@ -89,7 +89,7 @@ export function DadiHome({
   );
 }
 
-/** Sent message → drawing thread → routing status. */
+/** Sent message → drawing thread → pulsing beads and routing status. */
 function RoutingTrail({
   routing,
   reduced,
@@ -134,7 +134,20 @@ function RoutingTrail({
         aria-live="polite"
         className="mt-3 flex h-4 items-center gap-2 text-[12px] tracking-[0.04em] text-sage-text"
       >
-        <RoutingDots reduced={reduced} />
+        <span className="inline-flex items-center gap-[3px]" aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <motion.span
+              key={i}
+              className="block size-[4px] rounded-full bg-sage"
+              animate={reduced ? { opacity: 0.8 } : { opacity: [0.25, 1, 0.25] }}
+              transition={
+                reduced
+                  ? undefined
+                  : { duration: 1.1, repeat: Infinity, ease: EASE, delay: i * 0.16 }
+              }
+            />
+          ))}
+        </span>
         <AnimatePresence mode="wait" initial={false}>
           <motion.span
             key={label}
@@ -148,26 +161,6 @@ function RoutingTrail({
         </AnimatePresence>
       </div>
     </motion.div>
-  );
-}
-
-/** Three sage beads pulsing in turn. */
-function RoutingDots({ reduced }: { reduced: boolean }) {
-  return (
-    <span className="inline-flex items-center gap-[3px]" aria-hidden>
-      {[0, 1, 2].map((i) => (
-        <motion.span
-          key={i}
-          className="block size-[4px] rounded-full bg-sage"
-          animate={reduced ? { opacity: 0.8 } : { opacity: [0.25, 1, 0.25] }}
-          transition={
-            reduced
-              ? undefined
-              : { duration: 1.1, repeat: Infinity, ease: EASE, delay: i * 0.16 }
-          }
-        />
-      ))}
-    </span>
   );
 }
 

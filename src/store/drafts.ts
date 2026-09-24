@@ -9,24 +9,16 @@ const PREFIX = "hath.draft.";
 /** Draft slot for the Talk to Dadi composer. */
 export const DADI_DRAFT_KEY = "dadi";
 
-/** Saved draft for a conversation, or "" when none (or storage is unavailable). */
+/** Saved draft for a conversation; "" when nothing is saved for it. */
 export function loadDraft(key: string): string {
-  try {
-    return localStorage.getItem(PREFIX + key) ?? "";
-  } catch {
-    return "";
-  }
+  return localStorage.getItem(PREFIX + key) ?? "";
 }
 
 /** Save a draft; an empty or whitespace-only draft clears the slot. */
 export function saveDraft(key: string, text: string): void {
-  try {
-    if (text.trim().length === 0) {
-      localStorage.removeItem(PREFIX + key);
-      return;
-    }
-    localStorage.setItem(PREFIX + key, text);
-  } catch {
-    // Private mode / blocked storage: drafts just don't persist.
+  if (text.trim().length === 0) {
+    localStorage.removeItem(PREFIX + key);
+    return;
   }
+  localStorage.setItem(PREFIX + key, text);
 }

@@ -1,6 +1,6 @@
 /** Pure helpers for chat sidebar lane/message presentation. */
 
-import type { ChatMessage } from "../../store/chat";
+import { messageKey, type ChatMessage } from "../../store/chat";
 
 /** Split messages into settled and queued (local hold while conversation busy). */
 export function partitionByQueued(messages: ChatMessage[]): {
@@ -11,18 +11,6 @@ export function partitionByQueued(messages: ChatMessage[]): {
     settled: messages.filter((msg) => !msg.queued),
     queued: messages.filter((msg) => msg.queued),
   };
-}
-
-/**
- * Stable row id for a thread message.
- * Optimistic sends keep `id` across seq promotion so the row does not remount.
- * Historical and live seqs can still collide, so those fall back to seq plus time.
- */
-export function messageKey(msg: ChatMessage): string {
-  if (msg.id) {
-    return msg.id;
-  }
-  return `${msg.historical ? "h" : "l"}-${msg.seq}-${msg.at}`;
 }
 
 /**
