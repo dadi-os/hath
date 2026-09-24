@@ -8,7 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { Html, Line } from "@react-three/drei";
+import { Line } from "@react-three/drei";
 import * as THREE from "three";
 import { useQuery } from "@tanstack/react-query";
 import { dimaag, isMeshOnline, nas } from "../../shared/api";
@@ -16,7 +16,8 @@ import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
 import { POLL_MS } from "../../shared/lib/ux/poll";
-import { GraphSpace, CameraDistanceReporter } from "../../shared/components/GraphSpace";
+import { GraphLabel } from "../../shared/components/GraphLabel";
+import { GraphSpace } from "../../shared/components/GraphSpace";
 import { openAgent } from "../../store/chat";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
 import { AgentPopover } from "./AgentPopover";
@@ -37,6 +38,7 @@ const SAGE = "#8fa382";
 const SAGE_DEEP = "#5c6b52";
 const SAGE_LINE = "#b9c9ab";
 const BONE = "#fafaf7";
+const IDLE_FILL = "#dce5d4";
 
 export type AgentGraph3DProps = {
   entranceKey: string;
@@ -53,37 +55,37 @@ function visualMaterial(visual: NodeVisual, selected: boolean): {
   if (visual === "dormant") {
     return {
       color: SAGE_LINE,
-      opacity: 0.35,
+      opacity: 0.55,
       emissive: "#000000",
       emissiveIntensity: 0,
     };
   }
   if (visual === "idle") {
     return {
-      color: BONE,
+      color: IDLE_FILL,
       opacity: 1,
-      emissive: selected ? SAGE : "#000000",
-      emissiveIntensity: selected ? 0.15 : 0,
+      emissive: selected ? SAGE : SAGE_LINE,
+      emissiveIntensity: selected ? 0.22 : 0.08,
     };
   }
   if (visual === "reasoning") {
     return {
       color: SAGE,
-      opacity: 0.45,
+      opacity: 0.55,
       emissive: SAGE,
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.4,
     };
   }
   return {
     color: SAGE,
     opacity: 1,
     emissive: SAGE,
-    emissiveIntensity: 0.55,
+    emissiveIntensity: 0.6,
   };
 }
 
 /**
- * Frame the camera on the laid-out forest bounds after layout changes.
+ * Frame the camera on the hanging canopy (side-front so −Y depth reads).
  */
 function FitCamera({ nodes }: { nodes: LaidOutNode[] }) {
   const { camera, controls } = useThree();
@@ -107,12 +109,16 @@ function FitCamera({ nodes }: { nodes: LaidOutNode[] }) {
     const center = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(center);
-    const span = Math.max(size.x, size.z, size.y, 40);
-    const dist = span * 1.35;
+    const span = Math.max(size.x, size.y * 1.15, size.z * 1.1, 52);
+    const dist = span * 1.2;
 
-    camera.position.set(center.x, center.y + dist * 0.55, center.z + dist * 0.95);
+    camera.position.set(
+      center.x + dist * 0.05,
+      center.y + dist * 0.38,
+      center.z + dist * 1.05,
+    );
     camera.near = 0.5;
-    camera.far = Math.max(4000, dist * 8);
+    camera.far = Math.max(4000, dist * 10);
     camera.updateProjectionMatrix();
     camera.lookAt(center);
 
@@ -139,7 +145,7 @@ function LivePulse({ live, children }: { live: boolean; children: ReactNode }) {
       return;
     }
     const t = clock.getElapsedTime();
-    const s = 1 + Math.sin(t * 2.2) * 0.06;
+    const s = 1 + Math.sin(t * 2.2) * 0.07;
     ref.current.scale.setScalar(s);
   });
   return <group ref={ref}>{children}</group>;
@@ -150,7 +156,6 @@ type AgentNodeMeshProps = {
   agent: AgentRecord;
   visual: NodeVisual;
   selected: boolean;
-  showLabel: boolean;
   onHover: (node: LaidOutNode, screen: { x: number; y: number }) => void;
   onLeave: () => void;
   onClick: (agentId: string) => void;
@@ -164,13 +169,12 @@ function AgentNodeMesh({
   agent,
   visual,
   selected,
-  showLabel,
   onHover,
   onLeave,
   onClick,
 }: AgentNodeMeshProps) {
   const live = isLiveVisual(visual);
-  const r = visual === "dormant" ? 2.4 : 3.6;
+  const r = node.depth === 0 ? (visual === "dormant" ? 3.4 : 4.8) : visual === "dormant" ? 2.6 : 3.5;
   const mat = visualMaterial(visual, selected);
   const { gl } = useThree();
 
@@ -178,6 +182,7 @@ function AgentNodeMesh({
     <group position={[node.x, node.y, node.z]}>
       <LivePulse live={live}>
         <mesh
+          castShadow
           onPointerOver={(e) => {
             e.stopPropagation();
             const rect = gl.domElement.getBoundingClientRect();
@@ -195,60 +200,49 @@ function AgentNodeMesh({
             onClick(agent.id);
           }}
         >
-          <sphereGeometry args={[r, 24, 24]} />
+          <sphereGeometry args={[r, 28, 28]} />
           <meshStandardMaterial
             color={mat.color}
             transparent={mat.opacity < 1}
             opacity={mat.opacity}
             emissive={mat.emissive}
             emissiveIntensity={mat.emissiveIntensity}
-            roughness={0.55}
-            metalness={0.05}
+            roughness={0.48}
+            metalness={0.06}
             wireframe={visual === "dormant"}
           />
         </mesh>
         {visual === "both" ? (
           <mesh>
             <sphereGeometry args={[r * 0.42, 16, 16]} />
-            <meshStandardMaterial color={BONE} roughness={0.6} />
+            <meshStandardMaterial color={BONE} roughness={0.55} />
           </mesh>
         ) : null}
         {live ? (
           <mesh>
-            <sphereGeometry args={[r * 1.55, 16, 16]} />
+            <sphereGeometry args={[r * 1.65, 16, 16]} />
             <meshBasicMaterial
               color={SAGE}
               transparent
-              opacity={0.12}
+              opacity={0.14}
               depthWrite={false}
             />
           </mesh>
         ) : null}
         {selected ? (
-          <mesh>
-            <ringGeometry args={[r * 1.35, r * 1.55, 32]} />
+          <mesh rotation={[Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[r * 1.4, r * 1.65, 40]} />
             <meshBasicMaterial color={SAGE_DEEP} side={THREE.DoubleSide} />
           </mesh>
         ) : null}
       </LivePulse>
-      {showLabel ? (
-        <Html
-          distanceFactor={80}
-          style={{
-            pointerEvents: "none",
-            userSelect: "none",
-            color: visual === "dormant" ? "#b0b8a6" : "#6e7568",
-            fontSize: "11px",
-            fontWeight: 500,
-            letterSpacing: "0.02em",
-            whiteSpace: "nowrap",
-            transform: "translate(-50%, 12px)",
-          }}
-          center
-        >
-          {agent.name}
-        </Html>
-      ) : null}
+      <GraphLabel
+        position={[0, -r - 1.2, 0]}
+        color={visual === "dormant" ? "#b0b8a6" : "#5c6b52"}
+        fontSize={node.depth === 0 ? 3.2 : 2.5}
+      >
+        {agent.name}
+      </GraphLabel>
     </group>
   );
 }
@@ -306,12 +300,11 @@ export function AgentGraph3D({ entranceKey, className }: AgentGraph3DProps) {
     if (forest.length === 0) {
       return null;
     }
-    return layoutForest3d(forest, 28, 42);
+    return layoutForest3d(forest, 34, 52);
   }, [agents]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
-  const [labelsFar, setLabelsFar] = useState(false);
   const detailTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
 
@@ -370,8 +363,7 @@ export function AgentGraph3D({ entranceKey, className }: AgentGraph3DProps) {
   const movePopoverToAgent = (agentId: string) => {
     clearCloseTimer();
     setSelectedId(agentId);
-    const node = layout?.nodes.find((n) => n.data.id === agentId);
-    if (!node || !rootRef.current) {
+    if (!rootRef.current) {
       return;
     }
     setAnchor({
@@ -422,24 +414,21 @@ export function AgentGraph3D({ entranceKey, className }: AgentGraph3DProps) {
       ? pickLiveTerminal(detailAgent.sessions.terminals, terminalsQuery.data)
       : null;
 
-  const linkPoints = layout.links.map((link) => [
-    new THREE.Vector3(link.source.x, link.source.y, link.source.z),
-    new THREE.Vector3(link.target.x, link.target.y, link.target.z),
-  ]);
-
   return (
     <div ref={rootRef} className={`relative h-full min-h-0 w-full ${className ?? ""}`}>
-      <GraphSpace key={entranceKey} interactive cameraPosition={[0, 90, 180]}>
+      <GraphSpace key={entranceKey} interactive cameraPosition={[20, 60, 150]}>
         <FitCamera nodes={layout.nodes} />
-        <CameraDistanceReporter onFar={setLabelsFar} farThreshold={320} />
-        {linkPoints.map((pts, i) => (
+        {layout.links.map((link) => (
           <Line
-            key={`${layout.links[i].source.data.id}-${layout.links[i].target.data.id}`}
-            points={pts}
+            key={`${link.source.data.id}-${link.target.data.id}`}
+            points={[
+              [link.source.x, link.source.y, link.source.z],
+              [link.target.x, link.target.y, link.target.z],
+            ]}
             color={SAGE_LINE}
-            lineWidth={1.25}
+            lineWidth={1.8}
             transparent
-            opacity={0.55}
+            opacity={0.7}
           />
         ))}
         {layout.nodes.map((node) => {
@@ -448,7 +437,6 @@ export function AgentGraph3D({ entranceKey, className }: AgentGraph3DProps) {
             throw new Error(`layout node missing agent record: ${node.data.id}`);
           }
           const visual = visualState(agent, runningMap[agent.id]);
-          const showLabel = !labelsFar || selectedId === agent.id;
           return (
             <AgentNodeMesh
               key={agent.id}
@@ -456,7 +444,6 @@ export function AgentGraph3D({ entranceKey, className }: AgentGraph3DProps) {
               agent={agent}
               visual={visual}
               selected={selectedId === agent.id}
-              showLabel={showLabel}
               onHover={scheduleDetails}
               onLeave={scheduleClose}
               onClick={(id) => {

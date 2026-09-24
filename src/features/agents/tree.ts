@@ -74,9 +74,9 @@ function leafCount(node: AgentTreeNode): number {
 }
 
 /**
- * Wide hierarchical forest in 3D.
- * Roots pack along X by subtree leaf width; depth advances along Z;
- * Y stays near zero with a slight sibling fan for separation.
+ * Hanging org canopy for agents.
+ * Each root owns a plot on a ridge in the XZ plane; children drop on −Y under
+ * that plot with siblings fanning in local X. Z separates root crews, not depth.
  */
 export function layoutForest3d(
   forest: AgentTreeNode[],
@@ -89,14 +89,18 @@ export function layoutForest3d(
     return { nodes, links };
   }
 
-  const rootGap = siblingGap * 1.35;
-  let cursor = 0;
+  const nRoots = forest.length;
+  const ridgeR = Math.max(
+    siblingGap * 3.2,
+    Math.sqrt(nRoots) * siblingGap * 1.8,
+  );
 
-  const place = (
+  const placeInPlot = (
     data: AgentTreeNode,
     left: number,
     depth: number,
-    parent: LaidOutNode | null,
+    plotX: number,
+    plotZ: number,
     siblingIndex: number,
     siblingCount: number,
   ): { node: LaidOutNode; right: number } => {
@@ -104,17 +108,21 @@ export function layoutForest3d(
     let node: LaidOutNode;
     let right: number;
 
+    const localY = -depth * depthStep;
+    const siblingFan =
+      siblingCount <= 1
+        ? 0
+        : ((siblingIndex - (siblingCount - 1) / 2) / Math.max(siblingCount - 1, 1)) *
+          siblingGap *
+          0.28;
+
     if (kids.length === 0) {
-      const x = left + siblingGap / 2;
-      const fan =
-        siblingCount <= 1
-          ? 0
-          : ((siblingIndex - (siblingCount - 1) / 2) / siblingCount) * siblingGap * 0.22;
+      const localX = left + siblingGap / 2;
       node = {
         data,
-        x,
-        y: fan,
-        z: depth * depthStep,
+        x: plotX + localX,
+        y: localY,
+        z: plotZ + siblingFan,
         depth,
       };
       right = left + siblingGap;
@@ -123,17 +131,25 @@ export function layoutForest3d(
       let childLeft = left;
       const childNodes: LaidOutNode[] = [];
       kids.forEach((child, index) => {
-        const placed = place(child, childLeft, depth + 1, null, index, kids.length);
+        const placed = placeInPlot(
+          child,
+          childLeft,
+          depth + 1,
+          plotX,
+          plotZ,
+          index,
+          kids.length,
+        );
         childNodes.push(placed.node);
         childLeft = placed.right;
       });
-      const midX =
-        (childNodes[0].x + childNodes[childNodes.length - 1].x) / 2;
+      const midLocalX =
+        (childNodes[0].x + childNodes[childNodes.length - 1].x) / 2 - plotX;
       node = {
         data,
-        x: midX,
-        y: 0,
-        z: depth * depthStep,
+        x: plotX + midLocalX,
+        y: localY,
+        z: plotZ,
         depth,
       };
       for (const child of childNodes) {
@@ -143,28 +159,40 @@ export function layoutForest3d(
     }
 
     nodes.push(node);
-    if (parent) {
-      links.push({ source: parent, target: node });
-    }
     return { node, right };
   };
 
   forest.forEach((root, index) => {
-    const placed = place(root, cursor, 0, null, index, forest.length);
-    cursor = placed.right + rootGap;
+    const t = nRoots === 1 ? 0.5 : index / (nRoots - 1);
+    const angle = -Math.PI * 0.42 + t * Math.PI * 0.84;
+    const plotX = Math.sin(angle) * ridgeR;
+    const plotZ = -Math.cos(angle) * ridgeR * 0.72;
+    const width = leafCount(root) * siblingGap;
+    placeInPlot(root, -width / 2, 0, plotX, plotZ, 0, 1);
   });
 
-  // Center the forest on the origin so the camera frames it cleanly.
   if (nodes.length > 0) {
     let minX = Infinity;
     let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
     for (const n of nodes) {
       minX = Math.min(minX, n.x);
       maxX = Math.max(maxX, n.x);
+      minY = Math.min(minY, n.y);
+      maxY = Math.max(maxY, n.y);
+      minZ = Math.min(minZ, n.z);
+      maxZ = Math.max(maxZ, n.z);
     }
-    const mid = (minX + maxX) / 2;
+    const midX = (minX + maxX) / 2;
+    const midY = (minY + maxY) / 2;
+    const midZ = (minZ + maxZ) / 2;
     for (const n of nodes) {
-      n.x -= mid;
+      n.x -= midX;
+      n.y -= midY;
+      n.z -= midZ;
     }
   }
 
@@ -172,7 +200,7 @@ export function layoutForest3d(
 }
 
 /**
- * Project the forest onto the XZ plane for SVG preview (svgY ← z).
+ * Project the forest onto the XY plane for SVG preview (hanging tree → 2D).
  */
 export function projectForest2d(
   laid: { nodes: LaidOutNode[]; links: LaidOutLink[] },
@@ -181,7 +209,6 @@ export function projectForest2d(
   const nodes = laid.nodes.map((n) => {
     const projected: LaidOutNode = {
       ...n,
-      y: n.z,
       z: 0,
     };
     byId.set(n.data.id, projected);

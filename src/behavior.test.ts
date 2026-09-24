@@ -40,6 +40,7 @@ import {
   statusLabel,
   visualState,
 } from "./features/agents/tree";
+import { layoutMemoryPlane3d } from "./features/memory/graph";
 import {
   hasRememberedSessions,
   pickLiveBrowser,
@@ -512,6 +513,75 @@ describe("agent tree", () => {
         ).toBeGreaterThan(14);
       }
     }
+  });
+
+  it("places root plots apart in Z on the canopy ridge", () => {
+    const a: AgentRecord = { ...planner, id: "a", name: "A" };
+    const b: AgentRecord = { ...planner, id: "b", name: "B" };
+    const c: AgentRecord = { ...planner, id: "c", name: "C" };
+    const { nodes } = layoutForest3d(buildTree([a, b, c]), 28, 42);
+    const roots = nodes.filter((n) => n.depth === 0);
+    expect(roots).toHaveLength(3);
+    const zs = roots.map((n) => n.z);
+    expect(new Set(zs.map((z) => z.toFixed(2))).size).toBeGreaterThan(1);
+  });
+});
+
+describe("memory plane layout", () => {
+  it("spreads hubs on XZ and lifts memories on Y", () => {
+    const now = "2026-01-01T00:00:00Z";
+    const person = {
+      id: "p1",
+      kind: "person" as const,
+      title: "Ada",
+      body: null,
+      occurred_at: null,
+      expires_at: null,
+      access_count: 1,
+      last_accessed_at: null,
+      source: "manual" as const,
+      created_at: now,
+      updated_at: now,
+      detail: { birthday: null, aliases: [] },
+    };
+    const place = {
+      ...person,
+      id: "pl1",
+      kind: "place" as const,
+      title: "Kitchen",
+      detail: { address: null, latitude: null, longitude: null },
+    };
+    const memory = {
+      ...person,
+      id: "m1",
+      kind: "memory" as const,
+      title: "Dinner",
+      detail: null,
+    };
+    const laid = layoutMemoryPlane3d(
+      {
+        nodes: [person, place, memory],
+        edges: [
+          {
+            id: "e1",
+            source: "p1",
+            target: "m1",
+            type: "ABOUT",
+            confidence: 0.9,
+          },
+        ],
+      },
+      36,
+      10,
+    );
+    const hubs = laid.filter((n) => n.kind === "person" || n.kind === "place");
+    expect(hubs).toHaveLength(2);
+    expect(Math.abs(hubs[0].z - hubs[1].z) + Math.abs(hubs[0].x - hubs[1].x)).toBeGreaterThan(
+      10,
+    );
+    const mem = laid.find((n) => n.id === "m1");
+    expect(mem).toBeTruthy();
+    expect(mem!.y).toBeGreaterThan(hubs[0].y);
   });
 });
 

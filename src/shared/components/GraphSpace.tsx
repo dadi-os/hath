@@ -1,7 +1,11 @@
-import { type ReactNode, Suspense, useRef } from "react";
+import { type ReactNode, Suspense } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
+import { useRef } from "react";
 import * as THREE from "three";
+
+const FOG = "#f4f6f0";
+const GROUND = "#e8ede3";
 
 export type GraphSpaceProps = {
   /** When true, enable orbit / zoom / pan. */
@@ -15,6 +19,24 @@ export type GraphSpaceProps = {
 };
 
 /**
+ * Soft ground disc so depth reads in the scene.
+ */
+function Ground() {
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.5, 0]} receiveShadow>
+      <circleGeometry args={[720, 72]} />
+      <meshStandardMaterial
+        color={GROUND}
+        transparent
+        opacity={0.55}
+        roughness={1}
+        metalness={0}
+      />
+    </mesh>
+  );
+}
+
+/**
  * Shared R3F shell for full-page graph spaces.
  * OrbitControls only when interactive; otherwise a static framed view.
  */
@@ -22,7 +44,7 @@ export function GraphSpace({
   interactive,
   className,
   children,
-  cameraPosition = [0, 80, 160],
+  cameraPosition = [0, 70, 140],
   cameraFar = 4000,
 }: GraphSpaceProps) {
   const rootClass = [
@@ -40,24 +62,29 @@ export function GraphSpace({
         gl={{ antialias: true, alpha: true }}
         camera={{
           position: cameraPosition,
-          fov: 42,
+          fov: 40,
           near: 0.5,
           far: cameraFar,
         }}
         style={{ background: "transparent" }}
       >
-        <ambientLight intensity={0.85} />
-        <directionalLight position={[40, 80, 30]} intensity={0.55} />
-        <directionalLight position={[-30, 20, -40]} intensity={0.25} />
+        <color attach="background" args={[FOG]} />
+        <fog attach="fog" args={[FOG, 80, 520]} />
+        <ambientLight intensity={0.72} />
+        <directionalLight position={[50, 90, 40]} intensity={0.7} castShadow />
+        <directionalLight position={[-40, 30, -50]} intensity={0.28} />
+        <hemisphereLight args={["#fafaf7", "#b9c9ab", 0.35]} />
+        <Ground />
         <Suspense fallback={null}>{children}</Suspense>
         {interactive ? (
           <OrbitControls
             makeDefault
             enableDamping
             dampingFactor={0.08}
-            minDistance={24}
-            maxDistance={900}
-            maxPolarAngle={Math.PI * 0.92}
+            minDistance={20}
+            maxDistance={1100}
+            maxPolarAngle={Math.PI * 0.88}
+            target={[0, -20, 20]}
           />
         ) : null}
       </Canvas>
@@ -67,7 +94,7 @@ export function GraphSpace({
 
 /**
  * CameraDistanceReporter publishes whether the camera is far enough to hide
- * non-selected labels. No-ops until OrbitControls exposes a target.
+ * non-selected labels. Threshold should sit well above the fit-camera distance.
  */
 export function CameraDistanceReporter({
   onFar,

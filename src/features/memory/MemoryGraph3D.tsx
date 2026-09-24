@@ -7,31 +7,24 @@ import {
   type RefObject,
 } from "react";
 import { useThree } from "@react-three/fiber";
-import { Html, Line } from "@react-three/drei";
+import { Line } from "@react-three/drei";
 import * as THREE from "three";
 import { useQuery } from "@tanstack/react-query";
-import {
-  forceCenter,
-  forceCollide,
-  forceLink,
-  forceManyBody,
-  forceSimulation,
-  type SimulationLinkDatum,
-  type SimulationNodeDatum,
-} from "d3-force-3d";
 import { isMeshOnline, yaad } from "../../shared/api";
 import type { EdgeRecord, NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
-import { GraphSpace, CameraDistanceReporter } from "../../shared/components/GraphSpace";
+import { GraphLabel } from "../../shared/components/GraphLabel";
+import { GraphSpace } from "../../shared/components/GraphSpace";
 import { Popover } from "../../shared/components/Popover";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import {
+  layoutMemoryPlane3d,
   mergeGraph,
   nodeRadius,
   truncate,
   type GraphData,
-  type GraphEdge,
   type GraphNode,
+  type LaidOutMemoryNode,
 } from "./graph";
 
 const SAGE = "#8fa382";
@@ -39,10 +32,6 @@ const SAGE_DEEP = "#5c6b52";
 const SAGE_LINE = "#b9c9ab";
 const BONE = "#fafaf7";
 const BONE_RAISED = "#f7f9f4";
-const SAGE_ACTIVE = "rgb(143, 163, 130)";
-
-type SimNode = GraphNode & SimulationNodeDatum;
-type SimLink = GraphEdge & SimulationLinkDatum<SimNode>;
 
 export type MemoryGraph3DProps = {
   entranceKey: string;
@@ -60,10 +49,10 @@ function kindColor(kind: NodeKind): string {
   if (kind === "plan") {
     return BONE_RAISED;
   }
-  return SAGE_ACTIVE;
+  return "#b5c4a8";
 }
 
-/** Kind → emissive / stroke accent. */
+/** Kind → accent for selection / outline. */
 function kindAccent(kind: NodeKind): string {
   if (kind === "person") {
     return SAGE_DEEP;
@@ -142,9 +131,9 @@ async function seedAmbient(): Promise<GraphData> {
 }
 
 /**
- * Frame the camera on the simulated node cloud.
+ * Frame the camera above the XZ neighborhood plane.
  */
-function FitCamera({ nodes }: { nodes: SimNode[] }) {
+function FitCamera({ nodes }: { nodes: LaidOutMemoryNode[] }) {
   const { camera, controls } = useThree();
   const fittedKey = useRef("");
 
@@ -160,18 +149,23 @@ function FitCamera({ nodes }: { nodes: SimNode[] }) {
 
     const box = new THREE.Box3();
     for (const n of nodes) {
-      box.expandByPoint(new THREE.Vector3(n.x ?? 0, n.y ?? 0, n.z ?? 0));
+      box.expandByPoint(new THREE.Vector3(n.x, n.y, n.z));
     }
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(center);
-    const span = Math.max(size.x, size.y, size.z, 40);
-    const dist = span * 1.5;
+    const span = Math.max(size.x, size.z, size.y * 1.2, 56);
+    const dist = span * 1.25;
 
-    camera.position.set(center.x + dist * 0.35, center.y + dist * 0.55, center.z + dist * 0.95);
+    // Elevated, slightly off-axis so the ground plane and heights both read.
+    camera.position.set(
+      center.x + dist * 0.35,
+      center.y + dist * 0.85,
+      center.z + dist * 0.55,
+    );
     camera.near = 0.5;
-    camera.far = Math.max(4000, dist * 8);
+    camera.far = Math.max(4000, dist * 10);
     camera.updateProjectionMatrix();
     camera.lookAt(center);
 
@@ -186,27 +180,25 @@ function FitCamera({ nodes }: { nodes: SimNode[] }) {
 }
 
 type MemoryNodeMeshProps = {
-  node: SimNode;
+  node: LaidOutMemoryNode;
   selected: boolean;
-  showLabel: boolean;
-  onSelect: (node: SimNode, screen: { x: number; y: number }) => void;
+  onSelect: (node: LaidOutMemoryNode, screen: { x: number; y: number }) => void;
 };
 
 /**
- * Single Yaad node mesh in the force graph.
+ * Single Yaad node mesh in the layered hierarchy.
  */
-function MemoryNodeMesh({
-  node,
-  selected,
-  showLabel,
-  onSelect,
-}: MemoryNodeMeshProps) {
+function MemoryNodeMesh({ node, selected, onSelect }: MemoryNodeMeshProps) {
   const { gl } = useThree();
-  const r = nodeRadius(node.kind, false) * 0.85;
+  const base = nodeRadius(node.kind, false);
+  const r = (node.depth === 0 ? base * 1.15 : base * 0.9) * 0.9;
+  const title =
+    node.title.length > 22 ? `${node.title.slice(0, 21)}…` : node.title;
 
   return (
-    <group position={[node.x ?? 0, node.y ?? 0, node.z ?? 0]}>
+    <group position={[node.x, node.y, node.z]}>
       <mesh
+        castShadow
         onClick={(e) => {
           e.stopPropagation();
           const rect = gl.domElement.getBoundingClientRect();
@@ -216,65 +208,34 @@ function MemoryNodeMesh({
           });
         }}
       >
-        <sphereGeometry args={[r, 20, 20]} />
+        <sphereGeometry args={[r, 24, 24]} />
         <meshStandardMaterial
           color={kindColor(node.kind)}
-          emissive={selected ? kindAccent(node.kind) : "#000000"}
-          emissiveIntensity={selected ? 0.35 : 0}
-          roughness={0.55}
-          metalness={0.04}
+          emissive={selected ? kindAccent(node.kind) : kindAccent(node.kind)}
+          emissiveIntensity={selected ? 0.4 : 0.06}
+          roughness={0.5}
+          metalness={0.05}
         />
       </mesh>
       {selected ? (
-        <mesh>
-          <ringGeometry args={[r * 1.3, r * 1.5, 28]} />
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[r * 1.35, r * 1.55, 36]} />
           <meshBasicMaterial color={SAGE_DEEP} side={THREE.DoubleSide} />
         </mesh>
       ) : null}
-      {showLabel ? (
-        <Html
-          distanceFactor={70}
-          style={{
-            pointerEvents: "none",
-            userSelect: "none",
-            color: "#6e7568",
-            fontSize: "10px",
-            fontWeight: 500,
-            letterSpacing: "0.02em",
-            whiteSpace: "nowrap",
-            transform: "translate(-50%, 10px)",
-          }}
-          center
-        >
-          {node.title.length > 18 ? `${node.title.slice(0, 17)}…` : node.title}
-        </Html>
-      ) : null}
+      <GraphLabel
+        position={[0, -r - 1.1, 0]}
+        color="#5c6b52"
+        fontSize={node.depth === 0 ? 2.8 : 2.3}
+      >
+        {title}
+      </GraphLabel>
     </group>
   );
 }
 
 /**
- * Edge line between simulated endpoints.
- */
-function MemoryLinkLine({ link }: { link: SimLink }) {
-  const s = link.source as SimNode;
-  const t = link.target as SimNode;
-  return (
-    <Line
-      points={[
-        [s.x ?? 0, s.y ?? 0, s.z ?? 0],
-        [t.x ?? 0, t.y ?? 0, t.z ?? 0],
-      ]}
-      color={SAGE_LINE}
-      lineWidth={1}
-      transparent
-      opacity={0.25 + link.confidence * 0.45}
-    />
-  );
-}
-
-/**
- * Full-page Yaad knowledge graph in 3D force layout.
+ * Full-page Yaad knowledge graph — hubs on an XZ plane, height by hop/kind.
  */
 export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   const { state: connection } = useConnection();
@@ -282,19 +243,11 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   const cap = 40;
 
   const [graph, setGraph] = useState<GraphData>({ nodes: [], edges: [] });
-  const [simNodes, setSimNodes] = useState<SimNode[]>([]);
-  const [simLinks, setSimLinks] = useState<SimLink[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
   const [expanding, setExpanding] = useState(false);
-  const [labelsFar, setLabelsFar] = useState(false);
 
   const rootRef = useRef<HTMLDivElement>(null);
-  const simRef = useRef<ReturnType<typeof forceSimulation<SimNode, SimLink>> | null>(
-    null,
-  );
-  const nodesRef = useRef<SimNode[]>([]);
-  const linksRef = useRef<SimLink[]>([]);
 
   const ambientQuery = useQuery({
     queryKey: ["yaad", "memory-ambient", "full", entranceKey],
@@ -314,76 +267,20 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
     setAnchor(null);
   }, [entranceKey]);
 
-  useEffect(() => {
-    simRef.current?.stop();
-    if (graph.nodes.length === 0) {
-      setSimNodes([]);
-      setSimLinks([]);
-      nodesRef.current = [];
-      linksRef.current = [];
-      return;
-    }
-
-    const prevById = new Map(nodesRef.current.map((n) => [n.id, n]));
-    const nodes: SimNode[] = graph.nodes.map((n) => {
-      const prev = prevById.get(n.id);
-      return {
-        ...n,
-        x: prev?.x,
-        y: prev?.y,
-        z: prev?.z,
-        vx: prev?.vx,
-        vy: prev?.vy,
-        vz: prev?.vz,
-      };
-    });
-    const links: SimLink[] = graph.edges.map((e) => ({ ...e }));
-
-    const sim = forceSimulation<SimNode, SimLink>(nodes, 3)
-      .force(
-        "link",
-        forceLink<SimNode, SimLink>(links)
-          .id((d) => d.id)
-          .distance(64)
-          .strength(0.45),
-      )
-      .force("charge", forceManyBody().strength(-140))
-      .force("center", forceCenter(0, 0, 0))
-      .force(
-        "collide",
-        forceCollide<SimNode>()
-          .radius((d) => nodeRadius(d.kind, false) + 4)
-          .strength(0.8),
-      )
-      .alpha(0.9)
-      .alphaDecay(0.028);
-
-    simRef.current = sim;
-    nodesRef.current = nodes;
-    linksRef.current = links;
-
-    const publish = () => {
-      setSimNodes(nodes.map((n) => ({ ...n })));
-      setSimLinks(links.map((l) => ({ ...l })));
-      nodesRef.current = nodes;
-      linksRef.current = links;
-    };
-    sim.on("tick", publish);
-    for (let i = 0; i < 80; i++) {
-      sim.tick();
-    }
-    publish();
-
-    return () => {
-      sim.stop();
-      simRef.current = null;
-    };
-  }, [graph]);
-
-  const selected = useMemo(
-    () => simNodes.find((n) => n.id === selectedId) ?? null,
-    [simNodes, selectedId],
+  const laid = useMemo(
+    () => layoutMemoryPlane3d(graph, 36, 10),
+    [graph],
   );
+
+  const byId = useMemo(() => {
+    const map = new Map<string, LaidOutMemoryNode>();
+    for (const n of laid) {
+      map.set(n.id, n);
+    }
+    return map;
+  }, [laid]);
+
+  const selected = selectedId ? byId.get(selectedId) ?? null : null;
 
   const expandSelected = useCallback(async () => {
     if (!selectedId) {
@@ -459,18 +356,33 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
 
   return (
     <div ref={rootRef} className={`relative h-full min-h-0 w-full ${className ?? ""}`}>
-      <GraphSpace key={entranceKey} interactive cameraPosition={[40, 90, 180]}>
-        <FitCamera nodes={simNodes} />
-        <CameraDistanceReporter onFar={setLabelsFar} farThreshold={280} />
-        {simLinks.map((link) => (
-          <MemoryLinkLine key={link.id} link={link} />
-        ))}
-        {simNodes.map((node) => (
+      <GraphSpace key={entranceKey} interactive cameraPosition={[60, 120, 90]}>
+        <FitCamera nodes={laid} />
+        {graph.edges.map((edge) => {
+          const s = byId.get(edge.source);
+          const t = byId.get(edge.target);
+          if (!s || !t) {
+            return null;
+          }
+          return (
+            <Line
+              key={edge.id}
+              points={[
+                [s.x, s.y, s.z],
+                [t.x, t.y, t.z],
+              ]}
+              color={SAGE_LINE}
+              lineWidth={1.4}
+              transparent
+              opacity={0.3 + edge.confidence * 0.4}
+            />
+          );
+        })}
+        {laid.map((node) => (
           <MemoryNodeMesh
             key={node.id}
             node={node}
             selected={node.id === selectedId}
-            showLabel={!labelsFar || node.id === selectedId}
             onSelect={(n, screen) => {
               setSelectedId(n.id);
               setAnchor(screen);
