@@ -18,12 +18,14 @@ export function MemoryPage() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
-      <PageHeader
-        title="MEMORY"
-        hint="Drag to orbit · scroll to zoom · click a node · expand grows the network"
-      />
-      <div className="min-h-0 flex-1 px-1 pb-1">
+      <div className="absolute inset-0">
         <MemoryGraph3D entranceKey={entranceKey} />
+      </div>
+      <div className="pointer-events-none relative z-10">
+        <PageHeader
+          title="MEMORY"
+          hint="Drag to orbit · scroll to zoom · click a node · expand grows the network"
+        />
       </div>
     </motion.div>
   );

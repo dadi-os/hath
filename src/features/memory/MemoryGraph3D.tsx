@@ -3,18 +3,21 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { isMeshOnline, yaad } from "../../shared/api";
 import type { NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
+import { useThemeTokens } from "../../hooks/useThemeTokens";
 import { ForceGraph, syncForceSimulation } from "../../shared/components/ForceGraph";
 import { GraphSpace } from "../../shared/components/GraphSpace";
 import { Popover } from "../../shared/components/Popover";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import { createMemorySimulation, mergeGraph, nodeRadius, truncate, type GraphData } from "./graph";
 
-const KIND_COLOR: Record<NodeKind, string> = {
-  person: "#5c6b52",
-  place: "#8fa382",
-  memory: "#aebda1",
-  plan: "#c4ad7c",
-};
+/** Theme token that colors each node kind, in the scene and the legend. */
+const KIND_TOKEN = {
+  person: "--sage-deep",
+  place: "--sage",
+  memory: "--ink-faint",
+  plan: "--clay",
+} as const satisfies Record<NodeKind, string>;
+const KIND_TOKENS = Object.values(KIND_TOKEN);
 /** Most-connected nodes that keep a label when nothing is selected. */
 const HUB_LABELS = 12;
 const EMPTY: GraphData = { nodes: [], edges: [] };
@@ -33,6 +36,7 @@ export type MemoryGraph3DProps = {
  */
 export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   const { state: connection } = useConnection();
+  const theme = useThemeTokens(KIND_TOKENS);
   const connected = isMeshOnline(connection);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -124,7 +128,7 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
           selectedId={selectedId}
           radius={(n) => nodeRadius(n.kind, n.degree)}
           look={(n, { selected: isSelected, dimmed }) => ({
-            color: KIND_COLOR[n.kind],
+            color: theme[KIND_TOKEN[n.kind]],
             opacity: dimmed ? 0.22 : 1,
             emissiveIntensity: isSelected ? 0.5 : 0.12,
             wireframe: false,
@@ -140,9 +144,9 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
       </GraphSpace>
 
       <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 text-[10px] font-medium tracking-[1.5px] uppercase text-ink-muted">
-        {(Object.keys(KIND_COLOR) as NodeKind[]).map((kind) => (
+        {(Object.keys(KIND_TOKEN) as NodeKind[]).map((kind) => (
           <span key={kind} className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full" style={{ background: KIND_COLOR[kind] }} />
+            <span className="h-2 w-2 rounded-full" style={{ background: `var(${KIND_TOKEN[kind]})` }} />
             {kind}
           </span>
         ))}

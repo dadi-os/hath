@@ -19,12 +19,14 @@ export function AgentsPage() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: SLOW_S, ease: EASE }}
     >
-      <PageHeader
-        title="AGENTS"
-        hint="Drag to orbit · scroll to zoom · hover for details · click to open in chat"
-      />
-      <div className="min-h-0 flex-1 px-1 pb-1">
+      <div className="absolute inset-0">
         <AgentGraph3D entranceKey={entranceKey} interactive />
+      </div>
+      <div className="pointer-events-none relative z-10">
+        <PageHeader
+          title="AGENTS"
+          hint="Drag to orbit · scroll to zoom · hover for details · click to open in chat"
+        />
       </div>
     </motion.div>
   );

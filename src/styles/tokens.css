@@ -23,6 +23,9 @@
   --sage-fill: rgba(143, 163, 130, 0.1);
   --sage-active: rgba(143, 163, 130, 0.16);
 
+  /* Clay — warm accent for plans in the memory graph */
+  --clay: #b89a63;
+
   /* Ink */
   --ink: #2c302a;
   --ink-muted: #6e7568;
@@ -83,6 +86,8 @@
     --sage-faint: rgba(154, 175, 140, 0.12);
     --sage-fill: rgba(154, 175, 140, 0.1);
     --sage-active: rgba(154, 175, 140, 0.18);
+
+    --clay: #d2bb8a;
 
     --ink: #e6ebe0;
     --ink-muted: #a3ab98;

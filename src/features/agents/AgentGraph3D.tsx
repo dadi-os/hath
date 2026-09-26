@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { dimaag, isMeshOnline, nas } from "../../shared/api";
 import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
+import { useThemeTokens } from "../../hooks/useThemeTokens";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import {
@@ -36,11 +37,15 @@ import {
 const DETAIL_DELAY_MS = 160;
 const DETAIL_CLOSE_MS = 320;
 
-const SAGE = "#8fa382";
-const SAGE_DEEP = "#5c6b52";
-const SAGE_LINE = "#b9c9ab";
-const IDLE = "#a9ba9b";
-const BONE = "#fafaf7";
+/**
+ * On the page, forests at or below this size label every agent; larger ones label
+ * roots and live agents. The home tile labels live agents only.
+ */
+const LABEL_ALL_MAX = 30;
+const THEME = ["--sage", "--sage-deep", "--ink-faint", "--bone"] as const;
+
+/** Resolved theme colors the agent scene draws with. */
+type AgentTheme = Record<(typeof THEME)[number], string>;
 
 export type AgentGraph3DProps = {
   /** Changes on each arrival at the page; resets the simulation and open details. */
@@ -52,27 +57,32 @@ export type AgentGraph3DProps = {
 };
 
 /** Surface for each agent lane; dimmed agents fade behind the focused one. */
-function agentLook(visual: NodeVisual, selected: boolean, dimmed: boolean): ForceGraphNodeLook {
+function agentLook(
+  theme: AgentTheme,
+  visual: NodeVisual,
+  selected: boolean,
+  dimmed: boolean,
+): ForceGraphNodeLook {
   const fade = dimmed ? 0.3 : 1;
   if (visual === "dormant") {
-    return { color: SAGE_LINE, opacity: 0.55 * fade, emissiveIntensity: 0, wireframe: true };
+    return { color: theme["--ink-faint"], opacity: 0.8 * fade, emissiveIntensity: 0, wireframe: true };
   }
   if (visual === "idle") {
     return {
-      color: IDLE,
+      color: theme["--sage"],
       opacity: fade,
       emissiveIntensity: selected ? 0.4 : 0.1,
       wireframe: false,
     };
   }
   if (visual === "reasoning") {
-    return { color: SAGE, opacity: 0.6 * fade, emissiveIntensity: 0.4, wireframe: false };
+    return { color: theme["--sage-deep"], opacity: 0.6 * fade, emissiveIntensity: 0.4, wireframe: false };
   }
-  return { color: SAGE_DEEP, opacity: fade, emissiveIntensity: 0.5, wireframe: false };
+  return { color: theme["--sage-deep"], opacity: fade, emissiveIntensity: 0.5, wireframe: false };
 }
 
 /** Breathing translucent shell around an agent that is mid-flight. */
-function LiveHalo({ radius }: { radius: number }) {
+function LiveHalo({ radius, color }: { radius: number; color: string }) {
   const ref = useRef<THREE.Mesh>(null);
   useFrame(({ clock }) => {
     ref.current?.scale.setScalar(radius * 1.7 * (1 + Math.sin(clock.getElapsedTime() * 2.2) * 0.08));
@@ -80,7 +90,7 @@ function LiveHalo({ radius }: { radius: number }) {
   return (
     <mesh ref={ref} scale={radius * 1.7}>
       <sphereGeometry args={[1, 16, 12]} />
-      <meshBasicMaterial color={SAGE} transparent opacity={0.16} depthWrite={false} />
+      <meshBasicMaterial color={color} transparent opacity={0.18} depthWrite={false} />
     </mesh>
   );
 }
@@ -94,6 +104,7 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
   const { state: connection } = useConnection();
   const connected = isMeshOnline(connection);
   const runningMap = useSyncExternalStore(subscribeRunning, getRunning, getRunning);
+  const theme = useThemeTokens(THEME);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const agentsQuery = useQuery({
@@ -141,10 +152,15 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
     () =>
       new Set(
         graph.nodes
-          .filter((n) => n.depth === 0 || isLiveVisual(visualState(n, runningMap[n.id])))
+          .filter((n) => {
+            if (isLiveVisual(visualState(n, runningMap[n.id]))) {
+              return true;
+            }
+            return interactive && (graph.nodes.length <= LABEL_ALL_MAX || n.depth === 0);
+          })
           .map((n) => n.id),
       ),
-    [graph.nodes, runningMap],
+    [graph.nodes, runningMap, interactive],
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -273,7 +289,7 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
           selectedId={selectedId}
           radius={(n) => agentRadius(n.depth, !n.active)}
           look={(n, { selected, dimmed }) =>
-            agentLook(visualState(n, runningMap[n.id]), selected, dimmed)
+            agentLook(theme, visualState(n, runningMap[n.id]), selected, dimmed)
           }
           labelText={(n) => (n.name.length > 30 ? `${n.name.slice(0, 29)}…` : n.name)}
           pinnedLabels={pinnedLabels}
@@ -281,11 +297,11 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
             const visual = visualState(n, runningMap[n.id]);
             return (
               <>
-                {isLiveVisual(visual) ? <LiveHalo radius={r} /> : null}
+                {isLiveVisual(visual) ? <LiveHalo radius={r} color={theme["--sage"]} /> : null}
                 {visual === "both" ? (
                   <mesh scale={r * 0.42}>
                     <sphereGeometry args={[1, 16, 12]} />
-                    <meshStandardMaterial color={BONE} roughness={0.55} />
+                    <meshStandardMaterial color={theme["--bone"]} roughness={0.55} />
                   </mesh>
                 ) : null}
               </>

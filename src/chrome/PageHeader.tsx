@@ -21,7 +21,7 @@ export function PageHeader({ title, hint, trailing }: PageHeaderProps) {
   return (
     <div className="mb-3 flex shrink-0 items-center gap-3 px-1">
       <Tooltip content="Back home">
-        <span className="inline-flex">
+        <span className="pointer-events-auto inline-flex">
           <IconButton
             label="Back home"
             size="sm"

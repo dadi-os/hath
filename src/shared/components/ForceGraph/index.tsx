@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
+import { Billboard, Text } from "@react-three/drei";
 import * as THREE from "three";
-import { GraphLabel } from "../GraphLabel";
+import { useThemeTokens } from "../../../hooks/useThemeTokens";
 import type { ForceEdge, ForceNode, SyncedForceGraph } from "./simulation";
 
 export {
@@ -14,19 +15,20 @@ export {
   type SyncedForceGraph,
 } from "./simulation";
 
-const EDGE = new THREE.Color("#b9c9ab");
-const EDGE_FOCUS = new THREE.Color("#5c6b52");
-const EDGE_DIM = new THREE.Color("#e6ebe0");
-const LABEL = "#5c6b52";
-const LABEL_DIM = "#b0b8a6";
 /**
  * Camera distance and canvas height (px) at which labels render at their authored
- * size; they scale with both so on-screen size is the same on a page or a tile.
+ * size. Each label scales with its own node's distance and the canvas height, so
+ * every label has the same on-screen size, near or far, on a page or a tile.
  */
 const LABEL_DISTANCE = 210;
 const LABEL_VIEWPORT = 760;
+/** Label font size in world units at the reference distance. */
+const LABEL_SIZE = 2.4;
+/** Screen-constant gap between a node's silhouette and its label, in label-scaled units. */
+const LABEL_GAP = 0.9;
 /** Radians per second the camera circles the graph before the user takes over. */
 const ORBIT_SPEED = 0.12;
+const THEME = ["--bone", "--sage-line", "--sage-deep", "--rule", "--ink-muted", "--ink-ghost"] as const;
 
 /** Surface material for one node. */
 export type ForceGraphNodeLook = {
@@ -54,7 +56,7 @@ export type ForceGraphProps<R extends { id: string }, E extends ForceEdge> = {
   radius: (node: ForceNode<R>) => number;
   /** Surface material; `dimmed` is true when another node is focused. */
   look: (node: ForceNode<R>, state: { selected: boolean; dimmed: boolean }) => ForceGraphNodeLook;
-  /** Text of the billboard label under the node. */
+  /** Text of the label under the node. */
   labelText: (node: ForceNode<R>) => string;
   /** Ids labelled while nothing is focused. Focus and hover are always labelled. */
   pinnedLabels: Set<string>;
@@ -77,14 +79,19 @@ type Orbit = {
   removeEventListener: (type: "start", listener: () => void) => void;
 };
 
+/** A mounted label and the radius of the node it hangs from. */
+type LabelMount = { group: THREE.Group; radius: number };
+
 /**
  * Live 3D force-directed graph, rendered inside a `GraphSpace`.
  *
  * Ticks the simulation once per frame and writes positions straight into meshes and
- * one edge buffer, so React only re-renders on membership, focus, or look changes.
- * Until the user grabs the camera it slowly circles and keeps the whole graph framed;
- * without orbit controls (non-interactive spaces) it always does. Fog follows the
- * camera so the far side fades and depth reads; labels keep a constant screen size.
+ * one edge buffer, so React only re-renders on membership, focus, look, or theme
+ * changes. Until the user grabs the camera it slowly circles and keeps the whole
+ * graph framed; without orbit controls (non-interactive spaces) it always does. Fog
+ * follows the camera so the far side fades. Labels draw on top of everything, ignore
+ * fog, keep a constant screen size, and sit just below their node on screen from any
+ * viewing angle.
  */
 export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
   sim,
@@ -100,16 +107,38 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
   onNodeLeave,
 }: ForceGraphProps<R, E>) {
   const { camera, controls, scene, gl, size } = useThree();
+  const theme = useThemeTokens(THEME);
   const groups = useRef(new Map<string, THREE.Group>());
-  const labels = useRef(new Map<string, THREE.Group>());
+  const labels = useRef(new Map<string, LabelMount>());
   const userMoved = useRef(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const sphere = useMemo(() => new THREE.SphereGeometry(1, 20, 16), []);
+  const labelMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        depthTest: false,
+        depthWrite: false,
+        fog: false,
+        transparent: true,
+        toneMapped: false,
+      }),
+    [],
+  );
   const centroid = useMemo(() => new THREE.Vector3(), []);
   const target = useMemo(() => new THREE.Vector3(), []);
   const offset = useMemo(() => new THREE.Vector3(), []);
+  const down = useMemo(() => new THREE.Vector3(), []);
+  const edgeColors = useMemo(
+    () => ({
+      base: new THREE.Color(theme["--sage-line"]),
+      focus: new THREE.Color(theme["--sage-deep"]),
+      dim: new THREE.Color(theme["--rule"]),
+    }),
+    [theme],
+  );
 
   useEffect(() => () => sphere.dispose(), [sphere]);
+  useEffect(() => () => labelMaterial.dispose(), [labelMaterial]);
 
   useEffect(() => {
     const orbit = controls as unknown as Orbit | null;
@@ -117,7 +146,7 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
       return;
     }
     orbit.autoRotate = !userMoved.current;
-    orbit.autoRotateSpeed = ORBIT_SPEED * 30 / Math.PI;
+    orbit.autoRotateSpeed = (ORBIT_SPEED * 30) / Math.PI;
     const release = () => {
       userMoved.current = true;
       orbit.autoRotate = false;
@@ -128,9 +157,9 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
 
   const edgeGeometry = useMemo(() => {
     const geometry = new THREE.BufferGeometry();
-    const size = graph.links.length * 6;
-    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(size), 3));
-    geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(size), 3));
+    const length = graph.links.length * 6;
+    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(length), 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(length), 3));
     return geometry;
   }, [graph.links]);
 
@@ -156,12 +185,13 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
     graph.links.forEach((l, i) => {
       const touches =
         selectedId !== null && (l.source.id === selectedId || l.target.id === selectedId);
-      const color = selectedId === null ? EDGE : touches ? EDGE_FOCUS : EDGE_DIM;
+      const color =
+        selectedId === null ? edgeColors.base : touches ? edgeColors.focus : edgeColors.dim;
       colors.setXYZ(i * 2, color.r, color.g, color.b);
       colors.setXYZ(i * 2 + 1, color.r, color.g, color.b);
     });
     colors.needsUpdate = true;
-  }, [edgeGeometry, graph.links, selectedId]);
+  }, [edgeGeometry, edgeColors, graph.links, selectedId]);
 
   useEffect(() => {
     gl.domElement.style.cursor = hoveredId && onNodeClick ? "pointer" : "";
@@ -213,8 +243,16 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
     }
 
     const d = camera.position.distanceTo(pivot);
-    for (const label of labels.current.values()) {
-      label.scale.setScalar((d / LABEL_DISTANCE) * (LABEL_VIEWPORT / size.height));
+    const perUnitDistance = LABEL_VIEWPORT / size.height / LABEL_DISTANCE;
+    down.set(0, -1, 0).applyQuaternion(camera.quaternion);
+    for (const { group, radius: r } of labels.current.values()) {
+      const node = group.parent;
+      if (!node) {
+        continue;
+      }
+      const scale = camera.position.distanceTo(node.position) * perUnitDistance;
+      group.scale.setScalar(scale);
+      group.position.copy(down).multiplyScalar(r + LABEL_GAP * scale);
     }
     if (scene.fog instanceof THREE.Fog) {
       scene.fog.near = Math.max(1, d - extent * 0.3);
@@ -284,22 +322,31 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
             {decorate?.(node, r)}
             {labelled ? (
               <group
-                position={[0, -r - 0.5, 0]}
                 ref={(g) => {
                   if (g) {
-                    labels.current.set(node.id, g);
+                    labels.current.set(node.id, { group: g, radius: r });
                   } else {
                     labels.current.delete(node.id);
                   }
                 }}
               >
-                <GraphLabel
-                  position={[0, 0, 0]}
-                  color={dimmed ? LABEL_DIM : LABEL}
-                  fontSize={selected ? 3 : 2.4}
-                >
-                  {labelText(node)}
-                </GraphLabel>
+                <Billboard follow>
+                  <Text
+                    material={labelMaterial}
+                    renderOrder={10}
+                    fontSize={selected ? LABEL_SIZE * 1.2 : LABEL_SIZE}
+                    color={dimmed ? theme["--ink-ghost"] : theme["--ink-muted"]}
+                    anchorX="center"
+                    anchorY="top"
+                    maxWidth={80}
+                    textAlign="center"
+                    outlineWidth={0.14}
+                    outlineColor={theme["--bone"]}
+                    outlineOpacity={0.9}
+                  >
+                    {labelText(node)}
+                  </Text>
+                </Billboard>
               </group>
             ) : null}
           </group>

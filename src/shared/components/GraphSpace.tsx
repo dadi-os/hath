@@ -1,8 +1,7 @@
 import { type ReactNode, Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-
-const FOG = "#f4f6f0";
+import { useThemeTokens } from "../../hooks/useThemeTokens";
 
 export type GraphSpaceProps = {
   /** When true, enable orbit / zoom / pan. */
@@ -16,8 +15,10 @@ export type GraphSpaceProps = {
 };
 
 /**
- * Shared R3F shell for graph spaces: fogged background, lights, and orbit controls
- * when interactive. Children own camera framing and set the fog range each frame.
+ * Shared R3F shell for graph spaces: a transparent canvas over the page background,
+ * fog in the page's `--bone` color (so the far side fades into the page in either
+ * theme), lights, and orbit controls when interactive. Children own camera framing
+ * and set the fog range each frame.
  */
 export function GraphSpace({
   interactive,
@@ -26,6 +27,7 @@ export function GraphSpace({
   cameraPosition = [0, 70, 140],
   cameraFar = 4000,
 }: GraphSpaceProps) {
+  const { "--bone": bone } = useThemeTokens(["--bone"]);
   const rootClass = [
     "relative h-full min-h-0 w-full",
     interactive ? "" : "pointer-events-none",
@@ -47,8 +49,7 @@ export function GraphSpace({
         }}
         style={{ background: "transparent" }}
       >
-        <color attach="background" args={[FOG]} />
-        <fog attach="fog" args={[FOG, 80, 520]} />
+        <fog attach="fog" args={[bone, 80, 520]} />
         <ambientLight intensity={0.72} />
         <directionalLight position={[50, 90, 40]} intensity={0.7} />
         <directionalLight position={[-40, 30, -50]} intensity={0.28} />
