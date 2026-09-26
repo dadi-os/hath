@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useQuery } from "@tanstack/react-query";
@@ -21,8 +22,9 @@ import {
   syncForceSimulation,
   type ForceGraphNodeLook,
 } from "../../shared/components/ForceGraph";
-import { GraphSearch } from "../../shared/components/GraphSearch";
+import { GraphPlaceholder } from "../../shared/components/GraphPlaceholder";
 import { GraphSpace } from "../../shared/components/GraphSpace";
+import { SearchField } from "../../shared/components/SearchField";
 import { openAgent } from "../../store/chat";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
 import { AgentPopover } from "./AgentPopover";
@@ -51,6 +53,8 @@ export type AgentGraph3DProps = {
   entranceKey: string;
   /** Page mode: orbit, hover details, click to open chat. Off for the home tile, which is view-only. */
   interactive: boolean;
+  /** Page header slot the search box renders into; null on the home tile. */
+  toolbar: HTMLElement | null;
   /** Extra classes on the root element. */
   className?: string;
 };
@@ -88,7 +92,7 @@ function LiveHalo({ radius, color }: { radius: number; color: string }) {
  * shell, sub-agents settle on outer shells toward their parent, and a newly spawned
  * sub-agent grows out of its parent. Used full-page and as the home tile.
  */
-export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph3DProps) {
+export function AgentGraph3D({ entranceKey, interactive, toolbar, className }: AgentGraph3DProps) {
   const { state: connection } = useConnection();
   const connected = isMeshOnline(connection);
   const runningMap = useSyncExternalStore(subscribeRunning, getRunning, getRunning);
@@ -191,34 +195,44 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
 
   if (!connected) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-ghost">Connect to load agents</p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder
+          tone="offline"
+          label="Agents offline"
+          detail={interactive ? "Connect to the mesh to load agents" : undefined}
+        />
       </div>
     );
   }
 
   if (agentsQuery.isError) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-muted">
-          Could not load agents: {agentsQuery.error.message}
-        </p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder tone="error" label="Could not load agents" detail={agentsQuery.error.message} />
       </div>
     );
   }
 
   if (!agents) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-muted">Loading agents…</p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder
+          tone="loading"
+          label="Loading agents"
+          detail={interactive ? "Tracing threads and sub-agents" : undefined}
+        />
       </div>
     );
   }
 
   if (agents.length === 0) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-muted">No agents yet</p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder
+          tone="empty"
+          label="No agents yet"
+          detail={interactive ? "Agents appear here as soon as Dadi starts one" : undefined}
+        />
       </div>
     );
   }
@@ -280,19 +294,22 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
         />
       </GraphSpace>
 
-      {interactive ? (
-        <GraphSearch
-          value={query}
-          onChange={setQuery}
-          placeholder="Search agents"
-          matches={matches === null ? null : matches.size}
-          onPick={() => {
-            if (onlyMatch) {
-              focusAgent(onlyMatch);
-            }
-          }}
-        />
-      ) : null}
+      {interactive && toolbar
+        ? createPortal(
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              placeholder="Search agents"
+              matches={matches === null ? null : matches.size}
+              onPick={() => {
+                if (onlyMatch) {
+                  focusAgent(onlyMatch);
+                }
+              }}
+            />,
+            toolbar,
+          )
+        : null}
 
       {interactive ? (
         <AgentPopover

@@ -120,6 +120,15 @@ export function IconPlus() {
   );
 }
 
+export function IconSearch() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" aria-hidden>
+      <circle cx="8" cy="8" r="4.6" stroke="currentColor" strokeWidth="1.5" />
+      <path d="m11.5 11.5 3.2 3.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function IconAttach() {
   return (
     <svg viewBox="0 0 18 18" fill="none" aria-hidden>
