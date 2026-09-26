@@ -21,6 +21,7 @@ import {
   syncForceSimulation,
   type ForceGraphNodeLook,
 } from "../../shared/components/ForceGraph";
+import { GraphSearch } from "../../shared/components/GraphSearch";
 import { GraphSpace } from "../../shared/components/GraphSpace";
 import { openAgent } from "../../store/chat";
 import { getRunning, seedRunningFromAgents, subscribeRunning } from "../../store/running";
@@ -152,10 +153,31 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
 
   const details = useHoverDetails(entranceKey);
   const [focusId, setFocusId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q
+      ? new Set(graph.nodes.filter((n) => n.name.toLowerCase().includes(q)).map((n) => n.id))
+      : null;
+  }, [graph.nodes, query]);
+  const onlyMatch = matches?.size === 1 ? [...matches][0]! : null;
+
+  const roots = useMemo(
+    () => new Set(graph.nodes.filter((n) => n.depth === 0).map((n) => n.id)),
+    [graph.nodes],
+  );
 
   useEffect(() => {
     setFocusId(null);
+    setQuery("");
   }, [entranceKey]);
+
+  const focusAgent = (agentId: string) => {
+    details.close();
+    setFocusId(agentId);
+    openAgent(agentId);
+  };
 
   const showParent = (agentId: string) => {
     if (!rootRef.current) {
@@ -225,13 +247,15 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
         <ForceGraph
           sim={sim}
           graph={graph}
-          focusId={focusId}
-          hold={details.id !== null || focusId !== null}
+          focusId={focusId ?? onlyMatch}
+          hold={details.id !== null || focusId !== null || matches !== null}
+          matches={matches}
           radius={(n) => agentRadius(n.depth, !n.active)}
           look={(n) => agentLook(theme, visualState(n, runningMap[n.id]))}
           edgeLabel={(link, id) => (link.source.id === id ? "sub-agent" : "parent")}
           labelText={(n) => (n.name.length > 30 ? `${n.name.slice(0, 29)}…` : n.name)}
           pinnedLabels={pinnedLabels}
+          revealSeeds={roots}
           decorate={(n, r) => {
             const visual = visualState(n, runningMap[n.id]);
             return (
@@ -250,15 +274,25 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
           onNodeLeave={interactive ? details.leave : undefined}
           onNodeClick={
             interactive
-              ? (n) => {
-                  details.close();
-                  setFocusId(n.id);
-                  openAgent(n.id);
-                }
+              ? (n) => focusAgent(n.id)
               : undefined
           }
         />
       </GraphSpace>
+
+      {interactive ? (
+        <GraphSearch
+          value={query}
+          onChange={setQuery}
+          placeholder="Search agents"
+          matches={matches === null ? null : matches.size}
+          onPick={() => {
+            if (onlyMatch) {
+              focusAgent(onlyMatch);
+            }
+          }}
+        />
+      ) : null}
 
       {interactive ? (
         <AgentPopover

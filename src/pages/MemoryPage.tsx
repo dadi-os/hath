@@ -5,7 +5,7 @@ import { MemoryGraph3D } from "../features/memory/MemoryGraph3D";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
- * Full Memory page: Yaad knowledge network as a live 3D force graph.
+ * Yaad page: the knowledge network as a live 3D force graph.
  */
 export function MemoryPage() {
   const location = useLocation();
@@ -23,8 +23,8 @@ export function MemoryPage() {
       </div>
       <div className="pointer-events-none relative z-10">
         <PageHeader
-          title="MEMORY"
-          hint="Drag to orbit · scroll to zoom · click a node · expand grows the network"
+          title="YAAD"
+          hint="Drag to orbit · scroll to zoom · hover for details · click to focus"
         />
       </div>
     </motion.div>

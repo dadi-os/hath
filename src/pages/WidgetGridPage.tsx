@@ -16,7 +16,7 @@ const tile =
 
 /**
  * Home widget grid — 4×4 on desktop.
- * Agents 2×2, Timeline 2×2, Memory 2×1, Ghar 2×1, Chaavi 1×1, System 1×2.
+ * Agents 2×2, Timeline 2×2, Yaad 2×1, Ghar 2×1, Chaavi 1×1, System 1×2.
  */
 export function WidgetGridPage() {
   const navigate = useNavigate();
@@ -62,7 +62,7 @@ export function WidgetGridPage() {
       )}
 
       <WidgetFrame
-        title="MEMORY"
+        title="YAAD"
         role="link"
         tabIndex={0}
         onClick={open("/memory")}

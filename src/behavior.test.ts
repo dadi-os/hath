@@ -40,6 +40,7 @@ import {
 } from "./features/agents/tree";
 import { createMemorySimulation, mergeGraph, type GraphData } from "./features/memory/graph";
 import { syncForceSimulation } from "./shared/components/ForceGraph";
+import { revealSchedule } from "./shared/components/ForceGraph/reveal";
 import {
   hasRememberedSessions,
   pickLiveBrowser,
@@ -566,6 +567,60 @@ describe("agent tree", () => {
     const parent = nodes.find((n) => n.id === "r3")!;
     const fresh = nodes.find((n) => n.id === "fresh")!;
     expect(Math.hypot(fresh.x - parent.x, fresh.y - parent.y, fresh.z - parent.z)).toBeLessThan(7);
+  });
+});
+
+describe("graph reveal schedule", () => {
+  const node = (id: string, degree: number) => ({ id, degree });
+  const link = (a: string, b: string) => ({ source: { id: a }, target: { id: b } });
+  const nodes = [
+    node("hub", 3),
+    node("seed", 1),
+    node("a", 2),
+    node("b", 1),
+    node("c", 2),
+    node("leaf", 1),
+    node("island", 0),
+  ];
+  const links = [
+    link("hub", "a"),
+    link("hub", "b"),
+    link("hub", "c"),
+    link("seed", "c"),
+    link("a", "leaf"),
+  ];
+
+  it("opens with the seeds in place, most-connected first", () => {
+    const schedule = revealSchedule(nodes, links, new Set(["seed", "hub"]));
+    const order = [...schedule.keys()];
+    expect(order.slice(0, 2)).toEqual(["hub", "seed"]);
+    expect(schedule.get("hub")).toEqual({ delay: 0, anchor: null });
+    expect(schedule.get("seed")!.anchor).toBeNull();
+  });
+
+  it("sprouts every other node from an earlier neighbor, after it", () => {
+    const schedule = revealSchedule(nodes, links, new Set(["seed", "hub"]));
+    const order = [...schedule.keys()];
+    const adjacent = (x: string, y: string) =>
+      links.some(
+        (l) => (l.source.id === x && l.target.id === y) || (l.source.id === y && l.target.id === x),
+      );
+    for (const [id, step] of schedule) {
+      if (step.anchor === null) {
+        continue;
+      }
+      expect(adjacent(id, step.anchor)).toBe(true);
+      expect(order.indexOf(step.anchor)).toBeLessThan(order.indexOf(id));
+      expect(step.delay).toBeGreaterThan(schedule.get(step.anchor)!.delay);
+    }
+    expect(schedule.get("leaf")!.anchor).toBe("a");
+  });
+
+  it("still reveals disconnected nodes, in place, and keeps the bloom short", () => {
+    const schedule = revealSchedule(nodes, links, new Set(["seed", "hub"]));
+    expect(schedule.size).toBe(nodes.length);
+    expect(schedule.get("island")!.anchor).toBeNull();
+    expect(Math.max(...[...schedule.values()].map((s) => s.delay))).toBeLessThan(2);
   });
 });
 

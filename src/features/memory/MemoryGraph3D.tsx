@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { isMeshOnline, yaad } from "../../shared/api";
 import type { NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
 import { useHoverDetails } from "../../hooks/useHoverDetails";
 import { useThemeTokens } from "../../hooks/useThemeTokens";
 import { ForceGraph, syncForceSimulation } from "../../shared/components/ForceGraph";
+import { GraphSearch } from "../../shared/components/GraphSearch";
 import { GraphSpace } from "../../shared/components/GraphSpace";
 import { Popover } from "../../shared/components/Popover";
 import { POLL_MS } from "../../shared/lib/ux/poll";
@@ -19,12 +20,10 @@ const KIND_TOKEN = {
   plan: "--clay",
 } as const satisfies Record<NodeKind, string>;
 const KIND_TOKENS = Object.values(KIND_TOKEN);
-/** Most-connected nodes that always carry a label (people and places always do). */
-const HUB_LABELS = 12;
 const EMPTY: GraphData = { nodes: [], edges: [] };
 
 export type MemoryGraph3DProps = {
-  /** Changes on each arrival at the page; resets the simulation, expansions, and selection. */
+  /** Changes on each arrival at the page; resets the simulation, search, and selection. */
   entranceKey: string;
   /** Extra classes on the root element. */
   className?: string;
@@ -33,7 +32,8 @@ export type MemoryGraph3DProps = {
 /**
  * Full-page Yaad knowledge network — a live 3D force-directed graph.
  * Polls `POST /graph`; new nodes sprout from the node they attach to and the
- * layout relaxes around them. "Expand neighbors" grows the network from a node.
+ * layout relaxes around them. Every non-memory node is labelled; the search box
+ * narrows to matching titles and flies to a lone match.
  */
 export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   const { state: connection } = useConnection();
@@ -41,9 +41,9 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   const connected = isMeshOnline(connection);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  const [expansions, setExpansions] = useState<GraphData>(EMPTY);
   const details = useHoverDetails(entranceKey);
   const [focusId, setFocusId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   const ambientQuery = useQuery({
     queryKey: ["yaad", "graph", entranceKey],
@@ -52,14 +52,9 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
     refetchInterval: POLL_MS,
   });
 
-  const expand = useMutation({
-    mutationFn: (id: string) => yaad.graph({ seed_ids: [id] }),
-    onSuccess: (res) => setExpansions((prev) => mergeGraph(prev, res)),
-  });
-
   useEffect(() => {
-    setExpansions(EMPTY);
     setFocusId(null);
+    setQuery("");
   }, [entranceKey]);
 
   const clearFocus = () => {
@@ -70,25 +65,37 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   const sim = useMemo(() => createMemorySimulation(), [entranceKey]);
 
   const graph = useMemo(() => {
-    const data = ambientQuery.data ? mergeGraph(expansions, ambientQuery.data) : expansions;
+    const data = ambientQuery.data ? mergeGraph(EMPTY, ambientQuery.data) : EMPTY;
     return syncForceSimulation(sim, data.nodes, data.edges);
-  }, [sim, ambientQuery.data, expansions]);
+  }, [sim, ambientQuery.data]);
 
-  const pinnedLabels = useMemo(() => {
-    const hubs = [...graph.nodes]
-      .filter((n) => n.degree > 0)
-      .sort((a, b) => b.degree - a.degree)
-      .slice(0, HUB_LABELS);
-    const anchors = graph.nodes.filter((n) => n.kind === "person" || n.kind === "place");
-    return new Set([...hubs, ...anchors].map((n) => n.id));
-  }, [graph.nodes]);
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q
+      ? new Set(graph.nodes.filter((n) => n.title.toLowerCase().includes(q)).map((n) => n.id))
+      : null;
+  }, [graph.nodes, query]);
+  const onlyMatch = matches?.size === 1 ? [...matches][0]! : null;
+
+  const pinnedLabels = useMemo(
+    () => new Set(graph.nodes.filter((n) => n.kind !== "memory").map((n) => n.id)),
+    [graph.nodes],
+  );
+
+  const revealSeeds = useMemo(
+    () =>
+      new Set(
+        graph.nodes.filter((n) => n.kind === "person" || n.kind === "place").map((n) => n.id),
+      ),
+    [graph.nodes],
+  );
 
   const selected = graph.nodes.find((n) => n.id === details.id) ?? null;
 
   if (!connected) {
     return (
       <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-ghost">Connect to load memory</p>
+        <p className="text-[13px] text-ink-ghost">Connect to load Yaad</p>
       </div>
     );
   }
@@ -97,7 +104,7 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
     return (
       <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
         <p className="text-[13px] text-ink-muted">
-          Could not load memory: {ambientQuery.error.message}
+          Could not load Yaad: {ambientQuery.error.message}
         </p>
       </div>
     );
@@ -106,7 +113,7 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   if (ambientQuery.isPending) {
     return (
       <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-ghost">Loading memory…</p>
+        <p className="text-[13px] text-ink-ghost">Loading Yaad…</p>
       </div>
     );
   }
@@ -132,8 +139,9 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
         <ForceGraph
           sim={sim}
           graph={graph}
-          focusId={focusId}
-          hold={details.id !== null || focusId !== null}
+          focusId={focusId ?? onlyMatch}
+          hold={details.id !== null || focusId !== null || matches !== null}
+          matches={matches}
           radius={(n) => nodeRadius(n.kind, n.degree)}
           look={(n) => ({
             color: theme[KIND_TOKEN[n.kind]],
@@ -143,17 +151,34 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
           })}
           labelText={(n) => truncate(n.title, 32)}
           pinnedLabels={pinnedLabels}
+          revealSeeds={revealSeeds}
           edgeLabel={(link) => link.type.replace(/_/g, " ")}
           onNodeHover={(node, at) => details.hover(node.id, at)}
           onNodeLeave={details.leave}
           onNodeClick={(node) => {
-            expand.reset();
             details.close();
             setFocusId(node.id);
           }}
-          onFocusArrive={(node, at) => details.pin(node.id, at)}
+          onFocusArrive={(node, at) => {
+            if (node.id === focusId) {
+              details.pin(node.id, at);
+            }
+          }}
         />
       </GraphSpace>
+
+      <GraphSearch
+        value={query}
+        onChange={setQuery}
+        placeholder="Search Yaad"
+        matches={matches === null ? null : matches.size}
+        onPick={() => {
+          if (onlyMatch) {
+            details.close();
+            setFocusId(onlyMatch);
+          }
+        }}
+      />
 
       <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 text-[10px] font-medium tracking-[1.5px] uppercase text-ink-muted">
         {(Object.keys(KIND_TOKEN) as NodeKind[]).map((kind) => (
@@ -201,17 +226,6 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
             <p className="text-[11px] text-ink-ghost">
               {selected.degree} {selected.degree === 1 ? "link" : "links"}
             </p>
-            <button
-              type="button"
-              disabled={expand.isPending}
-              onClick={() => expand.mutate(selected.id)}
-              className="mt-1 self-start rounded-[6px] border border-dashed border-sage-line bg-sage-fill px-2.5 py-1 text-[11px] font-medium tracking-wide text-sage-deep transition-colors duration-slow ease-hath hover:bg-sage-active disabled:opacity-50"
-            >
-              {expand.isPending ? "Expanding…" : "Expand neighbors"}
-            </button>
-            {expand.isError ? (
-              <p className="text-[11px] text-error">Could not expand: {expand.error.message}</p>
-            ) : null}
           </div>
         ) : null}
       </Popover>
