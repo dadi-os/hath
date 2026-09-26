@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
@@ -11,6 +12,7 @@ import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 export function AgentsPage() {
   const location = useLocation();
   const entranceKey = `agents:${location.key}`;
+  const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
 
   return (
     <motion.div
@@ -20,12 +22,13 @@ export function AgentsPage() {
       transition={{ duration: SLOW_S, ease: EASE }}
     >
       <div className="absolute inset-0">
-        <AgentGraph3D entranceKey={entranceKey} interactive />
+        <AgentGraph3D entranceKey={entranceKey} interactive toolbar={toolbar} />
       </div>
       <div className="pointer-events-none relative z-10">
         <PageHeader
           title="AGENTS"
           hint="Drag to orbit · scroll to zoom · hover for details · click to open in chat"
+          trailing={<div ref={setToolbar} className="flex items-center gap-2" />}
         />
       </div>
     </motion.div>

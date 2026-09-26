@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { isMeshOnline, yaad } from "../../shared/api";
 import type { NodeKind } from "../../shared/api/types";
@@ -6,9 +7,10 @@ import { useConnection } from "../../hooks/useConnection";
 import { useHoverDetails } from "../../hooks/useHoverDetails";
 import { useThemeTokens } from "../../hooks/useThemeTokens";
 import { ForceGraph, syncForceSimulation } from "../../shared/components/ForceGraph";
-import { GraphSearch } from "../../shared/components/GraphSearch";
+import { GraphPlaceholder } from "../../shared/components/GraphPlaceholder";
 import { GraphSpace } from "../../shared/components/GraphSpace";
 import { Popover } from "../../shared/components/Popover";
+import { SearchField } from "../../shared/components/SearchField";
 import { POLL_MS } from "../../shared/lib/ux/poll";
 import { createMemorySimulation, mergeGraph, nodeRadius, truncate, type GraphData } from "./graph";
 
@@ -25,6 +27,8 @@ const EMPTY: GraphData = { nodes: [], edges: [] };
 export type MemoryGraph3DProps = {
   /** Changes on each arrival at the page; resets the simulation, search, and selection. */
   entranceKey: string;
+  /** Page header slot the search box renders into; no search while null. */
+  toolbar: HTMLElement | null;
   /** Extra classes on the root element. */
   className?: string;
 };
@@ -35,7 +39,7 @@ export type MemoryGraph3DProps = {
  * layout relaxes around them. Every non-memory node is labelled; the search box
  * narrows to matching titles and flies to a lone match.
  */
-export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
+export function MemoryGraph3D({ entranceKey, toolbar, className }: MemoryGraph3DProps) {
   const { state: connection } = useConnection();
   const theme = useThemeTokens(KIND_TOKENS);
   const connected = isMeshOnline(connection);
@@ -94,36 +98,36 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
 
   if (!connected) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-ghost">Connect to load Yaad</p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder tone="offline" label="Yaad is offline" detail="Connect to the mesh to load memory" />
       </div>
     );
   }
 
   if (ambientQuery.isError) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-muted">
-          Could not load Yaad: {ambientQuery.error.message}
-        </p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder tone="error" label="Could not load Yaad" detail={ambientQuery.error.message} />
       </div>
     );
   }
 
   if (ambientQuery.isPending) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="text-[13px] text-ink-ghost">Loading Yaad…</p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder tone="loading" label="Loading Yaad" detail="Gathering people, places, and memories" />
       </div>
     );
   }
 
   if (graph.nodes.length === 0) {
     return (
-      <div className={`flex h-full items-center justify-center ${className ?? ""}`}>
-        <p className="px-4 text-center text-[13px] text-ink-ghost">
-          No people, places, or memories yet
-        </p>
+      <div className={`h-full ${className ?? ""}`}>
+        <GraphPlaceholder
+          tone="empty"
+          label="Nothing remembered yet"
+          detail="People, places, and memories appear here as Dadi learns them"
+        />
       </div>
     );
   }
@@ -167,18 +171,23 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
         />
       </GraphSpace>
 
-      <GraphSearch
-        value={query}
-        onChange={setQuery}
-        placeholder="Search Yaad"
-        matches={matches === null ? null : matches.size}
-        onPick={() => {
-          if (onlyMatch) {
-            details.close();
-            setFocusId(onlyMatch);
-          }
-        }}
-      />
+      {toolbar
+        ? createPortal(
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              placeholder="Search Yaad"
+              matches={matches === null ? null : matches.size}
+              onPick={() => {
+                if (onlyMatch) {
+                  details.close();
+                  setFocusId(onlyMatch);
+                }
+              }}
+            />,
+            toolbar,
+          )
+        : null}
 
       <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 text-[10px] font-medium tracking-[1.5px] uppercase text-ink-muted">
         {(Object.keys(KIND_TOKEN) as NodeKind[]).map((kind) => (

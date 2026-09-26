@@ -29,7 +29,8 @@ import {
   upsertConversation,
 } from "./store/chat";
 import type { ChatMessage } from "./store/chat";
-import type { DurableMessage, LogRecord } from "./shared/api/types";
+import type { DurableMessage, GharDevice, LogRecord } from "./shared/api/types";
+import { searchHouse } from "./features/ghar/house/search";
 import {
   agentGraph,
   createAgentSimulation,
@@ -1108,5 +1109,64 @@ describe("countNoun", () => {
     expect(countNoun(3, "MEMORY", "MEMORIES")).toBe("MEMORIES");
     expect(countNoun(1, "PERSON", "PEOPLE")).toBe("PERSON");
     expect(countNoun(0, "PERSON", "PEOPLE")).toBe("PEOPLE");
+  });
+});
+
+describe("searchHouse", () => {
+  const bedroom = { id: "r1", name: "Ankur's Room" };
+  const kitchen = { id: "r2", name: "Kitchen" };
+  const unplaced = { id: "r0", name: "unassigned" };
+  const device = (id: string, name: string, room: { id: string; name: string }, product: string | null = null): GharDevice => ({
+    id,
+    name,
+    product_name: product,
+    room,
+    capabilities: [],
+    online: true,
+    last_seen_at: null,
+    state: {},
+  });
+  const desk = device("d1", "Desk Lamp", bedroom, "Smart RGBTW Bulb");
+  const nightstand = device("d2", "Left Nightstand Lamp", bedroom);
+  const kettle = device("d3", "Kettle Plug", kitchen, "Smart Plug");
+  const rooms = [unplaced, bedroom, kitchen];
+  const devices = [desk, nightstand, kettle];
+
+  it("shows every room and device with no match count while the query is blank", () => {
+    const result = searchHouse("  ", rooms, devices);
+    expect(result.rooms.map((r) => r.room.id)).toEqual(["r0", "r1", "r2"]);
+    expect(result.rooms[1]?.listed).toEqual([desk, nightstand]);
+    expect(result.matches).toBeNull();
+    expect(result.lonelyDevice).toBeNull();
+  });
+
+  it("keeps only rooms holding a matching device, listing just those devices", () => {
+    const result = searchHouse("desk", rooms, devices);
+    expect(result.rooms).toEqual([{ room: bedroom, listed: [desk] }]);
+    expect(result.matches).toBe(1);
+    expect(result.lonelyDevice).toBe(desk);
+  });
+
+  it("matches product names case-insensitively", () => {
+    const result = searchHouse("SMART PLUG", rooms, devices);
+    expect(result.rooms).toEqual([{ room: kitchen, listed: [kettle] }]);
+  });
+
+  it("keeps all devices in a room whose name matches and never offers a room to Enter", () => {
+    const result = searchHouse("kitchen", rooms, devices);
+    expect(result.rooms).toEqual([{ room: kitchen, listed: [kettle] }]);
+    expect(result.matches).toBe(1);
+    expect(result.lonelyDevice).toBeNull();
+  });
+
+  it("finds the unassigned room by its shown title", () => {
+    const result = searchHouse("unplaced", rooms, devices);
+    expect(result.rooms).toEqual([{ room: unplaced, listed: [] }]);
+  });
+
+  it("returns no rooms and a zero count when nothing matches", () => {
+    const result = searchHouse("toaster", rooms, devices);
+    expect(result.rooms).toEqual([]);
+    expect(result.matches).toBe(0);
   });
 });

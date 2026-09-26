@@ -48,7 +48,7 @@ export function WidgetGridPage() {
           onKeyDown={onActivate("/agents")}
           className={`${tile} md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1`}
         >
-          <AgentGraph3D entranceKey="home-agents" interactive={false} />
+          <AgentGraph3D entranceKey="home-agents" interactive={false} toolbar={null} />
         </WidgetFrame>
       ) : (
         <WidgetFrame
@@ -91,7 +91,7 @@ export function WidgetGridPage() {
         onKeyDown={onActivate("/ghar")}
         className={`${tile} md:col-span-2 md:col-start-1 md:row-start-4`}
       >
-        <GharHouse mode="preview" />
+        <GharHouse mode="preview" toolbar={null} />
       </WidgetFrame>
 
       <WidgetFrame

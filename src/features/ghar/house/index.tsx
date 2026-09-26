@@ -9,6 +9,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ghar, isMeshOnline } from "../../../shared/api";
 import { GHAR_DEVICES_KEY, GHAR_ROOMS_KEY } from "../../../shared/api/ghar";
@@ -16,17 +17,19 @@ import type { GharDevice, GharRoom } from "../../../shared/api/types";
 import { useConnection } from "../../../hooks/useConnection";
 import { IconPlus } from "../../../shared/components/IconButton";
 import { Popover, type PopoverAnchor } from "../../../shared/components/Popover";
+import { SearchField } from "../../../shared/components/SearchField";
 import { POLL_MS } from "../../../shared/lib/ux/poll";
 import { shownError, roomTitle, UnplacedCommission } from "../commission";
 import { DeviceGlyph, glyphFor } from "./icons";
 import { DevicePopover } from "./inspector";
+import { searchHouse, type RoomRef } from "./search";
 
 export type GharHouseProps = {
   /** `preview` is the home widget: room tiles only. `full` is the page. */
   mode: "preview" | "full";
+  /** Page header slot for search and New room in `full` mode; null on the home widget. */
+  toolbar: HTMLElement | null;
 };
-
-type RoomRef = { id: string; name: string };
 
 type DragGhost = {
   id: string;
@@ -47,6 +50,12 @@ const DRAG_PX = 4;
 const TOGGLE_HOLD_MS = 280;
 const HOVER_OPEN_MS = 160;
 const HOVER_CLOSE_MS = 320;
+/**
+ * New room form anchor past the button's bottom-right corner. Popover has no room
+ * to open rightward at the header's edge, so it flips left and hangs right-aligned
+ * just under the button instead of covering the search box.
+ */
+const NEW_ROOM_ANCHOR_OFFSET = { x: 28, y: 30 };
 
 const panel =
   "flex min-h-0 min-w-0 flex-col rounded-[var(--radius)] border border-dashed px-3 py-3 transition-[border-color,background-color,box-shadow] duration-slow ease-hath";
@@ -111,7 +120,7 @@ function confirmState(queryClient: QueryClient, id: string, values: Record<strin
  * Rooms and devices. Preview tiles toggle a room and do not navigate.
  * Full mode: click a device to switch it, hover for its controls, drag it into a room.
  */
-export function GharHouse({ mode }: GharHouseProps) {
+export function GharHouse({ mode, toolbar }: GharHouseProps) {
   const { state: connection } = useConnection();
   const connected = isMeshOnline(connection);
   const queryClient = useQueryClient();
@@ -127,6 +136,7 @@ export function GharHouse({ mode }: GharHouseProps) {
   const [naming, setNaming] = useState(false);
   const [roomAnchor, setRoomAnchor] = useState<PopoverAnchor | null>(null);
   const [roomDraft, setRoomDraft] = useState("");
+  const [query, setQuery] = useState("");
   const roomButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -314,6 +324,8 @@ export function GharHouse({ mode }: GharHouseProps) {
   const dragged = devices.find((device) => device.id === drag?.id) ?? null;
   const hovered = devices.find((device) => device.id === hoverId) ?? null;
 
+  const search = searchHouse(query, panels, devices);
+
   const trouble =
     (toggle.isError ? shownError(toggle.error) : null) ??
     (brightness.isError ? shownError(brightness.error) : null) ??
@@ -491,11 +503,29 @@ export function GharHouse({ mode }: GharHouseProps) {
 
   function openNewRoom(): void {
     const button = roomButtonRef.current;
-    if (!button) {
+    const canvas = canvasRef.current;
+    if (!button || !canvas) {
       return;
     }
-    setRoomAnchor(anchorFor(button));
+    const rect = button.getBoundingClientRect();
+    const origin = canvas.getBoundingClientRect();
+    setRoomAnchor({
+      x: rect.right - origin.left + NEW_ROOM_ANCHOR_OFFSET.x,
+      y: rect.bottom - origin.top + NEW_ROOM_ANCHOR_OFFSET.y,
+    });
     setNaming(true);
+  }
+
+  /** Open a device's controls as if hovered, e.g. when search narrows to it. */
+  function showDevice(device: GharDevice): void {
+    const el = canvasRef.current?.querySelector<HTMLElement>(`[data-device-id="${device.id}"]`);
+    if (!el) {
+      return;
+    }
+    clearOpenTimer();
+    clearCloseTimer();
+    setHoverId(device.id);
+    setAnchor(anchorFor(el));
   }
 
   function submitRoom(): void {
@@ -515,19 +545,35 @@ export function GharHouse({ mode }: GharHouseProps) {
     <div ref={canvasRef} className="relative flex h-full min-h-0 flex-col">
       {!connected ? <p className="px-3 pt-1 text-[12px] text-ink-ghost">Ghar is offline</p> : null}
       {trouble ? <p className="px-3 pt-1 text-[12px] text-error">{trouble}</p> : null}
-      {mode === "full" ? (
-        <div className="flex items-center justify-end px-3 pt-1 pb-2">
-          <button
-            ref={roomButtonRef}
-            type="button"
-            onClick={openNewRoom}
-            className="inline-flex items-center gap-1.5 rounded-[7px] border border-dashed border-sage-line bg-[var(--glass-sheet)] px-3 py-1.5 text-[11px] font-medium tracking-[0.14em] text-sage-deep uppercase shadow-[var(--shadow)] transition-[border-color,background-color] duration-slow ease-hath hover:border-sage hover:bg-sage-active/50"
-          >
-            <IconPlus />
-            New room
-          </button>
-        </div>
-      ) : null}
+      {mode === "full" && toolbar
+        ? createPortal(
+            <>
+              <SearchField
+                value={query}
+                onChange={setQuery}
+                placeholder="Search Ghar"
+                matches={search.matches}
+                onPick={() => {
+                  if (search.lonelyDevice) {
+                    showDevice(search.lonelyDevice);
+                  }
+                }}
+              />
+              <button
+                ref={roomButtonRef}
+                type="button"
+                onClick={openNewRoom}
+                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[7px] border border-dashed border-sage-line bg-[var(--glass-sheet)] px-3 text-[11px] font-medium tracking-[0.14em] whitespace-nowrap text-sage-deep uppercase shadow-[var(--shadow)] transition-[border-color,background-color] duration-slow ease-hath hover:border-sage hover:bg-sage-active/50"
+              >
+                <span className="flex size-4 shrink-0">
+                  <IconPlus />
+                </span>
+                New room
+              </button>
+            </>,
+            toolbar,
+          )
+        : null}
       <div
         className={`min-h-0 flex-1 [container-type:size] ${mode === "full" ? "px-3 pb-3" : "px-2 pb-2.5 pt-0.5"}`}
       >
@@ -539,6 +585,10 @@ export function GharHouse({ mode }: GharHouseProps) {
           <div className="flex h-full items-center justify-center">
             <p className="text-[13px] text-ink-ghost">No rooms yet</p>
           </div>
+        ) : search.rooms.length === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-[13px] text-ink-ghost">No rooms or devices match “{query.trim()}”</p>
+          </div>
         ) : (
           <div
             className={
@@ -547,7 +597,7 @@ export function GharHouse({ mode }: GharHouseProps) {
                 : "grid h-full min-h-0 grid-cols-3 gap-3 overflow-y-auto [grid-auto-rows:calc((100cqh-0.75rem)/2)]"
             }
           >
-            {panels.map((room) => {
+            {search.rooms.map(({ room, listed }) => {
               const inRoom = devices.filter((device) => device.room.id === room.id);
               const lit = inRoom.some(
                 (device) => device.online && isSwitchable(device) && isOn(device),
@@ -570,7 +620,7 @@ export function GharHouse({ mode }: GharHouseProps) {
                   room={room}
                   lit={lit}
                   hot={hot}
-                  devices={inRoom}
+                  devices={listed}
                   pendingIds={pendingIds}
                   draggingId={drag?.id ?? null}
                   onFloor={() => toggleRoom(room.id)}
@@ -634,7 +684,6 @@ export function GharHouse({ mode }: GharHouseProps) {
         containerRef={canvasRef}
         aria-label="New room"
         widthPx={240}
-        caret
       >
         <form
           className="flex flex-col gap-3 px-3.5 py-3"
@@ -804,6 +853,7 @@ function DeviceMark({
 }) {
   return (
     <div
+      data-device-id={device.id}
       onPointerDown={(event) => onPointerDown(event, device)}
       onPointerMove={onPointerMove}
       onPointerUp={(event) => onPointerUp(event, device)}
