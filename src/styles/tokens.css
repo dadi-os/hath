@@ -378,7 +378,9 @@
   background: color-mix(in srgb, var(--bone) 46%, transparent);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
-  box-shadow: 0 1px 2px rgb(92 107 82 / 0.06);
+  box-shadow:
+    0 1px 2px rgb(92 107 82 / 0.06),
+    0 10px 24px -12px rgb(44 48 42 / 0.22);
 }
 
 .host-pin__live {
@@ -389,39 +391,10 @@
   background: var(--sage);
 }
 
-/*
- * Same dissolve as the composer, hanging under the floating browser.
- * The tail is short so the first message is never read through the blur.
- */
-.host-pin-fade {
-  --host-fade-tail: 1.75rem;
-  pointer-events: none;
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  height: calc(100% + var(--host-fade-tail));
-  z-index: 0;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--composer-fade-solid) 72%, transparent) 0%,
-    color-mix(in srgb, var(--composer-fade-solid) 72%, transparent) calc(100% - var(--host-fade-tail)),
-    transparent 100%
-  );
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    #000 0%,
-    #000 calc(100% - var(--host-fade-tail)),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    #000 0%,
-    #000 calc(100% - var(--host-fade-tail)),
-    transparent 100%
-  );
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
+/* Thread under a host pin: messages dissolve as they scroll up beneath it. */
+.thread-fade-top {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
 }
 
 /* Talk to Dadi routing: a thread line with a bead running down it. */

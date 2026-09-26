@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type RefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
 import { motion } from "motion/react";
 import {
   IconAttach,
@@ -35,6 +43,8 @@ export interface FloatingComposerProps {
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   /** Focus the field once this composer mounts (Talk to Dadi). */
   autoFocus?: boolean;
+  /** Reports the composer's rendered height as it grows or shrinks. */
+  onHeight: (px: number) => void;
 }
 
 /**
@@ -58,9 +68,23 @@ export function FloatingComposer({
   onSubmit,
   onKeyDown,
   autoFocus = false,
+  onHeight,
 }: FloatingComposerProps) {
   const [attachOpen, setAttachOpen] = useState(false);
   const attachRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) {
+      return;
+    }
+    const report = () => onHeight(Math.ceil(el.getBoundingClientRect().height));
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [onHeight]);
 
   useEffect(() => {
     if (!attachOpen) {
@@ -91,6 +115,7 @@ export function FloatingComposer({
 
   return (
     <motion.div
+      ref={rootRef}
       className="pointer-events-none absolute inset-x-0 bottom-0 z-20"
       style={{
         paddingBottom: "max(0.65rem, env(safe-area-inset-bottom))",

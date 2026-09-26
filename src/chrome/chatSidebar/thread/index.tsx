@@ -11,9 +11,10 @@ export interface ThreadViewProps {
   scrollRef: RefObject<HTMLDivElement | null>;
   onScroll: (e: UIEvent<HTMLDivElement>) => void;
   onDismissKeyboard: () => void;
+  /** Measured space under the floating composer, so the last line clears it. */
   composerPad: number;
-  /** Space under a floating browser pin. Zero when the thread has no browser. */
-  hostPad: number;
+  /** A host pin sits above the pane; dissolve messages as they scroll under it. */
+  fadeTop: boolean;
   settledMessages: ChatMessage[];
   queuedMessages: ChatMessage[];
   /** Open agent id for live tool-preview log polls. */
@@ -43,7 +44,7 @@ export function ThreadView({
   onScroll,
   onDismissKeyboard,
   composerPad,
-  hostPad,
+  fadeTop,
   settledMessages,
   queuedMessages,
   agentId,
@@ -83,7 +84,7 @@ export function ThreadView({
       {isEmpty && load ? (
         <div
           className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center px-8 [&>*]:pointer-events-auto"
-          style={{ paddingBottom: composerPad, paddingTop: hostPad }}
+          style={{ paddingBottom: composerPad }}
         >
           {load.error ? (
             <p role="alert" className="max-w-[16rem] text-center text-[13px] leading-relaxed text-error">
@@ -98,11 +99,10 @@ export function ThreadView({
         ref={scrollRef}
         onScroll={onScroll}
         onClick={onDismissKeyboard}
-        className="h-full overflow-y-auto overscroll-contain px-3.5 py-4"
-        style={{
-          paddingBottom: composerPad,
-          paddingTop: hostPad > 0 ? hostPad : undefined,
-        }}
+        className={`h-full overflow-y-auto overscroll-contain px-3.5 py-4 ${
+          fadeTop ? "thread-fade-top" : ""
+        }`}
+        style={{ paddingBottom: composerPad }}
       >
         <div className="flex flex-col gap-4">
           <AnimatePresence initial={false}>

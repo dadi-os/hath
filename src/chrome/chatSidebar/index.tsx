@@ -59,10 +59,8 @@ import { POLL_MS } from "../../shared/lib/ux/poll";
 import { logLine } from "../../shared/lib/platform/log";
 import { FloatingComposer } from "./composer";
 import {
-  COMPOSER_PAD,
-  COMPOSER_PAD_WITH_ATTACH,
+  COMPOSER_GAP,
   HISTORY_LOG_LIMIT,
-  HOST_PIN_GAP,
   NEAR_BOTTOM_PX,
   TEXTAREA_MAX_PX,
   THREAD_REFRESH_MS,
@@ -131,8 +129,8 @@ export function ChatSidebar({
     agentId: string;
     error: string | null;
   } | null>(null);
-  /** Measured floating browser pin height (0 when none). */
-  const [hostPinHeight, setHostPinHeight] = useState(0);
+  /** Measured floating composer height; the thread pads by it so text clears it. */
+  const [composerHeight, setComposerHeight] = useState(0);
   const refreshThreadRef = useRef<(() => void) | null>(null);
 
   const dadiBusy = isDadiBusy();
@@ -233,7 +231,7 @@ export function ChatSidebar({
       return;
     }
     el.scrollTop = el.scrollHeight;
-  }, [threadMessages, conversationBusy, reasoningBusy, viewingThread]);
+  }, [threadMessages, conversationBusy, reasoningBusy, viewingThread, composerHeight]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -608,8 +606,7 @@ export function ChatSidebar({
     connected &&
     !dadiBusy &&
     (draft.trim().length > 0 || draftAttachments.length > 0);
-  const composerPad =
-    draftAttachments.length > 0 ? COMPOSER_PAD_WITH_ATTACH : COMPOSER_PAD;
+  const composerPad = composerHeight + COMPOSER_GAP;
 
   const { settled: settledMessages, queued: queuedMessages } = partitionByQueued(
     threadMessages,
@@ -635,7 +632,7 @@ export function ChatSidebar({
           terminalsQuery.data,
         )
       : null;
-  const showHostOverlay =
+  const showHostPin =
     viewingThread && (liveBrowserId !== null || liveTerminal !== null);
 
   const showListInDrawer = isMobile;
@@ -771,11 +768,8 @@ export function ChatSidebar({
                   </div>
                 ) : null}
                 <div className="relative flex min-h-0 flex-1 flex-col">
-                  {showHostOverlay && liveBrowserId === null ? (
-                    <HostPin
-                      browserId={null}
-                      terminal={liveTerminal}
-                    />
+                  {showHostPin ? (
+                    <HostPin browserId={liveBrowserId} terminal={liveTerminal} />
                   ) : null}
                   <div className="relative min-h-0 flex-1">
                     {openAgentId ? (
@@ -784,11 +778,7 @@ export function ChatSidebar({
                       onScroll={onScroll}
                       onDismissKeyboard={dismissKeyboard}
                       composerPad={composerPad}
-                      hostPad={
-                        liveBrowserId !== null && hostPinHeight > 0
-                          ? hostPinHeight + HOST_PIN_GAP
-                          : 0
-                      }
+                      fadeTop={showHostPin}
                       settledMessages={settledMessages}
                       queuedMessages={queuedMessages}
                       agentId={openAgentId}
@@ -819,14 +809,6 @@ export function ChatSidebar({
                         });
                       }}
                     />
-                    ) : null}
-                    {liveBrowserId !== null ? (
-                      <HostPin
-                        browserId={liveBrowserId}
-                        terminal={liveTerminal}
-                        floating
-                        onHeight={setHostPinHeight}
-                      />
                     ) : null}
                   </div>
                 </div>
@@ -885,6 +867,7 @@ export function ChatSidebar({
               onSubmit={onSubmit}
               onKeyDown={onKeyDown}
               autoFocus={viewingDadi}
+              onHeight={setComposerHeight}
             />
           ) : null}
         </AnimatePresence>
