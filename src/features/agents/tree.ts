@@ -33,9 +33,9 @@ export type NodeVisual =
   | "both";
 
 /** Radius of the shell top-level agents sit on. */
-const ROOT_SHELL = 42;
+const ROOT_SHELL = 75;
 /** Extra radius per level of depth; also the parent → child spring length. */
-const SHELL_STEP = 34;
+const SHELL_STEP = 60;
 
 /**
  * Agents with depth plus parent → child edges. A null or dangling parent makes the
@@ -91,7 +91,7 @@ export function agentRadius(depth: number, dormant: boolean): number {
 export function createAgentSimulation(): AgentSimulation {
   return forceSimulation<AgentNode, ForceLinkDatum<AgentGraphNode, AgentEdge>>([], 3)
     .stop()
-    .force("charge", forceManyBody<AgentNode>().strength(-90).distanceMax(260))
+    .force("charge", forceManyBody<AgentNode>().strength(-220).distanceMax(500))
     .force(
       "link",
       forceLink<AgentNode, ForceLinkDatum<AgentGraphNode, AgentEdge>>([])
@@ -100,7 +100,7 @@ export function createAgentSimulation(): AgentSimulation {
         .strength(0.7),
     )
     .force("radial", forceRadial<AgentNode>((n) => shellRadius(n.depth)).strength(0.9))
-    .force("collide", forceCollide<AgentNode>((n) => agentRadius(n.depth, !n.active) + 2));
+    .force("collide", forceCollide<AgentNode>((n) => agentRadius(n.depth, !n.active) + 6));
 }
 
 /**

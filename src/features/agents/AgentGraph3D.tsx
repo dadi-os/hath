@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { dimaag, isMeshOnline, nas } from "../../shared/api";
 import type { AgentRecord } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
+import { useHoverDetails } from "../../hooks/useHoverDetails";
 import { useThemeTokens } from "../../hooks/useThemeTokens";
 import { AGENTS_QUERY_KEY } from "../../hooks/useEvents";
 import { POLL_MS } from "../../shared/lib/ux/poll";
@@ -34,9 +35,6 @@ import {
   type NodeVisual,
 } from "./tree";
 
-const DETAIL_DELAY_MS = 160;
-const DETAIL_CLOSE_MS = 320;
-
 /**
  * On the page, forests at or below this size label every agent; larger ones label
  * roots and live agents. The home tile labels live agents only.
@@ -56,29 +54,18 @@ export type AgentGraph3DProps = {
   className?: string;
 };
 
-/** Surface for each agent lane; dimmed agents fade behind the focused one. */
-function agentLook(
-  theme: AgentTheme,
-  visual: NodeVisual,
-  selected: boolean,
-  dimmed: boolean,
-): ForceGraphNodeLook {
-  const fade = dimmed ? 0.3 : 1;
+/** Resting surface for each agent lane. */
+function agentLook(theme: AgentTheme, visual: NodeVisual): ForceGraphNodeLook {
   if (visual === "dormant") {
-    return { color: theme["--ink-faint"], opacity: 0.8 * fade, emissiveIntensity: 0, wireframe: true };
+    return { color: theme["--ink-faint"], opacity: 0.8, emissiveIntensity: 0, wireframe: true };
   }
   if (visual === "idle") {
-    return {
-      color: theme["--sage"],
-      opacity: fade,
-      emissiveIntensity: selected ? 0.4 : 0.1,
-      wireframe: false,
-    };
+    return { color: theme["--sage"], opacity: 1, emissiveIntensity: 0.1, wireframe: false };
   }
   if (visual === "reasoning") {
-    return { color: theme["--sage-deep"], opacity: 0.6 * fade, emissiveIntensity: 0.4, wireframe: false };
+    return { color: theme["--sage-deep"], opacity: 0.6, emissiveIntensity: 0.4, wireframe: false };
   }
-  return { color: theme["--sage-deep"], opacity: fade, emissiveIntensity: 0.5, wireframe: false };
+  return { color: theme["--sage-deep"], opacity: 1, emissiveIntensity: 0.5, wireframe: false };
 }
 
 /** Breathing translucent shell around an agent that is mid-flight. */
@@ -163,70 +150,18 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
     [graph.nodes, runningMap, interactive],
   );
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
-  const detailTimerRef = useRef<number | null>(null);
-  const closeTimerRef = useRef<number | null>(null);
-
-  const clearDetailTimer = () => {
-    if (detailTimerRef.current !== null) {
-      window.clearTimeout(detailTimerRef.current);
-      detailTimerRef.current = null;
-    }
-  };
-
-  const clearCloseTimer = () => {
-    if (closeTimerRef.current !== null) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  };
-
-  const hideDetails = () => {
-    clearDetailTimer();
-    clearCloseTimer();
-    setSelectedId(null);
-    setAnchor(null);
-  };
-
-  useEffect(() => () => {
-    clearDetailTimer();
-    clearCloseTimer();
-  }, []);
+  const details = useHoverDetails(entranceKey);
+  const [focusId, setFocusId] = useState<string | null>(null);
 
   useEffect(() => {
-    hideDetails();
+    setFocusId(null);
   }, [entranceKey]);
 
-  const scheduleDetails = (agentId: string, at: { x: number; y: number }) => {
-    clearCloseTimer();
-    if (selectedId === agentId) {
-      setAnchor(at);
-      return;
-    }
-    clearDetailTimer();
-    detailTimerRef.current = window.setTimeout(() => {
-      setSelectedId(agentId);
-      setAnchor(at);
-    }, DETAIL_DELAY_MS);
-  };
-
-  const scheduleClose = () => {
-    clearDetailTimer();
-    clearCloseTimer();
-    closeTimerRef.current = window.setTimeout(() => {
-      setSelectedId(null);
-      setAnchor(null);
-    }, DETAIL_CLOSE_MS);
-  };
-
-  const movePopoverToAgent = (agentId: string) => {
-    clearCloseTimer();
-    setSelectedId(agentId);
+  const showParent = (agentId: string) => {
     if (!rootRef.current) {
       return;
     }
-    setAnchor({
+    details.pin(agentId, {
       x: rootRef.current.clientWidth / 2,
       y: rootRef.current.clientHeight / 2,
     });
@@ -266,7 +201,7 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
     );
   }
 
-  const detailAgent = selectedId ? agentsById.get(selectedId) : undefined;
+  const detailAgent = details.id ? agentsById.get(details.id) : undefined;
   const detailBrowserId =
     detailAgent && browsersQuery.isSuccess
       ? pickLiveBrowser(detailAgent.sessions.browsers, browsersQuery.data)
@@ -281,16 +216,20 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
       <GraphSpace
         key={entranceKey}
         interactive={interactive}
-        cameraPosition={[0, 50, 200]}
+        cameraPosition={[0, 60, 300]}
+        onBackgroundClick={() => {
+          setFocusId(null);
+          details.close();
+        }}
       >
         <ForceGraph
           sim={sim}
           graph={graph}
-          selectedId={selectedId}
+          focusId={focusId}
+          hold={details.id !== null || focusId !== null}
           radius={(n) => agentRadius(n.depth, !n.active)}
-          look={(n, { selected, dimmed }) =>
-            agentLook(theme, visualState(n, runningMap[n.id]), selected, dimmed)
-          }
+          look={(n) => agentLook(theme, visualState(n, runningMap[n.id]))}
+          edgeLabel={(link, id) => (link.source.id === id ? "sub-agent" : "parent")}
           labelText={(n) => (n.name.length > 30 ? `${n.name.slice(0, 29)}…` : n.name)}
           pinnedLabels={pinnedLabels}
           decorate={(n, r) => {
@@ -307,12 +246,13 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
               </>
             );
           }}
-          onNodeHover={interactive ? (n, at) => scheduleDetails(n.id, at) : undefined}
-          onNodeLeave={interactive ? scheduleClose : undefined}
+          onNodeHover={interactive ? (n, at) => details.hover(n.id, at) : undefined}
+          onNodeLeave={interactive ? details.leave : undefined}
           onNodeClick={
             interactive
               ? (n) => {
-                  hideDetails();
+                  details.close();
+                  setFocusId(n.id);
                   openAgent(n.id);
                 }
               : undefined
@@ -322,18 +262,18 @@ export function AgentGraph3D({ entranceKey, interactive, className }: AgentGraph
 
       {interactive ? (
         <AgentPopover
-          open={selectedId !== null && anchor !== null}
-          agentId={selectedId}
+          open={details.id !== null && details.anchor !== null}
+          agentId={details.id}
           agentsById={agentsById}
           runningMap={runningMap}
-          anchor={anchor}
+          anchor={details.anchor}
           containerRef={rootRef as RefObject<HTMLElement | null>}
           browserId={detailBrowserId}
           terminal={detailTerminal}
-          onHoverStart={clearCloseTimer}
-          onHoverEnd={scheduleClose}
-          onClose={hideDetails}
-          onSelectParent={movePopoverToAgent}
+          onHoverStart={details.keep}
+          onHoverEnd={details.leave}
+          onClose={details.close}
+          onSelectParent={showParent}
         />
       ) : null}
     </div>

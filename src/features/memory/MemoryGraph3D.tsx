@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { isMeshOnline, yaad } from "../../shared/api";
 import type { NodeKind } from "../../shared/api/types";
 import { useConnection } from "../../hooks/useConnection";
+import { useHoverDetails } from "../../hooks/useHoverDetails";
 import { useThemeTokens } from "../../hooks/useThemeTokens";
 import { ForceGraph, syncForceSimulation } from "../../shared/components/ForceGraph";
 import { GraphSpace } from "../../shared/components/GraphSpace";
@@ -18,7 +19,7 @@ const KIND_TOKEN = {
   plan: "--clay",
 } as const satisfies Record<NodeKind, string>;
 const KIND_TOKENS = Object.values(KIND_TOKEN);
-/** Most-connected nodes that keep a label when nothing is selected. */
+/** Most-connected nodes that always carry a label (people and places always do). */
 const HUB_LABELS = 12;
 const EMPTY: GraphData = { nodes: [], edges: [] };
 
@@ -41,8 +42,8 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   const [expansions, setExpansions] = useState<GraphData>(EMPTY);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  const details = useHoverDetails(entranceKey);
+  const [focusId, setFocusId] = useState<string | null>(null);
 
   const ambientQuery = useQuery({
     queryKey: ["yaad", "graph", entranceKey],
@@ -58,9 +59,13 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
 
   useEffect(() => {
     setExpansions(EMPTY);
-    setSelectedId(null);
-    setAnchor(null);
+    setFocusId(null);
   }, [entranceKey]);
+
+  const clearFocus = () => {
+    details.close();
+    setFocusId(null);
+  };
 
   const sim = useMemo(() => createMemorySimulation(), [entranceKey]);
 
@@ -69,19 +74,16 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
     return syncForceSimulation(sim, data.nodes, data.edges);
   }, [sim, ambientQuery.data, expansions]);
 
-  const hubs = useMemo(
-    () =>
-      new Set(
-        [...graph.nodes]
-          .filter((n) => n.degree > 0)
-          .sort((a, b) => b.degree - a.degree)
-          .slice(0, HUB_LABELS)
-          .map((n) => n.id),
-      ),
-    [graph.nodes],
-  );
+  const pinnedLabels = useMemo(() => {
+    const hubs = [...graph.nodes]
+      .filter((n) => n.degree > 0)
+      .sort((a, b) => b.degree - a.degree)
+      .slice(0, HUB_LABELS);
+    const anchors = graph.nodes.filter((n) => n.kind === "person" || n.kind === "place");
+    return new Set([...hubs, ...anchors].map((n) => n.id));
+  }, [graph.nodes]);
 
-  const selected = graph.nodes.find((n) => n.id === selectedId) ?? null;
+  const selected = graph.nodes.find((n) => n.id === details.id) ?? null;
 
   if (!connected) {
     return (
@@ -121,25 +123,35 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
 
   return (
     <div ref={rootRef} className={`relative h-full min-h-0 w-full ${className ?? ""}`}>
-      <GraphSpace key={entranceKey} interactive cameraPosition={[0, 60, 220]}>
+      <GraphSpace
+        key={entranceKey}
+        interactive
+        cameraPosition={[0, 60, 260]}
+        onBackgroundClick={clearFocus}
+      >
         <ForceGraph
           sim={sim}
           graph={graph}
-          selectedId={selectedId}
+          focusId={focusId}
+          hold={details.id !== null || focusId !== null}
           radius={(n) => nodeRadius(n.kind, n.degree)}
-          look={(n, { selected: isSelected, dimmed }) => ({
+          look={(n) => ({
             color: theme[KIND_TOKEN[n.kind]],
-            opacity: dimmed ? 0.22 : 1,
-            emissiveIntensity: isSelected ? 0.5 : 0.12,
+            opacity: 1,
+            emissiveIntensity: 0.12,
             wireframe: false,
           })}
           labelText={(n) => truncate(n.title, 32)}
-          pinnedLabels={hubs}
-          onNodeClick={(node, at) => {
+          pinnedLabels={pinnedLabels}
+          edgeLabel={(link) => link.type.replace(/_/g, " ")}
+          onNodeHover={(node, at) => details.hover(node.id, at)}
+          onNodeLeave={details.leave}
+          onNodeClick={(node) => {
             expand.reset();
-            setSelectedId(node.id);
-            setAnchor(at);
+            details.close();
+            setFocusId(node.id);
           }}
+          onFocusArrive={(node, at) => details.pin(node.id, at)}
         />
       </GraphSpace>
 
@@ -156,14 +168,13 @@ export function MemoryGraph3D({ entranceKey, className }: MemoryGraph3DProps) {
       </div>
 
       <Popover
-        open={selected !== null && anchor !== null}
+        open={selected !== null && details.anchor !== null}
         aria-label={selected ? selected.title : "Node"}
-        anchor={anchor === null ? { x: 0, y: 0 } : anchor}
+        anchor={details.anchor ?? { x: 0, y: 0 }}
         containerRef={rootRef as RefObject<HTMLElement | null>}
-        onClose={() => {
-          setSelectedId(null);
-          setAnchor(null);
-        }}
+        onClose={clearFocus}
+        onMouseEnter={details.keep}
+        onMouseLeave={details.leave}
         widthPx={300}
       >
         {selected ? (

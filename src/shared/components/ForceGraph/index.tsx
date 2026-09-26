@@ -3,7 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { Billboard, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { useThemeTokens } from "../../../hooks/useThemeTokens";
-import type { ForceEdge, ForceNode, SyncedForceGraph } from "./simulation";
+import type { ForceEdge, ForceLinkResolved, ForceNode, SyncedForceGraph } from "./simulation";
 
 export {
   syncForceSimulation,
@@ -17,8 +17,8 @@ export {
 
 /**
  * Camera distance and canvas height (px) at which labels render at their authored
- * size. Each label scales with its own node's distance and the canvas height, so
- * every label has the same on-screen size, near or far, on a page or a tile.
+ * size. Each label scales with its own distance and the canvas height, so every
+ * label has the same on-screen size, near or far, on a page or a tile.
  */
 const LABEL_DISTANCE = 210;
 const LABEL_VIEWPORT = 760;
@@ -26,17 +26,40 @@ const LABEL_VIEWPORT = 760;
 const LABEL_SIZE = 2.4;
 /** Screen-constant gap between a node's silhouette and its label, in label-scaled units. */
 const LABEL_GAP = 0.9;
-/** Radians per second the camera circles the graph before the user takes over. */
+/** Radians per second the camera circles the graph while idle. */
 const ORBIT_SPEED = 0.12;
-const THEME = ["--bone", "--sage-line", "--sage-deep", "--rule", "--ink-muted", "--ink-ghost"] as const;
+/** Node scale targets: focused nodes pop, hovered nodes lift. */
+const FOCUS_SCALE = 1.35;
+const HOVER_SCALE = 1.2;
+/** Spring constants for node scale; underdamped so focus reads as a pop. */
+const SPRING_STIFFNESS = 170;
+const SPRING_DAMPING = 15;
+/** Exponential easing rates (per second) for fades and the link sweep. */
+const FADE_RATE = 9;
+const SWEEP_RATE = 7;
+/** Link brightness the near end must reach before the sweep continues to the far end. */
+const SWEEP_HANDOFF = 0.75;
+/** Exponential rate (per second) of the camera flight to a focused node. */
+const FLIGHT_RATE = 4;
+/** Flight is done once the camera is this close (fraction of its distance) to where it is heading. */
+const FLIGHT_ARRIVED = 0.02;
+/** Link brightness toward a hovered node. */
+const HOVER_LINK = 0.6;
+const THEME = [
+  "--bone",
+  "--sage-line",
+  "--sage-deep",
+  "--rule",
+  "--ink-muted",
+] as const;
 
-/** Surface material for one node. */
+/** Surface material for one node, before hover and focus effects. */
 export type ForceGraphNodeLook = {
   /** Base and emissive color. */
   color: string;
-  /** Below 1 renders transparent. */
+  /** Resting opacity; unrelated nodes fade below this while another node is focused. */
   opacity: number;
-  /** Self-glow strength; raise for selected or live nodes. */
+  /** Resting self-glow; hover and focus add to it. */
   emissiveIntensity: number;
   /** Draw the sphere as a wire cage (used for dormant agents). */
   wireframe: boolean;
@@ -50,70 +73,97 @@ export type ForceGraphProps<R extends { id: string }, E extends ForceEdge> = {
   sim: { tick: () => unknown; alpha: () => number; alphaMin: () => number };
   /** Output of `syncForceSimulation` for the current data. */
   graph: SyncedForceGraph<R, E>;
-  /** Focused node: it, its neighbors, and their links stay bright; the rest dims. */
-  selectedId: string | null;
+  /**
+   * Clicked node. It pops, the camera flies in until its neighborhood fills the view,
+   * its links light up sweeping outward and gain `edgeLabel` annotations, and
+   * unrelated nodes fade back. Orbiting then revolves around it; clearing it lets
+   * the idle framing glide back out.
+   */
+  focusId: string | null;
+  /** Freeze the idle orbit and framing (e.g. while a details popover is open). Hover always freezes. */
+  hold: boolean;
   /** Sphere radius in world units. */
   radius: (node: ForceNode<R>) => number;
-  /** Surface material; `dimmed` is true when another node is focused. */
-  look: (node: ForceNode<R>, state: { selected: boolean; dimmed: boolean }) => ForceGraphNodeLook;
+  /** Resting surface material. */
+  look: (node: ForceNode<R>) => ForceGraphNodeLook;
   /** Text of the label under the node. */
   labelText: (node: ForceNode<R>) => string;
-  /** Ids labelled while nothing is focused. Focus and hover are always labelled. */
+  /** Ids that always carry a label. The hovered node and the focus neighborhood are labelled too. */
   pinnedLabels: Set<string>;
+  /** Annotation drawn on a link of the focused node; omit for no annotations. */
+  edgeLabel?: (link: ForceLinkResolved<R, E>, focusId: string) => string;
   /** Extra meshes drawn inside the node's group (halos, cores). */
   decorate?: (node: ForceNode<R>, radius: number) => ReactNode;
-  /** Node clicked; omit for a view-only graph (also drops the pointer cursor). */
+  /** Node clicked; `at` is the node's screen position. Omit for a view-only graph. */
   onNodeClick?: (node: ForceNode<R>, at: ForceGraphPoint) => void;
-  /** Pointer entered a node. */
+  /** Pointer entered a node; `at` is the node's screen position. */
   onNodeHover?: (node: ForceNode<R>, at: ForceGraphPoint) => void;
   /** Pointer left a node. */
   onNodeLeave?: () => void;
+  /** Camera finished flying to the focused node; `at` is its screen position there. */
+  onFocusArrive?: (node: ForceNode<R>, at: ForceGraphPoint) => void;
 };
 
 /** Orbit controls surface this scene drives (GraphSpace registers them as default). */
 type Orbit = {
   target: THREE.Vector3;
-  autoRotate: boolean;
-  autoRotateSpeed: number;
   addEventListener: (type: "start", listener: () => void) => void;
   removeEventListener: (type: "start", listener: () => void) => void;
 };
 
-/** A mounted label and the radius of the node it hangs from. */
-type LabelMount = { group: THREE.Group; radius: number };
+/** Troika text mesh fields animated per frame. */
+type FadingText = THREE.Mesh & { fillOpacity: number; outlineOpacity: number };
+
+
+/** Per-node animation state carried across frames. */
+type NodeMotion = { scale: number; velocity: number; visible: number; glow: number };
+
+/** Scale a text group so it keeps one on-screen size at its distance from the camera. */
+function screenScale(camera: THREE.Camera, at: THREE.Vector3, height: number): number {
+  return (camera.position.distanceTo(at) * LABEL_VIEWPORT) / height / LABEL_DISTANCE;
+}
 
 /**
  * Live 3D force-directed graph, rendered inside a `GraphSpace`.
  *
- * Ticks the simulation once per frame and writes positions straight into meshes and
- * one edge buffer, so React only re-renders on membership, focus, look, or theme
- * changes. Until the user grabs the camera it slowly circles and keeps the whole
- * graph framed; without orbit controls (non-interactive spaces) it always does. Fog
- * follows the camera so the far side fades. Labels draw on top of everything, ignore
- * fog, keep a constant screen size, and sit just below their node on screen from any
- * viewing angle.
+ * Ticks the simulation once per frame and writes positions, colors, and fades
+ * straight into meshes and one edge buffer, so hover and focus animate smoothly
+ * without re-rendering React. Nodes grow in when they first appear. Until the user
+ * grabs the camera it slowly circles and keeps the whole graph framed, freezing the
+ * instant a node is hovered or `hold` is set so targets stay under the pointer;
+ * fog follows the camera so the far side fades. Labels draw on top without fog,
+ * keep one on-screen size, and sit just below their node from any viewing angle.
  */
 export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
   sim,
   graph,
-  selectedId,
+  focusId,
+  hold,
   radius,
   look,
   labelText,
   pinnedLabels,
+  edgeLabel,
   decorate,
   onNodeClick,
   onNodeHover,
   onNodeLeave,
+  onFocusArrive,
 }: ForceGraphProps<R, E>) {
   const { camera, controls, scene, gl, size } = useThree();
   const theme = useThemeTokens(THEME);
   const groups = useRef(new Map<string, THREE.Group>());
-  const labels = useRef(new Map<string, LabelMount>());
+  const meshes = useRef(new Map<string, THREE.Mesh>());
+  const labelGroups = useRef(new Map<string, THREE.Group>());
+  const labelTexts = useRef(new Map<string, FadingText>());
+  const noteGroups = useRef(new Map<string, THREE.Group>());
+  const noteTexts = useRef(new Map<string, FadingText>());
+  const motion = useRef(new Map<string, NodeMotion>());
   const userMoved = useRef(false);
+  const arrivedAt = useRef<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const sphere = useMemo(() => new THREE.SphereGeometry(1, 20, 16), []);
-  const labelMaterial = useMemo(
+  const textMaterial = useMemo(
     () =>
       new THREE.MeshBasicMaterial({
         depthTest: false,
@@ -124,10 +174,18 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
       }),
     [],
   );
-  const centroid = useMemo(() => new THREE.Vector3(), []);
-  const target = useMemo(() => new THREE.Vector3(), []);
-  const offset = useMemo(() => new THREE.Vector3(), []);
-  const down = useMemo(() => new THREE.Vector3(), []);
+  const scratch = useMemo(
+    () => ({
+      centroid: new THREE.Vector3(),
+      target: new THREE.Vector3(),
+      offset: new THREE.Vector3(),
+      down: new THREE.Vector3(),
+      mid: new THREE.Vector3(),
+      project: new THREE.Vector3(),
+      color: new THREE.Color(),
+    }),
+    [],
+  );
   const edgeColors = useMemo(
     () => ({
       base: new THREE.Color(theme["--sage-line"]),
@@ -138,72 +196,88 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
   );
 
   useEffect(() => () => sphere.dispose(), [sphere]);
-  useEffect(() => () => labelMaterial.dispose(), [labelMaterial]);
+  useEffect(() => () => textMaterial.dispose(), [textMaterial]);
 
   useEffect(() => {
     const orbit = controls as unknown as Orbit | null;
     if (!orbit) {
       return;
     }
-    orbit.autoRotate = !userMoved.current;
-    orbit.autoRotateSpeed = (ORBIT_SPEED * 30) / Math.PI;
     const release = () => {
       userMoved.current = true;
-      orbit.autoRotate = false;
     };
     orbit.addEventListener("start", release);
     return () => orbit.removeEventListener("start", release);
   }, [controls]);
 
-  const edgeGeometry = useMemo(() => {
+  const edges = useMemo(() => {
     const geometry = new THREE.BufferGeometry();
     const length = graph.links.length * 6;
     geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(length), 3));
     geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(length), 3));
-    return geometry;
+    return { geometry, brightness: new Float32Array(graph.links.length * 2) };
   }, [graph.links]);
 
-  useEffect(() => () => edgeGeometry.dispose(), [edgeGeometry]);
+  useEffect(() => () => edges.geometry.dispose(), [edges]);
+
+  useEffect(() => {
+    const live = new Set(graph.nodes.map((n) => n.id));
+    for (const id of motion.current.keys()) {
+      if (!live.has(id)) {
+        motion.current.delete(id);
+      }
+    }
+  }, [graph.nodes]);
 
   const focus = useMemo(() => {
     const ids = new Set<string>();
-    if (selectedId) {
-      ids.add(selectedId);
+    if (focusId) {
+      ids.add(focusId);
       for (const l of graph.links) {
-        if (l.source.id === selectedId) {
+        if (l.source.id === focusId) {
           ids.add(l.target.id);
-        } else if (l.target.id === selectedId) {
+        } else if (l.target.id === focusId) {
           ids.add(l.source.id);
         }
       }
     }
     return ids;
-  }, [graph.links, selectedId]);
+  }, [graph.links, focusId]);
 
-  useEffect(() => {
-    const colors = edgeGeometry.getAttribute("color") as THREE.BufferAttribute;
-    graph.links.forEach((l, i) => {
-      const touches =
-        selectedId !== null && (l.source.id === selectedId || l.target.id === selectedId);
-      const color =
-        selectedId === null ? edgeColors.base : touches ? edgeColors.focus : edgeColors.dim;
-      colors.setXYZ(i * 2, color.r, color.g, color.b);
-      colors.setXYZ(i * 2 + 1, color.r, color.g, color.b);
-    });
-    colors.needsUpdate = true;
-  }, [edgeGeometry, edgeColors, graph.links, selectedId]);
+  const annotated = useMemo(
+    () =>
+      focusId && edgeLabel
+        ? graph.links.filter((l) => l.source.id === focusId || l.target.id === focusId)
+        : [],
+    [graph.links, focusId, edgeLabel],
+  );
 
   useEffect(() => {
     gl.domElement.style.cursor = hoveredId && onNodeClick ? "pointer" : "";
   }, [gl, hoveredId, onNodeClick]);
 
-  useFrame((_, delta) => {
+  /** Canvas-relative screen position of a node's center. */
+  const toScreen = (node: ForceNode<R>): ForceGraphPoint => {
+    scratch.project.set(node.x, node.y, node.z).project(camera);
+    return {
+      x: ((scratch.project.x + 1) / 2) * size.width,
+      y: ((1 - scratch.project.y) / 2) * size.height,
+    };
+  };
+
+  useEffect(() => {
+    arrivedAt.current = null;
+  }, [focusId]);
+
+  useFrame((_, rawDelta) => {
+    const dt = Math.min(rawDelta, 0.05);
     if (sim.alpha() > sim.alphaMin()) {
       sim.tick();
     }
     if (graph.nodes.length === 0) {
       return;
     }
+    const { centroid, target, offset, down, mid, color } = scratch;
 
     centroid.set(0, 0, 0);
     for (const n of graph.nodes) {
@@ -218,23 +292,40 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
       extent = Math.max(extent, Math.hypot(n.x - centroid.x, n.y - centroid.y, n.z - centroid.z));
     }
 
-    const positions = edgeGeometry.getAttribute("position") as THREE.BufferAttribute;
-    graph.links.forEach((l, i) => {
-      positions.setXYZ(i * 2, l.source.x, l.source.y, l.source.z);
-      positions.setXYZ(i * 2 + 1, l.target.x, l.target.y, l.target.z);
-    });
-    positions.needsUpdate = true;
-
     const orbit = controls as unknown as Orbit | null;
     const pivot = orbit ? orbit.target : target;
-    if (!userMoved.current) {
+    const fov = THREE.MathUtils.degToRad((camera as THREE.PerspectiveCamera).fov);
+    const focused = focusId === null ? undefined : graph.nodes.find((n) => n.id === focusId);
+    if (focused) {
+      let reach = 0;
+      for (const n of graph.nodes) {
+        if (focus.has(n.id)) {
+          reach = Math.max(reach, Math.hypot(n.x - focused.x, n.y - focused.y, n.z - focused.z));
+        }
+      }
+      const want = (reach + 20) / Math.sin(fov / 2);
+      const k = 1 - Math.exp(-dt * FLIGHT_RATE);
+      mid.set(focused.x, focused.y, focused.z);
+      const gap = pivot.distanceTo(mid);
+      offset.copy(camera.position).sub(pivot);
+      const distance = offset.length();
+      pivot.lerp(mid, k);
+      offset.setLength(distance + (want - distance) * k);
+      camera.position.copy(pivot).add(offset);
+      if (!orbit) {
+        camera.lookAt(pivot);
+      }
+      const arrived =
+        gap < distance * FLIGHT_ARRIVED && Math.abs(want - distance) < distance * FLIGHT_ARRIVED;
+      if (arrived && arrivedAt.current !== focused.id) {
+        arrivedAt.current = focused.id;
+        onFocusArrive?.(focused, toScreen(focused));
+      }
+    } else if (!userMoved.current && !hold && hoveredId === null) {
       pivot.lerp(centroid, 0.08);
-      const fov = THREE.MathUtils.degToRad((camera as THREE.PerspectiveCamera).fov);
       const want = (extent + 12) / Math.sin(fov / 2);
       offset.copy(camera.position).sub(pivot);
-      if (!orbit) {
-        offset.applyAxisAngle(THREE.Object3D.DEFAULT_UP, ORBIT_SPEED * delta);
-      }
+      offset.applyAxisAngle(THREE.Object3D.DEFAULT_UP, ORBIT_SPEED * dt);
       offset.setLength(offset.length() + (want - offset.length()) * 0.08);
       camera.position.copy(pivot).add(offset);
       if (!orbit) {
@@ -242,18 +333,96 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
       }
     }
 
-    const d = camera.position.distanceTo(pivot);
-    const perUnitDistance = LABEL_VIEWPORT / size.height / LABEL_DISTANCE;
+    const fade = 1 - Math.exp(-dt * FADE_RATE);
     down.set(0, -1, 0).applyQuaternion(camera.quaternion);
-    for (const { group, radius: r } of labels.current.values()) {
-      const node = group.parent;
-      if (!node) {
+    for (const n of graph.nodes) {
+      const mesh = meshes.current.get(n.id);
+      if (!mesh) {
         continue;
       }
-      const scale = camera.position.distanceTo(node.position) * perUnitDistance;
-      group.scale.setScalar(scale);
-      group.position.copy(down).multiplyScalar(r + LABEL_GAP * scale);
+      let m = motion.current.get(n.id);
+      if (!m) {
+        m = { scale: 0, velocity: 0, visible: 1, glow: 0 };
+        motion.current.set(n.id, m);
+      }
+      const focused = n.id === focusId;
+      const hovered = n.id === hoveredId;
+      const wantScale = focused ? FOCUS_SCALE : hovered ? HOVER_SCALE : 1;
+      m.velocity += ((wantScale - m.scale) * SPRING_STIFFNESS - m.velocity * SPRING_DAMPING) * dt;
+      m.scale += m.velocity * dt;
+      m.visible += ((focusId === null || focus.has(n.id) ? 1 : 0) - m.visible) * fade;
+      m.glow += ((focused ? 0.45 : hovered ? 0.3 : 0) - m.glow) * fade;
+
+      const base = look(n);
+      const r = radius(n) * Math.max(m.scale, 0.01);
+      mesh.scale.setScalar(r);
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.opacity = base.opacity * (0.15 + 0.85 * m.visible);
+      material.emissiveIntensity = base.emissiveIntensity + m.glow;
+
+      const labelGroup = labelGroups.current.get(n.id);
+      const labelText = labelTexts.current.get(n.id);
+      if (labelGroup && labelText) {
+        const s = screenScale(camera, mid.set(n.x, n.y, n.z), size.height);
+        labelGroup.scale.setScalar(s);
+        labelGroup.position.copy(down).multiplyScalar(r + LABEL_GAP * s);
+        labelText.fillOpacity = 0.3 + 0.7 * m.visible;
+        labelText.outlineOpacity = 0.9 * m.visible;
+      }
     }
+
+    const sweep = 1 - Math.exp(-dt * SWEEP_RATE);
+    const positions = edges.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const colors = edges.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const bright = edges.brightness;
+    graph.links.forEach((l, i) => {
+      positions.setXYZ(i * 2, l.source.x, l.source.y, l.source.z);
+      positions.setXYZ(i * 2 + 1, l.target.x, l.target.y, l.target.z);
+
+      const fromTarget = l.target.id === focusId;
+      const near = fromTarget ? i * 2 + 1 : i * 2;
+      const far = fromTarget ? i * 2 : i * 2 + 1;
+      let wantNear = 0;
+      let wantFar = 0;
+      if (focusId !== null) {
+        if (l.source.id === focusId || fromTarget) {
+          wantNear = 1;
+          wantFar = bright[near] > SWEEP_HANDOFF ? 1 : bright[far];
+        } else {
+          wantNear = -1;
+          wantFar = -1;
+        }
+      } else if (hoveredId !== null && (l.source.id === hoveredId || l.target.id === hoveredId)) {
+        wantNear = HOVER_LINK;
+        wantFar = HOVER_LINK;
+      }
+      bright[near] += (wantNear - bright[near]) * sweep;
+      bright[far] += (wantFar - bright[far]) * sweep;
+      for (const v of [i * 2, i * 2 + 1]) {
+        const b = bright[v];
+        color.copy(edgeColors.base).lerp(b >= 0 ? edgeColors.focus : edgeColors.dim, Math.abs(b));
+        colors.setXYZ(v, color.r, color.g, color.b);
+      }
+
+      const noteGroup = noteGroups.current.get(l.id);
+      const noteText = noteTexts.current.get(l.id);
+      if (noteGroup && noteText) {
+        mid.set(
+          (l.source.x + l.target.x) / 2,
+          (l.source.y + l.target.y) / 2,
+          (l.source.z + l.target.z) / 2,
+        );
+        noteGroup.position.copy(mid);
+        noteGroup.scale.setScalar(screenScale(camera, mid, size.height));
+        const shown = THREE.MathUtils.clamp((bright[far] - 0.7) / 0.3, 0, 1);
+        noteText.fillOpacity = shown;
+        noteText.outlineOpacity = 0.9 * shown;
+      }
+    });
+    positions.needsUpdate = true;
+    colors.needsUpdate = true;
+
+    const d = camera.position.distanceTo(pivot);
     if (scene.fog instanceof THREE.Fog) {
       scene.fog.near = Math.max(1, d - extent * 0.3);
       scene.fog.far = d + extent * 2.5 + 60;
@@ -262,18 +431,48 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
 
   return (
     <>
-      <lineSegments geometry={edgeGeometry} frustumCulled={false}>
+      <lineSegments geometry={edges.geometry} frustumCulled={false}>
         <lineBasicMaterial vertexColors transparent opacity={0.85} />
       </lineSegments>
+      {annotated.map((link) => (
+        <group
+          key={link.id}
+          ref={(g) => {
+            if (g) {
+              noteGroups.current.set(link.id, g);
+            } else {
+              noteGroups.current.delete(link.id);
+            }
+          }}
+        >
+          <Billboard follow>
+            <Text
+              ref={(t: FadingText | null) => {
+                if (t) {
+                  noteTexts.current.set(link.id, t);
+                } else {
+                  noteTexts.current.delete(link.id);
+                }
+              }}
+              material={textMaterial}
+              renderOrder={11}
+              fontSize={LABEL_SIZE * 0.8}
+              color={theme["--sage-deep"]}
+              anchorX="center"
+              anchorY="middle"
+              outlineWidth={0.16}
+              outlineColor={theme["--bone"]}
+              fillOpacity={0}
+              outlineOpacity={0}
+            >
+              {edgeLabel!(link, focusId!)}
+            </Text>
+          </Billboard>
+        </group>
+      ))}
       {graph.nodes.map((node) => {
-        const r = radius(node);
-        const selected = node.id === selectedId;
-        const dimmed = selectedId !== null && !focus.has(node.id);
-        const surface = look(node, { selected, dimmed });
-        const labelled =
-          focus.has(node.id) ||
-          node.id === hoveredId ||
-          (selectedId === null && pinnedLabels.has(node.id));
+        const surface = look(node);
+        const labelled = pinnedLabels.has(node.id) || focus.has(node.id) || node.id === hoveredId;
         return (
           <group
             key={node.id}
@@ -288,20 +487,25 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
           >
             <mesh
               geometry={sphere}
-              scale={r}
+              scale={0.01}
+              ref={(m) => {
+                if (m) {
+                  meshes.current.set(node.id, m);
+                } else {
+                  meshes.current.delete(node.id);
+                }
+              }}
               onClick={(e) => {
                 if (!onNodeClick) {
                   return;
                 }
                 e.stopPropagation();
-                const rect = gl.domElement.getBoundingClientRect();
-                onNodeClick(node, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+                onNodeClick(node, toScreen(node));
               }}
               onPointerOver={(e) => {
                 e.stopPropagation();
                 setHoveredId(node.id);
-                const rect = gl.domElement.getBoundingClientRect();
-                onNodeHover?.(node, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+                onNodeHover?.(node, toScreen(node));
               }}
               onPointerOut={() => {
                 setHoveredId((id) => (id === node.id ? null : id));
@@ -311,38 +515,42 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
               <meshStandardMaterial
                 color={surface.color}
                 emissive={surface.color}
-                emissiveIntensity={surface.emissiveIntensity}
                 roughness={0.55}
                 metalness={0.05}
-                transparent={surface.opacity < 1}
-                opacity={surface.opacity}
+                transparent
                 wireframe={surface.wireframe}
               />
             </mesh>
-            {decorate?.(node, r)}
+            {decorate?.(node, radius(node))}
             {labelled ? (
               <group
                 ref={(g) => {
                   if (g) {
-                    labels.current.set(node.id, { group: g, radius: r });
+                    labelGroups.current.set(node.id, g);
                   } else {
-                    labels.current.delete(node.id);
+                    labelGroups.current.delete(node.id);
                   }
                 }}
               >
                 <Billboard follow>
                   <Text
-                    material={labelMaterial}
+                    ref={(t: FadingText | null) => {
+                      if (t) {
+                        labelTexts.current.set(node.id, t);
+                      } else {
+                        labelTexts.current.delete(node.id);
+                      }
+                    }}
+                    material={textMaterial}
                     renderOrder={10}
-                    fontSize={selected ? LABEL_SIZE * 1.2 : LABEL_SIZE}
-                    color={dimmed ? theme["--ink-ghost"] : theme["--ink-muted"]}
+                    fontSize={node.id === focusId ? LABEL_SIZE * 1.2 : LABEL_SIZE}
+                    color={theme["--ink-muted"]}
                     anchorX="center"
                     anchorY="top"
                     maxWidth={80}
                     textAlign="center"
                     outlineWidth={0.14}
                     outlineColor={theme["--bone"]}
-                    outlineOpacity={0.9}
                   >
                     {labelText(node)}
                   </Text>

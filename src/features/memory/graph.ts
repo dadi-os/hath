@@ -77,18 +77,18 @@ export function mergeGraph(
 export function createMemorySimulation(): MemorySimulation {
   return forceSimulation<MemoryNode, ForceLinkDatum<NodeRecord, GraphEdge>>([], 3)
     .stop()
-    .force("charge", forceManyBody<MemoryNode>().strength(-70).distanceMax(320))
+    .force("charge", forceManyBody<MemoryNode>().strength(-180).distanceMax(600))
     .force(
       "link",
       forceLink<MemoryNode, ForceLinkDatum<NodeRecord, GraphEdge>>([])
         .id((n) => n.id)
-        .distance(26)
+        .distance(48)
         .strength((l) => 0.25 + 0.5 * l.confidence),
     )
-    .force("collide", forceCollide<MemoryNode>((n) => nodeRadius(n.kind, n.degree) + 1.5))
-    .force("x", forceX<MemoryNode>(0).strength(0.03))
-    .force("y", forceY<MemoryNode>(0).strength(0.03))
-    .force("z", forceZ<MemoryNode>(0).strength(0.03));
+    .force("collide", forceCollide<MemoryNode>((n) => nodeRadius(n.kind, n.degree) + 4))
+    .force("x", forceX<MemoryNode>(0).strength(0.02))
+    .force("y", forceY<MemoryNode>(0).strength(0.02))
+    .force("z", forceZ<MemoryNode>(0).strength(0.02));
 }
 
 /** Collapse whitespace and ellipsize for graph labels. */

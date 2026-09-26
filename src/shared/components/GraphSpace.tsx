@@ -12,6 +12,8 @@ export type GraphSpaceProps = {
   cameraPosition?: [number, number, number];
   /** Far plane for large graphs. */
   cameraFar?: number;
+  /** Click that hit nothing in the scene (a drag to orbit does not count). */
+  onBackgroundClick?: () => void;
 };
 
 /**
@@ -26,6 +28,7 @@ export function GraphSpace({
   children,
   cameraPosition = [0, 70, 140],
   cameraFar = 4000,
+  onBackgroundClick,
 }: GraphSpaceProps) {
   const { "--bone": bone } = useThemeTokens(["--bone"]);
   const rootClass = [
@@ -48,6 +51,7 @@ export function GraphSpace({
           far: cameraFar,
         }}
         style={{ background: "transparent" }}
+        onPointerMissed={onBackgroundClick}
       >
         <fog attach="fog" args={[bone, 80, 520]} />
         <ambientLight intensity={0.72} />
