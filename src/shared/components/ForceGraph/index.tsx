@@ -35,8 +35,6 @@ const LABEL_CLEARANCE = 1.2;
 const FOCUS_LABEL_CLEARANCE = 1.45;
 /** Pointer travel (px) between press and release beyond which a click was a drag. */
 const DRAG_SLOP = 4;
-/** Radians per second the camera circles the graph while idle. */
-const ORBIT_SPEED = 0.12;
 /** Node scale targets: focused nodes pop, hovered nodes lift. */
 const FOCUS_SCALE = 1.35;
 const HOVER_SCALE = 1.2;
@@ -97,7 +95,7 @@ export type ForceGraphProps<R extends { id: string }, E extends ForceEdge> = {
    * the idle framing glide back out.
    */
   focusId: string | null;
-  /** Freeze the idle orbit and framing (e.g. while a details popover is open). Hover always freezes. */
+  /** Freeze the automatic framing (e.g. while a details popover is open). Hover always freezes it. */
   hold: boolean;
   /**
    * Search result: matching nodes stay bright and labelled, the rest fade, and the
@@ -172,10 +170,10 @@ function screenScale(camera: THREE.Camera, at: THREE.Vector3, height: number): n
  * straight into meshes and one edge buffer, so hover and focus animate smoothly
  * without re-rendering React. The graph opens with a bloom: the layout is settled
  * off-screen, then seeds grow in place and each ring of neighbors sprouts outward
- * along its link while the camera eases in; later arrivals sprout the same way. Until the user
- * grabs the camera it slowly circles and keeps the whole graph framed, freezing the
- * instant a node is hovered or `hold` is set so targets stay under the pointer;
- * fog follows the camera so the far side fades. Labels draw on top without fog,
+ * along its link while the camera eases in; later arrivals sprout the same way. The
+ * camera never moves on its own except to keep the whole graph framed until the user
+ * grabs it, and that framing freezes while a node is hovered or `hold` is set, so
+ * targets stay under the pointer. Fog follows the camera so the far side fades. Labels draw on top without fog,
  * keep one on-screen size, and sit just below their node from any viewing angle.
  */
 export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
@@ -461,7 +459,6 @@ export function ForceGraph<R extends { id: string }, E extends ForceEdge>({
       pivot.lerp(centroid, 0.08);
       const want = (extent + 12) / Math.sin(fov / 2);
       offset.copy(camera.position).sub(pivot);
-      offset.applyAxisAngle(THREE.Object3D.DEFAULT_UP, ORBIT_SPEED * dt);
       offset.setLength(offset.length() + (want - offset.length()) * 0.08);
       camera.position.copy(pivot).add(offset);
       if (!orbit) {

@@ -49,7 +49,7 @@ type AgentTheme = Record<(typeof THEME)[number], string>;
 export type AgentGraph3DProps = {
   /** Changes on each arrival at the page; resets the simulation and open details. */
   entranceKey: string;
-  /** Page mode: orbit, hover details, click to open chat. Off for the home tile, which only turns slowly. */
+  /** Page mode: orbit, hover details, click to open chat. Off for the home tile, which is view-only. */
   interactive: boolean;
   /** Extra classes on the root element. */
   className?: string;
