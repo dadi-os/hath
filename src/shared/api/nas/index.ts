@@ -155,10 +155,11 @@ export function createNasClient(transport: Transport, baseUrl: string) {
       });
     },
 
-    /** POST /pull_updates — apply module and/or OS updates. */
+    /** POST /pull_updates — start module and/or OS updates in the background (202 with the run). */
     pullUpdates(scope: "modules" | "os" | "all"): Promise<{
-      status: string;
-      scope: string;
+      state: "running";
+      scope: "modules" | "os" | "all";
+      started_at: string;
       reboot_required: boolean;
     }> {
       return transport.request({
