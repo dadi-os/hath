@@ -1,11 +1,11 @@
 import { useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
-import { MemoryGraph } from "../features/memory/MemoryGraph";
+import { MemoryGraph3D } from "../features/memory/MemoryGraph3D";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
- * Full Memory page: Yaad knowledge graph.
+ * Full Memory page: Yaad knowledge network as a live 3D force graph.
  */
 export function MemoryPage() {
   const location = useLocation();
@@ -20,10 +20,10 @@ export function MemoryPage() {
     >
       <PageHeader
         title="MEMORY"
-        hint="Drag to orbit · scroll to zoom · click a node · expand fills the plane"
+        hint="Drag to orbit · scroll to zoom · click a node · expand grows the network"
       />
       <div className="min-h-0 flex-1 px-1 pb-1">
-        <MemoryGraph mode="full" entranceKey={entranceKey} />
+        <MemoryGraph3D entranceKey={entranceKey} />
       </div>
     </motion.div>
   );

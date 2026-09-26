@@ -253,6 +253,18 @@ export type RecallResponse = {
   anchors: string[];
 };
 
+/** POST /graph body — omit `seed_ids` for the most-used live nodes. */
+export type GraphRequest = {
+  seed_ids?: string[];
+  limit?: number;
+};
+
+/** POST /graph response. Every edge endpoint is in `nodes`. */
+export type GraphResponse = {
+  nodes: NodeRecord[];
+  edges: EdgeRecord[];
+};
+
 /** GET /nodes/:id response. */
 export type NodeResponse = NodeRecord & {
   detail: NodeDetail;

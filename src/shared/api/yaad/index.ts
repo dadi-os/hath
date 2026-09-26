@@ -1,5 +1,7 @@
 import type { Transport } from "../transport";
 import type {
+  GraphRequest,
+  GraphResponse,
   NodeHistoryRecord,
   NodeResponse,
   QueryRequest,
@@ -29,6 +31,16 @@ export function createYaadClient(transport: Transport, baseUrl: string) {
       return transport.request({
         baseUrl,
         path: "/recall",
+        method: "POST",
+        body,
+      });
+    },
+
+    /** POST /graph — bounded live subgraph (seeded one-hop when `seed_ids` is set). */
+    graph(body: GraphRequest): Promise<GraphResponse> {
+      return transport.request({
+        baseUrl,
+        path: "/graph",
         method: "POST",
         body,
       });

@@ -1,11 +1,11 @@
 import { useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import { PageHeader } from "../chrome/PageHeader";
-import { AgentTree } from "../features/agents/AgentTree";
+import { AgentGraph3D } from "../features/agents/AgentGraph3D";
 import { EASE, SLOW_S } from "../shared/lib/ux/motion";
 
 /**
- * Full-canvas agent tree: pan, zoom, pinch, node popovers.
+ * Full-canvas agent forest as a live 3D graph: orbit, zoom, hover details, click to chat.
  * Blow-up entrance remounts when arriving from home (or elsewhere).
  */
 export function AgentsPage() {
@@ -24,7 +24,7 @@ export function AgentsPage() {
         hint="Drag to orbit · scroll to zoom · hover for details · click to open in chat"
       />
       <div className="min-h-0 flex-1 px-1 pb-1">
-        <AgentTree mode="full" entranceKey={entranceKey} />
+        <AgentGraph3D entranceKey={entranceKey} interactive />
       </div>
     </motion.div>
   );

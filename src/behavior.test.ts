@@ -31,16 +31,15 @@ import {
 import type { ChatMessage } from "./store/chat";
 import type { DurableMessage, LogRecord } from "./shared/api/types";
 import {
-  buildTree,
+  agentGraph,
+  createAgentSimulation,
   isLiveVisual,
-  labelPlacement,
-  layoutForest3d,
-  linkPath,
-  projectForest2d,
+  shellRadius,
   statusLabel,
   visualState,
 } from "./features/agents/tree";
-import { layoutMemoryPlane3d } from "./features/memory/graph";
+import { createMemorySimulation, mergeGraph, type GraphData } from "./features/memory/graph";
+import { syncForceSimulation } from "./shared/components/ForceGraph";
 import {
   hasRememberedSessions,
   pickLiveBrowser,
@@ -457,33 +456,24 @@ describe("agent tree", () => {
     updated_at: "2026-01-01T00:00:00Z",
   };
 
-  it("builds a forest of null-parent threads", () => {
-    const child: AgentRecord = {
-      ...planner,
-      id: "child",
-      name: "Worker",
-      parent_agent_id: "planner",
-    };
-    const other: AgentRecord = {
-      ...planner,
-      id: "home",
-      name: "Home",
-    };
-    const forest = buildTree([planner, child, other]);
-    expect(forest.map((n) => n.id).sort()).toEqual(["home", "planner"]);
-    const plannerNode = forest.find((n) => n.id === "planner");
-    expect(plannerNode?.children?.[0]?.id).toBe("child");
+  it("roots null and dangling parents and links children to parents", () => {
+    const child: AgentRecord = { ...planner, id: "child", parent_agent_id: "planner" };
+    const grand: AgentRecord = { ...planner, id: "grand", parent_agent_id: "child" };
+    const orphan: AgentRecord = { ...planner, id: "orphan", parent_agent_id: "missing" };
+    const { nodes, edges } = agentGraph([grand, planner, child, orphan]);
+    const depth = Object.fromEntries(nodes.map((n) => [n.id, n.depth]));
+    expect(depth).toEqual({ planner: 0, child: 1, grand: 2, orphan: 0 });
+    expect(edges.map((e) => [e.source, e.target])).toEqual([
+      ["child", "grand"],
+      ["planner", "child"],
+    ]);
+    expect(agentGraph([])).toEqual({ nodes: [], edges: [] });
   });
 
-  it("treats a dangling parent as its own root", () => {
-    const orphan: AgentRecord = {
-      ...planner,
-      id: "orphan",
-      name: "Orphan",
-      parent_agent_id: "missing",
-    };
-    const forest = buildTree([planner, orphan]);
-    expect(forest.map((n) => n.id).sort()).toEqual(["orphan", "planner"]);
+  it("rejects a parent cycle instead of drawing it", () => {
+    const a: AgentRecord = { ...planner, id: "a", parent_agent_id: "b" };
+    const b: AgentRecord = { ...planner, id: "b", parent_agent_id: "a" };
+    expect(() => agentGraph([a, b])).toThrow(/cycle/);
   });
 
   it("marks running lanes by fill key", () => {
@@ -516,131 +506,185 @@ describe("agent tree", () => {
     ).toBe("Idle");
   });
 
-  it("returns an empty forest when there are no agents", () => {
-    expect(buildTree([])).toEqual([]);
+  /** Nine top-level threads; one manager with six workers, like the live forest. */
+  const forest = (): AgentRecord[] => {
+    const roots = Array.from({ length: 9 }, (_, i) => ({ ...planner, id: `r${i}` }));
+    const workers = Array.from({ length: 6 }, (_, i) => ({
+      ...planner,
+      id: `w${i}`,
+      parent_agent_id: "r0",
+    }));
+    return [...roots, ...workers];
+  };
+
+  const settle = (sim: ReturnType<typeof createAgentSimulation>) => {
+    for (let i = 0; i < 400; i++) {
+      sim.tick();
+    }
+  };
+
+  it("spreads roots over a sphere and puts workers on an outer shell", () => {
+    const sim = createAgentSimulation();
+    const { nodes: records, edges } = agentGraph(forest());
+    const { nodes } = syncForceSimulation(sim, records, edges);
+    settle(sim);
+    const dist = (n: { x: number; y: number; z: number }) => Math.hypot(n.x, n.y, n.z);
+    const roots = nodes.filter((n) => n.depth === 0);
+    const workers = nodes.filter((n) => n.depth === 1);
+    for (const r of roots) {
+      expect(dist(r)).toBeGreaterThan(shellRadius(0) * 0.6);
+      expect(dist(r)).toBeLessThan(shellRadius(1));
+    }
+    const meanRoot = roots.reduce((a, r) => a + dist(r), 0) / roots.length;
+    for (const w of workers) {
+      expect(dist(w)).toBeGreaterThan(meanRoot);
+    }
+    for (const axis of ["x", "y", "z"] as const) {
+      const values = roots.map((r) => r[axis]);
+      expect(Math.max(...values) - Math.min(...values)).toBeGreaterThan(shellRadius(0) * 0.5);
+    }
+    const manager = nodes.find((n) => n.id === "r0")!;
+    const nearest = (w: (typeof nodes)[number]) =>
+      roots.reduce((best, r) =>
+        Math.hypot(w.x - r.x, w.y - r.y, w.z - r.z) <
+        Math.hypot(w.x - best.x, w.y - best.y, w.z - best.z)
+          ? r
+          : best,
+      );
+    const underManager = workers.filter((w) => nearest(w) === manager).length;
+    expect(underManager).toBeGreaterThanOrEqual(4);
   });
 
-  it("draws straight links and keeps names off those segments", () => {
-    const child: AgentRecord = {
-      ...planner,
-      id: "child",
-      name: "Worker",
-      parent_agent_id: "planner",
-    };
-    const grand: AgentRecord = {
-      ...planner,
-      id: "grand",
-      name: "Scout",
-      parent_agent_id: "child",
-    };
-    const { links } = projectForest2d(
-      layoutForest3d(buildTree([planner, child, grand]), 28, 42),
-    );
-    expect(links).toHaveLength(2);
-    for (const link of links) {
-      const path = linkPath(link);
-      expect(path).toContain("L");
-      expect(path).not.toContain("Q");
-      for (const node of [link.source, link.target]) {
-        const place = labelPlacement(node, links, 20);
-        expect(
-          distanceToSegment(
-            node.x + place.x,
-            node.y + place.y,
-            link.source,
-            link.target,
-          ),
-        ).toBeGreaterThan(14);
+  it("grows a newly spawned worker out of its parent", () => {
+    const sim = createAgentSimulation();
+    const agents = forest();
+    const first = agentGraph(agents);
+    syncForceSimulation(sim, first.nodes, first.edges);
+    settle(sim);
+    const grown = agentGraph([...agents, { ...planner, id: "fresh", parent_agent_id: "r3" }]);
+    const { nodes } = syncForceSimulation(sim, grown.nodes, grown.edges);
+    const parent = nodes.find((n) => n.id === "r3")!;
+    const fresh = nodes.find((n) => n.id === "fresh")!;
+    expect(Math.hypot(fresh.x - parent.x, fresh.y - parent.y, fresh.z - parent.z)).toBeLessThan(7);
+  });
+});
+
+describe("memory network simulation", () => {
+  const now = "2026-01-01T00:00:00Z";
+  const record = (id: string, kind: "person" | "memory" | "place" | "plan") => ({
+    id,
+    kind,
+    title: id,
+    body: null,
+    occurred_at: null,
+    expires_at: null,
+    access_count: 0,
+    last_accessed_at: null,
+    source: "manual" as const,
+    created_at: now,
+    updated_at: now,
+  });
+  const edge = (id: string, source: string, target: string) => ({
+    id,
+    source,
+    target,
+    type: "about",
+    confidence: 1,
+  });
+
+  /** Five people, each with six memories, some memories shared between people. */
+  const community = (): GraphData => {
+    const nodes = [];
+    const edges = [];
+    for (let p = 0; p < 5; p++) {
+      nodes.push(record(`p${p}`, "person"));
+      for (let m = 0; m < 6; m++) {
+        nodes.push(record(`m${p}-${m}`, "memory"));
+        edges.push(edge(`e${p}-${m}`, `p${p}`, `m${p}-${m}`));
       }
+      edges.push(edge(`share${p}`, `p${p}`, `m${(p + 1) % 5}-0`));
+    }
+    return { nodes, edges };
+  };
+
+  const settle = (sim: ReturnType<typeof createMemorySimulation>) => {
+    for (let i = 0; i < 300; i++) {
+      sim.tick();
+    }
+  };
+
+  it("spreads the network through all three axes, not a plane", () => {
+    const sim = createMemorySimulation();
+    const { nodes } = syncForceSimulation(sim, community().nodes, community().edges);
+    settle(sim);
+    const spread = (axis: "x" | "y" | "z") => {
+      const values = nodes.map((n) => n[axis]);
+      const mean = values.reduce((a, b) => a + b, 0) / values.length;
+      return Math.sqrt(values.reduce((a, v) => a + (v - mean) ** 2, 0) / values.length);
+    };
+    const spreads = [spread("x"), spread("y"), spread("z")];
+    for (const s of spreads) {
+      expect(Number.isFinite(s)).toBe(true);
+      expect(s).toBeGreaterThan(Math.max(...spreads) * 0.4);
     }
   });
 
-  it("places root plots apart in Z on the canopy ridge", () => {
-    const a: AgentRecord = { ...planner, id: "a", name: "A" };
-    const b: AgentRecord = { ...planner, id: "b", name: "B" };
-    const c: AgentRecord = { ...planner, id: "c", name: "C" };
-    const { nodes } = layoutForest3d(buildTree([a, b, c]), 28, 42);
-    const roots = nodes.filter((n) => n.depth === 0);
-    expect(roots).toHaveLength(3);
-    const zs = roots.map((n) => n.z);
-    expect(new Set(zs.map((z) => z.toFixed(2))).size).toBeGreaterThan(1);
+  it("grows new nodes out of the node they attach to without moving the rest", () => {
+    const sim = createMemorySimulation();
+    const data = community();
+    const { nodes: before } = syncForceSimulation(sim, data.nodes, data.edges);
+    settle(sim);
+    const snapshot = new Map(before.map((n) => [n.id, [n.x, n.y, n.z]]));
+    const anchor = before.find((n) => n.id === "p2")!;
+
+    const grown = mergeGraph(data, {
+      nodes: [record("fresh", "memory")],
+      edges: [
+        {
+          id: "e-fresh",
+          src_id: "p2",
+          dst_id: "fresh",
+          type: "about",
+          properties: {},
+          confidence: 1,
+          created_at: now,
+          valid_from: now,
+          valid_to: null,
+        },
+      ],
+    });
+    const { nodes: after } = syncForceSimulation(sim, grown.nodes, grown.edges);
+
+    const fresh = after.find((n) => n.id === "fresh")!;
+    expect(Math.hypot(fresh.x - anchor.x, fresh.y - anchor.y, fresh.z - anchor.z)).toBeLessThan(
+      7,
+    );
+    for (const n of after) {
+      if (n.id !== "fresh") {
+        expect([n.x, n.y, n.z]).toEqual(snapshot.get(n.id));
+      }
+    }
+    expect(sim.alpha()).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it("keeps node identity across polls and drops edges to pruned nodes", () => {
+    const sim = createMemorySimulation();
+    const data = community();
+    const { nodes: first } = syncForceSimulation(sim, data.nodes, data.edges);
+    settle(sim);
+    const alphaSettled = sim.alpha();
+
+    const { nodes: again } = syncForceSimulation(sim, data.nodes, data.edges);
+    expect(again.find((n) => n.id === "p0")).toBe(first.find((n) => n.id === "p0"));
+    expect(sim.alpha()).toBe(alphaSettled);
+
+    const pruned = mergeGraph(
+      { nodes: data.nodes.filter((n) => n.id !== "m0-1"), edges: data.edges },
+      { nodes: [], edges: [] },
+    );
+    expect(pruned.edges.some((e) => e.target === "m0-1")).toBe(false);
   });
 });
-
-describe("memory plane layout", () => {
-  it("spreads hubs on XZ and lifts memories on Y", () => {
-    const now = "2026-01-01T00:00:00Z";
-    const person = {
-      id: "p1",
-      kind: "person" as const,
-      title: "Ada",
-      body: null,
-      occurred_at: null,
-      expires_at: null,
-      access_count: 1,
-      last_accessed_at: null,
-      source: "manual" as const,
-      created_at: now,
-      updated_at: now,
-      detail: { birthday: null, aliases: [] },
-    };
-    const place = {
-      ...person,
-      id: "pl1",
-      kind: "place" as const,
-      title: "Kitchen",
-      detail: { address: null, latitude: null, longitude: null },
-    };
-    const memory = {
-      ...person,
-      id: "m1",
-      kind: "memory" as const,
-      title: "Dinner",
-      detail: null,
-    };
-    const laid = layoutMemoryPlane3d(
-      {
-        nodes: [person, place, memory],
-        edges: [
-          {
-            id: "e1",
-            source: "p1",
-            target: "m1",
-            type: "ABOUT",
-            confidence: 0.9,
-          },
-        ],
-      },
-      36,
-      10,
-    );
-    const hubs = laid.filter((n) => n.kind === "person" || n.kind === "place");
-    expect(hubs).toHaveLength(2);
-    expect(Math.abs(hubs[0].z - hubs[1].z) + Math.abs(hubs[0].x - hubs[1].x)).toBeGreaterThan(
-      10,
-    );
-    const mem = laid.find((n) => n.id === "m1");
-    expect(mem).toBeTruthy();
-    expect(mem!.y).toBeGreaterThan(hubs[0].y);
-  });
-});
-
-/** Distance from a point to a finite segment. */
-function distanceToSegment(
-  px: number,
-  py: number,
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  if (len2 === 0) {
-    return Math.hypot(px - a.x, py - a.y);
-  }
-  const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len2));
-  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
-}
 
 describe("agent host sessions", () => {
   it("picks the newest live browser and terminal", () => {

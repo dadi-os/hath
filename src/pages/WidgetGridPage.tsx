@@ -2,7 +2,7 @@ import type { KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { useTarget } from "../hooks/useTarget";
-import { AgentTree } from "../features/agents/AgentTree";
+import { AgentGraph3D } from "../features/agents/AgentGraph3D";
 import { ChaaviCounts } from "../features/chaavi/ChaaviCounts";
 import { GharHouse } from "../features/ghar/house";
 import { MemoryCounters } from "../features/memory/MemoryCounters";
@@ -48,7 +48,7 @@ export function WidgetGridPage() {
           onKeyDown={onActivate("/agents")}
           className={`${tile} md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1`}
         >
-          <AgentTree mode="preview" entranceKey="home-agents" />
+          <AgentGraph3D entranceKey="home-agents" interactive={false} />
         </WidgetFrame>
       ) : (
         <WidgetFrame

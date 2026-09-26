@@ -115,15 +115,37 @@ declare module "d3-force-3d" {
     NodeDatum extends SimulationNodeDatum,
   >(radius?: number | ((node: NodeDatum) => number)): ForceCollide<NodeDatum>;
 
+  /** Pulls each node toward a sphere of `radius` around (x, y, z). */
+  export interface ForceRadial<
+    NodeDatum extends SimulationNodeDatum,
+  > extends Force<NodeDatum, never> {
+    radius(radius: number | ((node: NodeDatum) => number)): this;
+    strength(strength: number | ((node: NodeDatum) => number)): this;
+  }
+
+  export function forceRadial<NodeDatum extends SimulationNodeDatum>(
+    radius: number | ((node: NodeDatum) => number),
+    x?: number,
+    y?: number,
+    z?: number,
+  ): ForceRadial<NodeDatum>;
+
+  /** Per-axis positioning force (forceX / forceY / forceZ). */
+  export interface ForcePosition<
+    NodeDatum extends SimulationNodeDatum,
+  > extends Force<NodeDatum, never> {
+    strength(strength: number | ((node: NodeDatum) => number)): this;
+  }
+
   export function forceX<NodeDatum extends SimulationNodeDatum>(
     x?: number | ((node: NodeDatum) => number),
-  ): Force<NodeDatum, never>;
+  ): ForcePosition<NodeDatum>;
 
   export function forceY<NodeDatum extends SimulationNodeDatum>(
     y?: number | ((node: NodeDatum) => number),
-  ): Force<NodeDatum, never>;
+  ): ForcePosition<NodeDatum>;
 
   export function forceZ<NodeDatum extends SimulationNodeDatum>(
     z?: number | ((node: NodeDatum) => number),
-  ): Force<NodeDatum, never>;
+  ): ForcePosition<NodeDatum>;
 }
