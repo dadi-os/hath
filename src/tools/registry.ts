@@ -8,6 +8,7 @@ import { listBrowsers } from "./browser/list-browsers.js";
 import { listTabs } from "./browser/list-tabs.js";
 import { navigate } from "./browser/navigate.js";
 import { newTab } from "./browser/new-tab.js";
+import { pressKey } from "./browser/press-key.js";
 import { screenshot } from "./browser/screenshot.js";
 import { selectOption } from "./browser/select.js";
 import { spawnBrowser } from "./browser/spawn-browser.js";
@@ -98,6 +99,7 @@ const definitions = [
   navigate,
   accessibilityTree,
   click,
+  pressKey,
   typeText,
   uploadFile,
   selectOption,

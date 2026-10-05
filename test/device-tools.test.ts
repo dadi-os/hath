@@ -43,7 +43,7 @@ test("device tools are registered", async () => {
   for (const name of DEVICE_TOOLS) {
     assert.equal(findTool(name)?.name, name);
   }
-  assert.equal(allTools().length, 51);
+  assert.equal(allTools().length, 52);
   await assert.doesNotReject(() => syncTools(handle.db));
 });
 

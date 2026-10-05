@@ -46,6 +46,7 @@ const BROWSER_TOOLS = [
   "browser_screenshot",
   "browser_extract_text",
   "browser_upload_file",
+  "browser_press_key",
 ] as const;
 
 test("browser tools are registered", async () => {
@@ -53,7 +54,7 @@ test("browser tools are registered", async () => {
   for (const name of BROWSER_TOOLS) {
     assert.equal(findTool(name)?.name, name);
   }
-  assert.equal(allTools().length, 51);
+  assert.equal(allTools().length, 52);
   await assert.doesNotReject(() => syncTools(handle.db));
 });
 

@@ -70,7 +70,7 @@ after(async () => {
 });
 
 test("the three schedule tools are embedded, not grantable", async () => {
-  assert.equal(allTools().length, 51);
+  assert.equal(allTools().length, 52);
   for (const name of ["schedule_message", "list_schedules", "cancel_schedule"]) {
     assert.equal(findTool(name), undefined);
     assert.equal(findEmbeddedTool(name)?.name, name);

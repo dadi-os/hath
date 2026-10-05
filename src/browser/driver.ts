@@ -11,6 +11,7 @@ import {
   type CDPSession,
   type Download,
   type ElementHandle,
+  type Locator,
   type Page,
 } from "playwright-core";
 import type { Config } from "../config.js";
@@ -370,9 +371,29 @@ export class BrowserDriver {
   ): Promise<SnapshotResult & { tab_id: string }> {
     const resolved = await this.resolvePage(browserId, tabId);
     const limit = maxBytes ?? this.config.browser.snapshot_max_bytes;
-    const raw = String(await resolved.page.evaluate(SNAPSHOT_SCRIPT));
+    const main = resolved.page.mainFrame();
+    const sections: string[] = [];
+    let next = 1;
+    for (const frame of resolved.page.frames()) {
+      if (frame.isDetached()) {
+        continue;
+      }
+      if (frame !== main && !(await (await frame.frameElement()).isVisible())) {
+        continue;
+      }
+      const snapshot = (await frame.evaluate(`(${SNAPSHOT_SCRIPT})(${next})`)) as {
+        lines: string;
+        next: number;
+      };
+      next = snapshot.next;
+      if (frame === main) {
+        sections.push(snapshot.lines);
+      } else if (snapshot.lines) {
+        sections.push(`frame ${JSON.stringify(frame.url())}\n${snapshot.lines.replace(/^/gm, "  ")}`);
+      }
+    }
     const tree =
-      "Refs (eN) are valid only until the next accessibility_tree call.\n" + raw;
+      "Refs (eN) are valid only until the next accessibility_tree call.\n" + sections.join("\n");
     const truncated = Buffer.byteLength(tree, "utf8") > limit;
     const bounded = truncated ? truncateUtf8(tree, limit) : tree;
     return {
@@ -383,23 +404,67 @@ export class BrowserDriver {
     };
   }
 
-  private async locatorForRef(page: Page, ref: string) {
-    const locator = page.locator(`[data-dadi-ref="${cssEscape(ref)}"]`);
-    const count = await locator.count();
-    if (count !== 1) {
+  /**
+   * Find the one element carrying `ref` in any frame of the page. Refs are numbered across
+   * frames, and Playwright's CSS engine reaches into open shadow roots.
+   */
+  private async locatorForRef(page: Page, ref: string): Promise<Locator> {
+    const selector = `[data-dadi-ref="${cssEscape(ref)}"]`;
+    const matches: Locator[] = [];
+    let count = 0;
+    for (const frame of page.frames()) {
+      if (frame.isDetached()) {
+        continue;
+      }
+      const locator = frame.locator(selector);
+      const inFrame = await locator.count();
+      if (inFrame > 0) {
+        matches.push(locator);
+        count += inFrame;
+      }
+    }
+    const [match] = matches;
+    if (count !== 1 || !match) {
       throw new HathError(
         409,
         "stale_ref",
         `ref ${ref} resolved to ${count} element(s); take a fresh accessibility_tree`,
       );
     }
-    return locator;
+    return match;
   }
 
   async click(browserId: number, tabId: string | undefined, ref: string): Promise<{ tab_id: string }> {
     const resolved = await this.resolvePage(browserId, tabId);
     const locator = await this.locatorForRef(resolved.page, ref);
+    if (await locator.isDisabled()) {
+      throw new HathError(
+        409,
+        "disabled",
+        `ref ${ref} is disabled; clicking it does nothing until the page enables it`,
+      );
+    }
     await locator.click();
+    return { tab_id: resolved.tabId };
+  }
+
+  /**
+   * Press a key or chord in Playwright key syntax (`Enter`, `Escape`, `Control+Enter`, `l`):
+   * on the element at `ref` when given, otherwise on whatever has focus.
+   */
+  async pressKey(
+    browserId: number,
+    tabId: string | undefined,
+    key: string,
+    ref?: string,
+  ): Promise<{ tab_id: string }> {
+    const resolved = await this.resolvePage(browserId, tabId);
+    if (ref) {
+      const locator = await this.locatorForRef(resolved.page, ref);
+      await locator.press(key);
+    } else {
+      await resolved.page.keyboard.press(key);
+    }
     return { tab_id: resolved.tabId };
   }
 
@@ -539,16 +604,8 @@ export class BrowserDriver {
       await page.getByText(opts.text).first().waitFor({ state: "visible", timeout });
     }
     if (opts.ref) {
-      const locator = page.locator(`[data-dadi-ref="${cssEscape(opts.ref)}"]`);
+      const locator = await this.locatorForRef(page, opts.ref);
       await locator.waitFor({ state: "visible", timeout });
-      const count = await locator.count();
-      if (count !== 1) {
-        throw new HathError(
-          409,
-          "stale_ref",
-          `ref ${opts.ref} resolved to ${count} element(s); take a fresh accessibility_tree`,
-        );
-      }
     }
     if (opts.network_idle) {
       await page.waitForLoadState("networkidle", { timeout });
@@ -681,12 +738,23 @@ function cdpSend<T>(
 }
 
 /**
- * Injected into the page: clear old refs, walk visible DOM, assign data-dadi-ref
- * to interactive nodes, return an indented text tree.
+ * Evaluated in each frame with the first ref number to hand out: clear old refs (shadow roots
+ * included), walk the visible DOM through open shadow roots and slots, assign data-dadi-ref to
+ * interactive nodes, and return the indented text tree with the next free ref number.
  */
-const SNAPSHOT_SCRIPT = `(() => {
-  document.querySelectorAll("[data-dadi-ref]").forEach((el) => el.removeAttribute("data-dadi-ref"));
-  let next = 1;
+const SNAPSHOT_SCRIPT = `(start) => {
+  const ROLE_CONTROLS = ["checkbox", "radio", "switch", "tab", "menuitem", "menuitemcheckbox",
+    "menuitemradio", "option", "treeitem", "textbox", "searchbox", "combobox", "slider", "spinbutton"];
+
+  function clearRefs(root) {
+    root.querySelectorAll("[data-dadi-ref]").forEach((el) => el.removeAttribute("data-dadi-ref"));
+    root.querySelectorAll("*").forEach((el) => {
+      if (el.shadowRoot) clearRefs(el.shadowRoot);
+    });
+  }
+
+  clearRefs(document);
+  let next = start;
   const lines = [];
   const MIN_TEXT = 2;
 
@@ -712,6 +780,12 @@ const SNAPSHOT_SCRIPT = `(() => {
     return "  ".repeat(depth);
   }
 
+  function states(el) {
+    return (el.disabled === true || el.getAttribute("aria-disabled") === "true" ? " disabled" : "")
+      + (el.getAttribute("aria-checked") === "true" ? " checked" : "")
+      + (el.getAttribute("aria-selected") === "true" ? " selected" : "");
+  }
+
   function describeInput(el) {
     const type = (el.getAttribute("type") || "text").toLowerCase();
     const name = el.getAttribute("name") || el.getAttribute("aria-label") || el.id || "";
@@ -722,7 +796,8 @@ const SNAPSHOT_SCRIPT = `(() => {
       + (name ? " name=" + JSON.stringify(name) : "")
       + (placeholder ? " placeholder=" + JSON.stringify(placeholder) : "")
       + (value ? " value=" + JSON.stringify(value) : "")
-      + checked;
+      + checked
+      + states(el);
   }
 
   function walk(node, depth) {
@@ -763,7 +838,7 @@ const SNAPSHOT_SCRIPT = `(() => {
     } else if (tag === "button" || role === "button") {
       const ref = assignRef(node);
       const text = (node.innerText || node.getAttribute("aria-label") || "").replace(/\\s+/g, " ").trim().slice(0, 120);
-      lines.push(indent(depth) + "button [" + ref + "]" + (text ? " " + JSON.stringify(text) : ""));
+      lines.push(indent(depth) + "button [" + ref + "]" + states(node) + (text ? " " + JSON.stringify(text) : ""));
       emitted = true;
     } else if (tag === "input") {
       const ref = assignRef(node);
@@ -773,7 +848,7 @@ const SNAPSHOT_SCRIPT = `(() => {
       const ref = assignRef(node);
       const name = node.getAttribute("name") || node.getAttribute("aria-label") || "";
       const value = node.value || "";
-      lines.push(indent(depth) + "textarea [" + ref + "]"
+      lines.push(indent(depth) + "textarea [" + ref + "]" + states(node)
         + (name ? " name=" + JSON.stringify(name) : "")
         + (value ? " value=" + JSON.stringify(value.slice(0, 200)) : ""));
       emitted = true;
@@ -784,7 +859,17 @@ const SNAPSHOT_SCRIPT = `(() => {
         label: o.label || o.text,
         selected: o.selected,
       }));
-      lines.push(indent(depth) + "select [" + ref + "] options=" + JSON.stringify(options));
+      lines.push(indent(depth) + "select [" + ref + "]" + states(node) + " options=" + JSON.stringify(options));
+      emitted = true;
+    } else if (ROLE_CONTROLS.includes(role)
+        || (node.isContentEditable && !(node.parentElement && node.parentElement.isContentEditable))) {
+      const ref = assignRef(node);
+      const kind = ROLE_CONTROLS.includes(role) ? role : "textbox";
+      const text = (node.getAttribute("aria-label") || node.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+      lines.push(indent(depth) + kind + " [" + ref + "]"
+        + (node.isContentEditable ? " editable" : "")
+        + states(node)
+        + (text ? " " + JSON.stringify(text) : ""));
       emitted = true;
     } else if (tag === "img") {
       const alt = node.getAttribute("alt") || "";
@@ -796,11 +881,19 @@ const SNAPSHOT_SCRIPT = `(() => {
     if (tag === "input" || tag === "textarea" || tag === "select" || tag === "img") {
       return;
     }
-    for (const child of node.childNodes) {
+    let children = node.childNodes;
+    if (node.shadowRoot) {
+      children = node.shadowRoot.childNodes;
+    } else if (tag === "slot" && node.assignedNodes({ flatten: true }).length > 0) {
+      children = node.assignedNodes({ flatten: true });
+    }
+    for (const child of children) {
       walk(child, childDepth);
     }
   }
 
-  walk(document.body, 0);
-  return lines.join("\\n");
-})()`;
+  if (document.body) {
+    walk(document.body, 0);
+  }
+  return { lines: lines.join("\\n"), next };
+}`;

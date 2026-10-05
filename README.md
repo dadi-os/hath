@@ -164,8 +164,9 @@ Each worker drives one Nas Chromium over CDP (`playwright-core` `connectOverCDP`
 | `browser_close` | manager | Nas `DELETE` + drop in-process CDP connection |
 | `browser_list_tabs` / `browser_new_tab` / `browser_close_tab` | worker | CDP target ids |
 | `browser_navigate` | worker | returns `{ url, title }` |
-| `browser_accessibility_tree` | worker | bounded tree + refs; truncated flag |
-| `browser_click` / `browser_type` / `browser_select` | worker | by ref; `stale_ref` if missing/ambiguous |
+| `browser_accessibility_tree` | worker | bounded tree + refs across every visible frame and open shadow root (child frames under a `frame "url"` line); links, buttons, form fields, ARIA controls (checkbox, radio, tab, menuitem, option, textbox, …) and editable regions get refs, marked `disabled` / `checked` / `selected`; truncated flag |
+| `browser_click` / `browser_type` / `browser_select` | worker | by ref in any frame; `stale_ref` if missing/ambiguous; click fails fast with `disabled` on a disabled element |
+| `browser_press_key` | worker | Playwright key or chord (`Escape`, `Control+Enter`, `l`) on a ref or the focused element |
 | `browser_wait_for` | worker | text, ref, and/or network_idle |
 | `browser_upload_file` | worker | absolute host `paths` onto a file input or the chooser a ref opens; CDP `DOM.setFileInputFiles` so Chromium reads the host file itself; returns attached names + sizes |
 | `browser_screenshot` | worker | `page` (Playwright) or `display` (Nas monitor) → Dwar describe |

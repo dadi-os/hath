@@ -13,7 +13,7 @@ import { silentLog, testConfig } from "./helpers.js";
 
 const nasUrl = process.env.NAS_URL;
 
-test("integration: snapshot refs, actions, tabs, truncate, stale_ref", async (t) => {
+test("integration: snapshot refs across frames and shadow roots, actions, keys, tabs, truncate, stale_ref", async (t) => {
   if (!nasUrl) {
     t.skip("NAS_URL not set");
     return;
@@ -102,6 +102,46 @@ test("integration: snapshot refs, actions, tabs, truncate, stale_ref", async (t)
     const tiny = await driver.accessibilityTree(browserId, tabId, 40);
     assert.equal(tiny.truncated, true);
     assert.ok(Buffer.byteLength(tiny.tree, "utf8") <= 40);
+
+    const nestedHtml = encodeURIComponent(`<!doctype html><html><body>
+      <button disabled>Authorize</button>
+      <div contenteditable="true" aria-label="Body">hi</div>
+      <x-host></x-host>
+      <iframe srcdoc="<input type=radio name=q value=a>" width=200 height=80></iframe>
+      <div id="keys"></div>
+      <script>
+        customElements.define("x-host", class extends HTMLElement {
+          constructor() {
+            super();
+            this.attachShadow({ mode: "open" }).innerHTML = "<button>Shadow</button>";
+            this.shadowRoot.querySelector("button").onclick = () => { document.body.dataset.shadow = "1"; };
+          }
+        });
+        document.addEventListener("keydown", (e) => { document.getElementById("keys").textContent += e.key; });
+      </script>
+    </body></html>`);
+    await driver.navigate(browserId, tabId, `data:text/html,${nestedHtml}`);
+    const nested = await driver.accessibilityTree(browserId, tabId);
+    const disabledRef = nested.tree.match(/button \[(e\d+)\] disabled/)?.[1];
+    const editableRef = nested.tree.match(/textbox \[(e\d+)\] editable/)?.[1];
+    const shadowRef = nested.tree.match(/button \[(e\d+)\] "Shadow"/)?.[1];
+    const radioRef = nested.tree.match(/frame "about:srcdoc"\n\s+\[(e\d+)\] input type="radio"/)?.[1];
+    assert.ok(disabledRef && editableRef && shadowRef && radioRef, nested.tree);
+
+    await assert.rejects(
+      () => driver.click(browserId, tabId, disabledRef),
+      (err: unknown) => (err as { type: string }).type === "disabled",
+    );
+    await driver.click(browserId, tabId, shadowRef);
+    assert.equal(await page.evaluate(() => document.body.dataset.shadow), "1");
+    await driver.click(browserId, tabId, radioRef);
+    const radioChecked = await page
+      .frames()[1]
+      ?.evaluate(() => (document.querySelector("input") as HTMLInputElement).checked);
+    assert.equal(radioChecked, true);
+    await driver.type(browserId, tabId, editableRef, "typed");
+    await driver.pressKey(browserId, tabId, "Escape");
+    assert.equal(await page.locator("#keys").innerText(), "Escape");
 
     await page.evaluate(() => {
       document.body.innerHTML = "<p>rewritten</p>";
