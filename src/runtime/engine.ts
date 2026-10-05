@@ -193,10 +193,14 @@ export function createRuntime(opts: {
   /**
    * Acquire the lane lock and run reasoning or conversation. `releaseWake` is
    * this run's hold on the agent's shared wake, taken when the run was queued
-   * and released last, after any follow-up run has taken its own hold.
+   * and released last, after any follow-up run has taken its own hold. Only a
+   * reasoning run that finished its loop queues a follow-up for steers that
+   * arrived after its last drain; a run that failed, or found the agent missing
+   * or dormant, leaves them for the next wake instead of re-queuing itself forever.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
+    let reasoned = false;
     try {
       release = await locks.acquire(agentId, lane, opts.config.runtime.lane_queue_timeout_ms);
       events.emit({
@@ -213,6 +217,7 @@ export function createRuntime(opts: {
         }
         if (lane === "reasoning") {
           await runReasoningLoop(reasoningDeps(agentId));
+          reasoned = true;
         } else {
           await runConversationLoop(conversationDeps(agentId));
         }
@@ -241,10 +246,8 @@ export function createRuntime(opts: {
       }
     } finally {
       release?.();
-      if (lane === "reasoning") {
-        if (steer.hasItems(agentId)) {
-          enqueueReasoning(agentId);
-        }
+      if (reasoned && steer.hasItems(agentId)) {
+        enqueueReasoning(agentId);
       }
       releaseWake();
     }

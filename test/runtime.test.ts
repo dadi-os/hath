@@ -1727,6 +1727,18 @@ test("a failed reasoning wake is reported to the parent and wakes it", async () 
   assert.ok(conversed.some((body) => body.includes("Dwar is unreachable")));
 });
 
+test("queued steers for a missing agent end the reasoning wake instead of re-queuing it", { timeout: 10_000 }, async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const dwar = mockDwar({});
+  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
+  runtime.steer.append("ghost-agent", "keep going");
+  runtime.enqueueReasoning("ghost-agent");
+  await runtime.waitUntilIdle();
+
+  assert.equal(dwar.reasoningCalls.length, 0);
+  assert.equal(runtime.steer.hasItems("ghost-agent"), true);
+});
+
 test("a lane logs each model turn whole before its tools run, and each result with its tool name", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, { name: "log-shape", systemPrompt: "work", tools: [] });
