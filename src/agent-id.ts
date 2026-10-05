@@ -9,7 +9,7 @@ export const agentIdSchema = z
   .string()
   .regex(
     AGENT_ID_PATTERN,
-    "agent id must be immutable kebab-case (e.g. browser-manager)",
+    "agent id must be immutable kebab-case (e.g. browser-manager); Ankur is null, not an id",
   );
 
 /** Nullable recipient: agent id or null for the user. */
