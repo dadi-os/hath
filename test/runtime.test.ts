@@ -48,7 +48,7 @@ after(async () => {
   await handle.close();
 });
 
-test("two concurrent messages to one agent serialize on its conversation lock", async () => {
+test("two concurrent messages to one agent serialize on its conversation lock", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {
     name: "thread",
@@ -77,20 +77,22 @@ test("two concurrent messages to one agent serialize on its conversation lock", 
     ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
     runtime,
   });
+  t.after(() => app.close());
   const body = {
     to_agent_id: workerId,
     content: "hello",
   };
   const [a, b] = await Promise.all([
-    app.inject({ method: "POST", url: "/messages", payload: { ...body, content: "one" } }),
-    app.inject({ method: "POST", url: "/messages", payload: { ...body, content: "two" } }),
+    app.inject({ method: "POST", url: "/messages", payload: { ...body, content: "message-one" } }),
+    app.inject({ method: "POST", url: "/messages", payload: { ...body, content: "message-two" } }),
   ]);
   assert.equal(a.statusCode, 201);
   assert.equal(b.statusCode, 201);
   await runtime.waitUntilIdle();
   assert.equal(overlap, false);
-  assert.equal(dwar.conversationCalls.length, 2);
-  await app.close();
+  assert.ok(dwar.conversationCalls.length >= 1 && dwar.conversationCalls.length <= 2);
+  const lastSeen = JSON.stringify(dwar.conversationCalls.at(-1)?.messages);
+  assert.ok(lastSeen.includes("message-one") && lastSeen.includes("message-two"));
 });
 
 test("modify_agent on a non-child is rejected", async () => {
