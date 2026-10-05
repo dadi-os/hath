@@ -314,9 +314,10 @@ export class BrowserDriver {
   }
 
   /**
-   * Navigate a tab. A URL that turns into a file download aborts the navigation; that
-   * resolves with `download` (the suggested file name and the downloads dir it is saving
-   * into) instead of failing. Any other navigation failure rejects.
+   * Navigate a tab. A URL that turns into a file download makes Playwright reject the
+   * navigation with "Download is starting", sometimes before the page's download event
+   * arrives; that resolves with `download` (the suggested file name and the downloads dir
+   * it is saving into) once the event is in. Any other navigation failure rejects.
    */
   async navigate(
     browserId: number,
@@ -338,9 +339,12 @@ export class BrowserDriver {
     try {
       await resolved.page.goto(url, { waitUntil });
     } catch (err) {
-      if (!download) {
+      if (!(err instanceof Error && err.message.includes("Download is starting"))) {
         throw err;
       }
+      download ??= await resolved.page.waitForEvent("download", {
+        timeout: this.config.browser.action_timeout_ms,
+      });
     } finally {
       resolved.page.off("download", onDownload);
     }
