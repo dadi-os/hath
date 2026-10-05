@@ -12,7 +12,7 @@ export async function yaadToolCall<T>(
     return ok(shape(data));
   } catch (err) {
     if (err instanceof HathError) {
-      return fail(err.message);
+      return fail(`${err.type}: ${err.message}`);
     }
     throw err;
   }

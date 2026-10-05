@@ -116,7 +116,7 @@ async function composeSystem(
   ].join("\n\n");
   if (activeChildren.length > 0) {
     const lines = activeChildren.map((c) => {
-      const purpose = c.systemPrompt.trim().split(/\n/)[0] ?? "";
+      const purpose = c.systemPrompt.trim().replace(/\n[\s\S]*$/, "");
       const brief = purpose.length > 120 ? `${purpose.slice(0, 117)}…` : purpose;
       return brief ? `- ${c.id}: ${brief}` : `- ${c.id}`;
     });

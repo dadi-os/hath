@@ -159,26 +159,26 @@ export class BrowserDriver {
   }
 
   private async withBrowser<T>(browserId: number, fn: (browser: Browser) => Promise<T>): Promise<T> {
-    const run = async () => {
-      const endpoint = await this.resolveEndpoint(browserId);
-      const browser = await this.connect(browserId, endpoint);
-      return await fn(browser);
-    };
+    return fn(await this.attach(browserId));
+  }
+
+  /**
+   * Connect to a browser through its remembered endpoint. A failed connect retries once,
+   * logged, from a fresh Nas lookup, since a restarted browser comes back on a new CDP URL;
+   * a browser Nas no longer runs fails with not_found. Errors from the action itself are
+   * never retried here, so a click or navigation never runs twice.
+   */
+  private async attach(browserId: number): Promise<Browser> {
     try {
-      return await run();
+      return await this.connect(browserId, await this.resolveEndpoint(browserId));
     } catch (err) {
       if (err instanceof HathError) {
         throw err;
       }
-      this.detach(browserId);
-      try {
-        return await run();
-      } catch (err2) {
-        if (err2 instanceof HathError) {
-          throw err2;
-        }
-        throw new HathError(404, "not_found", `browser ${browserId} is not running`);
-      }
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn({ browser_id: browserId, error: message }, "browser connect failed; retrying from Nas");
+      this.drop(browserId);
+      return this.connect(browserId, await this.resolveEndpoint(browserId));
     }
   }
 

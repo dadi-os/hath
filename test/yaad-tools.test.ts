@@ -255,7 +255,7 @@ test("Yaad 4xx maps to isError without throwing", async () => {
     input: { from: [randomUUID()], kind: "plan" },
   });
   assert.equal(result.isError, true);
-  assert.equal(result.content, "from cannot be combined with filters");
+  assert.equal(result.content, "yaad: from cannot be combined with filters");
 });
 
 test("Yaad unreachable maps to isError and the lane continues", async () => {
