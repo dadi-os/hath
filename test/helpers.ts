@@ -6,6 +6,7 @@ import { agentTools, agents } from "../src/db/schema.js";
 import { toolId } from "../src/tools/sync.js";
 import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
 import type { DwarClient } from "../src/dwar/client.js";
+import type { WakeLimits } from "../src/runtime/wake.js";
 import type {
   ChaaviClient,
   ChaaviItem,
@@ -55,6 +56,12 @@ import { HathError } from "../src/errors.js";
 export function testConfig(): Config {
   return loadConfig();
 }
+
+/** Wake limits no test wake reaches, for tests that are not about clearing tool results. */
+export const roomyWakeLimits: WakeLimits = {
+  toolResultsMaxChars: 1_000_000,
+  toolResultsKeptChars: 500_000,
+};
 
 export const silentLog = {
   error() {},

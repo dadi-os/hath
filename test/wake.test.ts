@@ -12,7 +12,8 @@ import { IntentQueue } from "../src/runtime/intents.js";
 import { runReasoningLoop } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
-import { CONTINUE_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
+import { CLEARED_RESULT, CONTINUE_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
+import { roomyWakeLimits } from "./helpers.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
@@ -70,11 +71,11 @@ function toolResults(messages: DwarMessage[]): string[] {
   return out;
 }
 
-test("reasoning keeps every full tool result and its own thinking for the whole wake", async () => {
+test("under its budget, reasoning keeps every full tool result and its own thinking for the whole wake", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
   await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(), () => {
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
       n += 1;
       if (n <= 12) {
         return turn("anthropic", [
@@ -107,11 +108,86 @@ test("reasoning keeps every full tool result and its own thinking for the whole 
   });
 });
 
+test("past its budget the wake clears older tool results in jumps, keeping every turn and the newest results", async () => {
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps(
+      "reasoning",
+      new Wake({ toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000 }),
+      () => {
+        n += 1;
+        return n <= 12
+          ? turn("anthropic", [call("browser_accessibility_tree", `s${n}`)])
+          : turn("anthropic", [call("yield", "y")]);
+      },
+      requests,
+    ),
+    steer: new SteerQueue(),
+  });
+
+  const results = toolResults(requests.at(-1)!.messages);
+  assert.equal(results.length, 12);
+  assert.ok(results.slice(0, 10).every((result) => result === CLEARED_RESULT));
+  assert.ok(results.slice(10).every((result) => result.startsWith("full result of s")));
+
+  let rewrites = 0;
+  for (let i = 1; i < requests.length; i += 1) {
+    const before = requests[i - 1]!.messages;
+    if (JSON.stringify(requests[i]!.messages.slice(0, before.length)) !== JSON.stringify(before)) {
+      rewrites += 1;
+    }
+  }
+  assert.equal(rewrites, 5);
+});
+
+test("a wake keeps the system it began with, so prompt changes land at the next wake", async () => {
+  const requests: DwarChatRequest[] = [];
+  let systems = 0;
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return turn("anthropic", [call(n < 3 ? "modify_agent" : "yield", `m${n}`)]);
+    }, requests),
+    assemble: async () => {
+      systems += 1;
+      return {
+        system: `sys v${systems}`,
+        messages: [{ role: "user", content: "[From: Ankur]\ncheck my email" }],
+        tools: [],
+        throughSeq: 1,
+      };
+    },
+    steer: new SteerQueue(),
+  });
+
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every((request) => request.system === "sys v1"));
+});
+
+test("only the transcript's last turn carries the cache breakpoint", async () => {
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return turn("anthropic", [call(n < 3 ? "browser_navigate" : "yield", `b${n}`)]);
+    }, requests),
+    steer: new SteerQueue(),
+  });
+
+  for (const request of requests) {
+    const marked = request.messages.flatMap((message, index) => (message.cache_breakpoint ? [index] : []));
+    assert.deepEqual(marked, [0]);
+  }
+});
+
 test("a turn without a tool call continues the lane; only yield ends it", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
   await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(), () => {
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
       n += 1;
       if (n === 1) {
         return turn("anthropic", [
@@ -137,7 +213,7 @@ test("an empty turn or a provider error with no tool call fails the lane instead
   ]) {
     await assert.rejects(
       runReasoningLoop({
-        ...stepDeps("reasoning", new Wake(), () => response, []),
+        ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => response, []),
         steer: new SteerQueue(),
       }),
     );
@@ -145,7 +221,7 @@ test("an empty turn or a provider error with no tool call fails the lane instead
 });
 
 test("both lanes share one wake: each sees the other's steps; steers and intents stay private", async () => {
-  const wake = new Wake();
+  const wake = new Wake(roomyWakeLimits);
   const steer = new SteerQueue();
   const intents = new IntentQueue();
   const reasoningRequests: DwarChatRequest[] = [];
@@ -195,7 +271,7 @@ test("a conversation intent stays in view while the lane keeps calling tools", a
   let n = 0;
 
   await runConversationLoop({
-    ...stepDeps("conversation", new Wake(), () => {
+    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("gemini", [call(n < 3 ? "list_agents" : "yield", `c${n}`)]);
     }, requests),
@@ -210,10 +286,10 @@ test("a conversation intent stays in view while the lane keeps calling tools", a
 });
 
 test("a wake lives while any run holds it and is dropped when the last releases", () => {
-  const wakes = new WakeStore();
+  const wakes = new WakeStore(roomyWakeLimits);
   const first = wakes.hold("agent-1");
   const wake = wakes.get("agent-1");
-  wake.begin([{ role: "user", content: "hi" }], 1);
+  wake.begin("sys", [{ role: "user", content: "hi" }], 1);
   wake.push({ message: { role: "assistant", content: "noted" } });
 
   const second = wakes.hold("agent-1");
@@ -228,7 +304,7 @@ test("a wake lives while any run holds it and is dropped when the last releases"
 });
 
 test("a queued conversation run makes no model call until something it can see joins the wake", async () => {
-  const wake = new Wake();
+  const wake = new Wake(roomyWakeLimits);
   const intents = new IntentQueue();
   const requests: DwarChatRequest[] = [];
   let arrival: DwarMessage | null = null;

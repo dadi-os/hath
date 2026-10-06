@@ -35,12 +35,13 @@ export type StepDeps = {
 };
 
 /**
- * syncWake freezes the transcript on the wake's first call; after that, messages
- * that landed since are appended once, where they arrived, for both lanes.
+ * syncWake freezes the system and transcript on the wake's first call; after
+ * that, messages that landed since are appended once, where they arrived, for
+ * both lanes.
  */
 export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
   if (!deps.wake.started) {
-    deps.wake.begin(assembled.messages, assembled.throughSeq);
+    deps.wake.begin(assembled.system, assembled.messages, assembled.throughSeq);
     return;
   }
   const arrived = deps.arrivalsSince(deps.wake.throughSeq);
@@ -51,15 +52,15 @@ export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
 }
 
 /**
- * The request a lane sends: its system and tools and the shared wake. Reasoning
- * gets tool_choice auto so it can think and write around its tool calls.
- * Conversation is forced to call a tool: its only outputs are dispatch, steer
- * and yield, and left free it writes `[To: …]` replies as plain text, which
- * never reach anyone and never end the lane.
+ * The request a lane sends: the wake's frozen system, its tools, and the shared
+ * wake. Reasoning gets tool_choice auto so it can think and write around its
+ * tool calls. Conversation is forced to call a tool: its only outputs are
+ * dispatch, steer and yield, and left free it writes `[To: …]` replies as plain
+ * text, which never reach anyone and never end the lane.
  */
 export function laneRequest(deps: StepDeps, assembled: AssembledContext): DwarChatRequest {
   return {
-    system: assembled.system,
+    system: deps.wake.system,
     messages: deps.wake.view(deps.lane),
     tools: assembled.tools,
     tool_choice: deps.lane === "reasoning" ? "auto" : "any",

@@ -154,6 +154,7 @@ test("modify_agent on a direct child is allowed", async () => {
   assert.equal(result.isError, false);
   assert.equal(result.audit.new_system_prompt, "new prompt");
   assert.equal(JSON.parse(result.content).new_system_prompt, undefined);
+  assert.equal(JSON.parse(result.content).old_system_prompt, undefined);
   assert.equal(result.audit.old_system_prompt, "old prompt");
 });
 
@@ -242,7 +243,7 @@ test("modify_agent updates prompt on self and a direct child", async () => {
   });
   assert.equal(self.isError, false);
   const selfBody = JSON.parse(self.content);
-  assert.equal(selfBody.old_system_prompt, "boss prompt");
+  assert.deepEqual(selfBody, { agent_id: parentId, retired: false });
     assert.equal(self.audit.old_system_prompt, "boss prompt");
   assert.equal(self.audit.new_system_prompt, "boss prompt v2");
   const [parent] = await handle.db.select().from(agents).where(eq(agents.id, parentId));

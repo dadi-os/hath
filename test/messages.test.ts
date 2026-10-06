@@ -22,6 +22,7 @@ import {
   mockYaad,
   openTestDb,
   resetRuntime,
+  roomyWakeLimits,
   silentLog,
   testConfig,
 } from "./helpers.js";
@@ -162,7 +163,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
   await runReasoningLoop({
     agentId,
     lane: "reasoning",
-    wake: new Wake(),
+    wake: new Wake(roomyWakeLimits),
     assemble: () =>
       assembleContext({
         db: handle.db,

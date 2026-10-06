@@ -26,6 +26,10 @@ const fileSchema = z.object({
     transcript_window_step_messages: z.number().int().positive(),
     tool_debounce_base_ms: z.number().int().positive(),
     tool_debounce_max_ms: z.number().int().positive(),
+    wake_tool_results_max_chars: z.number().int().positive(),
+    wake_tool_results_kept_chars: z.number().int().positive(),
+  }).refine((runtime) => runtime.wake_tool_results_kept_chars < runtime.wake_tool_results_max_chars, {
+    message: "wake_tool_results_kept_chars must be below wake_tool_results_max_chars",
   }),
   dwar: z.object({
     timeout_ms: z.number().int().positive(),

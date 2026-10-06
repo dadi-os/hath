@@ -12,6 +12,12 @@ transcript_window_step_messages = 20
 # consecutive failure and resets on the first success.
 tool_debounce_base_ms = 1200
 tool_debounce_max_ms = 15000
+# Once a wake's tool results still shown in full pass max chars, older results
+# are cleared down to the newest kept chars. Clearing in one jump keeps the
+# history byte-stable between clears, so the provider cache survives every
+# step but the clearing one; a wider gap clears less often.
+wake_tool_results_max_chars = 120000
+wake_tool_results_kept_chars = 30000
 
 [dwar]
 timeout_ms = 330000

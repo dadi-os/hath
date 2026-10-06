@@ -36,7 +36,7 @@ const modifyAgentInput = z
 export const modifyAgentTool: DwarTool = {
   name: MODIFY_AGENT,
   description:
-    "Change your own system prompt or a direct child's, retire one, or reactivate a retired child. Use system_prompt when your job itself changes — you are told to take on new responsibilities, organize differently, or stop doing something — so the change outlives this wake. The new system_prompt replaces the old one whole, so carry forward everything that still holds. retired true retires the agent: it stops running and cannot be messaged or changed. retired false reactivates a retired direct child with its prompt, tools and history intact; only its parent can. Ids are immutable and cannot be renamed.",
+    "Change your own system prompt or a direct child's, retire one, or reactivate a retired child. Use system_prompt when your job itself changes — you are told to take on new responsibilities, organize differently, or stop doing something — so the change outlives this wake. The new system_prompt replaces the old one whole, so carry forward everything that still holds; it takes effect from the agent's next wake, and the wake in progress keeps its current prompt. retired true retires the agent: it stops running and cannot be messaged or changed. retired false reactivates a retired direct child with its prompt, tools and history intact; only its parent can. Ids are immutable and cannot be renamed.",
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -91,7 +91,7 @@ export async function runModifyAgent(ctx: ToolContext, raw: unknown): Promise<To
   });
 
   return ok(
-    { agent_id: target.id, old_system_prompt: oldPrompt, retired },
+    { agent_id: target.id, retired },
     { old_system_prompt: oldPrompt, new_system_prompt: newPrompt },
   );
 }

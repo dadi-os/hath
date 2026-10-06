@@ -40,7 +40,7 @@ import { ToolDebounce } from "./tool-debounce.js";
 import { executeTool, type ToolContext, type ToolExecResult } from "./tools.js";
 import type { ToolCallerKind } from "../tools/shared.js";
 import { TranscriptStore } from "./transcript.js";
-import { Wake, WakeStore } from "./wake.js";
+import { Wake, WakeStore, type WakeLimits } from "./wake.js";
 import { ROUTER_KEY } from "./router.js";
 import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import { SEND_MESSAGE } from "../types/domain.js";
@@ -97,7 +97,11 @@ export function createRuntime(opts: {
     base_ms: opts.config.runtime.tool_debounce_base_ms,
     max_ms: opts.config.runtime.tool_debounce_max_ms,
   });
-  const wakes = new WakeStore();
+  const wakeLimits: WakeLimits = {
+    toolResultsMaxChars: opts.config.runtime.wake_tool_results_max_chars,
+    toolResultsKeptChars: opts.config.runtime.wake_tool_results_kept_chars,
+  };
+  const wakes = new WakeStore(wakeLimits);
   let pending = 0;
   const idleWaiters: Array<() => void> = [];
 
@@ -359,7 +363,7 @@ export function createRuntime(opts: {
       const deps: StepDeps = {
         agentId: ROUTER_KEY,
         lane: "router",
-        wake: new Wake(),
+        wake: new Wake(wakeLimits),
         assemble: () =>
           assembleRouterContext({
             db: opts.db,

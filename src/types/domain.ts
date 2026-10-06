@@ -112,6 +112,9 @@ export type DwarMessage = {
    * provider's turns verbatim and translates the other's. */
   provider?: DwarProvider;
   lane?: Lane;
+  /** Ends a prefix resent unchanged into the next wake (the frozen transcript);
+   * Dwar keeps a long-lived provider cache entry there. At most one per request. */
+  cache_breakpoint?: boolean;
 };
 
 export type DwarTool = {

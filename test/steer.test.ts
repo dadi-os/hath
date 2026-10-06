@@ -11,6 +11,7 @@ import { ToolDebounce } from "../src/runtime/tool-debounce.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { STEER_REASONING } from "../src/types/domain.js";
 import { Wake } from "../src/runtime/wake.js";
+import { roomyWakeLimits } from "./helpers.js";
 
 const noDebounce = new ToolDebounce({ base_ms: 1, max_ms: 1 });
 
@@ -32,7 +33,7 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
   await runReasoningLoop({
     agentId,
     lane: "reasoning",
-    wake: new Wake(),
+    wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async (request) => {
@@ -68,7 +69,7 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
   await runReasoningLoop({
     agentId,
     lane: "reasoning",
-    wake: new Wake(),
+    wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async (request) => {
@@ -174,7 +175,7 @@ test("steer_reasoning with terminate stops the next tool call from running", asy
   await runReasoningLoop({
     agentId,
     lane: "reasoning",
-    wake: new Wake(),
+    wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async () => {
@@ -207,7 +208,7 @@ test("steer_reasoning terminate mid-batch blocks remaining domain tools", async 
   await runReasoningLoop({
     agentId,
     lane: "reasoning",
-    wake: new Wake(),
+    wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async () => ({
