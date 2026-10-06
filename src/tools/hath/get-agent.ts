@@ -9,11 +9,11 @@ const input = z.object({
   agent_id: agentIdSchema,
 });
 
-/** Read id, system prompt, parent, active flag, and tool names for self or a direct child (any agent as the router). */
+/** Read id, system prompt, parent, retired flag, and tool names for self or a direct child (any agent as the router). */
 export const getAgent = defineTool({
   name: "get_agent",
   description:
-    "Read an agent's id, system prompt, parent, active flag, and the names of the tools it holds. Only the caller or its direct children are allowed. As the router, any agent is allowed.",
+    "Read an agent's id, system prompt, parent, whether it is retired, and the names of the tools it holds. Only the caller or its direct children are allowed. As the router, any agent is allowed.",
   input,
   inputSchema: {
     type: "object",
@@ -46,7 +46,7 @@ export const getAgent = defineTool({
       name: target.id,
       system_prompt: target.systemPrompt,
       parent_agent_id: target.parentAgentId,
-      active: target.active,
+      retired: !target.active,
       tools: held.map((row) => row.name),
     });
   },

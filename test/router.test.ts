@@ -157,7 +157,7 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
   await app.close();
 });
 
-test("POST /router sending to a dormant agent wakes it", async () => {
+test("POST /router sending to a retired agent is a retired error and revives nothing", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "finance-specialist", systemPrompt: "Owns money." });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, "finance-specialist"));
@@ -165,16 +165,18 @@ test("POST /router sending to a dormant agent wakes it", async () => {
     toolUse("send_message", { to_agent_id: "finance-specialist", content: "How much tax did I pay last year?" }),
   ]);
   const { app, runtime } = await appWith(dwar);
-  const seen: RuntimeEvent[] = [];
-  runtime.events.subscribe((event) => {
-    seen.push(event);
-  });
 
   const res = await app.inject({ method: "POST", url: "/router", payload: { content: "taxes last year?" } });
   assert.equal(res.statusCode, 201, res.body);
+  assert.deepEqual((res.json() as RoutedBody).messages, []);
   const [row] = await handle.db.select().from(agents).where(eq(agents.id, "finance-specialist"));
-  assert.equal(row?.active, true);
-  assert.ok(seen.some((event) => event.type === "agent_modified" && event.agent_id === "finance-specialist"));
+  assert.equal(row?.active, false);
+  const logs = await handle.db.select().from(agentLogs).where(isNull(agentLogs.agentId));
+  const send = logs.find((log) => log.event === "tool_result" && log.payload.name === "send_message");
+  assert.equal(send?.payload.is_error, true);
+  assert.match(String(send?.payload.content), /^retired: agent finance-specialist is retired$/);
+  const stored = await handle.db.select().from(messages).where(eq(messages.toAgentId, "finance-specialist"));
+  assert.equal(stored.length, 0);
 
   await runtime.waitUntilIdle();
   await app.close();
@@ -186,7 +188,7 @@ test("POST /router grants only to roots and cannot modify agents", async () => {
   await insertAgent(handle.db, { id: "coding-worker", systemPrompt: "One job.", parentAgentId: "coding-manager" });
   const dwar = scripted([
     toolUse("grant_tool", { agent_id: "coding-worker", tool_name: "yaad_search_history", usage: "x" }, "g1"),
-    toolUse("modify_agent", { agent_id: "coding-manager", active: false }, "m1"),
+    toolUse("modify_agent", { agent_id: "coding-manager", retire: true }, "m1"),
   ]);
   const { app, runtime } = await appWith(dwar);
 
@@ -509,11 +511,11 @@ test("POST /tools/:name/execute without grant is 403", async () => {
   await app.close();
 });
 
-test("POST /tools/:name/execute as inactive agent is 403", async () => {
+test("POST /tools/:name/execute as a retired agent is 409 retired", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {
-    name: "dormant",
-    systemPrompt: "asleep",
+    name: "retired",
+    systemPrompt: "retired",
     tools: ["yaad_search_history"],
   });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, workerId));
@@ -524,10 +526,10 @@ test("POST /tools/:name/execute as inactive agent is 403", async () => {
     url: "/tools/yaad_search_history/execute",
     payload: { as_agent_id: workerId, query: "anything" },
   });
-  assert.equal(res.statusCode, 403);
+  assert.equal(res.statusCode, 409);
   const body = res.json() as { error: { type: string; message: string } };
-  assert.equal(body.error.type, "forbidden");
-  assert.match(body.error.message, /inactive/);
+  assert.equal(body.error.type, "retired");
+  assert.match(body.error.message, /retired/);
 
   await runtime.waitUntilIdle();
   await app.close();

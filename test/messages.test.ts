@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
 import { hydrateTranscript, listHumanMessages, listThreads } from "../src/db/messages.js";
-import { agentLogs, messages } from "../src/db/schema.js";
+import { agentLogs, agents, messages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { arrivalsSince, assembleContext } from "../src/runtime/context.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
@@ -347,6 +347,10 @@ test("listThreads helpers match HTTP shape; agent↔agent excluded from human th
   const human = await listHumanMessages(handle.db, a, { limit: 50 });
   assert.equal(human.length, 1);
   assert.equal(human[0]?.content, "hi alpha");
+
+  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, a));
+  assert.deepEqual(await listThreads(handle.db), []);
+  assert.equal((await listHumanMessages(handle.db, a, { limit: 50 })).length, 1);
 });
 
 test("backfill migration smoke: agent_logs message events land in messages after recreate", async () => {
@@ -514,4 +518,62 @@ test("child may still send_message and dispatch_message to the user", async () =
   });
   assert.equal(rootSend.isError, false);
   await runtime.waitUntilIdle();
+});
+
+test("messaging a retired agent is a retired error on every path and stores nothing", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const senderId = await insertAgent(handle.db, { id: "msg-sender", systemPrompt: "sender" });
+  const retiredId = await insertAgent(handle.db, { id: "msg-retired", systemPrompt: "retired" });
+  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retiredId));
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const app = await buildApp(config, {
+    db: handle.db,
+    sql: handle.sql,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    runtime,
+  });
+
+  const posted = await app.inject({
+    method: "POST",
+    url: "/messages",
+    payload: { to_agent_id: retiredId, content: "are you there?" },
+  });
+  assert.equal(posted.statusCode, 409);
+  assert.equal((posted.json() as { error: { type: string } }).error.type, "retired");
+
+  const send = await executeTool(runtime.toolContext(senderId, "reasoning"), {
+    type: "tool_use",
+    id: "send-retired",
+    name: "send_message",
+    input: { to_agent_id: retiredId, intent: "ask it something" },
+  });
+  assert.equal(send.isError, true);
+  assert.equal(send.content, `retired: agent ${retiredId} is retired`);
+
+  const dispatch = await executeTool(runtime.toolContext(senderId, "conversation"), {
+    type: "tool_use",
+    id: "dispatch-retired",
+    name: "dispatch_message",
+    input: { to_agent_id: retiredId, content: "hello?" },
+  });
+  assert.equal(dispatch.isError, true);
+  assert.equal(dispatch.content, `retired: agent ${retiredId} is retired`);
+
+  const stored = await handle.db.select().from(messages).where(eq(messages.toAgentId, retiredId));
+  assert.equal(stored.length, 0);
+  await runtime.waitUntilIdle();
+  await app.close();
 });

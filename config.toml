@@ -1,5 +1,6 @@
 [runtime]
-# How long a request waits for a busy lane lock before failing.
+# How long a POST /router request waits for the router lane before failing.
+# Agent lane runs never time out: a wake queued behind a busy lane waits its turn.
 lane_queue_timeout_ms = 30000
 # Min message turns included in each Dwar call (rolling window).
 transcript_window_messages = 40

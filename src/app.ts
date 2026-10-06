@@ -10,6 +10,7 @@ import { HathError } from "./errors.js";
 import { registerRequestLogging } from "./logging.js";
 import { createRuntime, type Runtime } from "./runtime/engine.js";
 import { hydrateTranscript } from "./db/messages.js";
+import { recoverInterruptedWakes } from "./runtime/recovery.js";
 import { registerV1 } from "./routers/index.js";
 
 declare module "fastify" {
@@ -69,6 +70,13 @@ export async function buildApp(
     });
   if (!deps.runtime) {
     await hydrateTranscript(deps.db, runtime.transcript);
+    await recoverInterruptedWakes({
+      db: deps.db,
+      transcript: runtime.transcript,
+      events: runtime.events,
+      enqueueConversation: runtime.enqueueConversation,
+      log: app.log,
+    });
   }
   app.decorate("config", config);
   app.decorate("db", deps.db);

@@ -4,7 +4,8 @@ import type { Lane } from "../types/domain.js";
 type Waiter = {
   resolve: (release: () => void) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  /** Undefined for a waiter that waits its turn without a deadline. */
+  timer: ReturnType<typeof setTimeout> | undefined;
 };
 
 type LaneState = {
@@ -35,7 +36,12 @@ export class LaneLocks {
     return Boolean(state?.held);
   }
 
-  acquire(agentId: string, lane: Lane, timeoutMs: number): Promise<() => void> {
+  /**
+   * acquire resolves with a release once the lane is free. A waiter with a
+   * `timeoutMs` fails with `503 lane_busy` when it has not been granted in time;
+   * a null timeout waits its turn however long the runs ahead of it take.
+   */
+  acquire(agentId: string, lane: Lane, timeoutMs: number | null): Promise<() => void> {
     const key = this.key(agentId, lane);
     let state = this.states.get(key);
     if (!state) {
@@ -65,7 +71,7 @@ export class LaneLocks {
       const waiter: Waiter = {
         resolve,
         reject,
-        timer: setTimeout(() => {
+        timer: timeoutMs === null ? undefined : setTimeout(() => {
           const idx = state.waiters.indexOf(waiter);
           if (idx >= 0) {
             state.waiters.splice(idx, 1);

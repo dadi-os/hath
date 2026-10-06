@@ -3,7 +3,7 @@ import { z } from "zod";
 import { agentIdSchema } from "../../agent-id.js";
 import { scheduledMessages } from "../../db/schema.js";
 import { defineTool } from "../types.js";
-import { ok, fail, requireAgent, failWithoutAgentIdentity } from "../shared.js";
+import { ok, fail, requireActiveAgent, failWithoutAgentIdentity } from "../shared.js";
 
 const input = z.object({
   to_agent_id: agentIdSchema,
@@ -47,7 +47,7 @@ export const scheduleMessage = defineTool({
     if (parsed.to_agent_id === ctx.callerId) {
       return fail("an agent cannot schedule a message to itself");
     }
-    await requireAgent(ctx.db, parsed.to_agent_id);
+    await requireActiveAgent(ctx.db, parsed.to_agent_id);
     const runAt = new Date(parsed.run_at);
     if (!(runAt.getTime() > Date.now())) {
       return fail("run_at must be in the future");

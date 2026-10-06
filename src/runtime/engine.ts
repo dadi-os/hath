@@ -27,7 +27,7 @@ import type {
   RoutedMessage,
 } from "../types/domain.js";
 import { arrivalsSince, assembleContext, assembleRouterContext } from "./context.js";
-import { deliverAgentMessage } from "./deliver.js";
+import { deliverAgentMessage, RUNTIME_REPORT, type RuntimeReportKind } from "./deliver.js";
 import { runConversationLoop } from "./conversation.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
@@ -196,13 +196,14 @@ export function createRuntime(opts: {
    * and released last, after any follow-up run has taken its own hold. Only a
    * reasoning run that finished its loop queues a follow-up for steers that
    * arrived after its last drain; a run that failed, or found the agent missing
-   * or dormant, leaves them for the next wake instead of re-queuing itself forever.
+   * or retired, leaves them for the next wake instead of re-queuing itself forever.
+   * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
     let reasoned = false;
     try {
-      release = await locks.acquire(agentId, lane, opts.config.runtime.lane_queue_timeout_ms);
+      release = await locks.acquire(agentId, lane, null);
       events.emit({
         type: "lane_started",
         agent_id: agentId,
@@ -239,11 +240,9 @@ export function createRuntime(opts: {
         message,
         at: new Date().toISOString(),
       });
-      if (lane === "reasoning") {
-        await reportReasoningFailure(agentId, message).catch((reportErr: unknown) => {
-          opts.log.error({ err: reportErr, agentId }, "reasoning failure report failed");
-        });
-      }
+      await reportLaneFailure(agentId, lane, message).catch((reportErr: unknown) => {
+        opts.log.error({ err: reportErr, agentId, lane }, `${lane} failure report failed`);
+      });
     } finally {
       release?.();
       if (reasoned && steer.hasItems(agentId)) {
@@ -254,12 +253,13 @@ export function createRuntime(opts: {
   }
 
   /**
-   * reportReasoningFailure tells the failed agent's parent (or Ankur, for a root
-   * agent) that its wake died, as a durable message that also wakes the
-   * recipient — otherwise a crashed wake is indistinguishable from a slow one
-   * and the parent polls a dead worker.
+   * reportLaneFailure tells the failed agent's parent (or Ankur, for a root
+   * agent) that a lane died and its wake stopped, as a durable message that
+   * also wakes the recipient — otherwise a crashed wake is indistinguishable
+   * from a slow one and the parent polls a dead worker. Tool errors never get
+   * here: they come back to the model as tool results.
    */
-  async function reportReasoningFailure(agentId: string, message: string): Promise<void> {
+  async function reportLaneFailure(agentId: string, lane: Lane, message: string): Promise<void> {
     const [agent] = await opts.db
       .select({ parentAgentId: agents.parentAgentId })
       .from(agents)
@@ -272,7 +272,8 @@ export function createRuntime(opts: {
       {
         fromAgentId: agentId,
         toAgentId: agent.parentAgentId,
-        content: `[runtime] My reasoning lane failed and this wake stopped before finishing: ${message}. Work after my last update was not done; wake me with a message to retry.`,
+        content: `[runtime] My ${lane} lane failed and this wake stopped before finishing: ${message}. Work after my last update was not done; wake me with a message to retry.`,
+        extraPayload: { [RUNTIME_REPORT]: "lane_failed" satisfies RuntimeReportKind },
       },
     );
   }

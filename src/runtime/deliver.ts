@@ -4,7 +4,17 @@ import { writeAgentLog } from "../db/logs.js";
 import type { EventBus } from "./events.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 
-type DeliverDeps = {
+/**
+ * Audit-payload key on a message the runtime sends on an agent's behalf (a
+ * failed lane, or a wake a restart cut short). Boot recovery reads it to find
+ * where an agent's settled history ends, without parsing message text.
+ */
+export const RUNTIME_REPORT = "runtime_report";
+
+/** What a runtime report is about, stored under `RUNTIME_REPORT`. */
+export type RuntimeReportKind = "lane_failed" | "wake_interrupted";
+
+export type DeliverDeps = {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;

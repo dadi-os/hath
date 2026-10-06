@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { listThreads } from "../db/messages.js";
 import { patchMessageContent } from "../runtime/attachments.js";
 import { deliverUserMessage } from "../runtime/deliver.js";
-import { requireAgent } from "../runtime/tools.js";
+import { requireActiveAgent } from "../runtime/tools.js";
 import { postMessageBody, parse } from "./schemas.js";
 
 export async function registerMessages(app: FastifyInstance): Promise<void> {
@@ -15,7 +15,7 @@ export async function registerMessages(app: FastifyInstance): Promise<void> {
 
   app.post("/messages", async (request, reply) => {
     const body = parse(postMessageBody, request.body);
-    await requireAgent(app.db, body.to_agent_id);
+    await requireActiveAgent(app.db, body.to_agent_id);
     const content = await patchMessageContent(
       app.dwar,
       body.content,

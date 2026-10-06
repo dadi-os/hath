@@ -133,9 +133,9 @@ export const listAgentsInputSchema: Record<string, unknown> = {
       type: "string",
       description: "Exact kebab-case agent id. Returns at most one row.",
     },
-    include_inactive: {
+    show_retired: {
       type: "boolean",
-      description: "When true, include dormant agents. Defaults to false.",
+      description: "When true, include retired agents. Defaults to false.",
     },
   },
   additionalProperties: false,
@@ -190,11 +190,11 @@ export const recordThoughtTool: DwarTool = {
   input_schema: recordThoughtInputSchema,
 };
 
-/** Look up agents by exact id or list the roster (id, name alias, parent, active). */
+/** Look up agents by exact id or list the roster (id, name alias, parent, retired). */
 export const listAgentsTool: DwarTool = {
   name: LIST_AGENTS,
   description:
-    "List agents visible to you: id, name (alias of id), parent, and whether each is active. Pass id for an exact kebab-case lookup (empty list on miss). Pass include_inactive true to include dormant agents.",
+    "List agents visible to you: id, name (alias of id), parent, and whether each is retired. Retired agents are left out unless show_retired is true. Pass id for an exact kebab-case lookup (empty list on miss, including a retired id without show_retired).",
   input_schema: listAgentsInputSchema,
 };
 
@@ -232,7 +232,7 @@ const recordThoughtInput = z.object({ text: z.string().min(1) }).strict();
 const listAgentsInput = z
   .object({
     id: agentIdSchema.optional(),
-    include_inactive: z.boolean().optional(),
+    show_retired: z.boolean().optional(),
   })
   .strict();
 
@@ -384,7 +384,7 @@ async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   }
   const input = sendInput.parse(raw);
   if (input.to_agent_id !== null) {
-    await requireAgent(ctx.db, input.to_agent_id);
+    await requireActiveAgent(ctx.db, input.to_agent_id);
   }
   ctx.intents.append(ctx.callerId, { toAgentId: input.to_agent_id, intent: input.intent });
   ctx.enqueueConversation(ctx.callerId);
@@ -397,7 +397,7 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
   }
   const input = dispatchInput.parse(raw);
   if (input.to_agent_id !== null) {
-    await requireAgent(ctx.db, input.to_agent_id);
+    await requireActiveAgent(ctx.db, input.to_agent_id);
   }
   const row = await deliverAgentMessage(
     {
@@ -435,15 +435,15 @@ async function runSteerReasoning(ctx: ToolContext, raw: unknown): Promise<ToolEx
   });
 }
 
-/** runListAgents returns id/name/parent/active for matching agents (global visibility). */
+/** runListAgents returns id/name/parent/retired for matching agents (global visibility). */
 async function runListAgents(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   const input = listAgentsInput.parse(raw ?? {});
-  const includeInactive = input.include_inactive ?? false;
+  const showRetired = input.show_retired ?? false;
   const conditions = [];
   if (input.id !== undefined) {
     conditions.push(eq(agents.id, input.id));
   }
-  if (!includeInactive) {
+  if (!showRetired) {
     conditions.push(eq(agents.active, true));
   }
   const query = ctx.db
@@ -463,7 +463,7 @@ async function runListAgents(ctx: ToolContext, raw: unknown): Promise<ToolExecRe
       name: row.id,
       parent_agent_id: row.parentAgentId,
       parent_name: row.parentAgentId,
-      active: row.active,
+      retired: !row.active,
     })),
   });
 }

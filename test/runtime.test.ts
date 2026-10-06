@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   DISPATCH_MESSAGE,
   GET_AGENT,
@@ -9,6 +9,7 @@ import {
   SEND_MESSAGE,
 } from "../src/types/domain.js";
 import { assembleContext } from "../src/runtime/context.js";
+import { deliverUserMessage, RUNTIME_REPORT } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
@@ -118,7 +119,7 @@ test("modify_agent on a non-child is rejected", async () => {
     type: "tool_use",
     id: "m1",
     name: MODIFY_AGENT,
-    input: { agent_id: strangerId, active: false },
+    input: { agent_id: strangerId, retire: true },
   });
   assert.equal(result.isError, true);
   assert.match(result.content, /direct children/);
@@ -288,12 +289,23 @@ test("modify_agent accepts active alone", async () => {
     type: "tool_use",
     id: "rn-only",
     name: MODIFY_AGENT,
-    input: { agent_id: selfId, active: false },
+    input: { agent_id: selfId, retire: true },
   });
   assert.equal(result.isError, false);
   const body = JSON.parse(result.content);
   assert.equal(result.audit.new_system_prompt, "keep me");
-  assert.equal(body.active, false);
+  assert.equal(body.retired, true);
+  const [row] = await handle.db.select().from(agents).where(eq(agents.id, selfId));
+  assert.equal(row?.active, false);
+
+  const again = await executeTool(runtime.toolContext(selfId, "reasoning"), {
+    type: "tool_use",
+    id: "rn-after",
+    name: MODIFY_AGENT,
+    input: { agent_id: selfId, system_prompt: "back again" },
+  });
+  assert.equal(again.isError, true);
+  assert.equal(again.content, `retired: agent ${selfId} is retired`);
 });
 
 test("reasoning context has send_message, list_agents, and no dispatch_message", async () => {
@@ -662,7 +674,7 @@ test("grant_tool and modify_agent reject a grandchild for a normal agent", async
     type: "tool_use",
     id: "m-gc",
     name: MODIFY_AGENT,
-    input: { agent_id: grandchildId, active: false },
+    input: { agent_id: grandchildId, retire: true },
   });
   assert.equal(modify.isError, true);
   assert.match(modify.content, /direct children/);
@@ -754,7 +766,7 @@ test("as the router, modify_agent is refused and changes nothing", async () => {
     input: {
       agent_id: nestedId,
       system_prompt: "new",
-      active: false,
+      retire: true,
     },
   });
   assert.equal(result.isError, true);
@@ -830,12 +842,12 @@ test("get_agent lets an agent read itself", async () => {
     name: string;
     system_prompt: string;
     parent_agent_id: string | null;
-    active: boolean;
+    retired: boolean;
   };
   assert.equal(body.name, "self-reader");
   assert.equal(body.system_prompt, storedPrompt);
   assert.equal(body.parent_agent_id, null);
-  assert.equal(body.active, true);
+  assert.equal(body.retired, false);
 });
 
 test("get_agent refuses a grandchild and a sibling with the self-or-direct-child rule", async () => {
@@ -1367,14 +1379,14 @@ test("list_agents exact id is case-sensitive and empty on miss", async () => {
   });
   assert.equal(hit.isError, false);
   const hitBody = JSON.parse(hit.content) as {
-    agents: { id: string; name: string; parent_agent_id: string | null; parent_name: string | null; active: boolean }[];
+    agents: { id: string; name: string; parent_agent_id: string | null; parent_name: string | null; retired: boolean }[];
   };
   assert.equal(hitBody.agents.length, 1);
   assert.equal(hitBody.agents[0]?.id, codingId);
   assert.equal(hitBody.agents[0]?.name, "coding-manager");
   assert.equal(hitBody.agents[0]?.parent_agent_id, null);
   assert.equal(hitBody.agents[0]?.parent_name, null);
-  assert.equal(hitBody.agents[0]?.active, true);
+  assert.equal(hitBody.agents[0]?.retired, false);
 
   const missCase = await executeTool(runtime.toolContext(callerId, "reasoning"), {
     type: "tool_use",
@@ -1395,17 +1407,17 @@ test("list_agents exact id is case-sensitive and empty on miss", async () => {
   assert.deepEqual(JSON.parse(missName.content).agents, []);
 });
 
-test("list_agents omits dormant agents unless include_inactive", async () => {
+test("list_agents omits retired agents unless show_retired", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const activeId = await insertAgent(handle.db, {
     name: "active-root",
     systemPrompt: "active",
   });
-  const dormantId = await insertAgent(handle.db, {
-    name: "dormant-root",
-    systemPrompt: "asleep",
+  const retiredId = await insertAgent(handle.db, {
+    name: "retired-root",
+    systemPrompt: "retired",
   });
-  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, dormantId));
+  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retiredId));
   const callerId = await insertAgent(handle.db, {
     name: "lister",
     systemPrompt: "list",
@@ -1429,34 +1441,34 @@ test("list_agents omits dormant agents unless include_inactive", async () => {
   });
   assert.equal(activeOnly.isError, false);
   const activeBody = JSON.parse(activeOnly.content) as {
-    agents: { id: string; name: string; active: boolean }[];
+    agents: { id: string; name: string; retired: boolean }[];
   };
   const activeIds = new Set(activeBody.agents.map((row) => row.id));
   assert.ok(activeIds.has(activeId));
   assert.ok(activeIds.has(callerId));
-  assert.equal(activeIds.has(dormantId), false);
+  assert.equal(activeIds.has(retiredId), false);
 
-  const withInactive = await executeTool(runtime.toolContext(callerId, "reasoning"), {
+  const withRetired = await executeTool(runtime.toolContext(callerId, "reasoning"), {
     type: "tool_use",
     id: "la5",
     name: LIST_AGENTS,
-    input: { include_inactive: true },
+    input: { show_retired: true },
   });
-  assert.equal(withInactive.isError, false);
-  const inactiveBody = JSON.parse(withInactive.content) as {
-    agents: { id: string; name: string; active: boolean }[];
+  assert.equal(withRetired.isError, false);
+  const retiredBody = JSON.parse(withRetired.content) as {
+    agents: { id: string; name: string; retired: boolean }[];
   };
-  const dormant = inactiveBody.agents.find((row) => row.id === dormantId);
-  assert.ok(dormant);
-  assert.equal(dormant.active, false);
-  assert.equal(dormant.name, "dormant-root");
+  const retired = retiredBody.agents.find((row) => row.id === retiredId);
+  assert.ok(retired);
+  assert.equal(retired.retired, true);
+  assert.equal(retired.name, "retired-root");
 });
 
-test("list_agents resolves parent_name when the parent is dormant", async () => {
+test("list_agents resolves parent_name when the parent is retired", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, {
-    name: "dormant-parent",
-    systemPrompt: "asleep",
+    name: "retired-parent",
+    systemPrompt: "retired",
   });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, parentId));
   const childId = await insertAgent(handle.db, {
@@ -1486,7 +1498,7 @@ test("list_agents resolves parent_name when the parent is dormant", async () => 
   };
   assert.equal(body.agents.length, 1);
   assert.equal(body.agents[0]?.parent_agent_id, parentId);
-  assert.equal(body.agents[0]?.parent_name, "dormant-parent");
+  assert.equal(body.agents[0]?.parent_name, "retired-parent");
 });
 
 test("list_agents visibility is global across parents", async () => {
@@ -1647,19 +1659,19 @@ test("get_logs defaults to caller and allows direct children only", async () => 
   assert.deepEqual(JSON.parse(asUser.content).logs, []);
 });
 
-test("executeTool denies registry tools without grant or when inactive", async () => {
+test("executeTool denies registry tools without grant or when retired", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const ungranted = await insertWorker(handle.db, {
     name: "no-grant",
     systemPrompt: "none",
     tools: [],
   });
-  const dormant = await insertWorker(handle.db, {
-    name: "dormant-worker",
-    systemPrompt: "asleep",
+  const retired = await insertWorker(handle.db, {
+    name: "retired-worker",
+    systemPrompt: "retired",
     tools: ["yaad_search_history"],
   });
-  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, dormant));
+  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retired));
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
@@ -1680,14 +1692,14 @@ test("executeTool denies registry tools without grant or when inactive", async (
   assert.equal(noGrant.isError, true);
   assert.match(noGrant.content, /does not hold yaad_search_history/);
 
-  const inactive = await executeTool(runtime.toolContext(dormant, "reasoning"), {
+  const refused = await executeTool(runtime.toolContext(retired, "reasoning"), {
     type: "tool_use",
     id: "eg2",
     name: "yaad_search_history",
     input: { query: "x" },
   });
-  assert.equal(inactive.isError, true);
-  assert.match(inactive.content, /inactive/);
+  assert.equal(refused.isError, true);
+  assert.equal(refused.content, `retired: agent ${retired} is retired`);
 });
 
 
@@ -1727,6 +1739,51 @@ test("a failed reasoning wake is reported to the parent and wakes it", async () 
   assert.equal(sent[0]?.toAgentId, parentId);
   assert.ok(sent[0]!.content.includes("Dwar is unreachable"));
   assert.ok(conversed.some((body) => body.includes("Dwar is unreachable")));
+});
+
+test("a failed conversation lane is reported to the parent with a runtime_report marker", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const parentId = await insertAgent(handle.db, { id: "conv-failure-parent", systemPrompt: "parent" });
+  const childId = await insertAgent(handle.db, {
+    id: "conv-failure-child",
+    systemPrompt: "child",
+    parentAgentId: parentId,
+  });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({
+      converse: async (request) => {
+        if (request.system.includes(`Your agent id is ${childId}.`)) {
+          throw new Error("quota exceeded");
+        }
+        return yieldTurn();
+      },
+    }),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+
+  await deliverUserMessage(
+    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation },
+    childId,
+    "status?",
+  );
+  await runtime.waitUntilIdle();
+
+  const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.toAgentId, parentId);
+  assert.match(sent[0]!.content, /^\[runtime\] My conversation lane failed .*quota exceeded/);
+  const logs = await handle.db
+    .select()
+    .from(agentLogs)
+    .where(and(eq(agentLogs.agentId, childId), eq(agentLogs.event, "message")));
+  const report = logs.find((log) => log.payload.direction === "send");
+  assert.equal(report?.payload[RUNTIME_REPORT], "lane_failed");
 });
 
 test("queued steers for a missing agent end the reasoning wake instead of re-queuing it", { timeout: 10_000 }, async () => {

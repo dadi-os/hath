@@ -6,13 +6,11 @@
  * is its prompt's job (`prompts/router.md`). The loop ends when it yields.
  */
 
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { agentIdSchema } from "../agent-id.js";
-import { agents } from "../db/schema.js";
 import { spawnAgent } from "../tools/hath/spawn-agent.js";
 import { embeddedAgentTools } from "../tools/registry.js";
-import { fail, ok, requireAgent, type ToolContext, type ToolExecResult } from "../tools/shared.js";
+import { fail, ok, requireActiveAgent, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import { asDwarTool, type ToolDefinition } from "../tools/types.js";
 import type { DwarTool, DwarToolUseBlock, RoutedMessage } from "../types/domain.js";
 import { RECALL_MEMORY, SEND_MESSAGE } from "../types/domain.js";
@@ -34,7 +32,7 @@ const routerSendInput = z
 const routerSendMessageTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    "Send a message to an agent as Ankur. It lands in that agent's thread from him and wakes it; a dormant agent is made active first. Write it in his first person. Does not end your turn — call yield when you are done.",
+    "Send a message to an agent as Ankur. It lands in that agent's thread from him and wakes it; a retired agent cannot be messaged. Write it in his first person. Does not end your turn — call yield when you are done.",
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -91,24 +89,10 @@ export async function runRouterTool(
   return definition.handler(ctx, definition.input.parse(call.input));
 }
 
-/** runRouterSend delivers one message as Ankur, making a dormant recipient active first. */
+/** runRouterSend delivers one message as Ankur; a retired recipient is a `retired` error. */
 async function runRouterSend(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   const input = routerSendInput.parse(raw);
-  const target = await requireAgent(ctx.db, input.to_agent_id);
-  if (!target.active) {
-    const now = new Date();
-    await ctx.db
-      .update(agents)
-      .set({ active: true, updatedAt: now })
-      .where(eq(agents.id, target.id));
-    ctx.events.emit({
-      type: "agent_modified",
-      agent_id: target.id,
-      name: target.id,
-      active: true,
-      at: now.toISOString(),
-    });
-  }
+  const target = await requireActiveAgent(ctx.db, input.to_agent_id);
   const row = await deliverUserMessage(
     {
       db: ctx.db,

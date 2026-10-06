@@ -67,7 +67,8 @@ export type ThreadSummary = {
 
 /**
  * Conversation summaries for human↔agent threads (desktop sidebar shape).
- * One row per agent that has at least one human-thread message.
+ * One row per active agent that has at least one human-thread message; a
+ * retired agent's thread leaves the list (its history stays readable by id).
  */
 export async function listThreads(db: Db): Promise<ThreadSummary[]> {
   const rows = await db
@@ -95,20 +96,21 @@ export async function listThreads(db: Db): Promise<ThreadSummary[]> {
   const ids = [...byAgent.keys()];
   if (ids.length === 0) return [];
 
-  const nameRows = await db
-    .select({ id: agents.id })
+  const agentRows = await db
+    .select({ id: agents.id, active: agents.active })
     .from(agents)
     .where(inArray(agents.id, ids));
-  const names = new Map(nameRows.map((row) => [row.id, row.id]));
+  const activeById = new Map(agentRows.map((row) => [row.id, row.active]));
 
   return [...byAgent.values()]
-    .map(({ summary }) => {
-      const agent_name = names.get(summary.agent_id);
-      if (agent_name === undefined) {
+    .filter(({ summary }) => {
+      const active = activeById.get(summary.agent_id);
+      if (active === undefined) {
         throw new Error(`thread agent missing: ${summary.agent_id}`);
       }
-      return { ...summary, agent_name };
+      return active;
     })
+    .map(({ summary }) => ({ ...summary, agent_name: summary.agent_id }))
     .sort((a, b) => (a.last_at < b.last_at ? 1 : -1));
 }
 

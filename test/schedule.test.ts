@@ -346,7 +346,7 @@ test("catch-up delivers once, advances past now, and warns schedule_late", async
   assert.equal(late.fired_at, runAt.toISOString());
 });
 
-test("inactive target skips delivery and logs schedule_target_unavailable", async () => {
+test("retired target skips delivery and logs schedule_target_unavailable", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const fromId = await insertWorker(handle.db, {
     name: "scheduler",
@@ -354,7 +354,7 @@ test("inactive target skips delivery and logs schedule_target_unavailable", asyn
     tools: [],
   });
   const toId = await insertAgent(handle.db, {
-    name: "inactive-target",
+    name: "retired-target",
     systemPrompt: "target",
   });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, toId));
@@ -392,7 +392,7 @@ test("inactive target skips delivery and logs schedule_target_unavailable", asyn
 
   const unavailable = errors.find((entry) => entry.code === "schedule_target_unavailable");
   assert.ok(unavailable);
-  assert.equal(unavailable.reason, "inactive");
+  assert.equal(unavailable.reason, "retired");
   assert.equal(unavailable.schedule_id, scheduleId);
 
   const [row] = await handle.db

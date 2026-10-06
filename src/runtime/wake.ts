@@ -17,8 +17,13 @@
 
 import type { DwarMessage, Lane } from "../types/domain.js";
 
-/** Neutral user turn recorded after a model turn with no tool call, so the lane keeps going. */
-export const CONTINUE_TURN = "[continue]";
+/**
+ * User turn recorded after a model turn with no tool call, so the lane keeps
+ * going. It says the text went nowhere: a model that writes its report as
+ * `[To: …]` text believes it was sent, and then waits on a reply that never comes.
+ */
+export const CONTINUE_TURN =
+  "[continue] The text you just wrote reached no one: only a message tool call (send_message or dispatch_message) delivers anything.";
 
 /** One entry in a wake: a user or assistant turn, optionally private to one lane. */
 export type WakeTurn = {

@@ -81,11 +81,15 @@ export async function requireAgent(db: Db, id: string) {
   return row;
 }
 
-/** Load an active agent row or throw `404 not_found` / `403 forbidden`. */
+/**
+ * Load an agent that has not been retired, or throw `404 not_found` /
+ * `409 retired`. Retirement is permanent: a retired agent never acts, is
+ * messaged, or is changed again.
+ */
 export async function requireActiveAgent(db: Db, id: string) {
   const row = await requireAgent(db, id);
   if (!row.active) {
-    throw new HathError(403, "forbidden", `agent ${id} is inactive`);
+    throw new HathError(409, "retired", `agent ${id} is retired`);
   }
   return row;
 }

@@ -115,9 +115,9 @@ export function createScheduler(opts: {
           schedule_id: row.id,
           to_agent_id: row.toAgentId,
           from_agent_id: row.fromAgentId,
-          reason: "inactive",
+          reason: "retired",
         },
-        "scheduled message target inactive",
+        "scheduled message target retired",
       );
       return;
     }
