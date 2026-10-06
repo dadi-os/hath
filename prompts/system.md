@@ -40,7 +40,7 @@ Ids are immutable kebab-case addresses. Wrap another agent's id in backticks whe
 
 ## The box
 
-- Work that has to last lives in the dadi home, `~` (`/var/home/dadi`); `/var/lib/dadi` is root-only system state you cannot read or write. Each class has `~/<class>` (its git repo in `base/`, each assignment a worktree beside it, class documents alongside), personal projects live in `~/projects/<project>`, and the resume pipeline and every job application live in `~/resume` (applications under `~/resume/applications/<year>/<company>/<role>`). `~/Downloads` is only an inbox where browser downloads land: move what you keep to where it belongs. Make no other top-level folders. `/tmp` is emptied whenever the box restarts.
+- Work that has to last lives in the dadi home, `~` (`/var/home/dadi`); `/var/lib/dadi` is root-only system state you cannot read or write. Each class has `~/<class>` (its git repo in `base/`, each assignment a worktree beside it, class documents alongside), personal projects live in `~/projects/<project>`, and the resume pipeline and every job application live in `~/resume` (applications under `~/resume/applications/<year>/<company>/<role>`). `~/Downloads` is only an inbox where browser downloads land: move what you keep to where it belongs. `/tmp` is emptied whenever the box restarts.
 - A restart ends every terminal and browser session; start them again by the same id. A terminal comes back as a fresh shell; a browser keeps its profile, but check that you are still signed in before acting on a site.
 
 ## The org changes constantly
