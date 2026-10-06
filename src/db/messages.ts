@@ -1,7 +1,7 @@
 /** Durable message inserts, thread queries, and transcript hydrate helpers. */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import type { Db } from "./client.js";
 import { agents, messages, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
@@ -124,8 +124,10 @@ export type HumanMessageRecord = {
 };
 
 /**
- * Ordered human↔agent messages for one agent. Optional `since_seq` (exclusive);
- * `limit` defaults to 200 via the route schema.
+ * Human↔agent messages for one agent, oldest first. With `since_seq` (exclusive)
+ * it pages forward from that seq; without it, it returns the newest `limit` rows
+ * so a long thread opens on its latest messages. `limit` defaults to 200 via the
+ * route schema.
  */
 export async function listHumanMessages(
   db: Db,
@@ -133,16 +135,22 @@ export async function listHumanMessages(
   opts: { sinceSeq?: number; limit: number },
 ): Promise<HumanMessageRecord[]> {
   const party = or(eq(messages.fromAgentId, agentId), eq(messages.toAgentId, agentId));
-  const filter =
+  const rows =
     opts.sinceSeq !== undefined
-      ? and(party, humanThread, gt(messages.seq, opts.sinceSeq))
-      : and(party, humanThread);
-  const rows = await db
-    .select()
-    .from(messages)
-    .where(filter)
-    .orderBy(asc(messages.seq))
-    .limit(opts.limit);
+      ? await db
+          .select()
+          .from(messages)
+          .where(and(party, humanThread, gt(messages.seq, opts.sinceSeq)))
+          .orderBy(asc(messages.seq))
+          .limit(opts.limit)
+      : (
+          await db
+            .select()
+            .from(messages)
+            .where(and(party, humanThread))
+            .orderBy(desc(messages.seq))
+            .limit(opts.limit)
+        ).reverse();
   return rows.map((row) => ({
     id: row.id,
     seq: row.seq,

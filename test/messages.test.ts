@@ -354,6 +354,26 @@ test("listThreads helpers match HTTP shape; agent↔agent excluded from human th
   assert.equal((await listHumanMessages(handle.db, a, { limit: 50 })).length, 1);
 });
 
+test("listHumanMessages without since_seq returns the newest rows oldest first", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const a = await insertWorker(handle.db, {
+    name: "alpha",
+    systemPrompt: "a",
+    tools: [],
+  });
+  const deps = deliverDeps(new TranscriptStore());
+  for (const n of [1, 2, 3, 4, 5]) {
+    await deliverUserMessage(deps, a, `m${n}`);
+  }
+
+  const latest = await listHumanMessages(handle.db, a, { limit: 3 });
+  assert.deepEqual(latest.map((m) => m.content), ["m3", "m4", "m5"]);
+
+  const all = await listHumanMessages(handle.db, a, { limit: 50 });
+  const forward = await listHumanMessages(handle.db, a, { sinceSeq: all[0]!.seq, limit: 2 });
+  assert.deepEqual(forward.map((m) => m.content), ["m2", "m3"]);
+});
+
 test("backfill migration smoke: agent_logs message events land in messages after recreate", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertWorker(handle.db, {
