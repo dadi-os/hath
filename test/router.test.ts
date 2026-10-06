@@ -188,7 +188,7 @@ test("POST /router grants only to roots and cannot modify agents", async () => {
   await insertAgent(handle.db, { id: "coding-worker", systemPrompt: "One job.", parentAgentId: "coding-manager" });
   const dwar = scripted([
     toolUse("grant_tool", { agent_id: "coding-worker", tool_name: "yaad_search_history", usage: "x" }, "g1"),
-    toolUse("modify_agent", { agent_id: "coding-manager", retire: true }, "m1"),
+    toolUse("modify_agent", { agent_id: "coding-manager", retired: true }, "m1"),
   ]);
   const { app, runtime } = await appWith(dwar);
 

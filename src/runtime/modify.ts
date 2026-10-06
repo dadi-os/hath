@@ -1,19 +1,20 @@
 /**
  * Embedded `modify_agent`: every agent can rewrite its own purpose or retire,
- * and manage its direct children the same way; retirement is one-way. Not
- * grantable, and not the router's — the router hands work off; agents reshape
- * themselves.
+ * and manage its direct children the same way; only a parent can reactivate a
+ * retired child. Not grantable, and not the router's — the router hands work
+ * off; agents reshape themselves.
  */
 
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { agents } from "../db/schema.js";
+import { HathError } from "../errors.js";
 import { agentIdSchema } from "../agent-id.js";
 import {
   fail,
   failWithoutAgentIdentity,
   ok,
-  requireActiveAgent,
+  requireAgent,
   type ToolContext,
   type ToolExecResult,
 } from "../tools/shared.js";
@@ -24,18 +25,18 @@ const modifyAgentInput = z
   .object({
     agent_id: agentIdSchema,
     system_prompt: z.string().min(1).optional(),
-    retire: z.literal(true).optional(),
+    retired: z.boolean().optional(),
   })
   .strict()
-  .refine((value) => value.system_prompt !== undefined || value.retire !== undefined, {
-    message: "system_prompt or retire is required",
+  .refine((value) => value.system_prompt !== undefined || value.retired !== undefined, {
+    message: "system_prompt or retired is required",
   });
 
-/** Change the caller's or a direct child's system prompt, or retire it for good. */
+/** Change the caller's or a direct child's system prompt, retire it, or reactivate a retired child. */
 export const modifyAgentTool: DwarTool = {
   name: MODIFY_AGENT,
   description:
-    "Change your own system prompt, or a direct child's, or retire one. Use system_prompt when your job itself changes — you are told to take on new responsibilities, organize differently, or stop doing something — so the change outlives this wake. The new system_prompt replaces the old one whole, so carry forward everything that still holds. retire true retires the agent permanently: it never runs again, cannot be messaged or changed, and its id is never reused. Ids are immutable and cannot be renamed.",
+    "Change your own system prompt or a direct child's, retire one, or reactivate a retired child. Use system_prompt when your job itself changes — you are told to take on new responsibilities, organize differently, or stop doing something — so the change outlives this wake. The new system_prompt replaces the old one whole, so carry forward everything that still holds. retired true retires the agent: it stops running and cannot be messaged or changed. retired false reactivates a retired direct child with its prompt, tools and history intact; only its parent can. Ids are immutable and cannot be renamed.",
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -45,10 +46,9 @@ export const modifyAgentTool: DwarTool = {
         description: "Your own id or a direct child's; immutable kebab-case",
       },
       system_prompt: { type: "string", description: "The full replacement prompt" },
-      retire: {
+      retired: {
         type: "boolean",
-        enum: [true],
-        description: "Retire the agent permanently; there is no way back",
+        description: "true retires the agent; false reactivates a retired direct child",
       },
     },
     required: ["agent_id"],
@@ -61,14 +61,21 @@ export async function runModifyAgent(ctx: ToolContext, raw: unknown): Promise<To
     return failWithoutAgentIdentity();
   }
   const parsed = modifyAgentInput.parse(raw);
-  const target = await requireActiveAgent(ctx.db, parsed.agent_id);
+  const target = await requireAgent(ctx.db, parsed.agent_id);
   if (target.id !== ctx.callerId && target.parentAgentId !== ctx.callerId) {
     return fail("modify_agent is limited to yourself or your direct children");
+  }
+  if (!target.active && !(target.parentAgentId === ctx.callerId && parsed.retired === false)) {
+    throw new HathError(
+      409,
+      "retired",
+      `agent ${target.id} is retired; only its parent can reactivate it, with retired false`,
+    );
   }
 
   const oldPrompt = target.systemPrompt;
   const newPrompt = parsed.system_prompt ?? oldPrompt;
-  const retired = parsed.retire === true;
+  const retired = parsed.retired ?? !target.active;
   const now = new Date();
   await ctx.db
     .update(agents)

@@ -119,7 +119,7 @@ test("modify_agent on a non-child is rejected", async () => {
     type: "tool_use",
     id: "m1",
     name: MODIFY_AGENT,
-    input: { agent_id: strangerId, retire: true },
+    input: { agent_id: strangerId, retired: true },
   });
   assert.equal(result.isError, true);
   assert.match(result.content, /direct children/);
@@ -155,6 +155,60 @@ test("modify_agent on a direct child is allowed", async () => {
   assert.equal(result.audit.new_system_prompt, "new prompt");
   assert.equal(JSON.parse(result.content).new_system_prompt, undefined);
   assert.equal(result.audit.old_system_prompt, "old prompt");
+});
+
+test("a parent can retire a child and reactivate it; nothing else can change a retired agent", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const parentId = await insertAgent(handle.db, { id: "rehire-parent", systemPrompt: "parent" });
+  const childId = await insertAgent(handle.db, {
+    id: "rehire-child",
+    systemPrompt: "child",
+    parentAgentId: parentId,
+  });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const modify = (callerId: string, input: Record<string, unknown>, id: string) =>
+    executeTool(runtime.toolContext(callerId, "reasoning"), { type: "tool_use", id, name: MODIFY_AGENT, input });
+
+  const retire = await modify(parentId, { agent_id: childId, retired: true }, "rh1");
+  assert.equal(retire.isError, false, retire.content);
+  assert.equal(JSON.parse(retire.content).retired, true);
+
+  const promptOnly = await modify(parentId, { agent_id: childId, system_prompt: "still retired?" }, "rh2");
+  assert.equal(promptOnly.isError, true);
+  assert.match(promptOnly.content, /^retired: agent rehire-child is retired; only its parent can reactivate it/);
+
+  const blocked = await executeTool(runtime.toolContext(parentId, "conversation"), {
+    type: "tool_use",
+    id: "rh3",
+    name: "dispatch_message",
+    input: { to_agent_id: childId, content: "are you there?" },
+  });
+  assert.equal(blocked.isError, true);
+
+  const reactivate = await modify(parentId, { agent_id: childId, retired: false, system_prompt: "child, back" }, "rh4");
+  assert.equal(reactivate.isError, false, reactivate.content);
+  assert.equal(JSON.parse(reactivate.content).retired, false);
+  const [row] = await handle.db.select().from(agents).where(eq(agents.id, childId));
+  assert.equal(row?.active, true);
+  assert.equal(row?.systemPrompt, "child, back");
+
+  const delivered = await executeTool(runtime.toolContext(parentId, "conversation"), {
+    type: "tool_use",
+    id: "rh5",
+    name: "dispatch_message",
+    input: { to_agent_id: childId, content: "welcome back" },
+  });
+  assert.equal(delivered.isError, false, delivered.content);
+  await runtime.waitUntilIdle();
 });
 
 test("modify_agent updates prompt on self and a direct child", async () => {
@@ -265,7 +319,7 @@ test("modify_agent rejects empty updates", async () => {
     input: { agent_id: selfId },
   });
   assert.equal(result.isError, true);
-  assert.match(result.content, /system_prompt or retire is required/);
+  assert.match(result.content, /system_prompt or retired is required/);
 });
 
 test("modify_agent accepts active alone", async () => {
@@ -289,7 +343,7 @@ test("modify_agent accepts active alone", async () => {
     type: "tool_use",
     id: "rn-only",
     name: MODIFY_AGENT,
-    input: { agent_id: selfId, retire: true },
+    input: { agent_id: selfId, retired: true },
   });
   assert.equal(result.isError, false);
   const body = JSON.parse(result.content);
@@ -305,7 +359,7 @@ test("modify_agent accepts active alone", async () => {
     input: { agent_id: selfId, system_prompt: "back again" },
   });
   assert.equal(again.isError, true);
-  assert.equal(again.content, `retired: agent ${selfId} is retired`);
+  assert.equal(again.content, `retired: agent ${selfId} is retired; only its parent can reactivate it, with retired false`);
 });
 
 test("reasoning context has send_message, list_agents, and no dispatch_message", async () => {
@@ -674,7 +728,7 @@ test("grant_tool and modify_agent reject a grandchild for a normal agent", async
     type: "tool_use",
     id: "m-gc",
     name: MODIFY_AGENT,
-    input: { agent_id: grandchildId, retire: true },
+    input: { agent_id: grandchildId, retired: true },
   });
   assert.equal(modify.isError, true);
   assert.match(modify.content, /direct children/);
@@ -766,7 +820,7 @@ test("as the router, modify_agent is refused and changes nothing", async () => {
     input: {
       agent_id: nestedId,
       system_prompt: "new",
-      retire: true,
+      retired: true,
     },
   });
   assert.equal(result.isError, true);

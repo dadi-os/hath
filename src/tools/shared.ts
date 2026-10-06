@@ -83,8 +83,8 @@ export async function requireAgent(db: Db, id: string) {
 
 /**
  * Load an agent that has not been retired, or throw `404 not_found` /
- * `409 retired`. Retirement is permanent: a retired agent never acts, is
- * messaged, or is changed again.
+ * `409 retired`. A retired agent does not act and cannot be messaged until its
+ * parent reactivates it with modify_agent.
  */
 export async function requireActiveAgent(db: Db, id: string) {
   const row = await requireAgent(db, id);
