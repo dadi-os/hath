@@ -265,7 +265,7 @@ test("modify_agent rejects empty updates", async () => {
     input: { agent_id: selfId },
   });
   assert.equal(result.isError, true);
-  assert.match(result.content, /system_prompt or active is required/);
+  assert.match(result.content, /system_prompt or retire is required/);
 });
 
 test("modify_agent accepts active alone", async () => {
