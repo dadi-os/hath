@@ -151,7 +151,6 @@ export const DISPATCH_MESSAGE = "dispatch_message";
 export const STEER_REASONING = "steer_reasoning";
 export const YIELD = "yield";
 export const WAIT = "wait";
-export const RECORD_THOUGHT = "record_thought";
 export const RECALL_MEMORY = "recall_memory";
 export const INGEST_MEMORY = "ingest_memory";
 export const LIST_AGENTS = "list_agents";

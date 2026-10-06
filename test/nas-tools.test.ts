@@ -297,7 +297,6 @@ test("worker granted execute_shell and read_file sees those plus send_message an
       "wait",
       "recall_memory",
       "ingest_memory",
-      "record_thought",
       "modify_agent",
       "get_agent",
       "grant_tool",
