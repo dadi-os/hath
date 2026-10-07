@@ -148,12 +148,14 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
 
   const names = (request.tools ?? []).map((tool) => tool.name).sort();
   assert.deepEqual(names, [
+    "forward_attachment",
     "get_agent",
     "get_logs",
     "grant_tool",
     "hath_spawn_agent",
     "list_agents",
     "list_tools",
+    "read_attachment",
     "recall_memory",
     "revoke_tool",
     "send_message",

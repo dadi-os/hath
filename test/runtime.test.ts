@@ -640,6 +640,8 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
     childCtx.tools.map((tool) => tool.name),
     [
       SEND_MESSAGE,
+      "read_attachment",
+      "create_attachment",
       LIST_AGENTS,
       "wait",
       "recall_memory",
@@ -1439,6 +1441,8 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
   });
   assert.deepEqual(reasoning.tools.map((tool) => tool.name), [
     SEND_MESSAGE,
+    "read_attachment",
+    "create_attachment",
     LIST_AGENTS,
     "wait",
     "recall_memory",

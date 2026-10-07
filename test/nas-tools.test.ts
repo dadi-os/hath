@@ -293,6 +293,8 @@ test("worker granted execute_shell and read_file sees those plus send_message an
       "terminal_execute_shell",
       "terminal_read_file",
       SEND_MESSAGE,
+      "read_attachment",
+      "create_attachment",
       LIST_AGENTS,
       "wait",
       "recall_memory",

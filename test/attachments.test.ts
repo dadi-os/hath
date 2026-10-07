@@ -129,7 +129,10 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertWorker(handle.db, { name: "reader", systemPrompt: "reads", tools: [] });
   const { app, runtime } = await harness();
-  t.after(() => app.close());
+  t.after(async () => {
+    await runtime.waitUntilIdle();
+    await app.close();
+  });
   const report = "r".repeat(INLINE_TEXT_CHARS * 2);
 
   const posted = await app.inject({
@@ -187,7 +190,10 @@ test("forward_attachment copies a carried file to the recipient and read_attachm
   const senderId = await insertWorker(handle.db, { name: "sender", systemPrompt: "sends", tools: [] });
   const recipientId = await insertWorker(handle.db, { name: "recipient", systemPrompt: "gets", tools: [] });
   const { app, runtime } = await harness();
-  t.after(() => app.close());
+  t.after(async () => {
+    await runtime.waitUntilIdle();
+    await app.close();
+  });
   const report = "abcdefghij".repeat(3000);
   const posted = await app.inject({
     method: "POST",
@@ -246,7 +252,10 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
     tools: ["terminal_read_file"],
   });
   const { app, runtime } = await harness(nas);
-  t.after(() => app.close());
+  t.after(async () => {
+    await runtime.waitUntilIdle();
+    await app.close();
+  });
 
   const denied = await executeTool(runtime.toolContext(plainId, "reasoning"), {
     type: "tool_use",

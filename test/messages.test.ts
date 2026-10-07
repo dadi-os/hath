@@ -416,6 +416,10 @@ test("backfill migration smoke: agent_logs message events land in messages after
       FOREIGN KEY ("to_agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade
   `;
   await handle.sql`
+    ALTER TABLE "attachments" ADD CONSTRAINT "attachments_message_id_messages_id_fk"
+      FOREIGN KEY ("message_id") REFERENCES "public"."messages"("id") ON DELETE cascade
+  `;
+  await handle.sql`
     INSERT INTO "messages" ("id", "from_agent_id", "to_agent_id", "content", "created_at")
     SELECT
       gen_random_uuid(),
