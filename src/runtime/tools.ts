@@ -13,7 +13,8 @@ import {
   DISPATCH_MESSAGE,
   INGEST_MEMORY,
   LIST_AGENTS,
-  MODIFY_AGENT,
+  MANAGE_AGENT,
+  MODIFY_AGENT_PROMPT,
   RECALL_MEMORY,
   SEND_MESSAGE,
   STEER_REASONING,
@@ -33,7 +34,7 @@ import {
 } from "../tools/shared.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { runIngestMemory, runRecallMemory } from "./memory.js";
-import { runModifyAgent } from "./modify.js";
+import { runManageAgent, runModifyAgentPrompt } from "./modify.js";
 import { runRouterTool } from "./router.js";
 
 export type { ToolContext, ToolExecResult } from "../tools/shared.js";
@@ -163,7 +164,7 @@ export const yieldTool: DwarTool = {
 export const waitTool: DwarTool = {
   name: WAIT,
   description:
-    "Pause your reasoning lane for a number of seconds, then resume automatically where you left off. Use when you must wait for something to settle — a page to load, a job or another agent to finish, a reply you expect shortly — instead of burning turns polling. Unlike yield, this does NOT end your turn: reasoning continues after the pause with no model calls spent while waiting. Unlike schedule_message, it waits here rather than sending a message to another agent later. A steer or terminate cuts the wait short. Max " +
+    "Pause your reasoning lane for a number of seconds, then resume automatically where you left off. Use when you must wait for something to settle — a page to load, a job or another agent to finish, a reply you expect shortly — instead of burning turns polling. Unlike yield, this does NOT end your turn: reasoning continues after the pause with no model calls spent while waiting. Unlike schedule_message, it waits here rather than sending a message to another agent later. A steer, a terminate, or a new message to you cuts the wait short, so waiting on a reply returns as soon as it lands. Max " +
     `${WAIT_MAX_SECONDS}s; for longer or cross-agent delays, use scheduling.`,
   input_schema: waitInputSchema,
 };
@@ -277,8 +278,11 @@ async function dispatchTool(
       if (call.name === INGEST_MEMORY) {
         return await runIngestMemory(ctx, call.input);
       }
-      if (call.name === MODIFY_AGENT) {
-        return await runModifyAgent(ctx, call.input);
+      if (call.name === MANAGE_AGENT) {
+        return await runManageAgent(ctx, call.input);
+      }
+      if (call.name === MODIFY_AGENT_PROMPT) {
+        return await runModifyAgentPrompt(ctx, call.input);
       }
       const embedded = findEmbeddedTool(call.name);
       if (embedded) {
@@ -312,8 +316,9 @@ async function dispatchTool(
 }
 
 /**
- * Pause the reasoning lane in place, polling so a steer or terminate cuts the wait
- * short. No model calls run while waiting; the loop resumes on return.
+ * Pause the reasoning lane in place, polling so a steer, a terminate, or a new
+ * message to the agent cuts the wait short. No model calls run while waiting;
+ * the loop resumes on return and the next step folds in what arrived.
  */
 async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
@@ -323,8 +328,13 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
   const agentId = ctx.callerId;
   const totalMs = input.seconds * 1000;
   const deadline = Date.now() + totalMs;
+  const inboundAtStart = ctx.transcript.lastInboundSeq(agentId);
   while (Date.now() < deadline) {
-    if (ctx.steer.isTerminate(agentId) || ctx.steer.hasItems(agentId)) {
+    if (
+      ctx.steer.isTerminate(agentId) ||
+      ctx.steer.hasItems(agentId) ||
+      ctx.transcript.lastInboundSeq(agentId) > inboundAtStart
+    ) {
       return ok({ waited_seconds: Math.round((totalMs - (deadline - Date.now())) / 1000), interrupted: true });
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));

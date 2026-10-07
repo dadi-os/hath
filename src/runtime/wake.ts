@@ -69,7 +69,7 @@ export class Wake {
 
   /**
    * Freeze the system and transcript the wake begins from. The system stays put
-   * for the whole wake, so a prompt change (modify_agent, a new child) lands at
+   * for the whole wake, so a prompt change (modify_agent_prompt, a new child) lands at
    * the next wake instead of invalidating every cached step of this one.
    */
   begin(system: string, transcript: DwarMessage[], throughSeq: number): void {

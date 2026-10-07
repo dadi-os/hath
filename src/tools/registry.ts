@@ -63,7 +63,7 @@ import { searchHistory } from "./yaad/search-history.js";
 /**
  * Every grantable tool: what an agent's job is. Embedded lane plumbing
  * (send_message, dispatch_message, steer_reasoning, yield, list_agents, memory,
- * modify_agent) and the embedded agent-management and scheduling tools below are deliberately
+ * manage_agent, modify_agent_prompt) and the embedded agent-management and scheduling tools below are deliberately
  * NOT here — they are not grantable and never appear in the tools table.
  */
 const definitions = [

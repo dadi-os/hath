@@ -5,7 +5,8 @@ import {
   DISPATCH_MESSAGE,
   GET_AGENT,
   LIST_AGENTS,
-  MODIFY_AGENT,
+  MANAGE_AGENT,
+  MODIFY_AGENT_PROMPT,
   SEND_MESSAGE,
 } from "../src/types/domain.js";
 import { assembleContext } from "../src/runtime/context.js";
@@ -96,7 +97,7 @@ test("two concurrent messages to one agent serialize on its conversation lock", 
   assert.ok(lastSeen.includes("message-one") && lastSeen.includes("message-two"));
 });
 
-test("modify_agent on a non-child is rejected", async () => {
+test("manage_agent on a non-child is rejected", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertWorker(handle.db, {
     name: "parent",
@@ -118,14 +119,14 @@ test("modify_agent on a non-child is rejected", async () => {
   const result = await executeTool(runtime.toolContext(parentId, "reasoning"), {
     type: "tool_use",
     id: "m1",
-    name: MODIFY_AGENT,
+    name: MANAGE_AGENT,
     input: { agent_id: strangerId, retired: true },
   });
   assert.equal(result.isError, true);
   assert.match(result.content, /direct children/);
 });
 
-test("modify_agent on a direct child is allowed", async () => {
+test("modify_agent_prompt on a direct child is allowed", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertWorker(handle.db, {
     name: "boss",
@@ -148,8 +149,8 @@ test("modify_agent on a direct child is allowed", async () => {
   const result = await executeTool(runtime.toolContext(parentId, "reasoning"), {
     type: "tool_use",
     id: "m2",
-    name: MODIFY_AGENT,
-    input: { agent_id: childId, system_prompt: "new prompt" },
+    name: MODIFY_AGENT_PROMPT,
+    input: { agent_id: childId, edits: [{ old_string: "old", new_string: "new" }] },
   });
   assert.equal(result.isError, false);
   assert.equal(result.audit.new_system_prompt, "new prompt");
@@ -176,14 +177,18 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
     config,
     log: silentLog,
   });
-  const modify = (callerId: string, input: Record<string, unknown>, id: string) =>
-    executeTool(runtime.toolContext(callerId, "reasoning"), { type: "tool_use", id, name: MODIFY_AGENT, input });
+  const call = (name: string, input: Record<string, unknown>, id: string) =>
+    executeTool(runtime.toolContext(parentId, "reasoning"), { type: "tool_use", id, name, input });
 
-  const retire = await modify(parentId, { agent_id: childId, retired: true }, "rh1");
+  const retire = await call(MANAGE_AGENT, { agent_id: childId, retired: true }, "rh1");
   assert.equal(retire.isError, false, retire.content);
   assert.equal(JSON.parse(retire.content).retired, true);
 
-  const promptOnly = await modify(parentId, { agent_id: childId, system_prompt: "still retired?" }, "rh2");
+  const promptOnly = await call(
+    MODIFY_AGENT_PROMPT,
+    { agent_id: childId, edits: [{ old_string: "child", new_string: "still retired?" }] },
+    "rh2",
+  );
   assert.equal(promptOnly.isError, true);
   assert.match(promptOnly.content, /^retired: agent rehire-child is retired; only its parent can reactivate it/);
 
@@ -195,12 +200,12 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   });
   assert.equal(blocked.isError, true);
 
-  const reactivate = await modify(parentId, { agent_id: childId, retired: false, system_prompt: "child, back" }, "rh4");
+  const reactivate = await call(MANAGE_AGENT, { agent_id: childId, retired: false }, "rh4");
   assert.equal(reactivate.isError, false, reactivate.content);
   assert.equal(JSON.parse(reactivate.content).retired, false);
   const [row] = await handle.db.select().from(agents).where(eq(agents.id, childId));
   assert.equal(row?.active, true);
-  assert.equal(row?.systemPrompt, "child, back");
+  assert.equal(row?.systemPrompt, "child");
 
   const delivered = await executeTool(runtime.toolContext(parentId, "conversation"), {
     type: "tool_use",
@@ -212,7 +217,7 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   await runtime.waitUntilIdle();
 });
 
-test("modify_agent updates prompt on self and a direct child", async () => {
+test("modify_agent_prompt edits the prompt of self and a direct child", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertWorker(handle.db, {
     name: "boss",
@@ -238,13 +243,13 @@ test("modify_agent updates prompt on self and a direct child", async () => {
   const self = await executeTool(runtime.toolContext(parentId, "reasoning"), {
     type: "tool_use",
     id: "rn-self",
-    name: MODIFY_AGENT,
-    input: { agent_id: parentId, system_prompt: "boss prompt v2" },
+    name: MODIFY_AGENT_PROMPT,
+    input: { agent_id: parentId, edits: [{ old_string: "prompt", new_string: "prompt v2" }] },
   });
   assert.equal(self.isError, false);
   const selfBody = JSON.parse(self.content);
-  assert.deepEqual(selfBody, { agent_id: parentId, retired: false });
-    assert.equal(self.audit.old_system_prompt, "boss prompt");
+  assert.deepEqual(selfBody, { agent_id: parentId, edits_applied: 1 });
+  assert.equal(self.audit.old_system_prompt, "boss prompt");
   assert.equal(self.audit.new_system_prompt, "boss prompt v2");
   const [parent] = await handle.db.select().from(agents).where(eq(agents.id, parentId));
   assert.equal(parent?.systemPrompt, "boss prompt v2");
@@ -253,8 +258,8 @@ test("modify_agent updates prompt on self and a direct child", async () => {
   const child = await executeTool(runtime.toolContext(parentId, "reasoning"), {
     type: "tool_use",
     id: "rn-child",
-    name: MODIFY_AGENT,
-    input: { agent_id: childId, system_prompt: "child prompt v2" },
+    name: MODIFY_AGENT_PROMPT,
+    input: { agent_id: childId, edits: [{ old_string: "prompt", new_string: "prompt v2" }] },
   });
   assert.equal(child.isError, false);
   assert.equal(child.audit.new_system_prompt, "child prompt v2");
@@ -263,7 +268,7 @@ test("modify_agent updates prompt on self and a direct child", async () => {
   assert.equal(row?.id, "worker");
 });
 
-test("modify_agent of a stranger is rejected", async () => {
+test("modify_agent_prompt of a stranger is rejected", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertWorker(handle.db, {
     name: "parent",
@@ -287,8 +292,8 @@ test("modify_agent of a stranger is rejected", async () => {
   const result = await executeTool(runtime.toolContext(parentId, "reasoning"), {
     type: "tool_use",
     id: "rn-stranger",
-    name: MODIFY_AGENT,
-    input: { agent_id: strangerId, system_prompt: "hijacked" },
+    name: MODIFY_AGENT_PROMPT,
+    input: { agent_id: strangerId, edits: [{ old_string: "stranger", new_string: "hijacked" }] },
   });
   assert.equal(result.isError, true);
   assert.match(result.content, /direct children/);
@@ -296,11 +301,11 @@ test("modify_agent of a stranger is rejected", async () => {
   assert.equal(row?.systemPrompt, "stranger");
 });
 
-test("modify_agent rejects empty updates", async () => {
+test("modify_agent_prompt saves nothing unless every edit matches exactly once", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const selfId = await insertWorker(handle.db, {
     name: "alpha",
-    systemPrompt: "alpha",
+    systemPrompt: "alpha beta alpha",
     tools: [],
   });
   const runtime = createRuntime({
@@ -313,17 +318,45 @@ test("modify_agent rejects empty updates", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(selfId, "reasoning"), {
-    type: "tool_use",
-    id: "rn-empty",
-    name: MODIFY_AGENT,
-    input: { agent_id: selfId },
-  });
-  assert.equal(result.isError, true);
-  assert.match(result.content, /system_prompt or retired is required/);
+  const edit = (edits: unknown, id: string) =>
+    executeTool(runtime.toolContext(selfId, "reasoning"), {
+      type: "tool_use",
+      id,
+      name: MODIFY_AGENT_PROMPT,
+      input: { agent_id: selfId, edits },
+    });
+
+  const missing = await edit([{ old_string: "gamma", new_string: "x" }], "rn-missing");
+  assert.equal(missing.isError, true);
+  assert.match(missing.content, /edit 1: expected exactly 1 match of old_string, got 0/);
+
+  const ambiguous = await edit([{ old_string: "alpha", new_string: "x" }], "rn-ambiguous");
+  assert.equal(ambiguous.isError, true);
+  assert.match(ambiguous.content, /got 2/);
+
+  const partial = await edit(
+    [
+      { old_string: "beta", new_string: "B" },
+      { old_string: "beta", new_string: "C" },
+    ],
+    "rn-partial",
+  );
+  assert.equal(partial.isError, true);
+  assert.match(partial.content, /edit 2: .*got 0/);
+
+  const none = await edit([], "rn-none");
+  assert.equal(none.isError, true);
+
+  const [row] = await handle.db.select().from(agents).where(eq(agents.id, selfId));
+  assert.equal(row?.systemPrompt, "alpha beta alpha");
+
+  const dollar = await edit([{ old_string: "beta", new_string: "$& costs $1" }], "rn-dollar");
+  assert.equal(dollar.isError, false, dollar.content);
+  const [after] = await handle.db.select().from(agents).where(eq(agents.id, selfId));
+  assert.equal(after?.systemPrompt, "alpha $& costs $1 alpha");
 });
 
-test("modify_agent accepts active alone", async () => {
+test("manage_agent retires without touching the prompt", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const selfId = await insertWorker(handle.db, {
     name: "solo",
@@ -343,24 +376,34 @@ test("modify_agent accepts active alone", async () => {
   const result = await executeTool(runtime.toolContext(selfId, "reasoning"), {
     type: "tool_use",
     id: "rn-only",
-    name: MODIFY_AGENT,
+    name: MANAGE_AGENT,
     input: { agent_id: selfId, retired: true },
   });
   assert.equal(result.isError, false);
-  const body = JSON.parse(result.content);
-  assert.equal(result.audit.new_system_prompt, "keep me");
-  assert.equal(body.retired, true);
+  assert.deepEqual(JSON.parse(result.content), { agent_id: selfId, retired: true });
   const [row] = await handle.db.select().from(agents).where(eq(agents.id, selfId));
   assert.equal(row?.active, false);
+  assert.equal(row?.systemPrompt, "keep me");
+
+  const missingFlag = await executeTool(runtime.toolContext(selfId, "reasoning"), {
+    type: "tool_use",
+    id: "rn-no-flag",
+    name: MANAGE_AGENT,
+    input: { agent_id: selfId },
+  });
+  assert.equal(missingFlag.isError, true);
 
   const again = await executeTool(runtime.toolContext(selfId, "reasoning"), {
     type: "tool_use",
     id: "rn-after",
-    name: MODIFY_AGENT,
-    input: { agent_id: selfId, system_prompt: "back again" },
+    name: MODIFY_AGENT_PROMPT,
+    input: { agent_id: selfId, edits: [{ old_string: "keep me", new_string: "back again" }] },
   });
   assert.equal(again.isError, true);
-  assert.equal(again.content, `retired: agent ${selfId} is retired; only its parent can reactivate it, with retired false`);
+  assert.equal(
+    again.content,
+    `retired: agent ${selfId} is retired; only its parent can reactivate it, with manage_agent retired false`,
+  );
 });
 
 test("reasoning context has send_message, list_agents, and no dispatch_message", async () => {
@@ -601,7 +644,8 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
       "wait",
       "recall_memory",
       "ingest_memory",
-      "modify_agent",
+      "manage_agent",
+      "modify_agent_prompt",
       "get_agent",
       "grant_tool",
       "revoke_tool",
@@ -637,8 +681,7 @@ test("grant_tool on a direct child succeeds and appears in assembleContext", asy
     name: "grant_tool",
     input: {
       agent_id: childId,
-      tool_name: "hath_spawn_agent",
-      usage: "tune your own prompt",
+      tools: [{ tool_name: "hath_spawn_agent", usage: "tune your own prompt" }],
     },
   });
   assert.equal(granted.isError, false);
@@ -677,15 +720,14 @@ test("grant_tool on a non-child fails", async () => {
     name: "grant_tool",
     input: {
       agent_id: strangerId,
-      tool_name: "hath_spawn_agent",
-      usage: "nope",
+      tools: [{ tool_name: "hath_spawn_agent", usage: "nope" }],
     },
   });
   assert.equal(result.isError, true);
   assert.match(result.content, /direct children/);
 });
 
-test("grant_tool and modify_agent reject a grandchild for a normal agent", async () => {
+test("grant_tool and manage_agent reject a grandchild for a normal agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertManager(handle.db, {
     name: "grandparent",
@@ -717,8 +759,7 @@ test("grant_tool and modify_agent reject a grandchild for a normal agent", async
     name: "grant_tool",
     input: {
       agent_id: grandchildId,
-      tool_name: "yaad_search_history",
-      usage: "nope",
+      tools: [{ tool_name: "yaad_search_history", usage: "nope" }],
     },
   });
   assert.equal(grant.isError, true);
@@ -727,7 +768,7 @@ test("grant_tool and modify_agent reject a grandchild for a normal agent", async
   const modify = await executeTool(runtime.toolContext(parentId, "reasoning"), {
     type: "tool_use",
     id: "m-gc",
-    name: MODIFY_AGENT,
+    name: MANAGE_AGENT,
     input: { agent_id: grandchildId, retired: true },
   });
   assert.equal(modify.isError, true);
@@ -767,8 +808,7 @@ test("as the router, grant_tool reaches a root but not a nested agent", async ()
     name: "grant_tool",
     input: {
       agent_id: rootId,
-      tool_name: "yaad_search_history",
-      usage: "remember for the root",
+      tools: [{ tool_name: "yaad_search_history", usage: "remember for the root" }],
     },
   });
   assert.equal(rootGrant.isError, false, rootGrant.content);
@@ -779,8 +819,7 @@ test("as the router, grant_tool reaches a root but not a nested agent", async ()
     name: "grant_tool",
     input: {
       agent_id: nestedId,
-      tool_name: "yaad_get_node_history",
-      usage: "query for the nested agent",
+      tools: [{ tool_name: "yaad_get_node_history", usage: "query for the nested agent" }],
     },
   });
   assert.equal(nestedGrant.isError, true);
@@ -792,7 +831,7 @@ test("as the router, grant_tool reaches a root but not a nested agent", async ()
   assert.equal(byAgent.get(nestedId), undefined);
 });
 
-test("as the router, modify_agent is refused and changes nothing", async () => {
+test("as the router, manage_agent and modify_agent_prompt are refused and change nothing", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, {
     name: "parent-mod",
@@ -813,18 +852,22 @@ test("as the router, modify_agent is refused and changes nothing", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(null, "reasoning"), {
+  const retire = await executeTool(runtime.toolContext(null, "reasoning"), {
     type: "tool_use",
-    id: "dadi-mod",
-    name: MODIFY_AGENT,
-    input: {
-      agent_id: nestedId,
-      system_prompt: "new",
-      retired: true,
-    },
+    id: "dadi-manage",
+    name: MANAGE_AGENT,
+    input: { agent_id: nestedId, retired: true },
   });
-  assert.equal(result.isError, true);
-  assert.match(result.content, /agent identity/);
+  assert.equal(retire.isError, true);
+  assert.match(retire.content, /agent identity/);
+  const edit = await executeTool(runtime.toolContext(null, "reasoning"), {
+    type: "tool_use",
+    id: "dadi-edit",
+    name: MODIFY_AGENT_PROMPT,
+    input: { agent_id: nestedId, edits: [{ old_string: "old", new_string: "new" }] },
+  });
+  assert.equal(edit.isError, true);
+  assert.match(edit.content, /agent identity/);
   const [row] = await handle.db.select().from(agents).where(eq(agents.id, nestedId));
   assert.equal(row?.systemPrompt, "old");
   assert.equal(row?.active, true);
@@ -1036,7 +1079,7 @@ test("get_agent tool names match agent_tools for that agent", async () => {
   ]);
 });
 
-test("get_agent then modify_agent with the same prompt leaves it identical", async () => {
+test("an edit built from get_agent's prompt changes only the edited text", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertWorker(handle.db, {
     name: "round-parent",
@@ -1072,8 +1115,11 @@ test("get_agent then modify_agent with the same prompt leaves it identical", asy
   const modified = await executeTool(ctx, {
     type: "tool_use",
     id: "round-write",
-    name: MODIFY_AGENT,
-    input: { agent_id: childId, system_prompt: prompt },
+    name: MODIFY_AGENT_PROMPT,
+    input: {
+      agent_id: childId,
+      edits: [{ old_string: prompt.split("\n")[1], new_string: "keep the café line" }],
+    },
   });
   assert.equal(modified.isError, false, modified.content);
 
@@ -1084,9 +1130,10 @@ test("get_agent then modify_agent with the same prompt leaves it identical", asy
     input: { agent_id: childId },
   });
   assert.equal(after.isError, false, after.content);
-  assert.equal((JSON.parse(after.content) as { system_prompt: string }).system_prompt, prompt);
+  const edited = "revise me in place\nkeep the café line";
+  assert.equal((JSON.parse(after.content) as { system_prompt: string }).system_prompt, edited);
   const [row] = await handle.db.select().from(agents).where(eq(agents.id, childId));
-  assert.equal(row?.systemPrompt, storedPrompt);
+  assert.equal(row?.systemPrompt, edited);
 });
 
 test("as Dadi, schedule_message fails without writing a row", async () => {
@@ -1183,12 +1230,78 @@ test("grant_tool naming an unknown tool fails", async () => {
     name: "grant_tool",
     input: {
       agent_id: childId,
-      tool_name: "not_a_real_tool",
-      usage: "nope",
+      tools: [
+        { tool_name: "hath_spawn_agent", usage: "would be fine alone" },
+        { tool_name: "not_a_real_tool", usage: "nope" },
+      ],
     },
   });
   assert.equal(result.isError, true);
-  assert.match(result.content, /no tool named not_a_real_tool/);
+  assert.match(result.content, /no tool named not_a_real_tool; nothing was granted/);
+  const grants = await handle.db.select().from(agentTools).where(eq(agentTools.agentId, childId));
+  assert.equal(grants.length, 0);
+});
+
+test("grant_tool grants a list in one call, updates usage, and rejects a repeated name", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const managerId = await insertManager(handle.db);
+  const childId = await insertAgent(handle.db, {
+    name: "list-grant-child",
+    systemPrompt: "child",
+    parentAgentId: managerId,
+  });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const grant = (tools: unknown, id: string) =>
+    executeTool(runtime.toolContext(managerId, "reasoning"), {
+      type: "tool_use",
+      id,
+      name: "grant_tool",
+      input: { agent_id: childId, tools },
+    });
+
+  const both = await grant(
+    [
+      { tool_name: "yaad_search_history", usage: "find past plans" },
+      { tool_name: "yaad_get_node_history", usage: "check corrections" },
+    ],
+    "gl1",
+  );
+  assert.equal(both.isError, false, both.content);
+  assert.deepEqual(JSON.parse(both.content).tool_names, [
+    "yaad_search_history",
+    "yaad_get_node_history",
+  ]);
+
+  const again = await grant([{ tool_name: "yaad_search_history", usage: "newer reason" }], "gl2");
+  assert.equal(again.isError, false, again.content);
+  const rows = await handle.db.select().from(agentTools).where(eq(agentTools.agentId, childId));
+  assert.equal(rows.length, 2);
+  assert.equal(
+    rows.find((row) => row.toolId === toolId("yaad_search_history"))?.usage,
+    "newer reason",
+  );
+
+  const repeated = await grant(
+    [
+      { tool_name: "hath_spawn_agent", usage: "one" },
+      { tool_name: "hath_spawn_agent", usage: "two" },
+    ],
+    "gl3",
+  );
+  assert.equal(repeated.isError, true);
+  assert.match(repeated.content, /hath_spawn_agent listed more than once; nothing was granted/);
+
+  const empty = await grant([], "gl4");
+  assert.equal(empty.isError, true);
 });
 
 test("revoke_tool removes a grant and fails when the child does not hold it", async () => {
@@ -1213,8 +1326,7 @@ test("revoke_tool removes a grant and fails when the child does not hold it", as
     name: "grant_tool",
     input: {
       agent_id: childId,
-      tool_name: "hath_spawn_agent",
-      usage: "temporary",
+      tools: [{ tool_name: "hath_spawn_agent", usage: "temporary" }],
     },
   });
   const revoked = await executeTool(runtime.toolContext(managerId, "reasoning"), {
@@ -1285,8 +1397,7 @@ test("an agent can grant a tool it does not itself hold", async () => {
     name: "grant_tool",
     input: {
       agent_id: childId,
-      tool_name: "hath_spawn_agent",
-      usage: "you may modify yourself",
+      tools: [{ tool_name: "hath_spawn_agent", usage: "you may modify yourself" }],
     },
   });
   assert.equal(granted.isError, false);
@@ -1332,7 +1443,8 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     "wait",
     "recall_memory",
     "ingest_memory",
-    "modify_agent",
+    "manage_agent",
+    "modify_agent_prompt",
     "get_agent",
     "grant_tool",
     "revoke_tool",
@@ -1396,8 +1508,7 @@ test("list_agents is absent from GET /tools, the tools table, and grant_tool", a
     name: "grant_tool",
     input: {
       agent_id: childId,
-      tool_name: LIST_AGENTS,
-      usage: "should fail",
+      tools: [{ tool_name: LIST_AGENTS, usage: "should fail" }],
     },
   });
   assert.equal(granted.isError, true);

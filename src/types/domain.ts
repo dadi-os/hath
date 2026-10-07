@@ -155,5 +155,6 @@ export const RECALL_MEMORY = "recall_memory";
 export const INGEST_MEMORY = "ingest_memory";
 export const LIST_AGENTS = "list_agents";
 export const SPAWN_AGENT = "hath_spawn_agent";
-export const MODIFY_AGENT = "modify_agent";
+export const MANAGE_AGENT = "manage_agent";
+export const MODIFY_AGENT_PROMPT = "modify_agent_prompt";
 export const GET_AGENT = "get_agent";

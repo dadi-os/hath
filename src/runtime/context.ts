@@ -10,7 +10,8 @@ import {
   DISPATCH_MESSAGE,
   INGEST_MEMORY,
   LIST_AGENTS,
-  MODIFY_AGENT,
+  MANAGE_AGENT,
+  MODIFY_AGENT_PROMPT,
   RECALL_MEMORY,
   SEND_MESSAGE,
   STEER_REASONING,
@@ -26,7 +27,7 @@ import {
   yieldTool,
 } from "./tools.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
-import { modifyAgentTool } from "./modify.js";
+import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 import { embeddedAgentTools, embeddedSchedulingTools } from "../tools/registry.js";
 import { asDwarTool } from "../tools/types.js";
@@ -247,7 +248,8 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
     waitTool,
     recallMemoryTool,
     ingestMemoryTool,
-      modifyAgentTool,
+    manageAgentTool,
+    modifyAgentPromptTool,
     ...embeddedAgentTools().map(asDwarTool),
     ...embeddedSchedulingTools().map(asDwarTool),
     yieldTool,
@@ -260,7 +262,8 @@ export const embeddedReasoningTools = [
   WAIT,
   RECALL_MEMORY,
   INGEST_MEMORY,
-  MODIFY_AGENT,
+  MANAGE_AGENT,
+  MODIFY_AGENT_PROMPT,
   ...embeddedAgentTools().map((tool) => tool.name),
   ...embeddedSchedulingTools().map((tool) => tool.name),
   YIELD,

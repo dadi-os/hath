@@ -56,6 +56,11 @@ export class TranscriptStore {
     return row;
   }
 
+  /** The seq of the newest message addressed to this agent, or 0 before its first. */
+  lastInboundSeq(agentId: string): number {
+    return this.inbox.get(agentId)?.at(-1)?.seq ?? 0;
+  }
+
   /**
    * Every inbound message for this agent plus every outbound message from it,
    * sorted by seq.

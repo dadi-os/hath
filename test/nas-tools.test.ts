@@ -265,19 +265,19 @@ test("worker granted execute_shell and read_file sees those plus send_message an
     systemPrompt: "use terminal t1",
     parentAgentId: managerId,
   });
-  for (const toolName of ["terminal_execute_shell", "terminal_read_file"] as const) {
-    const granted = await executeTool(runtime.toolContext(managerId, "reasoning"), {
-      type: "tool_use",
-      id: `g-${toolName}`,
-      name: "grant_tool",
-      input: {
-        agent_id: childId,
-        tool_name: toolName,
-        usage: `use ${toolName}`,
-      },
-    });
-    assert.equal(granted.isError, false, granted.content);
-  }
+  const granted = await executeTool(runtime.toolContext(managerId, "reasoning"), {
+    type: "tool_use",
+    id: "g-terminal",
+    name: "grant_tool",
+    input: {
+      agent_id: childId,
+      tools: [
+        { tool_name: "terminal_execute_shell", usage: "use terminal_execute_shell" },
+        { tool_name: "terminal_read_file", usage: "use terminal_read_file" },
+      ],
+    },
+  });
+  assert.equal(granted.isError, false, granted.content);
   const ctx = await assembleContext({
     db: handle.db,
     serviceRoot: config.serviceRoot,
@@ -297,7 +297,8 @@ test("worker granted execute_shell and read_file sees those plus send_message an
       "wait",
       "recall_memory",
       "ingest_memory",
-      "modify_agent",
+      "manage_agent",
+      "modify_agent_prompt",
       "get_agent",
       "grant_tool",
       "revoke_tool",

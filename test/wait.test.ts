@@ -12,7 +12,7 @@ import type { ToolContext } from "../src/tools/shared.js";
 
 const agentId = "wait-worker";
 
-function ctxFor(steer: SteerQueue): ToolContext {
+function ctxFor(steer: SteerQueue, transcript = new TranscriptStore()): ToolContext {
   return {
     db: {} as never,
     callerId: agentId,
@@ -21,7 +21,7 @@ function ctxFor(steer: SteerQueue): ToolContext {
     steer,
     intents: new IntentQueue(),
     locks: new LaneLocks(),
-    transcript: new TranscriptStore(),
+    transcript,
     sessions: new HostSessions(),
     toolDebounce: new ToolDebounce({ base_ms: 1, max_ms: 1 }),
     enqueueConversation: () => {},
@@ -61,6 +61,30 @@ test("terminate cuts the wait short", async () => {
   assert.equal(result.isError, false);
   assert.ok(Date.now() - started < 1000);
   assert.equal(JSON.parse(result.content).interrupted, true);
+});
+
+test("a message to the agent cuts the wait short", async () => {
+  const transcript = new TranscriptStore();
+  setTimeout(() => {
+    transcript.append({ fromAgentId: "browser-manager", toAgentId: agentId, content: "done" });
+  }, 200);
+  const started = Date.now();
+  const result = await executeTool(ctxFor(new SteerQueue(), transcript), waitCall({ seconds: 30 }));
+  assert.equal(result.isError, false);
+  assert.ok(Date.now() - started < 1500);
+  assert.equal(JSON.parse(result.content).interrupted, true);
+});
+
+test("messages the agent sends or that go to others do not cut the wait short", async () => {
+  const transcript = new TranscriptStore();
+  transcript.append({ fromAgentId: "browser-manager", toAgentId: agentId, content: "earlier" });
+  setTimeout(() => {
+    transcript.append({ fromAgentId: agentId, toAgentId: "browser-manager", content: "on it" });
+    transcript.append({ fromAgentId: "browser-manager", toAgentId: "other-worker", content: "hi" });
+  }, 200);
+  const result = await executeTool(ctxFor(new SteerQueue(), transcript), waitCall({ seconds: 1 }));
+  assert.equal(result.isError, false);
+  assert.equal(JSON.parse(result.content).interrupted, false);
 });
 
 test("an uninterrupted wait runs the full duration", async () => {

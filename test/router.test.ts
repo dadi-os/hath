@@ -79,7 +79,14 @@ test("POST /router spawns a root, grants it, sends as Ankur, and returns what it
   await resetRuntime(handle.sql, handle.db, config);
   const dwar = scripted([
     toolUse("hath_spawn_agent", { id: "escape-room-booking", system_prompt: "Own the escape room booking." }, "c1"),
-    toolUse("grant_tool", { agent_id: "escape-room-booking", tool_name: "yaad_search_history", usage: "look up past plans" }, "c2"),
+    toolUse(
+      "grant_tool",
+      {
+        agent_id: "escape-room-booking",
+        tools: [{ tool_name: "yaad_search_history", usage: "look up past plans" }],
+      },
+      "c2",
+    ),
     toolUse("send_message", { to_agent_id: "escape-room-booking", content: "Check I can afford the escape room tomorrow, then book it." }, "c3"),
   ]);
   const { app, runtime } = await appWith(dwar);
@@ -187,8 +194,12 @@ test("POST /router grants only to roots and cannot modify agents", async () => {
   await insertAgent(handle.db, { id: "coding-manager", systemPrompt: "Owns terminals." });
   await insertAgent(handle.db, { id: "coding-worker", systemPrompt: "One job.", parentAgentId: "coding-manager" });
   const dwar = scripted([
-    toolUse("grant_tool", { agent_id: "coding-worker", tool_name: "yaad_search_history", usage: "x" }, "g1"),
-    toolUse("modify_agent", { agent_id: "coding-manager", retired: true }, "m1"),
+    toolUse(
+      "grant_tool",
+      { agent_id: "coding-worker", tools: [{ tool_name: "yaad_search_history", usage: "x" }] },
+      "g1",
+    ),
+    toolUse("manage_agent", { agent_id: "coding-manager", retired: true }, "m1"),
   ]);
   const { app, runtime } = await appWith(dwar);
 
@@ -197,7 +208,7 @@ test("POST /router grants only to roots and cannot modify agents", async () => {
   const logs = await handle.db.select().from(agentLogs).where(isNull(agentLogs.agentId));
   const results = logs.filter((row) => row.event === "tool_result").map((row) => row.payload);
   const grant = results.find((payload) => payload.name === "grant_tool");
-  const modify = results.find((payload) => payload.name === "modify_agent");
+  const modify = results.find((payload) => payload.name === "manage_agent");
   assert.equal(grant?.is_error, true);
   assert.match(String(grant?.content), /direct children/);
   assert.equal(modify?.is_error, true);

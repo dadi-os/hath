@@ -17,7 +17,7 @@ const input = z
 export const listTools = defineTool({
   name: "list_tools",
   description:
-    "List every grantable tool in the registry with its name and description. Use this before grant_tool when you need exact tool names for a suite (for example chaavi_ for vault login fill, browser_ for page control, terminal_ for shells). Optional prefix filters by name start (e.g. chaavi_, browser_). Embedded tools every agent already holds (send_message, list_agents, grant_tool, modify_agent, …) are not listed — they are not grantable.",
+    "List every grantable tool in the registry with its name and description. Use this before grant_tool when you need exact tool names for a suite (for example chaavi_ for vault login fill, browser_ for page control, terminal_ for shells). Optional prefix filters by name start (e.g. chaavi_, browser_). Embedded tools every agent already holds (send_message, list_agents, grant_tool, manage_agent, modify_agent_prompt, …) are not listed — they are not grantable.",
   input,
   inputSchema: {
     type: "object",

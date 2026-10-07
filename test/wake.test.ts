@@ -148,7 +148,7 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
   await runReasoningLoop({
     ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
       n += 1;
-      return turn("anthropic", [call(n < 3 ? "modify_agent" : "yield", `m${n}`)]);
+      return turn("anthropic", [call(n < 3 ? "modify_agent_prompt" : "yield", `m${n}`)]);
     }, requests),
     assemble: async () => {
       systems += 1;
