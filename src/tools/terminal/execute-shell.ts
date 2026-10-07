@@ -15,7 +15,7 @@ const input = z
 export const executeShell = defineTool({
   name: "terminal_execute_shell",
   description:
-    "Run a shell command in an existing host terminal and wait for it to finish (or time out). The command runs in a subshell started from the terminal's working directory: cd, export, and set do not carry over to the next call, and nothing the command does (set -e, exit, exec) can end the terminal. Returns exit_code, output, truncated, and timed_out. If timed_out is true the command is still running — use terminal_read to see more output and terminal_send_keys (e.g. [\"C-c\"]) to interrupt. Do not use this tool to read or edit files; use the file tools instead. Git, package managers, and process control all go through this tool.",
+    "Run a shell command in an existing host terminal and wait for it to finish (or time out). The command runs in a subshell started from the terminal's working directory: cd, export, and set do not carry over to the next call, and nothing the command does (set -e, exit, exec) can end the terminal. Returns exit_code, output, truncated, and timed_out. If timed_out is true the command is still running — use terminal_read to see more output and terminal_send_keys (e.g. [\"C-c\"]) to interrupt. Do not use this tool to read, edit or search files; use terminal_read_file, terminal_edit_file and terminal_write_file, and terminal_grep and terminal_glob instead of grep, find or ls. Git, package managers, and process control all go through this tool.",
   input,
   inputSchema: {
     type: "object",

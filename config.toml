@@ -16,8 +16,13 @@ tool_debounce_max_ms = 15000
 # are cleared down to the newest kept chars. Clearing in one jump keeps the
 # history byte-stable between clears, so the provider cache survives every
 # step but the clearing one; a wider gap clears less often.
-wake_tool_results_max_chars = 120000
-wake_tool_results_kept_chars = 30000
+wake_tool_results_max_chars = 60000
+wake_tool_results_kept_chars = 15000
+# A newer read of the same page tree, page text, screenshot or terminal screen
+# replaces the older read only while the older sits within this many of the
+# newest wake turns: further back, the cache rewrite it causes falls outside
+# the provider's 20-position lookback and rewrites the whole wake.
+wake_supersede_window_turns = 8
 
 [dwar]
 timeout_ms = 330000

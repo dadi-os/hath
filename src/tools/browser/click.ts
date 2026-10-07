@@ -47,8 +47,9 @@ export const click = defineTool({
       (response) =>
         response.page === null
           ? { clicked: true as const, ref: parsed.ref }
-          : `clicked: ${parsed.ref}\n${response.page}`,
+          : `clicked: ${parsed.ref}\n${response.page.page}`,
       (response) => ({ browser_id: parsed.browser_id, tab_id: response.tab_id }),
+      (response) => response.page?.state,
     );
   },
 });

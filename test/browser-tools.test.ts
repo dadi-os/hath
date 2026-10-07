@@ -275,6 +275,7 @@ test("browser_click with read settles and returns the page tree; without it, onl
     read.content,
     "clicked: e3\nurl: https://example.com/next\ntruncated: false\nbutton [e7] in t1",
   );
+  assert.equal(read.state, "browser:10:tree:t1");
 
   const plain = await executeTool(ctx, {
     type: "tool_use",
@@ -283,6 +284,7 @@ test("browser_click with read settles and returns the page tree; without it, onl
     input: { browser_id: 10, ref: "e3" },
   });
   assert.deepEqual(JSON.parse(plain.content), { clicked: true, ref: "e3" });
+  assert.equal(plain.state, undefined);
   assert.deepEqual(settles, [true, false]);
 });
 
@@ -311,6 +313,7 @@ test("browser_navigate with read returns the page text; a failed read names the 
     read.content,
     "title: Example\nurl: https://example.com/\ntruncated: false\nHello there",
   );
+  assert.equal(read.state, "browser:10:text:https://example.com/");
 
   readFails = true;
   const failed = await navigate("n2");
@@ -319,4 +322,5 @@ test("browser_navigate with read returns the page text; a failed read names the 
     failed.content,
     "stale_ref: navigated to https://example.com/, but reading the page failed: page went away",
   );
+  assert.equal(failed.state, undefined);
 });

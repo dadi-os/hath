@@ -29,10 +29,11 @@ export const readTerminal = defineTool({
   },
   async handler(ctx, parsed) {
     const query = parsed.lines !== undefined ? { lines: parsed.lines } : {};
-    return nasToolCall(
+    const result = await nasToolCall(
       () => ctx.nas.capture(parsed.terminal_id, query),
       (response) => response,
       { terminal_id: parsed.terminal_id },
     );
+    return result.isError ? result : { ...result, state: `terminal:${parsed.terminal_id}` };
   },
 });

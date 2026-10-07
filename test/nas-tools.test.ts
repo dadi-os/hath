@@ -145,6 +145,33 @@ test("execute_shell passes through exit code, output, and timed_out", async () =
   assert.equal(result.audit.terminal_id, "t1");
 });
 
+test("terminal_read keys its screen by terminal, so a newer read replaces it in the wake", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const workerId = await insertWorker(handle.db, {
+    name: "thread",
+    systemPrompt: "do the job",
+    tools: ["terminal_read"],
+  });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas({ capture: () => ({ output: "$ npm test\nok\n" }) }),
+    config,
+    log: silentLog,
+  });
+  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+    type: "tool_use",
+    id: "rd1",
+    name: "terminal_read",
+    input: { terminal_id: "t1" },
+  });
+  assert.equal(result.isError, false, result.content);
+  assert.equal(result.state, "terminal:t1");
+});
+
 test("Nas 404 becomes not_found tool error without killing the lane", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {

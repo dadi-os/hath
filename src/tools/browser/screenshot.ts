@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineTool } from "../types.js";
-import { browserToolCall } from "./call.js";
+import { browserToolCall, pageState } from "./call.js";
 
 const input = z
   .object({
@@ -83,6 +83,10 @@ export const screenshot = defineTool({
         ...(response.tab_id !== undefined ? { tab_id: response.tab_id } : {}),
         image: response.image,
       }),
+      (response) => {
+        const where = response.scope === "display" ? "display" : response.tab_id;
+        return where === undefined ? undefined : pageState(parsed.browser_id, "screenshot", where);
+      },
     );
   },
 });

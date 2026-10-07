@@ -12,7 +12,7 @@ import { IntentQueue } from "../src/runtime/intents.js";
 import { runReasoningLoop } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
-import { CLEARED_RESULT, CONTINUE_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
+import { CLEARED_RESULT, CONTINUE_TURN, SUPERSEDED_RESULT, Wake, WakeStore } from "../src/runtime/wake.js";
 import { roomyWakeLimits } from "./helpers.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -114,7 +114,7 @@ test("past its budget the wake clears older tool results in jumps, keeping every
   await runReasoningLoop({
     ...stepDeps(
       "reasoning",
-      new Wake({ toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000 }),
+      new Wake({ toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000, supersedeWindowTurns: 8 }),
       () => {
         n += 1;
         return n <= 12
@@ -333,4 +333,74 @@ test("a queued conversation run makes no model call until something it can see j
   intents.append("agent-1", { toAgentId: null, intent: "tell Ankur it is done", attachmentIds: [] });
   await runConversationLoop(deps);
   assert.equal(requests.length, 3);
+});
+
+/** Push one step onto `wake`: a call to `id`, then its result of `chars` characters under `state`. */
+function pushRead(wake: Wake, id: string, state?: string, chars = 1_000): void {
+  wake.push(
+    { message: { role: "assistant", content: [call("browser_accessibility_tree", id)] } },
+    {
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: id, content: `${id} `.padEnd(chars, "x"), is_error: false }],
+      },
+      ...(state !== undefined ? { states: { [id]: state } } : {}),
+    },
+  );
+}
+
+test("a newer read of the same state replaces the older one within the window; other states stay", () => {
+  const wake = new Wake({ toolResultsMaxChars: 1_000_000, toolResultsKeptChars: 500_000, supersedeWindowTurns: 4 });
+  wake.begin("sys", [{ role: "user", content: "[From: Ankur]\ncheck the course page" }], 1);
+  pushRead(wake, "t1", "browser:1:tree:tab");
+  pushRead(wake, "x1", "browser:1:text:https://a.example/");
+  pushRead(wake, "t2", "browser:1:tree:tab");
+  pushRead(wake, "x2", "browser:1:text:https://b.example/");
+  pushRead(wake, "s1");
+  pushRead(wake, "s2");
+  pushRead(wake, "x3", "browser:1:text:https://a.example/");
+
+  const results = toolResults(wake.view("reasoning"));
+  assert.equal(results[0], SUPERSEDED_RESULT);
+  assert.ok(results[1]!.startsWith("x1 "), "a.example's text is too far back to replace");
+  assert.ok(results[2]!.startsWith("t2 "));
+  assert.ok(results[3]!.startsWith("x2 "), "another page's text is not stale");
+  assert.ok(results.slice(4).every((result) => result !== SUPERSEDED_RESULT));
+});
+
+test("replaced reads stop counting toward the wake's clearing budget", () => {
+  const wake = new Wake({ toolResultsMaxChars: 3_000, toolResultsKeptChars: 1_500, supersedeWindowTurns: 8 });
+  wake.begin("sys", [{ role: "user", content: "[From: Ankur]\nwatch the terminal" }], 1);
+  for (let i = 1; i <= 5; i += 1) {
+    pushRead(wake, `r${i}`, "terminal:t1");
+  }
+  const results = toolResults(wake.view("reasoning"));
+  assert.deepEqual(results.slice(0, 4), Array(4).fill(SUPERSEDED_RESULT));
+  assert.ok(results[4]!.startsWith("r5 "));
+  assert.ok(!results.includes(CLEARED_RESULT));
+});
+
+test("a tool result's state reaches the wake through the step loop", async () => {
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return n <= 3
+        ? turn("anthropic", [call("browser_accessibility_tree", `t${n}`)])
+        : turn("anthropic", [call("yield", "y")]);
+    }, requests),
+    executeTool: async (use) => ({
+      content: `tree from ${use.id}`,
+      isError: false,
+      audit: {},
+      state: "browser:1:tree:tab",
+    }),
+    steer: new SteerQueue(),
+  });
+  assert.deepEqual(toolResults(requests.at(-1)!.messages), [
+    SUPERSEDED_RESULT,
+    SUPERSEDED_RESULT,
+    "tree from t3",
+  ]);
 });

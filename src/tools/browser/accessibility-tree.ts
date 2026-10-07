@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineTool } from "../types.js";
-import { browserToolCall } from "./call.js";
+import { browserToolCall, pageState } from "./call.js";
 
 const input = z
   .object({
@@ -34,6 +34,7 @@ export const accessibilityTree = defineTool({
       () => ctx.browsers.accessibilityTree(parsed.browser_id, parsed.tab_id, parsed.max_bytes),
       (response) => `url: ${response.url}\ntruncated: ${response.truncated}\n${response.tree}`,
       (response) => ({ browser_id: parsed.browser_id, tab_id: response.tab_id }),
+      (response) => pageState(parsed.browser_id, "tree", response.tab_id),
     );
   },
 });

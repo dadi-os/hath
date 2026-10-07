@@ -103,6 +103,7 @@ export async function runStep(
   }
 
   const results: DwarToolResultBlock[] = [];
+  const states: Record<string, string> = {};
   let yielded = false;
   let stopped = false;
   for (const call of uses) {
@@ -124,11 +125,14 @@ export async function runStep(
       content: result.content,
       is_error: result.isError,
     });
+    if (result.state !== undefined) {
+      states[call.id] = result.state;
+    }
     if (isStopped() && call.name !== YIELD) {
       stopped = true;
     }
   }
-  deps.wake.push({ message: assistant }, { message: { role: "user", content: results } });
+  deps.wake.push({ message: assistant }, { message: { role: "user", content: results }, states });
   if (yielded) {
     deps.wake.markYield(deps.lane);
   }

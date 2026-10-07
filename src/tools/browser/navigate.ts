@@ -63,9 +63,10 @@ export const navigate = defineTool({
         const downloadLine = response.download
           ? `download: ${JSON.stringify(response.download)}\n`
           : "";
-        return `title: ${response.title}\n${downloadLine}${response.page}`;
+        return `title: ${response.title}\n${downloadLine}${response.page.page}`;
       },
       (response) => ({ browser_id: parsed.browser_id, tab_id: response.tab_id }),
+      (response) => response.page?.state,
     );
   },
 });

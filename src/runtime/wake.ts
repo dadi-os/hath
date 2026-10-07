@@ -12,7 +12,10 @@
  * shown in full pass a size budget, every result before the newest ones is
  * replaced by a short cleared note. The cut only moves forward and moves in
  * one jump, so the history stays byte-stable between cuts and the provider's
- * cached prefix survives every step but the one that clears.
+ * cached prefix survives every step but the one that clears. A read of state
+ * (a tab's tree, a page's text, a terminal's screen) is also replaced by a short
+ * note when a newer read of the same state lands within a few turns of it; the
+ * window keeps the cache rewrite that causes inside the provider's lookback.
  *
  * A wake lasts while any lane run for the agent is queued or running, so a
  * steer from conversation reaches a reasoning run that still sees the steer's
@@ -34,12 +37,21 @@ export const CONTINUE_TURN =
 export const CLEARED_RESULT =
   "[cleared] This older tool result was dropped to keep the wake small. Call the tool again if you still need it.";
 
+/** What a tool result reads as once a newer read of the same state replaces it. */
+export const SUPERSEDED_RESULT =
+  "[superseded] A newer read of the same page or terminal follows in this wake; use that one.";
+
 /** How much tool output a wake shows in full before it clears older results. */
 export type WakeLimits = {
   /** Clearing starts when the tool results still shown in full pass this many characters. */
   toolResultsMaxChars: number;
   /** A clear keeps the newest results up to this many characters (always at least the newest turn's). */
   toolResultsKeptChars: number;
+  /**
+   * A newer read of the same state replaces an older one only while the older sits within
+   * this many of the newest turns, so the cache rewrite it causes stays short.
+   */
+  supersedeWindowTurns: number;
 };
 
 /** One entry in a wake: a user or assistant turn, optionally private to one lane. */
@@ -47,6 +59,8 @@ export type WakeTurn = {
   message: DwarMessage;
   /** Set when only one lane should see this turn. */
   only?: Lane;
+  /** The state key of each of this turn's tool results that read state, by tool_use_id. */
+  states?: Record<string, string>;
 };
 
 /** Wake is one agent's shared lane history for the current wake. */
@@ -59,6 +73,10 @@ export class Wake {
   private clearedThrough = 0;
   /** How many turns each lane could see when it last yielded. */
   private readonly yieldedAt = new Map<Lane, number>();
+  /** The newest result read under each state key: its turn index and tool_use_id. */
+  private readonly latestState = new Map<string, { turn: number; toolUseId: string }>();
+  /** tool_use_ids whose results a newer read of the same state replaced. */
+  private readonly superseded = new Set<string>();
 
   constructor(private readonly limits: WakeLimits) {}
 
@@ -97,11 +115,29 @@ export class Wake {
 
   /**
    * Append turns together, so a model turn and its results are never split by
-   * the other lane, then clear older tool results if the wake is over budget.
+   * the other lane, replace older reads of the state they read, then clear older
+   * tool results if the wake is over budget.
    */
   push(...turns: WakeTurn[]): void {
-    this.turns.push(...turns);
+    for (const turn of turns) {
+      this.turns.push(turn);
+      this.supersede(this.turns.length - 1, turn.states ?? {});
+    }
     this.clearOldResults();
+  }
+
+  /**
+   * supersede records the results of turn `index` as the newest read of their state
+   * keys, replacing the previous read of each key when it is within the window.
+   */
+  private supersede(index: number, states: Record<string, string>): void {
+    for (const [toolUseId, key] of Object.entries(states)) {
+      const previous = this.latestState.get(key);
+      if (previous !== undefined && previous.turn >= index - this.limits.supersedeWindowTurns) {
+        this.superseded.add(previous.toolUseId);
+      }
+      this.latestState.set(key, { turn: index, toolUseId });
+    }
   }
 
   /** Record that `lane` yielded with the wake as it stands now. */
@@ -131,9 +167,34 @@ export class Wake {
       if (turn.only !== undefined && turn.only !== lane) {
         return [];
       }
-      return [index < this.clearedThrough ? clearResults(turn.message) : turn.message];
+      return [
+        index < this.clearedThrough
+          ? replaceResults(turn.message, () => CLEARED_RESULT)
+          : replaceResults(turn.message, (id) =>
+              this.superseded.has(id) ? SUPERSEDED_RESULT : null,
+            ),
+      ];
     });
     return [...transcript, ...turns];
+  }
+
+  /**
+   * resultChars is the length every tool result in `message` is shown at, a superseded one
+   * as its note.
+   */
+  private resultChars(message: DwarMessage): number {
+    if (typeof message.content === "string") {
+      return 0;
+    }
+    let total = 0;
+    for (const block of message.content) {
+      if (block.type === "tool_result") {
+        total += this.superseded.has(block.tool_use_id)
+          ? SUPERSEDED_RESULT.length
+          : block.content.length;
+      }
+    }
+    return total;
   }
 
   /** The wake turns `lane` may see, in order. */
@@ -149,7 +210,7 @@ export class Wake {
   private clearOldResults(): void {
     let shown = 0;
     for (let i = this.clearedThrough; i < this.turns.length; i += 1) {
-      shown += resultChars(this.turns[i]!.message);
+      shown += this.resultChars(this.turns[i]!.message);
     }
     if (shown <= this.limits.toolResultsMaxChars) {
       return;
@@ -157,7 +218,7 @@ export class Wake {
     let kept = 0;
     let cut = this.turns.length;
     for (let i = this.turns.length - 1; i >= this.clearedThrough; i -= 1) {
-      const size = resultChars(this.turns[i]!.message);
+      const size = this.resultChars(this.turns[i]!.message);
       if (kept > 0 && kept + size > this.limits.toolResultsKeptChars) {
         break;
       }
@@ -168,30 +229,31 @@ export class Wake {
   }
 }
 
-/** resultChars is the length of every tool result in `message`. */
-function resultChars(message: DwarMessage): number {
-  if (typeof message.content === "string") {
-    return 0;
-  }
-  let total = 0;
-  for (const block of message.content) {
-    if (block.type === "tool_result") {
-      total += block.content.length;
-    }
-  }
-  return total;
-}
-
-/** clearResults returns `message` with each tool result's content replaced by CLEARED_RESULT. */
-function clearResults(message: DwarMessage): DwarMessage {
-  if (typeof message.content === "string" || !message.content.some((b) => b.type === "tool_result")) {
+/**
+ * replaceResults returns `message` with each tool result for which `note` returns text shown
+ * as that text instead of its content; `message` itself when none is replaced.
+ */
+function replaceResults(
+  message: DwarMessage,
+  note: (toolUseId: string) => string | null,
+): DwarMessage {
+  if (
+    typeof message.content === "string" ||
+    !message.content.some(
+      (block) => block.type === "tool_result" && note(block.tool_use_id) !== null,
+    )
+  ) {
     return message;
   }
   return {
     ...message,
-    content: message.content.map((block) =>
-      block.type === "tool_result" ? { ...block, content: CLEARED_RESULT } : block,
-    ),
+    content: message.content.map((block) => {
+      if (block.type !== "tool_result") {
+        return block;
+      }
+      const replacement = note(block.tool_use_id);
+      return replacement === null ? block : { ...block, content: replacement };
+    }),
   };
 }
 

@@ -26,6 +26,11 @@ export type ToolExecResult = {
   isError: boolean;
   /** Extra fields merged into the durable tool_result log row. */
   audit: Record<string, unknown>;
+  /**
+   * Set on a successful read of state that a newer read makes stale (a tab's tree, a page's
+   * text, a terminal's screen): the wake shows only the newest result under each key.
+   */
+  state?: string;
 };
 
 /** Who is invoking a tool: an agents-row kebab id, or a synthetic CLI identity. */

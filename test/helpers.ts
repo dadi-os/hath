@@ -61,6 +61,7 @@ export function testConfig(): Config {
 export const roomyWakeLimits: WakeLimits = {
   toolResultsMaxChars: 1_000_000,
   toolResultsKeptChars: 500_000,
+  supersedeWindowTurns: 8,
 };
 
 export const silentLog = {

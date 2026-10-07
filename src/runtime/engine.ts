@@ -100,6 +100,7 @@ export function createRuntime(opts: {
   const wakeLimits: WakeLimits = {
     toolResultsMaxChars: opts.config.runtime.wake_tool_results_max_chars,
     toolResultsKeptChars: opts.config.runtime.wake_tool_results_kept_chars,
+    supersedeWindowTurns: opts.config.runtime.wake_supersede_window_turns,
   };
   const wakes = new WakeStore(wakeLimits);
   let pending = 0;
