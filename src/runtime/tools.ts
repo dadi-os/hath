@@ -10,11 +10,14 @@ import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarTool, DwarToolUseBlock } from "../types/domain.js";
 import {
+  CREATE_ATTACHMENT,
   DISPATCH_MESSAGE,
+  FORWARD_ATTACHMENT,
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
+  READ_ATTACHMENT,
   RECALL_MEMORY,
   SEND_MESSAGE,
   STEER_REASONING,
@@ -32,6 +35,13 @@ import {
   type ToolContext,
   type ToolExecResult,
 } from "../tools/shared.js";
+import { requireAttachments } from "../db/attachments.js";
+import {
+  MAX_ATTACHMENTS,
+  runCreateAttachment,
+  runForwardAttachment,
+  runReadAttachment,
+} from "./attachments.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { runIngestMemory, runRecallMemory } from "./memory.js";
 import { runManageAgent, runModifyAgentPrompt } from "./modify.js";
@@ -50,6 +60,11 @@ export const sendMessageInputSchema: Record<string, unknown> = {
     intent: {
       type: "string",
       description: "What you want said, not the final wording",
+    },
+    attachment_ids: {
+      type: "array",
+      items: { type: "string" },
+      description: `Attachments the message should carry, by id (at most ${MAX_ATTACHMENTS}); conversation forwards them as they are`,
     },
   },
   required: ["to_agent_id", "intent"],
@@ -132,7 +147,7 @@ export const listAgentsInputSchema: Record<string, unknown> = {
 export const sendMessageTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    "Hand an intent to your conversation lane so it can compose and dispatch a message. Does not send anything itself. to_agent_id null is the user. See the routing block for who to address. Report real tool errors honestly; do not invent that grants are missing.",
+    "Hand an intent to your conversation lane so it can compose and dispatch a message. Does not send anything itself. to_agent_id null is the user. To send files, list their ids in attachment_ids (create_attachment turns a host file into one) instead of putting their contents in the intent. See the routing block for who to address. Report real tool errors honestly; do not invent that grants are missing.",
   input_schema: sendMessageInputSchema,
 };
 
@@ -180,6 +195,11 @@ export const listAgentsTool: DwarTool = {
 const sendInput = z.object({
   to_agent_id: agentIdOrUserSchema,
   intent: z.string().min(1),
+  attachment_ids: z
+    .array(z.string().uuid())
+    .max(MAX_ATTACHMENTS)
+    .refine((ids) => new Set(ids).size === ids.length, "attachment_ids must not repeat")
+    .optional(),
 });
 
 const dispatchInput = z.object({
@@ -262,6 +282,9 @@ async function dispatchTool(
     if (call.name === LIST_AGENTS) {
       return await runListAgents(ctx, call.input);
     }
+    if (call.name === READ_ATTACHMENT) {
+      return await runReadAttachment(ctx, call.input);
+    }
     if (ctx.lane === "router") {
       return await runRouterTool(ctx, call);
     }
@@ -271,6 +294,9 @@ async function dispatchTool(
       }
       if (call.name === WAIT) {
         return await runWait(ctx, call.input);
+      }
+      if (call.name === CREATE_ATTACHMENT) {
+        return await runCreateAttachment(ctx, call.input);
       }
       if (call.name === RECALL_MEMORY) {
         return await runRecallMemory(ctx, call.input);
@@ -302,6 +328,8 @@ async function dispatchTool(
     switch (call.name) {
       case DISPATCH_MESSAGE:
         return await runDispatchMessage(ctx, call.input);
+      case FORWARD_ATTACHMENT:
+        return await runForwardAttachment(ctx, call.input);
       case STEER_REASONING:
         return await runSteerReasoning(ctx, call.input);
       default:
@@ -350,7 +378,13 @@ async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   if (input.to_agent_id !== null) {
     await requireActiveAgent(ctx.db, input.to_agent_id);
   }
-  ctx.intents.append(ctx.callerId, { toAgentId: input.to_agent_id, intent: input.intent });
+  const attachmentIds = input.attachment_ids ?? [];
+  await requireAttachments(ctx.db, attachmentIds);
+  ctx.intents.append(ctx.callerId, {
+    toAgentId: input.to_agent_id,
+    intent: input.intent,
+    attachmentIds,
+  });
   ctx.enqueueConversation(ctx.callerId);
   return ok({ handed_off: true });
 }

@@ -1,8 +1,9 @@
 /** `POST /messages` — deliver a user message; `GET /threads` — human↔agent summaries. */
 
 import type { FastifyInstance } from "fastify";
+import { toAttachmentSummary } from "../db/attachments.js";
 import { listThreads } from "../db/messages.js";
-import { patchMessageContent } from "../runtime/attachments.js";
+import { prepareUploads } from "../runtime/attachments.js";
 import { deliverUserMessage } from "../runtime/deliver.js";
 import { requireActiveAgent } from "../runtime/tools.js";
 import { postMessageBody, parse } from "./schemas.js";
@@ -16,11 +17,7 @@ export async function registerMessages(app: FastifyInstance): Promise<void> {
   app.post("/messages", async (request, reply) => {
     const body = parse(postMessageBody, request.body);
     await requireActiveAgent(app.db, body.to_agent_id);
-    const content = await patchMessageContent(
-      app.dwar,
-      body.content,
-      body.attachments,
-    );
+    const uploads = await prepareUploads(app.dwar, body.attachments ?? []);
     const row = await deliverUserMessage(
       {
         db: app.db,
@@ -29,11 +26,13 @@ export async function registerMessages(app: FastifyInstance): Promise<void> {
         enqueueConversation: app.runtime.enqueueConversation,
       },
       body.to_agent_id,
-      content,
+      body.content.trim(),
+      { uploads, forward: [] },
     );
     return reply.status(201).send({
       to_agent_id: row.toAgentId,
       content: row.content,
+      attachments: row.attachments.map(toAttachmentSummary),
       seq: row.seq,
       created_at: row.createdAt.toISOString(),
     });

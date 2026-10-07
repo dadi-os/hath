@@ -43,7 +43,7 @@ import { TranscriptStore } from "./transcript.js";
 import { Wake, WakeStore, type WakeLimits } from "./wake.js";
 import { ROUTER_KEY } from "./router.js";
 import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
-import { SEND_MESSAGE } from "../types/domain.js";
+import { FORWARD_ATTACHMENT, SEND_MESSAGE } from "../types/domain.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
 
 export type RuntimeLog = {
@@ -374,7 +374,7 @@ export function createRuntime(opts: {
         call: (request: DwarChatRequest) => opts.dwar.complete(request, "hath/router"),
         executeTool: async (call: DwarToolUseBlock) => {
           const result = await helpers.exec(call);
-          if (call.name === SEND_MESSAGE && !result.isError) {
+          if ((call.name === SEND_MESSAGE || call.name === FORWARD_ATTACHMENT) && !result.isError) {
             sent.push(JSON.parse(result.content) as RoutedMessage);
           }
           return result;

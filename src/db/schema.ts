@@ -4,6 +4,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -18,6 +19,11 @@ import {
 import { sql } from "drizzle-orm";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
+
+/** Postgres `bytea`, read and written as a Node Buffer. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
 
 export const agents = pgTable(
   "agents",
@@ -114,6 +120,43 @@ export const messages = pgTable(
 );
 
 /**
+ * A file sent with a message. Unbound (`message_id` null) from upload or
+ * create_attachment until a message carries it; a later forward copies the row,
+ * so each message owns its attachments and deleting it deletes them.
+ *
+ * - Text files keep their UTF-8 text in `text_content` (paged by read_attachment);
+ *   everything else keeps its bytes in `data`. Exactly one is set.
+ * - `description` is the image.describe text for images, null otherwise.
+ * - `created_by_agent_id` is null for Ankur's uploads; an agent's unbound
+ *   attachments go when the agent does.
+ */
+export const attachments = pgTable(
+  "attachments",
+  {
+    id: uuid("id").primaryKey(),
+    messageId: uuid("message_id").references(() => messages.id, { onDelete: "cascade" }),
+    createdByAgentId: text("created_by_agent_id").references(() => agents.id, {
+      onDelete: "cascade",
+    }),
+    position: integer("position").notNull(),
+    filename: text("filename").notNull(),
+    mediaType: text("media_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    textContent: text("text_content"),
+    data: bytea("data"),
+    description: text("description"),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("attachments_message_id_position_idx").on(table.messageId, table.position),
+    check(
+      "attachments_payload_check",
+      sql`(${table.textContent} IS NULL) <> (${table.data} IS NULL)`,
+    ),
+  ],
+);
+
+/**
  * Deferred dispatch_message that survives restart. Presence of the row is the
  * state — no status/active/last_fired columns.
  *
@@ -153,6 +196,7 @@ export const scheduledMessages = pgTable(
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentLogRow = typeof agentLogs.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
+export type AttachmentRow = typeof attachments.$inferSelect;
 export type ToolRow = typeof tools.$inferSelect;
 export type AgentToolRow = typeof agentTools.$inferSelect;
 export type ScheduledMessageRow = typeof scheduledMessages.$inferSelect;

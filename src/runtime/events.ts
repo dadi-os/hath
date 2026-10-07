@@ -3,7 +3,7 @@
  * A listener that throws is logged and skipped, so a broken subscriber cannot take down a lane run.
  */
 
-import type { Lane } from "../types/domain.js";
+import type { AttachmentSummary, Lane } from "../types/domain.js";
 import type { RuntimeLog } from "./engine.js";
 
 export type RuntimeEvent =
@@ -13,6 +13,7 @@ export type RuntimeEvent =
       from_agent_id: string | null;
       to_agent_id: string | null;
       content: string;
+      attachments: AttachmentSummary[];
       seq: number;
       at: string;
     }

@@ -18,14 +18,14 @@ Agent runtime for dadi. It owns agent identity, transcripts, the dual-lane loop,
 hath/
   src/
     app.ts, config.ts, logging.ts, errors.ts, constants.ts
-    db/           Drizzle, migrate, messages, agent logs
+    db/           Drizzle, migrate, messages, attachments, agent logs
     dwar/         Dwar axios client
     yaad/         Yaad axios client
     ghar/         Ghar axios client
     chaavi/       Chaavi axios client (vault metadata + inject)
     nas/          Nas axios client (terminals + filesystem + browsers)
     browser/      Playwright CDP driver for Nas Chromium
-    runtime/      dual-lane engine, transcript cache, events, locks
+    runtime/      dual-lane engine, transcript cache, attachments, events, locks
     tools/        grantable tool registry (hath + yaad + ghar + chaavi + nas + browser)
     routers/      HTTP routes + schemas
     types/        domain types
@@ -75,11 +75,11 @@ Every `agents` row is an agent. The router is not a row — it is `POST /router`
 
 `POST /router` is Dadi's translator: Ankur says what he wants, and the router picks the owner, writes the message he would send, and sends it as him; his app opens that thread when the agent answers. It is not an agent and not a conversation. The router is the null identity — the same as the user — so every message it sends lands in an agent's thread as `from_agent_id` null, written as Ankur. The router is ephemeral: it has no transcript and carries nothing between runs. Each request:
 
-1. Writes an audit row (`agent_logs`, router lane, `message` / `receive`) holding the utterance. It is not stored as a message.
+1. Stages its attachments unbound and appends an `[Attachment …]` stub per file to the utterance, then writes an audit row (`agent_logs`, router lane, `message` / `receive`) holding it. The utterance is not stored as a message; staged files the router did not forward are deleted when the run ends.
 2. Runs the router lane: the same step loop as agent lanes, calling Dwar `POST /chat/complete` (context-free on Dwar's side). System is `prompts/system.md` + `prompts/router.md` + identity + the active root agents; messages are exactly one turn, this utterance (headed `[From: Ankur]`) — no earlier run, nothing sent as Ankur, no reply to him, and nothing that arrives mid-run. What is underway it finds with its tools. Nothing in code caps the loop; it ends when the model calls `yield`.
-3. Returns `201 { messages: [{ to_agent_id, content, seq, created_at }] }` — every message it sent, in order (may be empty).
+3. Returns `201 { messages: [{ to_agent_id, content, attachments, seq, created_at }] }` — every message it sent or forwarded, in order (may be empty).
 
-Router tools (hardcoded, not grants): `send_message` (deliver as Ankur; a retired recipient is a `retired` error), `list_agents`, `recall_memory`, `hath_spawn_agent` (creates a root), and the embedded agent-management tools — `grant_tool` / `revoke_tool` on root agents only, `get_agent` / `get_logs` on any agent, `list_tools`. It cannot modify agents: agents reshape themselves. Its model turns and tool results log to `agent_logs` with a null `agent_id` on the `router` lane. The router's `get_logs` must name an agent; only the user (CLI, no `agent_id`) reads the null identity's rows — the router's turns plus every message sent by or to Ankur. Runs are serialized.
+Router tools (hardcoded, not grants): `send_message` (deliver as Ankur; a retired recipient is a `retired` error), `forward_attachment` (deliver attachments by id as Ankur), `read_attachment`, `list_agents`, `recall_memory`, `hath_spawn_agent` (creates a root), and the embedded agent-management tools — `grant_tool` / `revoke_tool` on root agents only, `get_agent` / `get_logs` on any agent, `list_tools`. It cannot modify agents: agents reshape themselves. Its model turns and tool results log to `agent_logs` with a null `agent_id` on the `router` lane. The router's `get_logs` must name an agent; only the user (CLI, no `agent_id`) reads the null identity's rows — the router's turns plus every message sent by or to Ankur. Runs are serialized.
 
 SSE: `router_started` / `router_finished` / `router_failed`. After a route, each thread's `lane_*` and `message` events take over.
 
@@ -89,7 +89,7 @@ No user table. Human messages use `from_agent_id = null` / `to_agent_id = null`;
 
 ## Dual lanes
 
-Every agent has both lanes. **Reasoning** is the executor (tool-calling against `agent_tools` plus embedded `send_message` / `list_agents` / `wait` / `recall_memory` / `ingest_memory` / `manage_agent` / `modify_agent_prompt` / `get_agent` / `grant_tool` / `revoke_tool` / `list_tools` / `get_logs` / `yield`). **Conversation** is the control surface (`dispatch_message`, `steer_reasoning`, `list_agents`, `yield`). Speech is only via those message tools — model text is thought, never speech. Reasoning calls Dwar with `tool_choice: "auto"`, so the model can think and write before, alongside, or instead of a tool call; a turn with no tool call continues the lane (a `[continue]` user turn follows it, saying the text reached no one), and a turn ends only on `yield`. Conversation calls with `tool_choice: "any"`: its only outputs are dispatch, steer and yield, and left free it writes replies as plain text that reach no one and never end the lane. `list_agents` looks up kebab-case ids (or lists the roster); it is not grantable. Assembled transcripts stamp each turn `[From: …]` / `[To: …]` (Ankur or an agent id) so multi-party threads stay attributable.
+Every agent has both lanes. **Reasoning** is the executor (tool-calling against `agent_tools` plus embedded `send_message` / `read_attachment` / `create_attachment` / `list_agents` / `wait` / `recall_memory` / `ingest_memory` / `manage_agent` / `modify_agent_prompt` / `get_agent` / `grant_tool` / `revoke_tool` / `list_tools` / `get_logs` / `yield`). **Conversation** is the control surface (`dispatch_message`, `forward_attachment`, `read_attachment`, `steer_reasoning`, `list_agents`, `yield`). Speech is only via those message tools — model text is thought, never speech. Reasoning calls Dwar with `tool_choice: "auto"`, so the model can think and write before, alongside, or instead of a tool call; a turn with no tool call continues the lane (a `[continue]` user turn follows it, saying the text reached no one), and a turn ends only on `yield`. Conversation calls with `tool_choice: "any"`: its only outputs are dispatch, steer and yield, and left free it writes replies as plain text that reach no one and never end the lane. `list_agents` looks up kebab-case ids (or lists the roster); it is not grantable. Assembled transcripts stamp each turn `[From: …]` / `[To: …]` (Ankur or an agent id) so multi-party threads stay attributable.
 
 Transcript is in-process and shared. Conversation starts on inbound message, reasoning finish, or `send_message`. `steer_reasoning` queues instructions for the next reasoning step.
 
@@ -100,6 +100,12 @@ Both lanes share one **wake** per agent (`src/runtime/wake.ts`). It starts from 
 Every Dwar call sends `X-Dadi-Caller` (`hath/<agent id>`, `hath/router`, `hath/attachments`) so Dwar's inference log attributes tokens; `response` logs carry the full usage including cache reads and writes.
 
 Every system prompt starts with the shared system doctrine (`prompts/system.md`), then the charter (the agent's stored prompt), its identity, and its active children. Assembled context always includes a lane block (conversation manages reasoning via `steer_reasoning`, including `terminate` to halt the next tool call; conversation must not claim grants are missing) and an identity/routing block: agent id, parent (or root), point-of-contact messaging for the job, and grant escalation to the parent when the agent is a child. This is prompt guidance only — `send_message` / `dispatch_message` do not enforce it.
+
+## Attachments
+
+Files are rows in `attachments`, each bound to the message that carries it (`message_id`) or unbound until one does. Text files (`text/*` and a few textual `application/*` types, strict UTF-8) keep their text in `text_content`; images keep their bytes plus a Dwar `/image/describe` description; other files keep their bytes. One file is at most 10 MB, one message carries at most 8. A message delivers once, however many files it carries.
+
+Transcripts never hold file contents. Each file renders under its message as an `[Attachment <id> · name · type · size]` block: text up to 8,000 characters in full, longer text as a 500-character preview, an image as its description. Agents read text in pages with `read_attachment` (`offset`/`limit` in characters, `next_offset` null at the end) and pass files on by id: conversation's `forward_attachment`, or reasoning's `send_message` `attachment_ids`, which conversation forwards. Sending an unbound file binds it; sending a bound one copies the row, so every message owns its files and deleting it deletes them. `create_attachment` turns a host text file into an unbound attachment owned by the agent (needs the `terminal_read_file` grant; Nas `/fs/read`, line prefixes stripped). `GET /attachments/:id` returns the original file.
 
 ## Tools
 
@@ -228,7 +234,7 @@ The host `dadi` CLI lives in Nas (`service/cmd/dadi`, `/usr/bin/dadi` on the app
 
 ## Persistence
 
-`agents`, `agent_logs`, `messages`, and `scheduled_messages` survive restart. `messages` is the source of truth for human↔agent chat and the rolling lane transcript (at least the last `[runtime].transcript_window_messages` turns, default 40; the window's start advances in steps of `transcript_window_step_messages` so the cached prefix survives new messages). Older turns remain in `agent_logs` / `hath_get_logs`. Each `agent_logs` row is one of: `response` — one model call's full output (`provider`, `stop_reason`, `usage`, and `content` blocks in provider order: `thinking` / `redacted_thinking`, `text`, `tool_use`), written before its tools run; `tool_result` — one tool's outcome (`tool_use_id`, `name`, `content`, `is_error`, plus audit fields such as `browser_id`); `message` — a delivered message. Wakes, locks, steer/intent queues, host `sessions`, and the event stream do not survive. Single-process only — do not run replicas sharing the DB and expecting lane serialization.
+`agents`, `agent_logs`, `messages`, `attachments`, and `scheduled_messages` survive restart. `messages` is the source of truth for human↔agent chat and the rolling lane transcript (at least the last `[runtime].transcript_window_messages` turns, default 40; the window's start advances in steps of `transcript_window_step_messages` so the cached prefix survives new messages). Older turns remain in `agent_logs` / `hath_get_logs`. Each `agent_logs` row is one of: `response` — one model call's full output (`provider`, `stop_reason`, `usage`, and `content` blocks in provider order: `thinking` / `redacted_thinking`, `text`, `tool_use`), written before its tools run; `tool_result` — one tool's outcome (`tool_use_id`, `name`, `content`, `is_error`, plus audit fields such as `browser_id`); `message` — a delivered message. Wakes, locks, steer/intent queues, host `sessions`, and the event stream do not survive. Single-process only — do not run replicas sharing the DB and expecting lane serialization.
 
 Schedule tools (`schedule_message`, `list_schedules`, `cancel_schedule`) persist one-shot and recurring deliveries; the in-process scheduler ticks from `[schedule].tick_seconds` in `config.toml` (wall clock is the box's zone from the required `TZ`, which Nas writes from `/etc/localtime`).
 
@@ -238,9 +244,10 @@ Schedule tools (`schedule_message`, `list_schedules`, `cancel_schedule`) persist
 | --- | --- | --- |
 | `GET` | `/health` | `{ "status": "ok", "started_at": "<iso>" }` — process identity only; not a chat epoch |
 | `POST` | `/router` | Ankur → router: runs the router lane until it yields; returns the messages it sent |
-| `POST` | `/messages` | user → agent; images described via Dwar |
+| `POST` | `/messages` | user → agent; `attachments` stored as rows (images described via Dwar); returns them as summaries |
+| `GET` | `/attachments/:id` | the original file, with its media type |
 | `GET` | `/threads` | human↔agent conversation summaries (active agents only) |
-| `GET` | `/agents/:id/messages` | durable human-thread messages (`since_seq`, `limit`) |
+| `GET` | `/agents/:id/messages` | durable human-thread messages with attachment summaries (`since_seq`, `limit`) |
 | `GET` | `/events` | SSE live events; no replay |
 | `GET` | `/agents` | all agents + `running` + `sessions` |
 | `GET` | `/agents/:id` | agent, children, grants |

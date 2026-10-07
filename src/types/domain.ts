@@ -31,8 +31,19 @@ export type AgentRecord = {
 export type RoutedMessage = {
   to_agent_id: string;
   content: string;
+  attachments: AttachmentSummary[];
   seq: number;
   created_at: string;
+};
+
+/** Attachment metadata on HTTP responses and runtime events; bytes come from GET /attachments/:id. */
+export type AttachmentSummary = {
+  id: string;
+  filename: string;
+  media_type: string;
+  size_bytes: number;
+  /** image.describe text for images, null otherwise. */
+  description: string | null;
 };
 
 export type LogRecord = {
@@ -148,6 +159,9 @@ export type DwarUsage = {
 
 export const SEND_MESSAGE = "send_message";
 export const DISPATCH_MESSAGE = "dispatch_message";
+export const READ_ATTACHMENT = "read_attachment";
+export const FORWARD_ATTACHMENT = "forward_attachment";
+export const CREATE_ATTACHMENT = "create_attachment";
 export const STEER_REASONING = "steer_reasoning";
 export const YIELD = "yield";
 export const WAIT = "wait";

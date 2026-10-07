@@ -2,51 +2,77 @@
 
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import {
+  attachmentsByMessage,
+  attachToMessage,
+  toAttachmentSummary,
+  type AttachmentMeta,
+  type NewAttachment,
+} from "./attachments.js";
+import type { AttachmentSummary } from "../types/domain.js";
 import type { Db } from "./client.js";
 import { agents, messages, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
 
-/** Insert one durable message and return the row (stable seq). */
+/** Files a new message carries: fresh uploads, then existing attachments by id (bound if loose, copied if not). */
+export type MessageAttachments = {
+  uploads: NewAttachment[];
+  forward: string[];
+};
+
+/** A message that carries no files. */
+export const NO_ATTACHMENTS: MessageAttachments = { uploads: [], forward: [] };
+
+/** Insert one durable message and its attachments in one transaction; return it as a transcript entry (stable seq). */
 export async function insertMessage(
   db: Db,
   args: {
     fromAgentId: string | null;
     toAgentId: string | null;
     content: string;
+    attachments: MessageAttachments;
   },
-): Promise<MessageRow> {
-  const [row] = await db
-    .insert(messages)
-    .values({
-      id: randomUUID(),
-      fromAgentId: args.fromAgentId,
-      toAgentId: args.toAgentId,
-      content: args.content,
-    })
-    .returning();
-  if (!row) {
-    throw new Error("insert message returned no row");
-  }
-  return row;
+): Promise<TranscriptEntry> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(messages)
+      .values({
+        id: randomUUID(),
+        fromAgentId: args.fromAgentId,
+        toAgentId: args.toAgentId,
+        content: args.content,
+      })
+      .returning();
+    if (!row) {
+      throw new Error("insert message returned no row");
+    }
+    const attached = await attachToMessage(tx, row.id, args.fromAgentId, args.attachments);
+    return messageToTranscriptEntry(row, attached);
+  });
 }
 
-/** Map a DB message row into a transcript entry. */
-export function messageToTranscriptEntry(row: MessageRow): TranscriptEntry {
+/** Map a DB message row and its attachments into a transcript entry. */
+export function messageToTranscriptEntry(
+  row: MessageRow,
+  attachments: AttachmentMeta[],
+): TranscriptEntry {
   return {
     id: row.id,
     seq: row.seq,
     fromAgentId: row.fromAgentId,
     toAgentId: row.toAgentId,
     content: row.content,
+    attachments,
     createdAt: row.createdAt,
   };
 }
 
-/** Load all durable messages into the in-process transcript cache (startup resume). */
+/** Load all durable messages and their attachment metadata into the in-process transcript cache (startup resume). */
 export async function hydrateTranscript(db: Db, transcript: TranscriptStore): Promise<number> {
   const rows = await db.select().from(messages).orderBy(asc(messages.seq));
+  const attached = await attachmentsByMessage(db);
   for (const row of rows) {
-    transcript.ingest(messageToTranscriptEntry(row));
+    transcript.ingest(messageToTranscriptEntry(row, attached.get(row.id) ?? []));
   }
   return rows.length;
 }
@@ -120,6 +146,7 @@ export type HumanMessageRecord = {
   from_agent_id: string | null;
   to_agent_id: string | null;
   content: string;
+  attachments: AttachmentSummary[];
   created_at: string;
 };
 
@@ -151,12 +178,17 @@ export async function listHumanMessages(
             .orderBy(desc(messages.seq))
             .limit(opts.limit)
         ).reverse();
+  const attached = await attachmentsByMessage(
+    db,
+    rows.map((row) => row.id),
+  );
   return rows.map((row) => ({
     id: row.id,
     seq: row.seq,
     from_agent_id: row.fromAgentId,
     to_agent_id: row.toAgentId,
     content: row.content,
+    attachments: (attached.get(row.id) ?? []).map(toAttachmentSummary),
     created_at: row.createdAt.toISOString(),
   }));
 }

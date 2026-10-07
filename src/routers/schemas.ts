@@ -71,6 +71,9 @@ export const idParam = z.object({ id: agentIdSchema }).strict();
 /** Path params for one scheduled message, addressed by its uuid. */
 export const scheduleIdParam = z.object({ id: z.string().uuid() }).strict();
 
+/** Path params for one attachment, addressed by its uuid. */
+export const attachmentIdParam = z.object({ id: z.string().uuid() }).strict();
+
 /** A hand edit to a schedule: any of its time, repeat (null makes it one-shot), or message. */
 export const patchScheduleBody = z
   .object({

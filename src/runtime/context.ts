@@ -7,17 +7,26 @@ import { agentTools, agents, tools } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarChatRequest, DwarMessage, DwarTool, Lane } from "../types/domain.js";
 import {
+  CREATE_ATTACHMENT,
   DISPATCH_MESSAGE,
+  FORWARD_ATTACHMENT,
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
+  READ_ATTACHMENT,
   RECALL_MEMORY,
   SEND_MESSAGE,
   STEER_REASONING,
   WAIT,
   YIELD,
 } from "../types/domain.js";
+import {
+  attachmentStub,
+  createAttachmentTool,
+  forwardAttachmentTool,
+  readAttachmentTool,
+} from "./attachments.js";
 import {
   dispatchMessageTool,
   listAgentsTool,
@@ -146,7 +155,7 @@ export async function assembleContext(opts: {
     overflow > 0 ? Math.floor(overflow / opts.transcriptWindowStep) * opts.transcriptWindowStep : 0;
   const dwarMessages: DwarMessage[] = entries.slice(start).map((row) => {
     const labelled = labelEntry(row, opts.agentId);
-    return { role: labelled.role, content: `${labelled.label}\n${row.content}` };
+    return { role: labelled.role, content: `${labelled.label}\n${entryBody(row)}` };
   });
 
   return {
@@ -191,7 +200,7 @@ export function arrivalsSince(
   if (fresh.length === 0) {
     return { turn: null, throughSeq: afterSeq };
   }
-  const lines = fresh.map((row) => `${labelEntry(row, agentId).label}\n${row.content}`);
+  const lines = fresh.map((row) => `${labelEntry(row, agentId).label}\n${entryBody(row)}`);
   return {
     turn: { role: "user", content: `[Arrived during this wake]\n\n${lines.join("\n\n")}` },
     throughSeq: fresh.at(-1)!.seq,
@@ -218,12 +227,26 @@ function labelEntry(
   return { role: "assistant", label: `[To: ${row.toAgentId === null ? "Ankur" : row.toAgentId} · ${at}]` };
 }
 
+/** A transcript row's text followed by a stub per attachment it carries. */
+function entryBody(row: TranscriptEntry): string {
+  return [row.content, ...row.attachments.map(attachmentStub)]
+    .filter((part) => part.length > 0)
+    .join("\n\n");
+}
+
 async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTool[]> {
   if (lane === "router") {
     throw new HathError(500, "internal_error", `agent ${agentId} has no router lane`);
   }
   if (lane === "conversation") {
-    return [dispatchMessageTool, steerReasoningTool, listAgentsTool, yieldTool];
+    return [
+      dispatchMessageTool,
+      forwardAttachmentTool,
+      readAttachmentTool,
+      steerReasoningTool,
+      listAgentsTool,
+      yieldTool,
+    ];
   }
   const grants = await db
     .select({
@@ -244,6 +267,8 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
   return [
     ...granted,
     sendMessageTool,
+    readAttachmentTool,
+    createAttachmentTool,
     listAgentsTool,
     waitTool,
     recallMemoryTool,
@@ -258,6 +283,8 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
 
 export const embeddedReasoningTools = [
   SEND_MESSAGE,
+  READ_ATTACHMENT,
+  CREATE_ATTACHMENT,
   LIST_AGENTS,
   WAIT,
   RECALL_MEMORY,
@@ -270,6 +297,8 @@ export const embeddedReasoningTools = [
 ];
 export const embeddedConversationTools = [
   DISPATCH_MESSAGE,
+  FORWARD_ATTACHMENT,
+  READ_ATTACHMENT,
   STEER_REASONING,
   LIST_AGENTS,
   YIELD,

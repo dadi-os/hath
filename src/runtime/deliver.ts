@@ -1,5 +1,6 @@
+import { toAttachmentSummary } from "../db/attachments.js";
 import type { Db } from "../db/client.js";
-import { insertMessage, messageToTranscriptEntry } from "../db/messages.js";
+import { insertMessage, NO_ATTACHMENTS, type MessageAttachments } from "../db/messages.js";
 import { writeAgentLog } from "../db/logs.js";
 import type { EventBus } from "./events.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
@@ -23,22 +24,24 @@ export type DeliverDeps = {
 
 /**
  * Persist a human → agent message (from_agent_id null) and wake the recipient's
- * conversation lane. Shared by POST /messages and the router's send_message. The
- * null side is logged too, so the router's get_logs sees what Ankur (or it, as
- * him) sent.
+ * conversation lane once, however many files it carries. Shared by POST /messages
+ * and the router's send_message and forward_attachment. The null side is logged
+ * too, so the router's get_logs sees what Ankur (or it, as him) sent.
  */
 export async function deliverUserMessage(
   deps: DeliverDeps,
   toAgentId: string,
   content: string,
+  attachments: MessageAttachments = NO_ATTACHMENTS,
 ): Promise<TranscriptEntry> {
-  const stored = await insertMessage(deps.db, {
+  const row = await insertMessage(deps.db, {
     fromAgentId: null,
     toAgentId,
     content,
+    attachments,
   });
-  const row = messageToTranscriptEntry(stored);
   deps.transcript.ingest(row);
+  const attached = row.attachments.map(toAttachmentSummary);
   if (row.id === undefined) {
     throw new Error("durable message missing id");
   }
@@ -52,6 +55,7 @@ export async function deliverUserMessage(
       from_agent_id: null,
       to_agent_id: row.toAgentId,
       content: row.content,
+      attachments: attached,
       seq: row.seq,
     },
   });
@@ -65,6 +69,7 @@ export async function deliverUserMessage(
       from_agent_id: null,
       to_agent_id: row.toAgentId,
       content: row.content,
+      attachments: attached,
       seq: row.seq,
     },
   });
@@ -74,6 +79,7 @@ export async function deliverUserMessage(
     from_agent_id: null,
     to_agent_id: row.toAgentId,
     content: row.content,
+    attachments: attached,
     seq: row.seq,
     at: row.createdAt.toISOString(),
   });
@@ -82,8 +88,9 @@ export async function deliverUserMessage(
 }
 
 /**
- * Persist an agent → agent|user message. Shared by dispatch_message and the
- * scheduled-message ticker. Caller checks agent existence/active before calling.
+ * Persist an agent → agent|user message. Shared by dispatch_message,
+ * forward_attachment and the scheduled-message ticker. Caller checks agent
+ * existence/active before calling.
  */
 export async function deliverAgentMessage(
   deps: DeliverDeps,
@@ -91,17 +98,20 @@ export async function deliverAgentMessage(
     fromAgentId: string;
     toAgentId: string | null;
     content: string;
+    /** Existing attachments the message carries, by id. */
+    attachmentIds?: string[];
     extraPayload?: Record<string, unknown>;
   },
 ): Promise<TranscriptEntry> {
   const extra = args.extraPayload ?? {};
-  const stored = await insertMessage(deps.db, {
+  const row = await insertMessage(deps.db, {
     fromAgentId: args.fromAgentId,
     toAgentId: args.toAgentId,
     content: args.content,
+    attachments: { uploads: [], forward: args.attachmentIds ?? [] },
   });
-  const row = messageToTranscriptEntry(stored);
   deps.transcript.ingest(row);
+  const attached = row.attachments.map(toAttachmentSummary);
   if (row.id === undefined) {
     throw new Error("durable message missing id");
   }
@@ -115,6 +125,7 @@ export async function deliverAgentMessage(
       from_agent_id: args.fromAgentId,
       to_agent_id: row.toAgentId,
       content: row.content,
+      attachments: attached,
       seq: row.seq,
       ...extra,
     },
@@ -130,6 +141,7 @@ export async function deliverAgentMessage(
         from_agent_id: args.fromAgentId,
         to_agent_id: row.toAgentId,
         content: row.content,
+        attachments: attached,
         seq: row.seq,
         ...extra,
       },
@@ -146,6 +158,7 @@ export async function deliverAgentMessage(
         from_agent_id: args.fromAgentId,
         to_agent_id: null,
         content: row.content,
+        attachments: attached,
         seq: row.seq,
         ...extra,
       },
@@ -157,6 +170,7 @@ export async function deliverAgentMessage(
     from_agent_id: args.fromAgentId,
     to_agent_id: row.toAgentId,
     content: row.content,
+    attachments: attached,
     seq: row.seq,
     at: row.createdAt.toISOString(),
   });

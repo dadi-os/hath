@@ -4,6 +4,8 @@
  * transcript: the router is ephemeral and has none.
  */
 
+import type { AttachmentMeta } from "../db/attachments.js";
+
 export type TranscriptEntry = {
   /** Durable messages.id when loaded from or written to the messages table. */
   id?: string;
@@ -11,6 +13,8 @@ export type TranscriptEntry = {
   fromAgentId: string | null;
   toAgentId: string | null;
   content: string;
+  /** Files the message carries, in order; metadata only. */
+  attachments: AttachmentMeta[];
   createdAt: Date;
 };
 
@@ -49,6 +53,7 @@ export class TranscriptStore {
       fromAgentId: entry.fromAgentId,
       toAgentId: entry.toAgentId,
       content: entry.content,
+      attachments: [],
       createdAt: new Date(),
       ...(entry.id !== undefined ? { id: entry.id } : {}),
     };

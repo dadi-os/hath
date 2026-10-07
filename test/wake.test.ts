@@ -243,7 +243,7 @@ test("both lanes share one wake: each sees the other's steps; steers and intents
     steer,
   });
 
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur browser 15 is down" });
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur browser 15 is down", attachmentIds: [] });
   await runConversationLoop({
     ...stepDeps("conversation", wake, () => turn("gemini", [call("yield", "c-y")]), conversationRequests),
     intents,
@@ -266,7 +266,7 @@ test("both lanes share one wake: each sees the other's steps; steers and intents
 
 test("a conversation intent stays in view while the lane keeps calling tools", async () => {
   const intents = new IntentQueue();
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL" });
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [] });
   const requests: DwarChatRequest[] = [];
   let n = 0;
 
@@ -330,7 +330,7 @@ test("a queued conversation run makes no model call until something it can see j
   await runConversationLoop(deps);
   assert.equal(requests.length, 2);
 
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur it is done" });
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur it is done", attachmentIds: [] });
   await runConversationLoop(deps);
   assert.equal(requests.length, 3);
 });
