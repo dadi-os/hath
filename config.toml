@@ -54,6 +54,9 @@ timeout_ms = 30000
 action_timeout_ms = 5000
 navigation_timeout_ms = 30000
 snapshot_max_bytes = 32768
+# How long browser_click with read waits for the click to start a navigation
+# (then waits for load) or, without one, for the page to redraw in place.
+click_settle_ms = 750
 
 [schedule]
 tick_seconds = 10

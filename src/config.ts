@@ -63,6 +63,7 @@ const fileSchema = z.object({
     action_timeout_ms: z.number().int().positive(),
     navigation_timeout_ms: z.number().int().positive(),
     snapshot_max_bytes: z.number().int().positive(),
+    click_settle_ms: z.number().int().positive(),
   }),
   schedule: z.object({
     tick_seconds: z.number().int().positive(),

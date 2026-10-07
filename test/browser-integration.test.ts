@@ -88,11 +88,27 @@ test("integration: snapshot refs across frames and shadow roots, actions, keys, 
 
     await driver.type(browserId, tabId, inputRef, "hello");
     await driver.select(browserId, tabId, selectRef, "b");
-    await driver.click(browserId, tabId, buttonRef);
+    await driver.click(browserId, tabId, buttonRef, false);
 
     const { page } = await driver.resolvePage(browserId, tabId);
     const out = await page.locator("#out").innerText();
     assert.equal(out, "clicked:hello:b");
+
+    const laterHtml = encodeURIComponent(`<!doctype html><html><body>
+      <button id="later">Later</button><p id="drawn"></p>
+      <script>
+        document.getElementById("later").onclick = () => setTimeout(() => {
+          document.getElementById("drawn").textContent = "drawn after the click";
+        }, 300);
+      </script>
+    </body></html>`);
+    await driver.navigate(browserId, tabId, `data:text/html,${laterHtml}`);
+    const laterRef = (await driver.accessibilityTree(browserId, tabId)).tree.match(
+      /button \[(e\d+)\]/,
+    )?.[1];
+    assert.ok(laterRef);
+    await driver.click(browserId, tabId, laterRef, true);
+    assert.match((await driver.extractText(browserId, tabId)).text, /drawn after the click/);
 
     const tab2 = await driver.newTab(browserId, "about:blank");
     const tabs = await driver.listTabs(browserId);
@@ -129,12 +145,12 @@ test("integration: snapshot refs across frames and shadow roots, actions, keys, 
     assert.ok(disabledRef && editableRef && shadowRef && radioRef, nested.tree);
 
     await assert.rejects(
-      () => driver.click(browserId, tabId, disabledRef),
+      () => driver.click(browserId, tabId, disabledRef, false),
       (err: unknown) => (err as { type: string }).type === "disabled",
     );
-    await driver.click(browserId, tabId, shadowRef);
+    await driver.click(browserId, tabId, shadowRef, false);
     assert.equal(await page.evaluate(() => document.body.dataset.shadow), "1");
-    await driver.click(browserId, tabId, radioRef);
+    await driver.click(browserId, tabId, radioRef, false);
     const radioChecked = await page
       .frames()[1]
       ?.evaluate(() => (document.querySelector("input") as HTMLInputElement).checked);
@@ -147,7 +163,7 @@ test("integration: snapshot refs across frames and shadow roots, actions, keys, 
       document.body.innerHTML = "<p>rewritten</p>";
     });
     await assert.rejects(
-      () => driver.click(browserId, tabId, buttonRef),
+      () => driver.click(browserId, tabId, buttonRef, false),
       (err: unknown) => {
         assert.ok(err && typeof err === "object" && "type" in err);
         assert.equal((err as { type: string }).type, "stale_ref");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { HathError } from "../src/errors.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { migrate } from "../src/db/migrate.js";
@@ -228,4 +229,94 @@ test("upload_file rejects relative paths", async () => {
   assert.equal(result.isError, true);
   assert.match(result.content, /paths must be absolute/);
   assert.equal(nas.globCalls.length, 0);
+});
+
+/** A worker holding the browser tools named, and a runtime whose browser driver is `driver`. */
+async function browserWorker(tools: string[], driver: Record<string, unknown>) {
+  await resetRuntime(handle.sql, handle.db, config);
+  const workerId = await insertWorker(handle.db, { name: "thread", systemPrompt: "browse", tools });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas({}),
+    config,
+    log: silentLog,
+  });
+  Object.assign(runtime.browsers, driver);
+  return runtime.toolContext(workerId, "reasoning");
+}
+
+test("browser_click with read settles and returns the page tree; without it, only clicks", async () => {
+  const settles: boolean[] = [];
+  const ctx = await browserWorker(["browser_click"], {
+    click: async (_id: number, _tabId: string | undefined, _ref: string, settle: boolean) => {
+      settles.push(settle);
+      return { tab_id: "t1" };
+    },
+    accessibilityTree: async (_browserId: number, tabId: string) => ({
+      tree: `button [e7] in ${tabId}`,
+      truncated: false,
+      url: "https://example.com/next",
+      tab_id: tabId,
+    }),
+  });
+
+  const read = await executeTool(ctx, {
+    type: "tool_use",
+    id: "c1",
+    name: "browser_click",
+    input: { browser_id: 10, ref: "e3", read: "tree" },
+  });
+  assert.equal(read.isError, false, read.content);
+  assert.equal(
+    read.content,
+    "clicked: e3\nurl: https://example.com/next\ntruncated: false\nbutton [e7] in t1",
+  );
+
+  const plain = await executeTool(ctx, {
+    type: "tool_use",
+    id: "c2",
+    name: "browser_click",
+    input: { browser_id: 10, ref: "e3" },
+  });
+  assert.deepEqual(JSON.parse(plain.content), { clicked: true, ref: "e3" });
+  assert.deepEqual(settles, [true, false]);
+});
+
+test("browser_navigate with read returns the page text; a failed read names the navigation", async () => {
+  let readFails = false;
+  const ctx = await browserWorker(["browser_navigate"], {
+    navigate: async () => ({ url: "https://example.com/", title: "Example", tab_id: "t1" }),
+    extractText: async (_browserId: number, tabId: string) => {
+      if (readFails) {
+        throw new HathError(409, "stale_ref", "page went away");
+      }
+      return { text: "Hello there", truncated: false, url: "https://example.com/", tab_id: tabId };
+    },
+  });
+  const navigate = (id: string) =>
+    executeTool(ctx, {
+      type: "tool_use",
+      id,
+      name: "browser_navigate",
+      input: { browser_id: 10, url: "https://example.com/", read: "text" },
+    });
+
+  const read = await navigate("n1");
+  assert.equal(read.isError, false, read.content);
+  assert.equal(
+    read.content,
+    "title: Example\nurl: https://example.com/\ntruncated: false\nHello there",
+  );
+
+  readFails = true;
+  const failed = await navigate("n2");
+  assert.equal(failed.isError, true);
+  assert.equal(
+    failed.content,
+    "stale_ref: navigated to https://example.com/, but reading the page failed: page went away",
+  );
 });

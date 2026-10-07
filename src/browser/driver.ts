@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import {
   chromium,
+  errors,
   type Browser,
   type CDPSession,
   type Download,
@@ -434,9 +435,21 @@ export class BrowserDriver {
     return match;
   }
 
-  async click(browserId: number, tabId: string | undefined, ref: string): Promise<{ tab_id: string }> {
+  /**
+   * Click the element at `ref`. With `settle`, hold until the page is ready to read: a click
+   * that starts a main-frame navigation within `click_settle_ms` waits for that document's
+   * `load` (as navigate does); any other click waits out the window, so a page redrawing in
+   * place has drawn before it is read.
+   */
+  async click(
+    browserId: number,
+    tabId: string | undefined,
+    ref: string,
+    settle: boolean,
+  ): Promise<{ tab_id: string }> {
     const resolved = await this.resolvePage(browserId, tabId);
-    const locator = await this.locatorForRef(resolved.page, ref);
+    const page = resolved.page;
+    const locator = await this.locatorForRef(page, ref);
     if (await locator.isDisabled()) {
       throw new HathError(
         409,
@@ -444,8 +457,38 @@ export class BrowserDriver {
         `ref ${ref} is disabled; clicking it does nothing until the page enables it`,
       );
     }
-    await locator.click();
+    if (!settle) {
+      await locator.click();
+      return { tab_id: resolved.tabId };
+    }
+    const [navigated] = await Promise.all([
+      this.mainFrameNavigation(page, this.config.browser.click_settle_ms),
+      locator.click(),
+    ]);
+    if (navigated) {
+      await page.waitForLoadState("load");
+    }
     return { tab_id: resolved.tabId };
+  }
+
+  /**
+   * mainFrameNavigation resolves true once the page's main frame navigates, or false when
+   * `windowMs` passes without one — no navigation is an outcome here, not a failure. Any
+   * other error (the page closing) rejects.
+   */
+  private async mainFrameNavigation(page: Page, windowMs: number): Promise<boolean> {
+    try {
+      await page.waitForEvent("framenavigated", {
+        predicate: (frame) => frame === page.mainFrame(),
+        timeout: windowMs,
+      });
+      return true;
+    } catch (err) {
+      if (err instanceof errors.TimeoutError) {
+        return false;
+      }
+      throw err;
+    }
   }
 
   /**
