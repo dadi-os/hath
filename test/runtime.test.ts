@@ -1966,12 +1966,13 @@ test("a failed reasoning wake is reported to the parent and wakes it", async () 
   assert.ok(conversed.some((body) => body.includes("Dwar is unreachable")));
 });
 
-test("currentRequester is the newest sender other than the agent, skipping runtime reports, else the parent", async () => {
+test("currentRequester is whoever most recently wrote after opening the line, never a downstream reply, else the parent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "req-parent", systemPrompt: "parent" });
   const agentId = await insertAgent(handle.db, { id: "req-agent", systemPrompt: "agent", parentAgentId: parentId });
   const askerId = await insertAgent(handle.db, { id: "req-asker", systemPrompt: "asker" });
-  const workerId = await insertAgent(handle.db, { id: "req-worker", systemPrompt: "worker", parentAgentId: agentId });
+  const managerId = await insertAgent(handle.db, { id: "req-manager", systemPrompt: "manager" });
+  const workerId = await insertAgent(handle.db, { id: "req-worker", systemPrompt: "worker", parentAgentId: managerId });
   const send = (fromAgentId: string | null, toAgentId: string | null, content: string) =>
     insertMessage(handle.db, { fromAgentId, toAgentId, content, attachments: NO_ATTACHMENTS });
 
@@ -1982,6 +1983,11 @@ test("currentRequester is the newest sender other than the agent, skipping runti
   await send(agentId, agentId, "note to self");
   await send(workerId, agentId, "[runtime] My reasoning lane failed");
   assert.equal(await currentRequester(handle.db, agentId), askerId);
+
+  await send(agentId, workerId, "search for MSU alumni");
+  await send(workerId, agentId, "found 12 candidates");
+  assert.equal(await currentRequester(handle.db, agentId), askerId);
+  assert.equal(await currentRequester(handle.db, workerId), agentId);
 });
 
 test("a failed conversation lane is reported to its current requester with a runtime_report marker", async () => {

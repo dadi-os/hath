@@ -1,7 +1,7 @@
 /** Durable message inserts, thread queries, and transcript hydrate helpers. */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, notLike, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import {
   attachmentsByMessage,
   attachToMessage,
@@ -19,26 +19,40 @@ import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js"
 export const RUNTIME_PREFIX = "[runtime]";
 
 /**
- * currentRequester returns who an agent is working for right now: the sender of
- * the newest message it received from someone else (null is Ankur), skipping
- * Hath's `[runtime]` reports. An agent that has never been messaged answers to
- * its parent. Throws when the agent does not exist.
+ * currentRequester returns who an agent is working for right now: of everyone
+ * who opened a line to it (messaged it before it ever messaged them), the one
+ * who wrote to it most recently, with null for Ankur. Agents it brought in
+ * itself, such as a worker reporting back, are downstream and never count, and
+ * Hath's `[runtime]` reports are skipped in both directions. An agent no one has opened a line to
+ * answers to its parent. Throws when the agent does not exist.
  */
 export async function currentRequester(db: Db, agentId: string): Promise<string | null> {
-  const [latest] = await db
-    .select({ fromAgentId: messages.fromAgentId })
-    .from(messages)
-    .where(
-      and(
-        eq(messages.toAgentId, agentId),
-        or(isNull(messages.fromAgentId), ne(messages.fromAgentId, agentId)),
-        notLike(messages.content, `${RUNTIME_PREFIX}%`),
-      ),
+  const rows = await db.execute<{ sender: string | null }>(sql`
+    with inbound as (
+      select from_agent_id as sender, min(seq) as first_in, max(seq) as last_in
+      from ${messages}
+      where to_agent_id = ${agentId}
+        and from_agent_id is distinct from ${agentId}
+        and content not like ${`${RUNTIME_PREFIX}%`}
+      group by from_agent_id
+    ),
+    outbound as (
+      select to_agent_id as recipient, min(seq) as first_out
+      from ${messages}
+      where from_agent_id = ${agentId}
+        and content not like ${`${RUNTIME_PREFIX}%`}
+      group by to_agent_id
     )
-    .orderBy(desc(messages.seq))
-    .limit(1);
-  if (latest) {
-    return latest.fromAgentId;
+    select i.sender
+    from inbound i
+    left join outbound o on o.recipient is not distinct from i.sender
+    where o.first_out is null or i.first_in < o.first_out
+    order by i.last_in desc
+    limit 1
+  `);
+  const [row] = rows;
+  if (row) {
+    return row.sender;
   }
   const [agent] = await db.select({ parentAgentId: agents.parentAgentId }).from(agents).where(eq(agents.id, agentId));
   if (!agent) {
