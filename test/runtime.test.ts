@@ -420,8 +420,6 @@ test("reasoning context has send_message, list_agents, and no dispatch_message",
     agentId: workerId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   const names = ctx.tools.map((tool) => tool.name);
   assert.ok(names.includes(SEND_MESSAGE));
@@ -589,8 +587,6 @@ test("conversation tools are dispatch_message, steer_reasoning, list_agents, yie
     agentId: workerId,
     lane: "conversation",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   const names = ctx.tools.map((tool) => tool.name);
   assert.ok(names.includes(DISPATCH_MESSAGE));
@@ -634,8 +630,6 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
     agentId: childId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.deepEqual(
     childCtx.tools.map((tool) => tool.name),
@@ -694,8 +688,6 @@ test("grant_tool on a direct child succeeds and appears in assembleContext", asy
     agentId: childId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   const names = ctx.tools.map((tool) => tool.name);
   assert.ok(names.includes("hath_spawn_agent"));
@@ -1345,8 +1337,6 @@ test("revoke_tool removes a grant and fails when the child does not hold it", as
     agentId: childId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.equal(
     ctx.tools.map((tool) => tool.name).includes("hath_spawn_agent"),
@@ -1387,8 +1377,6 @@ test("an agent can grant a tool it does not itself hold", async () => {
     agentId: parentId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.equal(
     parentCtx.tools.map((tool) => tool.name).includes("hath_spawn_agent"),
@@ -1410,8 +1398,6 @@ test("an agent can grant a tool it does not itself hold", async () => {
     agentId: childId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.ok(childCtx.tools.map((tool) => tool.name).includes("hath_spawn_agent"));
 });
@@ -1428,8 +1414,6 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     agentId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   const conversation = await assembleContext({
     db: handle.db,
@@ -1437,8 +1421,6 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     agentId,
     lane: "conversation",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.deepEqual(reasoning.tools.map((tool) => tool.name), [
     SEND_MESSAGE,

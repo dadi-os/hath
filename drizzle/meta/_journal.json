@@ -64,6 +64,13 @@
       "when": 1790920000000,
       "tag": "0008_attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791030000000,
+      "tag": "0009_agent_histories",
+      "breakpoints": true
     }
   ]
 }

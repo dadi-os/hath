@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { formatISO } from "date-fns";
 import { asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agentTools, agents, tools } from "../db/schema.js";
+import { agentHistories, agentTools, agents, tools } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarChatRequest, DwarMessage, DwarTool, Lane } from "../types/domain.js";
 import {
@@ -45,7 +45,7 @@ import { routerLaneTools } from "./router.js";
 const promptCache = new Map<string, { mtimeMs: number; text: string }>();
 
 /** loadPrompt reads `prompts/<name>` under the service root, re-reading only when the file changes. Throws when empty. */
-function loadPrompt(serviceRoot: string, name: string): string {
+export function loadPrompt(serviceRoot: string, name: string): string {
   const path = join(serviceRoot, "prompts", name);
   const { mtimeMs } = statSync(path);
   const cached = promptCache.get(path);
@@ -83,14 +83,18 @@ export type AssembledContext = Omit<DwarChatRequest, "tool_choice"> & { throughS
 /**
  * hath's system for an identity, in order: the system doctrine
  * (`prompts/system.md`, shared by everyone), the charter (an agent's stored
- * prompt, or `prompts/router.md` for the router), lineage facts, then active
- * direct children — for the router, the active root agents.
+ * prompt, or `prompts/router.md` for the router), lineage facts, the summary of
+ * messages older than its transcript, then active direct children — for the
+ * router, the active root agents. The summary sits before the children because
+ * it changes less often, so a spawn or retire leaves it in the cached prefix.
  */
 async function composeSystem(
   db: Db,
   serviceRoot: string,
   /** Null is the router. */
   agentId: string | null,
+  /** The agent's summary of messages older than its transcript; null before its first. */
+  historySummary: string | null,
 ): Promise<string> {
   let charter: string;
   let parentAgentId: string | null = null;
@@ -122,6 +126,9 @@ async function composeSystem(
     charter,
     lineageBlock(agentId, parentAgentId),
   ].join("\n\n");
+  if (historySummary !== null) {
+    system = `${system}\n\nYour history before your transcript starts (your own record of the messages that scrolled out of it; get_logs with search finds their exact wording):\n${historySummary}`;
+  }
   if (activeChildren.length > 0) {
     const lines = activeChildren.map((c) => {
       const purpose = c.systemPrompt.trim().replace(/\n[\s\S]*$/, "");
@@ -134,10 +141,11 @@ async function composeSystem(
 }
 
 /**
- * An agent lane's request: its system, then its message history. History keeps
- * at least the last `transcriptWindowMessages` turns; its start only advances
- * in steps of `transcriptWindowStep` so the provider's cached prefix survives
- * new messages. Dwar appends lane doctrine as a cached block.
+ * An agent lane's request: its system (with its history summary), then every
+ * message newer than that summary. compactHistory moves the summary forward
+ * between wakes, so the transcript's start only moves when it does and the
+ * provider's cached prefix survives new messages. Dwar appends lane doctrine
+ * as a cached block.
  */
 export async function assembleContext(opts: {
   db: Db;
@@ -145,18 +153,26 @@ export async function assembleContext(opts: {
   lane: Lane;
   transcript: TranscriptStore;
   serviceRoot: string;
-  transcriptWindowMessages: number;
-  transcriptWindowStep: number;
 }): Promise<AssembledContext> {
-  const system = await composeSystem(opts.db, opts.serviceRoot, opts.agentId);
-  const entries = opts.transcript.transcriptFor(opts.agentId);
-  const overflow = entries.length - opts.transcriptWindowMessages;
-  const start =
-    overflow > 0 ? Math.floor(overflow / opts.transcriptWindowStep) * opts.transcriptWindowStep : 0;
-  const dwarMessages: DwarMessage[] = entries.slice(start).map((row) => {
-    const labelled = labelEntry(row, opts.agentId);
-    return { role: labelled.role, content: `${labelled.label}\n${entryBody(row)}` };
-  });
+  const historyRows = await opts.db
+    .select()
+    .from(agentHistories)
+    .where(eq(agentHistories.agentId, opts.agentId));
+  const history = historyRows[0];
+  const system = await composeSystem(
+    opts.db,
+    opts.serviceRoot,
+    opts.agentId,
+    history?.summary ?? null,
+  );
+  const summarizedThroughSeq = history?.summarizedThroughSeq ?? 0;
+  const entries = opts.transcript
+    .transcriptFor(opts.agentId)
+    .filter((row) => row.seq > summarizedThroughSeq);
+  const dwarMessages: DwarMessage[] = entries.map((row) => ({
+    role: labelEntry(row, opts.agentId).role,
+    content: transcriptText(row, opts.agentId),
+  }));
 
   return {
     system,
@@ -178,7 +194,7 @@ export async function assembleRouterContext(opts: {
   utterance: string;
 }): Promise<AssembledContext> {
   return {
-    system: await composeSystem(opts.db, opts.serviceRoot, null),
+    system: await composeSystem(opts.db, opts.serviceRoot, null, null),
     messages: [{ role: "user", content: `[From: Ankur · ${formatISO(new Date())}]\n${opts.utterance}` }],
     tools: routerLaneTools(),
     throughSeq: 0,
@@ -200,7 +216,7 @@ export function arrivalsSince(
   if (fresh.length === 0) {
     return { turn: null, throughSeq: afterSeq };
   }
-  const lines = fresh.map((row) => `${labelEntry(row, agentId).label}\n${entryBody(row)}`);
+  const lines = fresh.map((row) => transcriptText(row, agentId));
   return {
     turn: { role: "user", content: `[Arrived during this wake]\n\n${lines.join("\n\n")}` },
     throughSeq: fresh.at(-1)!.seq,
@@ -225,6 +241,11 @@ function labelEntry(
     return { role: "user", label: `[From: ${row.fromAgentId === null ? "Ankur" : row.fromAgentId} · ${at}]` };
   }
   return { role: "assistant", label: `[To: ${row.toAgentId === null ? "Ankur" : row.toAgentId} · ${at}]` };
+}
+
+/** transcriptText is a transcript row as this agent reads it: its label, then its body. */
+export function transcriptText(row: TranscriptEntry, agentId: string): string {
+  return `${labelEntry(row, agentId).label}\n${entryBody(row)}`;
 }
 
 /** A transcript row's text followed by a stub per attachment it carries. */

@@ -311,8 +311,6 @@ test("worker granted execute_shell and read_file sees those plus send_message an
     agentId: childId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.deepEqual(
     ctx.tools.map((tool) => tool.name).sort(),

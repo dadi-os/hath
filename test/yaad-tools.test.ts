@@ -78,8 +78,6 @@ test("a reasoning lane with no grants still holds recall_memory and ingest_memor
     agentId: workerId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   const names = new Set(ctx.tools.map((tool) => tool.name));
   for (const name of [RECALL_MEMORY, INGEST_MEMORY, SEND_MESSAGE, LIST_AGENTS, "yield"]) {

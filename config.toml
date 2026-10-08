@@ -2,12 +2,13 @@
 # How long a POST /router request waits for the router lane before failing.
 # Agent lane runs never time out: a wake queued behind a busy lane waits its turn.
 lane_queue_timeout_ms = 30000
-# Min message turns included in each Dwar call (rolling window).
-transcript_window_messages = 40
-# The window's start advances in steps of this many turns (so a call sees
-# window..window+step-1 turns) instead of sliding by one, which keeps the
-# provider's cached prefix intact as new messages arrive.
-transcript_window_step_messages = 20
+# Once an agent's messages since its history summary pass max chars (about
+# 4 chars a token), the next wake first folds the oldest into the summary,
+# keeping the newest kept chars as transcript. Folding in one jump keeps the
+# transcript byte-stable between folds, so the provider cache survives every
+# wake but the folding one.
+history_max_chars = 120000
+history_kept_chars = 60000
 # Backoff after a failed tool call before the agent's next call; doubles per
 # consecutive failure and resets on the first success.
 tool_debounce_base_ms = 1200

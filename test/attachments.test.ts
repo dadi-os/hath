@@ -165,8 +165,6 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
     lane: "conversation",
     transcript: runtime.transcript,
     serviceRoot: config.serviceRoot,
-    transcriptWindowMessages: 50,
-    transcriptWindowStep: 10,
   });
   const seen = JSON.stringify(context.messages);
   assert.ok(seen.includes(sent.attachments[0]!.id));

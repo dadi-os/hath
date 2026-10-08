@@ -10,9 +10,11 @@ import { arrivalsSince, assembleContext } from "../src/runtime/context.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus } from "../src/runtime/events.js";
+import { compactHistory, type HistoryDeps } from "../src/runtime/history.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import {
+  endTurn,
   insertAgent,
   insertWorker,
   mockChaavi,
@@ -48,6 +50,23 @@ function deliverDeps(transcript: TranscriptStore) {
   };
 }
 
+/** compactHistory deps over the test db with the given fold limits. */
+function historyDeps(
+  dwar: HistoryDeps["dwar"],
+  transcript: TranscriptStore,
+  maxChars: number,
+  keptChars: number,
+): HistoryDeps {
+  return {
+    db: handle.db,
+    dwar,
+    transcript,
+    serviceRoot: config.serviceRoot,
+    limits: { maxChars, keptChars },
+    log: silentLog,
+  };
+}
+
 test("deliverUserMessage persists messages row and log message_id", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertWorker(handle.db, {
@@ -75,47 +94,49 @@ test("deliverUserMessage persists messages row and log message_id", async () => 
   assert.equal(payload.message_id, row.id);
 });
 
-test("assembleContext truncates to transcript_window_messages", async () => {
+test("compactHistory leaves history under the limit whole and makes no summary call", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertWorker(handle.db, {
-    name: "window-worker",
+    name: "short-history-worker",
     systemPrompt: "system",
     tools: [],
   });
   const transcript = new TranscriptStore();
   const deps = deliverDeps(transcript);
-  for (let i = 0; i < 5; i++) {
-    await deliverUserMessage(deps, agentId, `user-${i}`);
-    await deliverAgentMessage(deps, {
-      fromAgentId: agentId,
-      toAgentId: null,
-      content: `agent-${i}`,
-    });
+  for (let i = 0; i < 6; i++) {
+    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
   }
+  const dwar = mockDwar({ complete: () => endTurn("unused") });
 
+  await compactHistory(historyDeps(dwar, transcript, 10_000, 5_000), agentId);
   const ctx = await assembleContext({
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId,
     lane: "conversation",
     transcript,
-    transcriptWindowMessages: 4,
-    transcriptWindowStep: 1,
   });
-  assert.equal(ctx.messages.length, 4);
-  assert.match(String(ctx.messages[0]?.content), /^\[From: Ankur · \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\]\nuser-3$/);
-  assert.match(String(ctx.messages[3]?.content), /^\[To: Ankur · \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\]\nagent-4$/);
+
+  assert.equal(dwar.completeCalls.length, 0);
+  assert.equal(ctx.messages.length, 6);
+  assert.doesNotMatch(ctx.system, /Your history before your transcript starts/);
 });
 
-test("assembleContext advances the window in steps so the prefix survives new messages", async () => {
+test("compactHistory folds the oldest messages into the summary and keeps the newest as transcript", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertWorker(handle.db, {
-    name: "step-window-worker",
+    name: "long-history-worker",
     systemPrompt: "system",
     tools: [],
   });
   const transcript = new TranscriptStore();
   const deps = deliverDeps(transcript);
+  for (let i = 0; i < 6; i++) {
+    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
+  }
+  let folds = 0;
+  const dwar = mockDwar({ complete: () => endTurn(`SUMMARY-${++folds}`) });
+  const history = historyDeps(dwar, transcript, 500, 300);
   const assemble = () =>
     assembleContext({
       db: handle.db,
@@ -123,25 +144,66 @@ test("assembleContext advances the window in steps so the prefix survives new me
       agentId,
       lane: "reasoning",
       transcript,
-      transcriptWindowMessages: 4,
-      transcriptWindowStep: 3,
     });
-  for (let i = 0; i < 10; i++) {
-    await deliverUserMessage(deps, agentId, `m-${i}`);
-  }
 
+  await compactHistory(history, agentId);
   const first = await assemble();
-  assert.equal(first.messages.length, 4);
-  await deliverUserMessage(deps, agentId, "m-10");
+  const foldedText = String(dwar.completeCalls[0]?.messages[0]?.content);
+  assert.equal(dwar.completeCalls.length, 1);
+  for (const i of [0, 1, 2, 3]) {
+    assert.ok(foldedText.includes(`m-${i} `));
+  }
+  assert.ok(!foldedText.includes("m-4 "));
+  assert.equal(first.messages.length, 2);
+  assert.match(String(first.messages[0]?.content), /\nm-4 /);
+  assert.match(first.system, /Your history before your transcript starts[^\n]*\nSUMMARY-1/);
+
+  await compactHistory(history, agentId);
+  assert.equal(dwar.completeCalls.length, 1);
+  await deliverUserMessage(deps, agentId, `m-6 ${"x".repeat(100)}`);
   const second = await assemble();
-  assert.equal(second.messages.length, 5);
-  assert.deepEqual(second.messages.slice(0, 4), first.messages);
-  await deliverUserMessage(deps, agentId, "m-11");
-  await deliverUserMessage(deps, agentId, "m-12");
+  assert.deepEqual(second.messages.slice(0, 2), first.messages);
+
+  for (let i = 7; i < 9; i++) {
+    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
+  }
+  await compactHistory(history, agentId);
+  assert.equal(dwar.completeCalls.length, 2);
+  assert.match(String(dwar.completeCalls[1]?.messages[0]?.content), /<record>\nSUMMARY-1\n<\/record>/);
   const third = await assemble();
-  assert.equal(third.messages.length, 4);
-  assert.match(String(third.messages[0]?.content), /^\[From: Ankur · \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\]\nm-9$/);
-  assert.equal(third.throughSeq, transcript.transcriptFor(agentId).at(-1)?.seq);
+  assert.equal(third.messages.length, 2);
+  assert.match(third.system, /\nSUMMARY-2/);
+});
+
+test("compactHistory fails on a cut-off summary and leaves the history unsummarized", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertWorker(handle.db, {
+    name: "cutoff-history-worker",
+    systemPrompt: "system",
+    tools: [],
+  });
+  const transcript = new TranscriptStore();
+  const deps = deliverDeps(transcript);
+  for (let i = 0; i < 6; i++) {
+    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
+  }
+  const dwar = mockDwar({
+    complete: () => ({ ...endTurn("SUMMARY-partial"), stop_reason: "max_tokens" as const }),
+  });
+
+  await assert.rejects(
+    compactHistory(historyDeps(dwar, transcript, 500, 300), agentId),
+    /stopped with max_tokens/,
+  );
+  const ctx = await assembleContext({
+    db: handle.db,
+    serviceRoot: config.serviceRoot,
+    agentId,
+    lane: "conversation",
+    transcript,
+  });
+  assert.equal(ctx.messages.length, 6);
+  assert.doesNotMatch(ctx.system, /SUMMARY-partial/);
 });
 
 test("messages arriving mid-wake join the wake after it and never rewrite earlier turns", async () => {
@@ -171,8 +233,6 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
         agentId,
         lane: "reasoning",
         transcript,
-        transcriptWindowMessages: 40,
-        transcriptWindowStep: 20,
       }),
     arrivalsSince: (afterSeq) => arrivalsSince(transcript, agentId, afterSeq),
     call: async (request) => {
@@ -469,8 +529,6 @@ test("assembleContext injects agent id and parent routing for children", async (
     agentId: childId,
     lane: "reasoning",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.match(childCtx.system, /Your agent id is routing-child/);
   assert.match(childCtx.system, /Your parent is routing-parent/);
@@ -481,8 +539,6 @@ test("assembleContext injects agent id and parent routing for children", async (
     agentId: parentId,
     lane: "conversation",
     transcript: new TranscriptStore(),
-    transcriptWindowMessages: 40,
-    transcriptWindowStep: 20,
   });
   assert.match(parentCtx.system, /Your agent id is routing-parent/);
   assert.match(parentCtx.system, /You are a root agent/);

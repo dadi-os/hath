@@ -22,8 +22,8 @@ const tomlPath = join(serviceRoot, "config.toml");
 const fileSchema = z.object({
   runtime: z.object({
     lane_queue_timeout_ms: z.number().int().positive(),
-    transcript_window_messages: z.number().int().positive(),
-    transcript_window_step_messages: z.number().int().positive(),
+    history_max_chars: z.number().int().positive(),
+    history_kept_chars: z.number().int().positive(),
     tool_debounce_base_ms: z.number().int().positive(),
     tool_debounce_max_ms: z.number().int().positive(),
     wake_tool_results_max_chars: z.number().int().positive(),
@@ -31,6 +31,8 @@ const fileSchema = z.object({
     wake_supersede_window_turns: z.number().int().positive(),
   }).refine((runtime) => runtime.wake_tool_results_kept_chars < runtime.wake_tool_results_max_chars, {
     message: "wake_tool_results_kept_chars must be below wake_tool_results_max_chars",
+  }).refine((runtime) => runtime.history_kept_chars < runtime.history_max_chars, {
+    message: "history_kept_chars must be below history_max_chars",
   }),
   dwar: z.object({
     timeout_ms: z.number().int().positive(),

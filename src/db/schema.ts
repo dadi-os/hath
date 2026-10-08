@@ -193,6 +193,21 @@ export const scheduledMessages = pgTable(
   ],
 );
 
+/**
+ * An agent's summary of the messages older than its transcript, one row per
+ * agent once its history first passes `history_max_chars`. The transcript shows
+ * only messages after `summarized_through_seq`; the summary stands in for the rest.
+ */
+export const agentHistories = pgTable("agent_histories", {
+  agentId: text("agent_id")
+    .primaryKey()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  summary: text("summary").notNull(),
+  /** messages.seq of the newest message the summary covers. */
+  summarizedThroughSeq: bigint("summarized_through_seq", { mode: "number" }).notNull(),
+  updatedAt: timestamptz("updated_at").notNull().defaultNow(),
+});
+
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentLogRow = typeof agentLogs.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
