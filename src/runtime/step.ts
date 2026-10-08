@@ -53,17 +53,17 @@ export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
 
 /**
  * The request a lane sends: the wake's frozen system, its tools, and the shared
- * wake. Reasoning gets tool_choice auto so it can think and write around its
- * tool calls. Conversation is forced to call a tool: its only outputs are
- * dispatch, steer and yield, and left free it writes `[To: …]` replies as plain
- * text, which never reach anyone and never end the lane.
+ * wake. Both agent lanes get tool_choice auto so they can think before acting
+ * (a forced call skips thinking on Anthropic models); a conversation turn of
+ * plain text reaches no one and is followed by a continue turn (see runStep).
+ * The router, on a context-free endpoint, is forced to call a tool.
  */
 export function laneRequest(deps: StepDeps, assembled: AssembledContext): DwarChatRequest {
   return {
     system: deps.wake.system,
     messages: deps.wake.view(deps.lane),
     tools: assembled.tools,
-    tool_choice: deps.lane === "reasoning" ? "auto" : "any",
+    tool_choice: deps.lane === "router" ? "any" : "auto",
   };
 }
 

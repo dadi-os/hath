@@ -333,7 +333,9 @@ async function dispatchTool(
       case STEER_REASONING:
         return await runSteerReasoning(ctx, call.input);
       default:
-        return fail(`unknown conversation tool: ${call.name}`);
+        return fail(
+          `${call.name} is not a conversation tool. Yours are ${DISPATCH_MESSAGE}, ${FORWARD_ATTACHMENT}, ${READ_ATTACHMENT}, ${STEER_REASONING}, ${LIST_AGENTS} and ${YIELD}. Every other tool this agent holds, ${call.name} included if it is granted, runs in the reasoning lane: call ${STEER_REASONING} with what you need done.`,
+        );
     }
   } catch (err) {
     if (err instanceof ZodError) {
