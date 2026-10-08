@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, type SQL } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { agentIdSchema } from "../../agent-id.js";
 import { agentLogs } from "../../db/schema.js";
@@ -11,8 +11,31 @@ const input = z
     agent_id: agentIdSchema.optional(),
     event: z.enum(["response", "tool_result", "message"]).optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    search: z.string().min(2).optional(),
+    before: z.string().datetime({ offset: true }).optional(),
   })
   .strict();
+
+/** Longest string kept whole inside a returned payload; longer ones (page trees, screenshots, file bodies) are clipped. */
+const MAX_STRING_CHARS = 2_000;
+/** Total serialized size of one result; rows past it are left for the next page. */
+const MAX_RESULT_CHARS = 40_000;
+
+/** clipStrings returns `value` with every string longer than {@link MAX_STRING_CHARS} cut, noting how much was dropped. */
+function clipStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > MAX_STRING_CHARS
+      ? `${value.slice(0, MAX_STRING_CHARS)}… [${value.length - MAX_STRING_CHARS} more chars]`
+      : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(clipStrings);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, clipStrings(inner)]));
+  }
+  return value;
+}
 
 /**
  * Query durable audit logs. Agents read themselves or a direct child. The router
@@ -23,7 +46,7 @@ const input = z
 export const getLogs = defineTool({
   name: "get_logs",
   description:
-    "Read cognition audit logs for yourself or a direct child: response rows hold one model turn in order (thinking, text, tool calls), tool_result rows hold each tool's name and outcome, message rows hold delivered messages. Defaults to yourself when agent_id is omitted. The router may read any agent and must name one: it has no logs of its own to read. Not system HTTP logs — use nas_get_logs for those.",
+    "Read cognition audit logs for yourself or a direct child, newest first: response rows hold one model turn in order (thinking, text, tool calls), tool_result rows hold each tool's name and outcome, message rows hold every message sent or received, so this is how you find something said earlier that has left your transcript (a plan, a list, an approval). `search` keeps rows whose content contains that text (case-insensitive); `before` (an ISO time, e.g. a result's `next_before`) pages back to older rows. Long strings are clipped and a result stops at a size budget with `next_before` set when older rows remain. Defaults to yourself when agent_id is omitted. The router may read any agent and must name one: it has no logs of its own to read. Not system HTTP logs — use nas_get_logs for those.",
   input,
   inputSchema: {
     type: "object",
@@ -37,6 +60,8 @@ export const getLogs = defineTool({
         enum: ["response", "tool_result", "message"],
       },
       limit: { type: "integer", minimum: 1, maximum: 200 },
+      search: { type: "string", description: "Keep rows whose content contains this text, case-insensitive" },
+      before: { type: "string", description: "ISO-8601 time with offset; only rows older than it" },
     },
     required: [],
   },
@@ -58,12 +83,33 @@ export const getLogs = defineTool({
     const party: SQL =
       targetId === null ? isNull(agentLogs.agentId) : eq(agentLogs.agentId, targetId);
     const limit = parsed.limit ?? 50;
+    const filters: SQL[] = [party];
+    if (parsed.event) {
+      filters.push(eq(agentLogs.event, parsed.event));
+    }
+    if (parsed.search) {
+      filters.push(sql`${agentLogs.payload}::text ILIKE ${`%${parsed.search}%`}`);
+    }
+    if (parsed.before) {
+      filters.push(lt(agentLogs.createdAt, new Date(parsed.before)));
+    }
     const rows = await ctx.db
       .select()
       .from(agentLogs)
-      .where(parsed.event ? and(party, eq(agentLogs.event, parsed.event)) : party)
+      .where(and(...filters))
       .orderBy(desc(agentLogs.createdAt))
       .limit(limit);
-    return ok({ logs: rows.map(toLogRecord) });
+    const logs: ReturnType<typeof toLogRecord>[] = [];
+    let size = 0;
+    for (const row of rows) {
+      const record = { ...toLogRecord(row), payload: clipStrings(row.payload) };
+      size += JSON.stringify(record).length;
+      if (size > MAX_RESULT_CHARS && logs.length > 0) {
+        return ok({ logs, next_before: logs[logs.length - 1]!.created_at });
+      }
+      logs.push(record as ReturnType<typeof toLogRecord>);
+    }
+    const next_before = rows.length === limit ? (logs[logs.length - 1]?.created_at ?? null) : null;
+    return ok({ logs, next_before });
   },
 });

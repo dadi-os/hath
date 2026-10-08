@@ -1725,6 +1725,62 @@ test("list_agents visibility is global across parents", async () => {
   assert.equal(byId.get(nestedCaller)?.parent_name, "root-a");
 });
 
+test("get_logs searches, clips long strings, and pages back with next_before", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertWorker(handle.db, { name: "log-search", systemPrompt: "searcher", tools: [] });
+  await writeAgentLog(handle.db, {
+    agentId,
+    lane: "conversation",
+    event: "message",
+    payload: { content: "Here is the revised Batch 2 (Thursday, Oct 8): Zehua Li, Sandra Kue" },
+  });
+  for (let i = 0; i < 30; i += 1) {
+    await writeAgentLog(handle.db, {
+      agentId,
+      lane: "reasoning",
+      event: "tool_result",
+      payload: { name: "browser_accessibility_tree", content: "x".repeat(10_000) },
+    });
+  }
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const read = async (input: Record<string, unknown>) => {
+    const result = await executeTool(runtime.toolContext(agentId, "reasoning"), {
+      type: "tool_use",
+      id: "gls",
+      name: "get_logs",
+      input,
+    });
+    assert.equal(result.isError, false, result.content);
+    return JSON.parse(result.content) as {
+      logs: Array<{ event: string; payload: { content: string } }>;
+      next_before: string | null;
+    };
+  };
+
+  const found = await read({ search: "batch 2" });
+  assert.equal(found.logs.length, 1);
+  assert.match(found.logs[0]?.payload.content ?? "", /Zehua Li/);
+  assert.equal(found.next_before, null);
+
+  const page = await read({ event: "tool_result" });
+  assert.ok(page.logs.length > 0 && page.logs.length < 30);
+  assert.match(page.logs[0]?.payload.content ?? "", /\[8000 more chars\]$/);
+  assert.ok(JSON.stringify(page.logs).length <= 40_000);
+  assert.ok(page.next_before !== null);
+
+  const older = await read({ event: "tool_result", before: page.next_before });
+  assert.ok(older.logs.length > 0);
+});
+
 test("get_logs defaults to caller and allows direct children only", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertWorker(handle.db, {
