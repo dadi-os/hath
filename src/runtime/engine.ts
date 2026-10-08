@@ -12,6 +12,7 @@ import type { Config } from "../config.js";
 import type { Db } from "../db/client.js";
 import { HathError } from "../errors.js";
 import { writeAgentLog } from "../db/logs.js";
+import { currentRequester, RUNTIME_PREFIX } from "../db/messages.js";
 import { agents } from "../db/schema.js";
 import { BrowserDriver } from "../browser/driver.js";
 import type { ChaaviClient } from "../chaavi/client.js";
@@ -258,26 +259,20 @@ export function createRuntime(opts: {
   }
 
   /**
-   * reportLaneFailure tells the failed agent's parent (or Ankur, for a root
-   * agent) that a lane died and its wake stopped, as a durable message that
-   * also wakes the recipient — otherwise a crashed wake is indistinguishable
-   * from a slow one and the parent polls a dead worker. Tool errors never get
+   * reportLaneFailure tells the failed agent's current requester (whoever it is
+   * working for, Ankur included) that a lane died and its wake stopped, as a
+   * durable message that also wakes the recipient — otherwise a crashed wake is
+   * indistinguishable from a slow one and the requester waits on a dead worker. Tool errors never get
    * here: they come back to the model as tool results.
    */
   async function reportLaneFailure(agentId: string, lane: Lane, message: string): Promise<void> {
-    const [agent] = await opts.db
-      .select({ parentAgentId: agents.parentAgentId })
-      .from(agents)
-      .where(eq(agents.id, agentId));
-    if (!agent) {
-      throw new HathError(404, "not_found", `agent ${agentId} not found`);
-    }
+    const requester = await currentRequester(opts.db, agentId);
     await deliverAgentMessage(
       { db: opts.db, transcript, events, enqueueConversation },
       {
         fromAgentId: agentId,
-        toAgentId: agent.parentAgentId,
-        content: `[runtime] My ${lane} lane failed and this wake stopped before finishing: ${message}. Work after my last update was not done; wake me with a message to retry.`,
+        toAgentId: requester,
+        content: `${RUNTIME_PREFIX} My ${lane} lane failed and this wake stopped before finishing: ${message}. Work after my last update was not done; wake me with a message to retry.`,
         extraPayload: { [RUNTIME_REPORT]: "lane_failed" satisfies RuntimeReportKind },
       },
     );

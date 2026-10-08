@@ -9,6 +9,7 @@ import {
   MODIFY_AGENT_PROMPT,
   SEND_MESSAGE,
 } from "../src/types/domain.js";
+import { currentRequester, insertMessage, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { assembleContext } from "../src/runtime/context.js";
 import { deliverUserMessage, RUNTIME_REPORT } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
@@ -1965,7 +1966,25 @@ test("a failed reasoning wake is reported to the parent and wakes it", async () 
   assert.ok(conversed.some((body) => body.includes("Dwar is unreachable")));
 });
 
-test("a failed conversation lane is reported to the parent with a runtime_report marker", async () => {
+test("currentRequester is the newest sender other than the agent, skipping runtime reports, else the parent", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const parentId = await insertAgent(handle.db, { id: "req-parent", systemPrompt: "parent" });
+  const agentId = await insertAgent(handle.db, { id: "req-agent", systemPrompt: "agent", parentAgentId: parentId });
+  const askerId = await insertAgent(handle.db, { id: "req-asker", systemPrompt: "asker" });
+  const workerId = await insertAgent(handle.db, { id: "req-worker", systemPrompt: "worker", parentAgentId: agentId });
+  const send = (fromAgentId: string | null, toAgentId: string | null, content: string) =>
+    insertMessage(handle.db, { fromAgentId, toAgentId, content, attachments: NO_ATTACHMENTS });
+
+  assert.equal(await currentRequester(handle.db, agentId), parentId);
+  await send(null, agentId, "check my email");
+  assert.equal(await currentRequester(handle.db, agentId), null);
+  await send(askerId, agentId, "find me a browser");
+  await send(agentId, agentId, "note to self");
+  await send(workerId, agentId, "[runtime] My reasoning lane failed");
+  assert.equal(await currentRequester(handle.db, agentId), askerId);
+});
+
+test("a failed conversation lane is reported to its current requester with a runtime_report marker", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "conv-failure-parent", systemPrompt: "parent" });
   const childId = await insertAgent(handle.db, {
@@ -2000,7 +2019,7 @@ test("a failed conversation lane is reported to the parent with a runtime_report
 
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
   assert.equal(sent.length, 1);
-  assert.equal(sent[0]?.toAgentId, parentId);
+  assert.equal(sent[0]?.toAgentId, null);
   assert.match(sent[0]!.content, /^\[runtime\] My conversation lane failed .*quota exceeded/);
   const logs = await handle.db
     .select()

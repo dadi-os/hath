@@ -1,7 +1,7 @@
 /** Durable message inserts, thread queries, and transcript hydrate helpers. */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, notLike, or } from "drizzle-orm";
 import {
   attachmentsByMessage,
   attachToMessage,
@@ -15,6 +15,38 @@ import { agents, messages, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
 
 /** Files a new message carries: fresh uploads, then existing attachments by id (bound if loose, copied if not). */
+/** Prefix of Hath's own `[runtime]` reports, which never make their sender anyone's requester. */
+export const RUNTIME_PREFIX = "[runtime]";
+
+/**
+ * currentRequester returns who an agent is working for right now: the sender of
+ * the newest message it received from someone else (null is Ankur), skipping
+ * Hath's `[runtime]` reports. An agent that has never been messaged answers to
+ * its parent. Throws when the agent does not exist.
+ */
+export async function currentRequester(db: Db, agentId: string): Promise<string | null> {
+  const [latest] = await db
+    .select({ fromAgentId: messages.fromAgentId })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.toAgentId, agentId),
+        or(isNull(messages.fromAgentId), ne(messages.fromAgentId, agentId)),
+        notLike(messages.content, `${RUNTIME_PREFIX}%`),
+      ),
+    )
+    .orderBy(desc(messages.seq))
+    .limit(1);
+  if (latest) {
+    return latest.fromAgentId;
+  }
+  const [agent] = await db.select({ parentAgentId: agents.parentAgentId }).from(agents).where(eq(agents.id, agentId));
+  if (!agent) {
+    throw new Error(`agent ${agentId} not found`);
+  }
+  return agent.parentAgentId;
+}
+
 export type MessageAttachments = {
   uploads: NewAttachment[];
   forward: string[];
