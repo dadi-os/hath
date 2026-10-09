@@ -40,13 +40,14 @@ async function seedLog(
   });
 }
 
-test("boot recovery reports a wake cut mid-tool once, wakes a waiting message, and leaves finished and retired agents alone", async () => {
+test("boot recovery reports a recent wake cut mid-tool once without waking its requester, wakes a waiting message, and leaves stale, finished and retired agents alone", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "recovery-parent", systemPrompt: "parent" });
   const cutId = await insertAgent(handle.db, { id: "recovery-cut", systemPrompt: "cut", parentAgentId: parentId });
   const waitingId = await insertAgent(handle.db, { id: "recovery-waiting", systemPrompt: "waiting" });
   const doneId = await insertAgent(handle.db, { id: "recovery-done", systemPrompt: "done" });
   const retiredId = await insertAgent(handle.db, { id: "recovery-retired", systemPrompt: "retired" });
+  const staleId = await insertAgent(handle.db, { id: "recovery-stale", systemPrompt: "stale", parentAgentId: parentId });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retiredId));
 
   await seedLog(cutId, "conversation", "message", { direction: "receive", content: "click it" }, 60);
@@ -59,6 +60,15 @@ test("boot recovery reports a wake cut mid-tool once, wakes a waiting message, a
     "response",
     { content: [{ type: "tool_use", id: "c1", name: "browser_click", input: { ref: "e1" } }] },
     56,
+  );
+
+  await seedLog(staleId, "conversation", "message", { direction: "receive", content: "read it" }, 3_600);
+  await seedLog(
+    staleId,
+    "reasoning",
+    "response",
+    { content: [{ type: "tool_use", id: "s1", name: "browser_navigate", input: { url: "https://example.com" } }] },
+    3_590,
   );
 
   await seedLog(waitingId, "conversation", "message", { direction: "receive", content: "hello?" }, 30);
@@ -78,6 +88,7 @@ test("boot recovery reports a wake cut mid-tool once, wakes a waiting message, a
       woken.push(agentId);
     },
     log: silentLog,
+    recoveryWindowMinutes: 10,
   };
   await recoverInterruptedWakes(deps);
 
@@ -92,11 +103,14 @@ test("boot recovery reports a wake cut mid-tool once, wakes a waiting message, a
     .where(eq(agentLogs.agentId, cutId))
     .then((rows) => rows.filter((row) => row.event === "message" && row.payload.direction === "send"));
   assert.equal(sendLog?.payload[RUNTIME_REPORT], "wake_interrupted");
-  assert.deepEqual(woken.sort(), [parentId, waitingId].sort());
+  assert.doesNotMatch(reports[0]!.content, /wake me/);
+  assert.deepEqual(woken, [waitingId]);
+  const staleReports = await handle.db.select().from(messages).where(eq(messages.fromAgentId, staleId));
+  assert.equal(staleReports.length, 0);
 
   woken.length = 0;
   await recoverInterruptedWakes(deps);
   const again = await handle.db.select().from(messages).where(eq(messages.fromAgentId, cutId));
   assert.equal(again.length, 1);
-  assert.deepEqual(woken.sort(), [parentId, waitingId].sort());
+  assert.deepEqual(woken, [waitingId]);
 });

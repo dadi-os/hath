@@ -101,6 +101,8 @@ export async function deliverAgentMessage(
     /** Existing attachments the message carries, by id. */
     attachmentIds?: string[];
     extraPayload?: Record<string, unknown>;
+    /** False delivers without waking the recipient; it reads the message on its next wake. */
+    wake?: boolean;
   },
 ): Promise<TranscriptEntry> {
   const extra = args.extraPayload ?? {};
@@ -146,7 +148,9 @@ export async function deliverAgentMessage(
         ...extra,
       },
     });
-    deps.enqueueConversation(row.toAgentId);
+    if (args.wake !== false) {
+      deps.enqueueConversation(row.toAgentId);
+    }
   } else {
     await writeAgentLog(deps.db, {
       agentId: null,

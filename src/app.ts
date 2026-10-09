@@ -76,6 +76,7 @@ export async function buildApp(
       events: runtime.events,
       enqueueConversation: runtime.enqueueConversation,
       log: app.log,
+      recoveryWindowMinutes: config.runtime.recovery_window_minutes,
     });
   }
   app.decorate("config", config);

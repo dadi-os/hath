@@ -8,9 +8,13 @@
  *
  * An agent that had only received a message — no lane step had started — is
  * simply woken to handle it. Anything further along is never replayed: a click
- * or submit may already have happened, so the agent reports to its current requester
- * (whoever it is working for, Ankur included) the way a failed lane does, naming
- * its last step, and that requester decides whether to wake it again.
+ * or submit may already have happened, so the agent reports to its current
+ * requester (whoever it is working for, Ankur included), naming its last step.
+ * The report does not wake the requester, and it is sent only when the wake's
+ * last step falls inside `[runtime].recovery_window_minutes` of boot: a wake
+ * that died long before the restart is stale, and reporting it would restart
+ * work nobody is waiting on. Runtime reports never count as messages waiting
+ * to be handled, so one boot's reports do not wake anyone on the next.
  */
 
 import { formatISO } from "date-fns";
@@ -40,6 +44,8 @@ type InterruptedWake = {
   hand_off_lost: boolean;
   /** A message arrived after conversation's last turn. */
   unhandled: boolean;
+  /** The newest audit row since the agent's last runtime report. */
+  last_at: Date;
 };
 
 /**
@@ -64,7 +70,10 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
     summary as (
       select
         agent_id,
-        max(created_at) filter (where event = 'message' and payload->>'direction' = 'receive') as received_at,
+        max(created_at) as last_at,
+        max(created_at) filter (
+          where event = 'message' and payload->>'direction' = 'receive' and not payload ? ${RUNTIME_REPORT}
+        ) as received_at,
         max(created_at) filter (where lane = 'conversation' and event = 'response') as conversed_at,
         max(created_at) filter (where lane = 'conversation' and event in ('response', 'tool_result')) as conversation_at,
         max(created_at) filter (where lane = 'conversation' and event = 'tool_result' and payload->>'name' = 'yield') as conversation_yield_at,
@@ -87,6 +96,7 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
     flags as (
       select
         agent_id,
+        last_at,
         coalesce(reasoning_at > coalesce(reasoning_end_at, '-infinity'), false) as reasoning_cut,
         coalesce(conversation_at > coalesce(conversation_yield_at, '-infinity'), false) as conversation_cut,
         coalesce(steered_at > coalesce(reasoning_at, '-infinity'), false) as steer_lost,
@@ -133,12 +143,22 @@ async function lastReasoningStep(db: Db, agentId: string): Promise<string> {
  * agent: it wakes agents that only had a message waiting and has every agent
  * caught mid-wake report to its current requester.
  */
-export async function recoverInterruptedWakes(deps: DeliverDeps & { log: RuntimeLog }): Promise<void> {
+export async function recoverInterruptedWakes(
+  deps: DeliverDeps & { log: RuntimeLog; recoveryWindowMinutes: number },
+): Promise<void> {
+  const cutoff = Date.now() - deps.recoveryWindowMinutes * 60_000;
   for (const wake of await findInterruptedWakes(deps.db)) {
     const midFlight = wake.reasoning_cut || wake.conversation_cut || wake.steer_lost || wake.hand_off_lost;
     if (!midFlight) {
       deps.log.info({ code: "wake_resumed", agent_id: wake.agent_id }, "restart left a message unhandled; waking the agent");
       deps.enqueueConversation(wake.agent_id);
+      continue;
+    }
+    if (new Date(wake.last_at).getTime() < cutoff) {
+      deps.log.info(
+        { code: "wake_stale", agent_id: wake.agent_id, last_at: wake.last_at },
+        "restart found a wake that stopped long before it; not reporting it",
+      );
       continue;
     }
     const details: string[] = [];
@@ -165,8 +185,9 @@ export async function recoverInterruptedWakes(deps: DeliverDeps & { log: Runtime
     await deliverAgentMessage(deps, {
       fromAgentId: wake.agent_id,
       toAgentId: requester,
-      content: `${RUNTIME_PREFIX} Hath restarted while my wake was running, so it stopped before finishing. ${details.join(" ")} Work after my last update was not done. Read my latest logs (get_logs) to see which steps already ran before redoing anything, then wake me with a message to resume.`,
+      content: `${RUNTIME_PREFIX} Hath restarted while my wake was running, so it stopped before finishing. ${details.join(" ")} Work after my last update was not done. If you still need it, message me and I will check my logs before redoing anything; otherwise nothing is needed.`,
       extraPayload: { [RUNTIME_REPORT]: "wake_interrupted" satisfies RuntimeReportKind },
+      wake: false,
     });
   }
 }

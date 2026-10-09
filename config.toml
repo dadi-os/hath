@@ -24,6 +24,10 @@ wake_tool_results_kept_chars = 15000
 # newest wake turns: further back, the cache rewrite it causes falls outside
 # the provider's 20-position lookback and rewrites the whole wake.
 wake_supersede_window_turns = 8
+# At boot, a wake a restart cut short is reported to the agent's requester
+# only when its last step is this recent; older ones are stale and dropped.
+# The report never wakes the requester.
+recovery_window_minutes = 10
 
 [dwar]
 timeout_ms = 330000

@@ -57,10 +57,10 @@ export function testConfig(): Config {
   return loadConfig();
 }
 
-/** Wake limits no test wake reaches, for tests that are not about clearing tool results. */
 /** A transcript window wide enough that tests see the whole thread. */
 export const wideWindow = { chars: 1_000_000, stepChars: 1_000 };
 
+/** Wake limits no test wake reaches, for tests that are not about clearing tool results. */
 export const roomyWakeLimits: WakeLimits = {
   toolResultsMaxChars: 1_000_000,
   toolResultsKeptChars: 500_000,
