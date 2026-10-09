@@ -37,7 +37,7 @@ hath/
 
 ## Config vs env
 
-`config.toml` (checked in): lane queue timeout, wake tool-result clearing budget and supersede window, Dwar/Yaad/Ghar/Chaavi/Nas timeout and retry, browser action/navigation/snapshot limits and the click settle window.
+`config.toml` (checked in): lane queue timeout, transcript window size and step, wake tool-result clearing budget and supersede window, Dwar/Yaad/Ghar/Chaavi/Nas timeout and retry, browser action/navigation/snapshot limits and the click settle window.
 
 Topology is hardcoded in `src/constants.ts`.
 
@@ -234,7 +234,7 @@ The host `dadi` CLI lives in Nas (`service/cmd/dadi`, `/usr/bin/dadi` on the app
 
 ## Persistence
 
-`agents`, `agent_logs`, `messages`, `attachments`, `agent_histories`, and `scheduled_messages` survive restart. `messages` is the source of truth for human↔agent chat and the lane transcript, which shows every message newer than the agent's `agent_histories` summary. Before a wake begins, once those messages pass `[runtime].history_max_chars`, the oldest are folded into the summary by one Dwar `chat/complete` call (`prompts/history.md`), keeping the newest `history_kept_chars` as transcript; the summary rides in the system prompt, and the jump-wise fold keeps the cached prefix stable between folds. Older turns remain in `agent_logs` / `hath_get_logs`. Each `agent_logs` row is one of: `response` — one model call's full output (`provider`, `stop_reason`, `usage`, and `content` blocks in provider order: `thinking` / `redacted_thinking`, `text`, `tool_use`), written before its tools run; `tool_result` — one tool's outcome (`tool_use_id`, `name`, `content`, `is_error`, plus audit fields such as `browser_id`); `message` — a delivered message. Wakes, locks, steer/intent queues, host `sessions`, and the event stream do not survive. Single-process only — do not run replicas sharing the DB and expecting lane serialization.
+`agents`, `agent_logs`, `messages`, `attachments`, and `scheduled_messages` survive restart. `messages` is the source of truth for human↔agent chat and the rolling lane transcript: the newest messages of the agent's thread up to `[runtime].transcript_window_chars` (default 120000, about 30k tokens). The window's start advances in jumps of `transcript_window_step_chars` so the cached prefix survives new messages; nothing is summarized, and what falls out of the window is gone from context. The transcript is the agent's scratchpad: how it did a task lives there and fades; facts about Ankur live in Yaad; the prompt holds only the agent's purpose. Older turns remain in `agent_logs` / `hath_get_logs`. Each `agent_logs` row is one of: `response` — one model call's full output (`provider`, `stop_reason`, `usage`, and `content` blocks in provider order: `thinking` / `redacted_thinking`, `text`, `tool_use`), written before its tools run; `tool_result` — one tool's outcome (`tool_use_id`, `name`, `content`, `is_error`, plus audit fields such as `browser_id`); `message` — a delivered message. Wakes, locks, steer/intent queues, host `sessions`, and the event stream do not survive. Single-process only — do not run replicas sharing the DB and expecting lane serialization.
 
 Schedule tools (`schedule_message`, `list_schedules`, `cancel_schedule`) persist one-shot and recurring deliveries; the in-process scheduler ticks from `[schedule].tick_seconds` in `config.toml` (wall clock is the box's zone from the required `TZ`, which Nas writes from `/etc/localtime`).
 

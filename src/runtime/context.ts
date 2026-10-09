@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { formatISO } from "date-fns";
 import { asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agentHistories, agentTools, agents, tools } from "../db/schema.js";
+import { agentTools, agents, tools } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarChatRequest, DwarMessage, DwarTool, Lane } from "../types/domain.js";
 import {
@@ -45,7 +45,7 @@ import { routerLaneTools } from "./router.js";
 const promptCache = new Map<string, { mtimeMs: number; text: string }>();
 
 /** loadPrompt reads `prompts/<name>` under the service root, re-reading only when the file changes. Throws when empty. */
-export function loadPrompt(serviceRoot: string, name: string): string {
+function loadPrompt(serviceRoot: string, name: string): string {
   const path = join(serviceRoot, "prompts", name);
   const { mtimeMs } = statSync(path);
   const cached = promptCache.get(path);
@@ -83,18 +83,14 @@ export type AssembledContext = Omit<DwarChatRequest, "tool_choice"> & { throughS
 /**
  * hath's system for an identity, in order: the system doctrine
  * (`prompts/system.md`, shared by everyone), the charter (an agent's stored
- * prompt, or `prompts/router.md` for the router), lineage facts, the summary of
- * messages older than its transcript, then active direct children — for the
- * router, the active root agents. The summary sits before the children because
- * it changes less often, so a spawn or retire leaves it in the cached prefix.
+ * prompt, or `prompts/router.md` for the router), lineage facts, then active
+ * direct children — for the router, the active root agents.
  */
 async function composeSystem(
   db: Db,
   serviceRoot: string,
   /** Null is the router. */
   agentId: string | null,
-  /** The agent's summary of messages older than its transcript; null before its first. */
-  historySummary: string | null,
 ): Promise<string> {
   let charter: string;
   let parentAgentId: string | null = null;
@@ -126,9 +122,6 @@ async function composeSystem(
     charter,
     lineageBlock(agentId, parentAgentId),
   ].join("\n\n");
-  if (historySummary !== null) {
-    system = `${system}\n\nYour history before your transcript starts (your own record of the messages that scrolled out of it; get_logs with search finds their exact wording):\n${historySummary}`;
-  }
   if (activeChildren.length > 0) {
     const lines = activeChildren.map((c) => {
       const purpose = c.systemPrompt.trim().replace(/\n[\s\S]*$/, "");
@@ -140,12 +133,44 @@ async function composeSystem(
   return system;
 }
 
+/** How much of an agent's thread its transcript holds. */
+export type TranscriptWindow = {
+  /** The window holds the newest messages up to about this many characters. */
+  chars: number;
+  /** The window's start moves in jumps of this many characters. */
+  stepChars: number;
+};
+
 /**
- * An agent lane's request: its system (with its history summary), then every
- * message newer than that summary. compactHistory moves the summary forward
- * between wakes, so the transcript's start only moves when it does and the
- * provider's cached prefix survives new messages. Dwar appends lane doctrine
- * as a cached block.
+ * windowStart is the index of the first entry an agent's transcript shows: the
+ * newest entries up to about `window.chars` characters. Character offsets are
+ * measured from the start of the thread and cut into buckets of
+ * `window.stepChars`; the window starts at the first entry of the earliest
+ * bucket that keeps it under `window.chars`. Older entries never change, so the
+ * start stays put while messages are appended and only jumps when the thread
+ * outgrows the window by another step, which keeps the provider's cached
+ * prefix byte-stable between jumps. The newest entry is always shown.
+ */
+export function windowStart(sizes: number[], window: TranscriptWindow): number {
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  if (total <= window.chars) {
+    return 0;
+  }
+  const cutAt = Math.ceil((total - window.chars) / window.stepChars) * window.stepChars;
+  let offset = 0;
+  for (let i = 0; i < sizes.length; i += 1) {
+    if (offset >= cutAt) {
+      return i;
+    }
+    offset += sizes[i]!;
+  }
+  return sizes.length - 1;
+}
+
+/**
+ * An agent lane's request: its system, then the rolling window of its thread
+ * (see windowStart). Messages that left the window are reached through
+ * get_logs and memory. Dwar appends lane doctrine as a cached block.
  */
 export async function assembleContext(opts: {
   db: Db;
@@ -153,25 +178,16 @@ export async function assembleContext(opts: {
   lane: Lane;
   transcript: TranscriptStore;
   serviceRoot: string;
+  window: TranscriptWindow;
 }): Promise<AssembledContext> {
-  const historyRows = await opts.db
-    .select()
-    .from(agentHistories)
-    .where(eq(agentHistories.agentId, opts.agentId));
-  const history = historyRows[0];
-  const system = await composeSystem(
-    opts.db,
-    opts.serviceRoot,
-    opts.agentId,
-    history?.summary ?? null,
-  );
-  const summarizedThroughSeq = history?.summarizedThroughSeq ?? 0;
-  const entries = opts.transcript
-    .transcriptFor(opts.agentId)
-    .filter((row) => row.seq > summarizedThroughSeq);
-  const dwarMessages: DwarMessage[] = entries.map((row) => ({
+  const system = await composeSystem(opts.db, opts.serviceRoot, opts.agentId);
+  const thread = opts.transcript.transcriptFor(opts.agentId);
+  const texts = thread.map((row) => transcriptText(row, opts.agentId));
+  const start = windowStart(texts.map((text) => text.length), opts.window);
+  const entries = thread.slice(start);
+  const dwarMessages: DwarMessage[] = entries.map((row, i) => ({
     role: labelEntry(row, opts.agentId).role,
-    content: transcriptText(row, opts.agentId),
+    content: texts[start + i]!,
   }));
 
   return {
@@ -194,7 +210,7 @@ export async function assembleRouterContext(opts: {
   utterance: string;
 }): Promise<AssembledContext> {
   return {
-    system: await composeSystem(opts.db, opts.serviceRoot, null, null),
+    system: await composeSystem(opts.db, opts.serviceRoot, null),
     messages: [{ role: "user", content: `[From: Ankur · ${formatISO(new Date())}]\n${opts.utterance}` }],
     tools: routerLaneTools(),
     throughSeq: 0,

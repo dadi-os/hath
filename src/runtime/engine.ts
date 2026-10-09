@@ -30,7 +30,6 @@ import type {
 import { arrivalsSince, assembleContext, assembleRouterContext } from "./context.js";
 import { deliverAgentMessage, RUNTIME_REPORT, type RuntimeReportKind } from "./deliver.js";
 import { runConversationLoop } from "./conversation.js";
-import { compactHistory, type HistoryDeps } from "./history.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
 import { IntentQueue } from "./intents.js";
@@ -105,18 +104,6 @@ export function createRuntime(opts: {
     supersedeWindowTurns: opts.config.runtime.wake_supersede_window_turns,
   };
   const wakes = new WakeStore(wakeLimits);
-  const historyDeps: HistoryDeps = {
-    db: opts.db,
-    dwar: opts.dwar,
-    transcript,
-    serviceRoot: opts.config.serviceRoot,
-    limits: {
-      maxChars: opts.config.runtime.history_max_chars,
-      keptChars: opts.config.runtime.history_kept_chars,
-    },
-    log: opts.log,
-  };
-  const compacting = new Map<string, Promise<void>>();
   let pending = 0;
   const idleWaiters: Array<() => void> = [];
 
@@ -152,22 +139,6 @@ export function createRuntime(opts: {
 
   function enqueueReasoning(agentId: string): void {
     track(runLane(agentId, "reasoning", wakes.hold(agentId)));
-  }
-
-  /**
-   * compact runs compactHistory for an agent whose wake has not begun, so the
-   * wake freezes a transcript that already fits. Both lanes can start one wake
-   * together; the second waits on the first's run instead of folding twice.
-   */
-  function compact(agentId: string): Promise<void> {
-    let running = compacting.get(agentId);
-    if (!running) {
-      running = compactHistory(historyDeps, agentId).finally(() => {
-        compacting.delete(agentId);
-      });
-      compacting.set(agentId, running);
-    }
-    return running;
   }
 
   const scheduler = createScheduler({
@@ -233,7 +204,6 @@ export function createRuntime(opts: {
    * arrived after its last drain; a run that failed, or found the agent missing
    * or retired, leaves them for the next wake instead of re-queuing itself forever.
    * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
-   * A run that opens a wake first folds old history into the agent's summary.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
@@ -251,9 +221,6 @@ export function createRuntime(opts: {
         const agent = rows[0];
         if (!agent || !agent.active) {
           return;
-        }
-        if (!wakes.get(agentId).started) {
-          await compact(agentId);
         }
         if (lane === "reasoning") {
           await runReasoningLoop(reasoningDeps(agentId));
@@ -355,6 +322,10 @@ export function createRuntime(opts: {
           lane,
           transcript,
           serviceRoot: opts.config.serviceRoot,
+          window: {
+            chars: opts.config.runtime.transcript_window_chars,
+            stepChars: opts.config.runtime.transcript_window_step_chars,
+          },
         }),
       arrivalsSince: (afterSeq: number) => arrivalsSince(transcript, agentId, afterSeq),
       executeTool: helpers.exec,

@@ -28,6 +28,7 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
+  wideWindow,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -160,6 +161,7 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
   assert.equal(thread.messages.at(-1)?.attachments.length, 2);
 
   const context = await assembleContext({
+    window: wideWindow,
     db: handle.db,
     agentId,
     lane: "conversation",

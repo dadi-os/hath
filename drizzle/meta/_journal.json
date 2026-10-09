@@ -71,6 +71,13 @@
       "when": 1791030000000,
       "tag": "0009_agent_histories",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791140000000,
+      "tag": "0010_drop_agent_histories",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,7 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
+  wideWindow,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -306,6 +307,7 @@ test("worker granted execute_shell and read_file sees those plus send_message an
   });
   assert.equal(granted.isError, false, granted.content);
   const ctx = await assembleContext({
+    window: wideWindow,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,

@@ -6,11 +6,10 @@ import { migrate } from "../src/db/migrate.js";
 import { hydrateTranscript, listHumanMessages, listThreads } from "../src/db/messages.js";
 import { agentLogs, agents, messages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { arrivalsSince, assembleContext } from "../src/runtime/context.js";
+import { arrivalsSince, assembleContext, windowStart } from "../src/runtime/context.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus } from "../src/runtime/events.js";
-import { compactHistory, type HistoryDeps } from "../src/runtime/history.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import {
@@ -27,6 +26,7 @@ import {
   roomyWakeLimits,
   silentLog,
   testConfig,
+  wideWindow,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -47,23 +47,6 @@ function deliverDeps(transcript: TranscriptStore) {
     transcript,
     events: new EventBus(silentLog),
     enqueueConversation: () => {},
-  };
-}
-
-/** compactHistory deps over the test db with the given fold limits. */
-function historyDeps(
-  dwar: HistoryDeps["dwar"],
-  transcript: TranscriptStore,
-  maxChars: number,
-  keptChars: number,
-): HistoryDeps {
-  return {
-    db: handle.db,
-    dwar,
-    transcript,
-    serviceRoot: config.serviceRoot,
-    limits: { maxChars, keptChars },
-    log: silentLog,
   };
 }
 
@@ -94,38 +77,29 @@ test("deliverUserMessage persists messages row and log message_id", async () => 
   assert.equal(payload.message_id, row.id);
 });
 
-test("compactHistory leaves history under the limit whole and makes no summary call", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
-    name: "short-history-worker",
-    systemPrompt: "system",
-    tools: [],
-  });
-  const transcript = new TranscriptStore();
-  const deps = deliverDeps(transcript);
-  for (let i = 0; i < 6; i++) {
-    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
-  }
-  const dwar = mockDwar({ complete: () => endTurn("unused") });
-
-  await compactHistory(historyDeps(dwar, transcript, 10_000, 5_000), agentId);
-  const ctx = await assembleContext({
-    db: handle.db,
-    serviceRoot: config.serviceRoot,
-    agentId,
-    lane: "conversation",
-    transcript,
-  });
-
-  assert.equal(dwar.completeCalls.length, 0);
-  assert.equal(ctx.messages.length, 6);
-  assert.doesNotMatch(ctx.system, /Your history before your transcript starts/);
+test("windowStart keeps a thread under the window whole", () => {
+  assert.equal(windowStart([100, 100, 100], { chars: 1000, stepChars: 300 }), 0);
+  assert.equal(windowStart([], { chars: 1000, stepChars: 300 }), 0);
 });
 
-test("compactHistory folds the oldest messages into the summary and keeps the newest as transcript", async () => {
+test("windowStart moves the start in steps, not with every message", () => {
+  const window = { chars: 1000, stepChars: 300 };
+  const sizes = Array.from({ length: 12 }, () => 100);
+  assert.equal(windowStart(sizes, window), 3);
+  assert.equal(windowStart([...sizes, 100], window), 3);
+  assert.equal(windowStart([...sizes, 100, 100], window), 6);
+});
+
+test("windowStart always shows the newest message, even when it alone overflows", () => {
+  const window = { chars: 1000, stepChars: 300 };
+  assert.equal(windowStart([5000], window), 0);
+  assert.equal(windowStart([100, 5000], window), 1);
+});
+
+test("assembleContext sends only the rolling window of the thread", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertWorker(handle.db, {
-    name: "long-history-worker",
+    name: "window-worker",
     systemPrompt: "system",
     tools: [],
   });
@@ -134,76 +108,26 @@ test("compactHistory folds the oldest messages into the summary and keeps the ne
   for (let i = 0; i < 6; i++) {
     await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
   }
-  let folds = 0;
-  const dwar = mockDwar({ complete: () => endTurn(`SUMMARY-${++folds}`) });
-  const history = historyDeps(dwar, transcript, 500, 300);
-  const assemble = () =>
+  const assemble = (window: { chars: number; stepChars: number }) =>
     assembleContext({
       db: handle.db,
       serviceRoot: config.serviceRoot,
       agentId,
-      lane: "reasoning",
+      lane: "conversation",
       transcript,
+      window,
     });
 
-  await compactHistory(history, agentId);
-  const first = await assemble();
-  const foldedText = String(dwar.completeCalls[0]?.messages[0]?.content);
-  assert.equal(dwar.completeCalls.length, 1);
-  for (const i of [0, 1, 2, 3]) {
-    assert.ok(foldedText.includes(`m-${i} `));
-  }
-  assert.ok(!foldedText.includes("m-4 "));
-  assert.equal(first.messages.length, 2);
-  assert.match(String(first.messages[0]?.content), /\nm-4 /);
-  assert.match(first.system, /Your history before your transcript starts[^\n]*\nSUMMARY-1/);
+  const whole = await assemble(wideWindow);
+  assert.equal(whole.messages.length, 6);
 
-  await compactHistory(history, agentId);
-  assert.equal(dwar.completeCalls.length, 1);
-  await deliverUserMessage(deps, agentId, `m-6 ${"x".repeat(100)}`);
-  const second = await assemble();
-  assert.deepEqual(second.messages.slice(0, 2), first.messages);
-
-  for (let i = 7; i < 9; i++) {
-    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
-  }
-  await compactHistory(history, agentId);
-  assert.equal(dwar.completeCalls.length, 2);
-  assert.match(String(dwar.completeCalls[1]?.messages[0]?.content), /<record>\nSUMMARY-1\n<\/record>/);
-  const third = await assemble();
-  assert.equal(third.messages.length, 2);
-  assert.match(third.system, /\nSUMMARY-2/);
-});
-
-test("compactHistory fails on a cut-off summary and leaves the history unsummarized", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
-    name: "cutoff-history-worker",
-    systemPrompt: "system",
-    tools: [],
-  });
-  const transcript = new TranscriptStore();
-  const deps = deliverDeps(transcript);
-  for (let i = 0; i < 6; i++) {
-    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
-  }
-  const dwar = mockDwar({
-    complete: () => ({ ...endTurn("SUMMARY-partial"), stop_reason: "max_tokens" as const }),
-  });
-
-  await assert.rejects(
-    compactHistory(historyDeps(dwar, transcript, 500, 300), agentId),
-    /stopped with max_tokens/,
-  );
-  const ctx = await assembleContext({
-    db: handle.db,
-    serviceRoot: config.serviceRoot,
-    agentId,
-    lane: "conversation",
-    transcript,
-  });
-  assert.equal(ctx.messages.length, 6);
-  assert.doesNotMatch(ctx.system, /SUMMARY-partial/);
+  const narrow = await assemble({ chars: 500, stepChars: 200 });
+  const sizes = whole.messages.map((m) => String(m.content).length);
+  const start = windowStart(sizes, { chars: 500, stepChars: 200 });
+  assert.ok(start > 0);
+  assert.deepEqual(narrow.messages, whole.messages.slice(start));
+  assert.match(String(narrow.messages.at(-1)?.content), /\nm-5 /);
+  assert.equal(narrow.throughSeq, whole.throughSeq);
 });
 
 test("messages arriving mid-wake join the wake after it and never rewrite earlier turns", async () => {
@@ -228,6 +152,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
     wake: new Wake(roomyWakeLimits),
     assemble: () =>
       assembleContext({
+        window: wideWindow,
         db: handle.db,
         serviceRoot: config.serviceRoot,
         agentId,
@@ -524,6 +449,7 @@ test("assembleContext injects agent id and parent routing for children", async (
     parentAgentId: parentId,
   });
   const childCtx = await assembleContext({
+    window: wideWindow,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
@@ -534,6 +460,7 @@ test("assembleContext injects agent id and parent routing for children", async (
   assert.match(childCtx.system, /Your parent is routing-parent/);
 
   const parentCtx = await assembleContext({
+    window: wideWindow,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: parentId,
