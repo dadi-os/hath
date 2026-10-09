@@ -64,6 +64,8 @@ test("integration: snapshot refs across frames and shadow roots, actions, keys, 
     const pageHtml = encodeURIComponent(`<!doctype html><html><body>
       <button id="btn">Go</button>
       <input id="inp" type="text" name="q" value="" />
+      <input id="pw" type="password" name="pw" value="hidden-pw-1" />
+      <input id="shown" type="text" name="shown" autocomplete="current-password" value="hidden-pw-2" />
       <select id="sel"><option value="a">Alpha</option><option value="b">Beta</option></select>
       <div id="out"></div>
       <script>
@@ -80,6 +82,9 @@ test("integration: snapshot refs across frames and shadow roots, actions, keys, 
     assert.match(snap.tree, /button \[e\d+\]/);
     assert.match(snap.tree, /\[e\d+\].*input/);
     assert.match(snap.tree, /select \[e\d+\]/);
+    assert.match(snap.tree, /input type="password" name="pw" filled/);
+    assert.match(snap.tree, /input type="text" name="shown" filled/);
+    assert.equal(snap.tree.includes("hidden-pw"), false, snap.tree);
 
     const buttonRef = snap.tree.match(/button \[(e\d+)\]/)?.[1];
     const inputRef = snap.tree.match(/\[(e\d+)\] input/)?.[1];

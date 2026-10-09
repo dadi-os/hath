@@ -12,13 +12,13 @@ const input = z
   .strict();
 
 /**
- * Fill a Chaavi passkey into a Nas browser virtual authenticator.
- * The private key never appears in tool content or audit.
+ * Fill a Chaavi passkey into a Nas browser virtual authenticator and reload the tab so the
+ * site asks again. The private key never appears in tool content or audit.
  */
 export const fillPasskey = defineTool({
   name: "chaavi_fill_passkey",
   description:
-    "Fill a Chaavi passkey into a Nas browser so the next WebAuthn request on that tab can sign in. Only a request the site starts after this call can use it, so call it before the step that makes the site ask for the passkey: before clicking the site's passkey button, and on Google before submitting the email. If the site is already asking (a passkey, phone or QR prompt is showing), call it, then use the site's \"Try again\" or reload the sign-in step so it asks again. Each call replaces the tab's previous passkey. The key never appears in the result. Use when chaavi_list_items shows hasPasskey. Do not use chaavi_fill_login for passkeys.",
+    "Load a Chaavi passkey into a Nas browser tab, then reload the tab so the site asks for the passkey again and signs in with it. Call it once on the site's sign-in flow, at any step, including when a passkey, phone or QR prompt is already showing (on Google, the \"Complete sign-in using your passkey\" page). Then read the page: if it signed in, continue; if it shows a passkey button, click it; if the reload cleared something you typed, type it again and continue. No wait, retry or extra reload is needed. The passkey stays loaded on the tab across later steps, and each call replaces the tab's previous one. The key never appears in the result. Use when chaavi_list_items shows hasPasskey. Do not use chaavi_fill_login for passkeys.",
   input,
   inputSchema: {
     type: "object",
@@ -41,6 +41,7 @@ export const fillPasskey = defineTool({
           rp_id: passkey.rpId,
           browser_id: parsed.browser_id,
           tab_id: injected.tab_id,
+          url: injected.url,
         },
         {
           item_id: parsed.item_id,

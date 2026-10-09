@@ -688,15 +688,17 @@ export class BrowserDriver {
 
   /**
    * Load a passkey into this tab's Chromium virtual authenticator, replacing any passkey an
-   * earlier call loaded. The authenticator lives on the page's kept CDP session, so it stays
-   * active across later browser actions until the tab or the connection closes.
-   * Only WebAuthn requests the page starts after this call can use the passkey.
+   * earlier call loaded, then reload the tab. The authenticator lives on the page's kept CDP
+   * session, so it stays active across later browser actions until the tab or the connection
+   * closes. Only WebAuthn requests the page starts after the passkey is in can use it, and a
+   * site that asked before then is waiting on a request the passkey cannot answer, so the
+   * reload makes it ask again.
    */
   async addPasskey(
     browserId: number,
     tabId: string | undefined,
     cred: PasskeyInject,
-  ): Promise<{ tab_id: string }> {
+  ): Promise<{ tab_id: string; url: string }> {
     const resolved = await this.resolvePage(browserId, tabId);
     try {
       const session = await this.pageSession(resolved.page);
@@ -713,7 +715,8 @@ export class BrowserDriver {
           signCount: cred.signCount,
         },
       });
-      return { tab_id: resolved.tabId };
+      await resolved.page.reload({ waitUntil: "load" });
+      return { tab_id: resolved.tabId, url: resolved.page.url() };
     } catch (err) {
       if (err instanceof HathError) {
         throw err;
@@ -784,6 +787,8 @@ function cdpSend<T>(
  * Evaluated in each frame with the first ref number to hand out: clear old refs (shadow roots
  * included), walk the visible DOM through open shadow roots and slots, assign data-dadi-ref to
  * interactive nodes, and return the indented text tree with the next free ref number.
+ * A password input (type password, or a password autocomplete once a show-password toggle has
+ * made it text) reads `filled` instead of its value, so a filled password never reaches a tree.
  */
 const SNAPSHOT_SCRIPT = `(start) => {
   const ROLE_CONTROLS = ["checkbox", "radio", "switch", "tab", "menuitem", "menuitemcheckbox",
@@ -834,11 +839,12 @@ const SNAPSHOT_SCRIPT = `(start) => {
     const name = el.getAttribute("name") || el.getAttribute("aria-label") || el.id || "";
     const placeholder = el.getAttribute("placeholder") || "";
     const value = el.value || "";
+    const secret = type === "password" || /password/i.test(el.getAttribute("autocomplete") || "");
     const checked = el.checked ? " checked" : "";
     return "input type=" + JSON.stringify(type)
       + (name ? " name=" + JSON.stringify(name) : "")
       + (placeholder ? " placeholder=" + JSON.stringify(placeholder) : "")
-      + (value ? " value=" + JSON.stringify(value) : "")
+      + (value ? (secret ? " filled" : " value=" + JSON.stringify(value)) : "")
       + checked
       + states(el);
   }

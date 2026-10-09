@@ -280,7 +280,7 @@ test("fill_passkey loads the credential into the browser and never returns the k
         cred: { rpId: string; privateKey: string },
       ) => {
         addCalls.push({ browserId, tabId, cred });
-        return { tab_id: tabId ?? "t1" };
+        return { tab_id: tabId ?? "t1", url: "https://accounts.google.com/v3/signin/challenge/pk" };
       },
     } as unknown as BrowserDriver,
   };
@@ -307,6 +307,7 @@ test("fill_passkey loads the credential into the browser and never returns the k
   assert.equal(body.rp_id, "google.com");
   assert.equal(body.browser_id, 10);
   assert.equal(body.tab_id, "tab-1");
+  assert.equal(body.url, "https://accounts.google.com/v3/signin/challenge/pk");
   assert.equal("privateKey" in body, false);
   assert.equal("credentialId" in body, false);
   assert.equal(result.content.includes(privateKey), false);
