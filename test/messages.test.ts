@@ -26,7 +26,7 @@ import {
   roomyWakeLimits,
   silentLog,
   testConfig,
-  wideWindow,
+  wideWindows,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -96,7 +96,7 @@ test("windowStart always shows the newest message, even when it alone overflows"
   assert.equal(windowStart([100, 5000], window), 1);
 });
 
-test("assembleContext sends only the rolling window of the thread", async () => {
+test("assembleContext cuts each lane its own rolling window of the thread", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertWorker(handle.db, {
     name: "window-worker",
@@ -108,25 +108,27 @@ test("assembleContext sends only the rolling window of the thread", async () => 
   for (let i = 0; i < 6; i++) {
     await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
   }
-  const assemble = (window: { chars: number; stepChars: number }) =>
+  const assemble = (conversation: { chars: number; stepChars: number }) =>
     assembleContext({
       db: handle.db,
       serviceRoot: config.serviceRoot,
       agentId,
       lane: "conversation",
       transcript,
-      window,
+      windows: { conversation, reasoning: wideWindows.reasoning },
     });
 
-  const whole = await assemble(wideWindow);
-  assert.equal(whole.messages.length, 6);
+  const whole = await assemble(wideWindows.conversation);
+  const thread = whole.transcripts.conversation!;
+  assert.equal(thread.length, 6);
 
   const narrow = await assemble({ chars: 500, stepChars: 200 });
-  const sizes = whole.messages.map((m) => String(m.content).length);
+  const sizes = thread.map((m) => String(m.content).length);
   const start = windowStart(sizes, { chars: 500, stepChars: 200 });
   assert.ok(start > 0);
-  assert.deepEqual(narrow.messages, whole.messages.slice(start));
-  assert.match(String(narrow.messages.at(-1)?.content), /\nm-5 /);
+  assert.deepEqual(narrow.transcripts.conversation, thread.slice(start));
+  assert.match(String(narrow.transcripts.conversation!.at(-1)?.content), /\nm-5 /);
+  assert.deepEqual(narrow.transcripts.reasoning, thread);
   assert.equal(narrow.throughSeq, whole.throughSeq);
 });
 
@@ -152,7 +154,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
     wake: new Wake(roomyWakeLimits),
     assemble: () =>
       assembleContext({
-        window: wideWindow,
+        windows: wideWindows,
         db: handle.db,
         serviceRoot: config.serviceRoot,
         agentId,
@@ -449,7 +451,7 @@ test("assembleContext injects agent id and parent routing for children", async (
     parentAgentId: parentId,
   });
   const childCtx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
@@ -460,7 +462,7 @@ test("assembleContext injects agent id and parent routing for children", async (
   assert.match(childCtx.system, /Your parent is routing-parent/);
 
   const parentCtx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: parentId,

@@ -77,8 +77,16 @@ function lineageBlock(agentId: string | null, parentAgentId: string | null): str
   return `Your agent id is ${agentId}.\n${parentLine}`;
 }
 
-/** An assembled lane request plus the newest transcript seq it includes (0 when empty). */
-export type AssembledContext = Omit<DwarChatRequest, "tool_choice"> & { throughSeq: number };
+/**
+ * An assembled lane request: its system and tools, the transcript each lane
+ * sends, and the newest transcript seq they include (0 when empty). Both agent
+ * lanes' transcripts are cut from the same thread at once, so whichever lane
+ * begins the wake freezes both through the same message.
+ */
+export type AssembledContext = Omit<DwarChatRequest, "tool_choice" | "messages"> & {
+  transcripts: Partial<Record<Lane, DwarMessage[]>>;
+  throughSeq: number;
+};
 
 /**
  * hath's system for an identity, in order: the system doctrine
@@ -141,6 +149,9 @@ export type TranscriptWindow = {
   stepChars: number;
 };
 
+/** Each agent lane's transcript window. */
+export type TranscriptWindows = Record<Exclude<Lane, "router">, TranscriptWindow>;
+
 /**
  * windowStart is the index of the first entry an agent's transcript shows: the
  * newest entries up to about `window.chars` characters. Character offsets are
@@ -168,8 +179,8 @@ export function windowStart(sizes: number[], window: TranscriptWindow): number {
 }
 
 /**
- * An agent lane's request: its system, then the rolling window of its thread
- * (see windowStart). Messages that left the window are reached through
+ * An agent lane's request: its system, then each lane's rolling window of its
+ * thread (see windowStart). Messages that left a window are reached through
  * get_logs and memory. Dwar appends lane doctrine as a cached block.
  */
 export async function assembleContext(opts: {
@@ -178,23 +189,25 @@ export async function assembleContext(opts: {
   lane: Lane;
   transcript: TranscriptStore;
   serviceRoot: string;
-  window: TranscriptWindow;
+  windows: TranscriptWindows;
 }): Promise<AssembledContext> {
   const system = await composeSystem(opts.db, opts.serviceRoot, opts.agentId);
   const thread = opts.transcript.transcriptFor(opts.agentId);
-  const texts = thread.map((row) => transcriptText(row, opts.agentId));
-  const start = windowStart(texts.map((text) => text.length), opts.window);
-  const entries = thread.slice(start);
-  const dwarMessages: DwarMessage[] = entries.map((row, i) => ({
+  const messages: DwarMessage[] = thread.map((row) => ({
     role: labelEntry(row, opts.agentId).role,
-    content: texts[start + i]!,
+    content: transcriptText(row, opts.agentId),
   }));
+  const sizes = messages.map((message) => String(message.content).length);
+  const windowed = (window: TranscriptWindow) => messages.slice(windowStart(sizes, window));
 
   return {
     system,
-    messages: dwarMessages,
+    transcripts: {
+      conversation: windowed(opts.windows.conversation),
+      reasoning: windowed(opts.windows.reasoning),
+    },
     tools: await toolsForLane(opts.db, opts.agentId, opts.lane),
-    throughSeq: entries.at(-1)?.seq ?? 0,
+    throughSeq: thread.at(-1)?.seq ?? 0,
   };
 }
 
@@ -211,7 +224,9 @@ export async function assembleRouterContext(opts: {
 }): Promise<AssembledContext> {
   return {
     system: await composeSystem(opts.db, opts.serviceRoot, null),
-    messages: [{ role: "user", content: `[From: Ankur · ${formatISO(new Date())}]\n${opts.utterance}` }],
+    transcripts: {
+      router: [{ role: "user", content: `[From: Ankur · ${formatISO(new Date())}]\n${opts.utterance}` }],
+    },
     tools: routerLaneTools(),
     throughSeq: 0,
   };

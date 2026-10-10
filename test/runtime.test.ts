@@ -37,7 +37,7 @@ import {
   testConfig,
   toolUse,
   yieldTurn,
-  wideWindow,
+  wideWindows,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -416,7 +416,7 @@ test("reasoning context has send_message, list_agents, and no dispatch_message",
     tools: [],
   });
   const ctx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: workerId,
@@ -584,7 +584,7 @@ test("conversation tools are dispatch_message, steer_reasoning, list_agents, yie
     tools: [],
   });
   const ctx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: workerId,
@@ -628,7 +628,7 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
   assert.equal(spawned.isError, false);
   const childId = JSON.parse(spawned.content).agent_id as string;
   const childCtx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
@@ -687,7 +687,7 @@ test("grant_tool on a direct child succeeds and appears in assembleContext", asy
   });
   assert.equal(granted.isError, false);
   const ctx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
@@ -1337,7 +1337,7 @@ test("revoke_tool removes a grant and fails when the child does not hold it", as
   });
   assert.equal(revoked.isError, false);
   const ctx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
@@ -1378,7 +1378,7 @@ test("an agent can grant a tool it does not itself hold", async () => {
     log: silentLog,
   });
   const parentCtx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: parentId,
@@ -1400,7 +1400,7 @@ test("an agent can grant a tool it does not itself hold", async () => {
   });
   assert.equal(granted.isError, false);
   const childCtx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
@@ -1417,7 +1417,7 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     systemPrompt: "empty",
   });
   const reasoning = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId,
@@ -1425,7 +1425,7 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     transcript: new TranscriptStore(),
   });
   const conversation = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId,

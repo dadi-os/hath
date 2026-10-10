@@ -28,7 +28,7 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
-  wideWindow,
+  wideWindows,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -161,14 +161,14 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
   assert.equal(thread.messages.at(-1)?.attachments.length, 2);
 
   const context = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     agentId,
     lane: "conversation",
     transcript: runtime.transcript,
     serviceRoot: config.serviceRoot,
   });
-  const seen = JSON.stringify(context.messages);
+  const seen = JSON.stringify(context.transcripts.conversation);
   assert.ok(seen.includes(sent.attachments[0]!.id));
   assert.ok(!seen.includes(report));
   assert.ok(seen.includes("mock image description"));

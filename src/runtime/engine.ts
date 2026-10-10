@@ -102,6 +102,8 @@ export function createRuntime(opts: {
     toolResultsMaxChars: opts.config.runtime.wake_tool_results_max_chars,
     toolResultsKeptChars: opts.config.runtime.wake_tool_results_kept_chars,
     supersedeWindowTurns: opts.config.runtime.wake_supersede_window_turns,
+    promptCeilingTokens: opts.config.runtime.prompt_ceiling_tokens,
+    promptTrimTokens: opts.config.runtime.prompt_trim_tokens,
   };
   const wakes = new WakeStore(wakeLimits);
   let pending = 0;
@@ -322,9 +324,15 @@ export function createRuntime(opts: {
           lane,
           transcript,
           serviceRoot: opts.config.serviceRoot,
-          window: {
-            chars: opts.config.runtime.transcript_window_chars,
-            stepChars: opts.config.runtime.transcript_window_step_chars,
+          windows: {
+            conversation: {
+              chars: opts.config.runtime.conversation_transcript_window_chars,
+              stepChars: opts.config.runtime.transcript_window_step_chars,
+            },
+            reasoning: {
+              chars: opts.config.runtime.reasoning_transcript_window_chars,
+              stepChars: opts.config.runtime.transcript_window_step_chars,
+            },
           },
         }),
       arrivalsSince: (afterSeq: number) => arrivalsSince(transcript, agentId, afterSeq),

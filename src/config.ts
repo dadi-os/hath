@@ -22,7 +22,8 @@ const tomlPath = join(serviceRoot, "config.toml");
 const fileSchema = z.object({
   runtime: z.object({
     lane_queue_timeout_ms: z.number().int().positive(),
-    transcript_window_chars: z.number().int().positive(),
+    conversation_transcript_window_chars: z.number().int().positive(),
+    reasoning_transcript_window_chars: z.number().int().positive(),
     transcript_window_step_chars: z.number().int().positive(),
     tool_debounce_base_ms: z.number().int().positive(),
     tool_debounce_max_ms: z.number().int().positive(),
@@ -30,10 +31,17 @@ const fileSchema = z.object({
     wake_tool_results_kept_chars: z.number().int().positive(),
     wake_supersede_window_turns: z.number().int().positive(),
     recovery_window_minutes: z.number().int().positive(),
+    prompt_ceiling_tokens: z.number().int().positive(),
+    prompt_trim_tokens: z.number().int().positive(),
   }).refine((runtime) => runtime.wake_tool_results_kept_chars < runtime.wake_tool_results_max_chars, {
     message: "wake_tool_results_kept_chars must be below wake_tool_results_max_chars",
-  }).refine((runtime) => runtime.transcript_window_step_chars < runtime.transcript_window_chars, {
-    message: "transcript_window_step_chars must be below transcript_window_chars",
+  }).refine(
+    (runtime) =>
+      runtime.transcript_window_step_chars <
+      Math.min(runtime.conversation_transcript_window_chars, runtime.reasoning_transcript_window_chars),
+    { message: "transcript_window_step_chars must be below both lanes' transcript_window_chars" },
+  ).refine((runtime) => runtime.prompt_trim_tokens < runtime.prompt_ceiling_tokens, {
+    message: "prompt_trim_tokens must be below prompt_ceiling_tokens",
   }),
   dwar: z.object({
     timeout_ms: z.number().int().positive(),

@@ -25,7 +25,7 @@ import {
   testConfig,
   toolUse,
   yieldTurn,
-  wideWindow,
+  wideWindows,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -74,7 +74,7 @@ test("a reasoning lane with no grants still holds recall_memory and ingest_memor
     tools: [],
   });
   const ctx = await assembleContext({
-    window: wideWindow,
+    windows: wideWindows,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: workerId,

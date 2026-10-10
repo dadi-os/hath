@@ -34,7 +34,7 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
     agentId,
     lane: "reasoning",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(request);
@@ -70,7 +70,7 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
     agentId,
     lane: "reasoning",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(structuredClone(request));
@@ -176,7 +176,7 @@ test("steer_reasoning with terminate stops the next tool call from running", asy
     agentId,
     lane: "reasoning",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async () => {
       turn += 1;
@@ -209,7 +209,7 @@ test("steer_reasoning terminate mid-batch blocks remaining domain tools", async 
     agentId,
     lane: "reasoning",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", messages: [], tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async () => ({
       provider: "anthropic",

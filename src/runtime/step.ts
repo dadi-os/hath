@@ -21,7 +21,7 @@ export type StepDeps = {
   agentId: string;
   lane: Lane;
   wake: Wake;
-  /** This lane's system prompt and tools, plus the windowed transcript. */
+  /** This lane's system prompt and tools, plus each lane's windowed transcript. */
   assemble: () => Promise<AssembledContext>;
   /** Transcript entries newer than `afterSeq`, folded into one user turn. */
   arrivalsSince: (afterSeq: number) => { turn: DwarMessage | null; throughSeq: number };
@@ -35,13 +35,13 @@ export type StepDeps = {
 };
 
 /**
- * syncWake freezes the system and transcript on the wake's first call; after
+ * syncWake freezes the system and both transcripts on the wake's first call; after
  * that, messages that landed since are appended once, where they arrived, for
  * both lanes.
  */
 export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
   if (!deps.wake.started) {
-    deps.wake.begin(assembled.system, assembled.messages, assembled.throughSeq);
+    deps.wake.begin(assembled.system, assembled.transcripts, assembled.throughSeq);
     return;
   }
   const arrived = deps.arrivalsSince(deps.wake.throughSeq);
@@ -52,13 +52,14 @@ export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
 }
 
 /**
- * The request a lane sends: the wake's frozen system, its tools, and the shared
- * wake. Both agent lanes get tool_choice auto so they can think before acting
+ * The request a lane sends: the wake's frozen system, its tools, and its view
+ * of the shared wake, trimmed to its token ceiling. Both agent lanes get tool_choice auto so they can think before acting
  * (a forced call skips thinking on Anthropic models); a conversation turn of
  * plain text reaches no one and is followed by a continue turn (see runStep).
  * The router, on a context-free endpoint, is forced to call a tool.
  */
 export function laneRequest(deps: StepDeps, assembled: AssembledContext): DwarChatRequest {
+  deps.wake.fit(deps.lane, assembled.tools);
   return {
     system: deps.wake.system,
     messages: deps.wake.view(deps.lane),
@@ -68,7 +69,8 @@ export function laneRequest(deps: StepDeps, assembled: AssembledContext): DwarCh
 }
 
 /**
- * runStep records one model turn and its tool results on the wake. A turn with
+ * runStep records one model turn and its tool results on the wake, with what the
+ * call measured (see Wake.measure) and what the turn cost to write. A turn with
  * no tool call is kept and followed by a neutral continue turn, so the lane
  * keeps going; only yield (or a stop) ends it. Returns true when the lane
  * should exit. Agent turns are tagged with their provider and lane so Dwar can
@@ -80,6 +82,8 @@ export async function runStep(
   response: DwarChatResponse,
   isStopped: () => boolean,
 ): Promise<boolean> {
+  deps.wake.measure(deps.lane, response.usage);
+  const outputTokens = response.usage.output_tokens;
   const assistant: DwarMessage =
     deps.lane === "router"
       ? { role: "assistant", content: response.content }
@@ -96,7 +100,7 @@ export async function runStep(
       throw new HathError(502, "dwar", `${deps.lane} model returned an empty turn`);
     }
     deps.wake.push(
-      { message: assistant },
+      { message: assistant, outputTokens },
       { message: { role: "user", content: CONTINUE_TURN } },
     );
     return false;
@@ -132,7 +136,7 @@ export async function runStep(
       stopped = true;
     }
   }
-  deps.wake.push({ message: assistant }, { message: { role: "user", content: results }, states });
+  deps.wake.push({ message: assistant, outputTokens }, { message: { role: "user", content: results }, states });
   if (yielded) {
     deps.wake.markYield(deps.lane);
   }

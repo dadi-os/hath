@@ -2,12 +2,15 @@
 # How long a POST /router request waits for the router lane before failing.
 # Agent lane runs never time out: a wake queued behind a busy lane waits its turn.
 lane_queue_timeout_ms = 30000
-# An agent's transcript is a rolling window over its thread: the newest
-# messages up to about max chars (about 4 chars a token). Older messages fall
-# out and are reached only through get_logs and memory. The window's start
-# moves in jumps of step chars instead of sliding with every message, so the
-# provider cache survives everything but the jump.
-transcript_window_chars = 120000
+# Each lane's transcript is a rolling window over the agent's thread: the
+# newest messages up to about that lane's chars (about 4 chars a token).
+# Conversation holds more of the thread; reasoning keeps room under the prompt
+# ceiling for its wake. Older messages fall out and are reached only through
+# get_logs and memory. A window's start moves in jumps of step chars instead
+# of sliding with every message, so the provider cache survives everything
+# but the jump.
+conversation_transcript_window_chars = 220000
+reasoning_transcript_window_chars = 160000
 transcript_window_step_chars = 30000
 # Backoff after a failed tool call before the agent's next call; doubles per
 # consecutive failure and resets on the first success.
@@ -17,8 +20,8 @@ tool_debounce_max_ms = 15000
 # are cleared down to the newest kept chars. Clearing in one jump keeps the
 # history byte-stable between clears, so the provider cache survives every
 # step but the clearing one; a wider gap clears less often.
-wake_tool_results_max_chars = 60000
-wake_tool_results_kept_chars = 15000
+wake_tool_results_max_chars = 100000
+wake_tool_results_kept_chars = 40000
 # A newer read of the same page tree, page text, screenshot or terminal screen
 # replaces the older read only while the older sits within this many of the
 # newest wake turns: further back, the cache rewrite it causes falls outside
@@ -28,6 +31,13 @@ wake_supersede_window_turns = 8
 # only when its last step is this recent; older ones are stale and dropped.
 # The report never wakes the requester.
 recovery_window_minutes = 10
+# A lane's prompt stays under ceiling tokens, below the 100k-token step where
+# Haiku's price rises 5x. Each call's measured usage calibrates the next: when
+# the next call would pass the ceiling, the oldest steps of the wake leave that
+# lane's view until it sits trim tokens under, in one jump so the cached
+# prefix holds until the next trim.
+prompt_ceiling_tokens = 96000
+prompt_trim_tokens = 16000
 
 [dwar]
 timeout_ms = 330000

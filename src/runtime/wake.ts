@@ -1,18 +1,20 @@
 /**
  * One agent's shared lane history for the current wake.
  *
- * Both lanes read the same record: the system and transcript frozen when the
- * wake began, then every step either lane took — each model turn whole
+ * Both lanes read the same record: the system and each lane's transcript
+ * window, frozen together when the wake began, then every step either lane took — each model turn whole
  * (thinking, text, tool calls, in provider order) followed by its tool results —
  * plus messages that arrived mid-wake. Only two kinds of turn are lane-private:
  * steers (reasoning's instructions) and intents (conversation's delivery
  * requests), because the other lane already sees the tool call that produced them.
  *
- * Turns are never dropped, but old tool results are: once the results still
- * shown in full pass a size budget, every result before the newest ones is
- * replaced by a short cleared note. The cut only moves forward and moves in
- * one jump, so the history stays byte-stable between cuts and the provider's
- * cached prefix survives every step but the one that clears. A read of state
+ * Old tool results are dropped first: once the results still shown in full
+ * pass a size budget, every result before the newest ones is replaced by a
+ * short cleared note. Old turns go only when a lane's prompt would pass its
+ * token ceiling: the oldest steps then leave that lane's view behind one
+ * trimmed note. Both cuts only move forward and move in one jump, so the
+ * history stays byte-stable between cuts and the provider's cached prefix
+ * survives every step but the one that cuts. A read of state
  * (a tab's tree, a page's text, a terminal's screen) is also replaced by a short
  * note when a newer read of the same state lands within a few turns of it; the
  * window keeps the cache rewrite that causes inside the provider's lookback.
@@ -23,7 +25,8 @@
  * starts from the transcript alone — prior steps cannot few-shot it.
  */
 
-import type { DwarMessage, Lane } from "../types/domain.js";
+import { HathError } from "../errors.js";
+import type { DwarMessage, DwarTool, DwarUsage, Lane } from "../types/domain.js";
 
 /**
  * User turn recorded after a model turn with no tool call, so the lane keeps
@@ -41,6 +44,17 @@ export const CLEARED_RESULT =
 export const SUPERSEDED_RESULT =
   "[superseded] A newer read of the same page or terminal follows in this wake; use that one.";
 
+/** The turn that stands in for the steps a lane's view trimmed to stay under its token ceiling. */
+export const TRIMMED_TURN =
+  "[trimmed] Earlier steps of this wake were dropped to keep the prompt small. get_logs has them; redo a step only if you still need its result.";
+
+/**
+ * Characters per token when estimating what Hath has not seen measured: a step
+ * since the lane's last call, and a lane's first call. Below English's ~4 so
+ * tool output (JSON, trees) is not undercounted.
+ */
+const CHARS_PER_TOKEN = 3;
+
 /** How much tool output a wake shows in full before it clears older results. */
 export type WakeLimits = {
   /** Clearing starts when the tool results still shown in full pass this many characters. */
@@ -52,6 +66,10 @@ export type WakeLimits = {
    * this many of the newest turns, so the cache rewrite it causes stays short.
    */
   supersedeWindowTurns: number;
+  /** A lane's prompt never passes this many tokens: past it, its oldest steps leave its view. */
+  promptCeilingTokens: number;
+  /** A trim brings the prompt this many tokens under the ceiling, so trims stay rare. */
+  promptTrimTokens: number;
 };
 
 /** One entry in a wake: a user or assistant turn, optionally private to one lane. */
@@ -61,12 +79,17 @@ export type WakeTurn = {
   only?: Lane;
   /** The state key of each of this turn's tool results that read state, by tool_use_id. */
   states?: Record<string, string>;
+  /**
+   * For a model turn, the tokens its provider counted for it (thinking, text and
+   * calls): its weight in the producing lane's prompt, which replays it verbatim.
+   */
+  outputTokens?: number;
 };
 
 /** Wake is one agent's shared lane history for the current wake. */
 export class Wake {
   private frozenSystem: string | null = null;
-  private transcript: DwarMessage[] | null = null;
+  private transcripts: Partial<Record<Lane, DwarMessage[]>> | null = null;
   private seenThrough = 0;
   private readonly turns: WakeTurn[] = [];
   /** Turns before this index show their tool results as CLEARED_RESULT. */
@@ -77,22 +100,31 @@ export class Wake {
   private readonly latestState = new Map<string, { turn: number; toolUseId: string }>();
   /** tool_use_ids whose results a newer read of the same state replaced. */
   private readonly superseded = new Set<string>();
+  /** Per lane, turns before this index are out of its view, behind TRIMMED_TURN. */
+  private readonly trimmedThrough = new Map<Lane, number>();
+  /**
+   * Per lane, its last call's measured prompt tokens less the estimated tokens of
+   * the wake turns that call sent: the system, tools, doctrine and transcript.
+   */
+  private readonly baseTokens = new Map<Lane, number>();
+  /** Per lane, the estimated tokens of the wake turns its in-flight call sent. */
+  private readonly sentTurnTokens = new Map<Lane, number>();
 
   constructor(private readonly limits: WakeLimits) {}
 
   /** False until the wake's first lane call freezes the system and transcript. */
   get started(): boolean {
-    return this.transcript !== null;
+    return this.transcripts !== null;
   }
 
   /**
-   * Freeze the system and transcript the wake begins from. The system stays put
-   * for the whole wake, so a prompt change (modify_agent_prompt, a new child) lands at
-   * the next wake instead of invalidating every cached step of this one.
+   * Freeze the system and each lane's transcript the wake begins from. The system
+   * stays put for the whole wake, so a prompt change (modify_agent_prompt, a new child)
+   * lands at the next wake instead of invalidating every cached step of this one.
    */
-  begin(system: string, transcript: DwarMessage[], throughSeq: number): void {
+  begin(system: string, transcripts: Partial<Record<Lane, DwarMessage[]>>, throughSeq: number): void {
     this.frozenSystem = system;
-    this.transcript = transcript;
+    this.transcripts = transcripts;
     this.seenThrough = throughSeq;
   }
 
@@ -151,31 +183,129 @@ export class Wake {
   }
 
   /**
-   * What `lane` sends to its provider: the frozen transcript, its last turn
+   * What `lane` sends to its provider: its frozen transcript, the last turn
    * marked as a cache breakpoint (the next wake opens on the same transcript),
-   * then every turn the lane may see, with cleared results swapped out.
+   * then every turn the lane may see past its trim, with cleared results
+   * swapped out.
    */
   view(lane: Lane): DwarMessage[] {
-    const frozen = this.transcript;
-    if (frozen === null) {
-      throw new Error("wake has not begun");
-    }
+    const frozen = this.transcriptFor(lane);
     const transcript = frozen.map((message, index) =>
       index === frozen.length - 1 ? { ...message, cache_breakpoint: true } : message,
     );
-    const turns = this.turns.flatMap((turn, index) => {
-      if (turn.only !== undefined && turn.only !== lane) {
-        return [];
+    const trimmed: DwarMessage[] =
+      (this.trimmedThrough.get(lane) ?? 0) > 0 ? [{ role: "user", content: TRIMMED_TURN }] : [];
+    const turns = this.inView(lane).map((index) => this.shown(index));
+    return [...transcript, ...trimmed, ...turns];
+  }
+
+  /**
+   * fit trims `lane`'s view before a call when its prompt would pass the token
+   * ceiling: the oldest steps leave the view until the prompt is promptTrimTokens
+   * under the ceiling, keeping at least the newest step. The prompt is the lane's
+   * last measured prompt (see measure) plus the estimated turns added since; a
+   * lane's first call estimates all of it from `tools` and the frozen text.
+   * Throws when the newest step alone still passes the ceiling.
+   */
+  fit(lane: Lane, tools: DwarTool[]): void {
+    const base =
+      this.baseTokens.get(lane) ??
+      estimateTokens(
+        this.system.length +
+          JSON.stringify(tools).length +
+          this.transcriptFor(lane).reduce((sum, message) => sum + messageChars(message), 0),
+      );
+    const visible = this.inView(lane);
+    const after = visible.map(() => 0);
+    for (let i = visible.length - 1; i >= 0; i -= 1) {
+      after[i] = this.turnTokens(visible[i]!, lane) + (after[i + 1] ?? 0);
+    }
+    const total = base + (after[0] ?? 0);
+    if (total > this.limits.promptCeilingTokens) {
+      const target = this.limits.promptCeilingTokens - this.limits.promptTrimTokens;
+      let cut = 0;
+      for (let i = 0; i < visible.length; i += 1) {
+        if (opensStep(this.turns[visible[i]!]!.message)) {
+          cut = i;
+          if (base + after[i]! <= target) {
+            break;
+          }
+        }
       }
-      return [
-        index < this.clearedThrough
-          ? replaceResults(turn.message, () => CLEARED_RESULT)
-          : replaceResults(turn.message, (id) =>
-              this.superseded.has(id) ? SUPERSEDED_RESULT : null,
-            ),
-      ];
-    });
-    return [...transcript, ...turns];
+      const kept = base + (after[cut] ?? 0);
+      if (kept > this.limits.promptCeilingTokens) {
+        throw new HathError(
+          500,
+          "internal_error",
+          `${lane} prompt is about ${kept} tokens with nothing left to trim, over the ${this.limits.promptCeilingTokens}-token ceiling`,
+        );
+      }
+      this.trimmedThrough.set(lane, visible[cut]!);
+    }
+    this.sentTurnTokens.set(
+      lane,
+      this.inView(lane).reduce((sum, index) => sum + this.turnTokens(index, lane), 0),
+    );
+  }
+
+  /**
+   * measure records what `lane`'s last call actually cost in prompt tokens, so the
+   * next fit counts the system, tools, doctrine and transcript exactly instead of
+   * estimating them.
+   */
+  measure(lane: Lane, usage: DwarUsage): void {
+    const sent = this.sentTurnTokens.get(lane);
+    if (sent === undefined) {
+      throw new Error(`${lane} measured a call it never fit`);
+    }
+    const prompt = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+    this.baseTokens.set(lane, prompt - sent);
+  }
+
+  /** transcriptFor is the transcript frozen for `lane` when the wake began. */
+  private transcriptFor(lane: Lane): DwarMessage[] {
+    if (this.transcripts === null) {
+      throw new Error("wake has not begun");
+    }
+    const transcript = this.transcripts[lane];
+    if (transcript === undefined) {
+      throw new Error(`wake has no ${lane} transcript`);
+    }
+    return transcript;
+  }
+
+  /** inView is the index of every turn `lane` may see past its trim, in order. */
+  private inView(lane: Lane): number[] {
+    const from = this.trimmedThrough.get(lane) ?? 0;
+    const out: number[] = [];
+    for (let i = from; i < this.turns.length; i += 1) {
+      const turn = this.turns[i]!;
+      if (turn.only === undefined || turn.only === lane) {
+        out.push(i);
+      }
+    }
+    return out;
+  }
+
+  /** shown is turn `index` as lanes see it, cleared and superseded results swapped for their notes. */
+  private shown(index: number): DwarMessage {
+    const message = this.turns[index]!.message;
+    return index < this.clearedThrough
+      ? replaceResults(message, () => CLEARED_RESULT)
+      : replaceResults(message, (id) => (this.superseded.has(id) ? SUPERSEDED_RESULT : null));
+  }
+
+  /**
+   * turnTokens is turn `index`'s weight in `lane`'s prompt: its provider count in the
+   * lane that wrote it (untagged turns are the router's own), otherwise estimated from
+   * its text, since Dwar shows another lane's turn as a shorter text rendering.
+   */
+  private turnTokens(index: number, lane: Lane): number {
+    const turn = this.turns[index]!;
+    const own = turn.message.lane === undefined || turn.message.lane === lane;
+    return own && turn.outputTokens !== undefined
+      ? turn.outputTokens
+      : estimateTokens(messageChars(this.shown(index)));
   }
 
   /**
@@ -255,6 +385,42 @@ function replaceResults(
       return replacement === null ? block : { ...block, content: replacement };
     }),
   };
+}
+
+/** estimateTokens is roughly how many tokens `chars` characters of prompt cost. */
+function estimateTokens(chars: number): number {
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+/** messageChars is the length of every block of `message` a provider reads. */
+function messageChars(message: DwarMessage): number {
+  if (typeof message.content === "string") {
+    return message.content.length;
+  }
+  let total = 0;
+  for (const block of message.content) {
+    if (block.type === "text") {
+      total += block.text.length;
+    } else if (block.type === "thinking") {
+      total += block.thinking.length;
+    } else if (block.type === "tool_use") {
+      total += JSON.stringify(block.input).length;
+    } else if (block.type === "tool_result") {
+      total += block.content.length;
+    }
+  }
+  return total;
+}
+
+/**
+ * opensStep is true when a view may start at `message`: anything but the
+ * results of a tool call, which must follow the model turn that made it.
+ */
+function opensStep(message: DwarMessage): boolean {
+  return (
+    typeof message.content === "string" ||
+    !message.content.some((block) => block.type === "tool_result")
+  );
 }
 
 /** WakeStore holds each agent's current wake and how many lane runs keep it alive. */

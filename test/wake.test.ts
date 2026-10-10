@@ -12,10 +12,12 @@ import { IntentQueue } from "../src/runtime/intents.js";
 import { runReasoningLoop } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
-import { CLEARED_RESULT, CONTINUE_TURN, SUPERSEDED_RESULT, Wake, WakeStore } from "../src/runtime/wake.js";
+import { CLEARED_RESULT, CONTINUE_TURN, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
 import { roomyWakeLimits } from "./helpers.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+
+const ASK: DwarMessage = { role: "user", content: "[From: Ankur]\ncheck my email" };
 
 function turn(
   provider: DwarChatResponse["provider"],
@@ -41,7 +43,7 @@ function stepDeps(
     wake,
     assemble: async () => ({
       system: "sys",
-      messages: [{ role: "user", content: "[From: Ankur]\ncheck my email" }],
+      transcripts: { reasoning: [ASK], conversation: [ASK] },
       tools: [],
       throughSeq: 1,
     }),
@@ -114,7 +116,7 @@ test("past its budget the wake clears older tool results in jumps, keeping every
   await runReasoningLoop({
     ...stepDeps(
       "reasoning",
-      new Wake({ toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000, supersedeWindowTurns: 8 }),
+      new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000, supersedeWindowTurns: 8 }),
       () => {
         n += 1;
         return n <= 12
@@ -154,7 +156,7 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
       systems += 1;
       return {
         system: `sys v${systems}`,
-        messages: [{ role: "user", content: "[From: Ankur]\ncheck my email" }],
+        transcripts: { reasoning: [ASK], conversation: [ASK] },
         tools: [],
         throughSeq: 1,
       };
@@ -289,7 +291,7 @@ test("a wake lives while any run holds it and is dropped when the last releases"
   const wakes = new WakeStore(roomyWakeLimits);
   const first = wakes.hold("agent-1");
   const wake = wakes.get("agent-1");
-  wake.begin("sys", [{ role: "user", content: "hi" }], 1);
+  wake.begin("sys", frozen("hi"), 1);
   wake.push({ message: { role: "assistant", content: "noted" } });
 
   const second = wakes.hold("agent-1");
@@ -335,6 +337,11 @@ test("a queued conversation run makes no model call until something it can see j
   assert.equal(requests.length, 3);
 });
 
+/** Both lanes' transcripts frozen as one user message of `content`. */
+function frozen(content: string): Record<"reasoning" | "conversation", DwarMessage[]> {
+  return { reasoning: [{ role: "user", content }], conversation: [{ role: "user", content }] };
+}
+
 /** Push one step onto `wake`: a call to `id`, then its result of `chars` characters under `state`. */
 function pushRead(wake: Wake, id: string, state?: string, chars = 1_000): void {
   wake.push(
@@ -350,8 +357,8 @@ function pushRead(wake: Wake, id: string, state?: string, chars = 1_000): void {
 }
 
 test("a newer read of the same state replaces the older one within the window; other states stay", () => {
-  const wake = new Wake({ toolResultsMaxChars: 1_000_000, toolResultsKeptChars: 500_000, supersedeWindowTurns: 4 });
-  wake.begin("sys", [{ role: "user", content: "[From: Ankur]\ncheck the course page" }], 1);
+  const wake = new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 1_000_000, toolResultsKeptChars: 500_000, supersedeWindowTurns: 4 });
+  wake.begin("sys", frozen("[From: Ankur]\ncheck the course page"), 1);
   pushRead(wake, "t1", "browser:1:tree:tab");
   pushRead(wake, "x1", "browser:1:text:https://a.example/");
   pushRead(wake, "t2", "browser:1:tree:tab");
@@ -369,8 +376,8 @@ test("a newer read of the same state replaces the older one within the window; o
 });
 
 test("replaced reads stop counting toward the wake's clearing budget", () => {
-  const wake = new Wake({ toolResultsMaxChars: 3_000, toolResultsKeptChars: 1_500, supersedeWindowTurns: 8 });
-  wake.begin("sys", [{ role: "user", content: "[From: Ankur]\nwatch the terminal" }], 1);
+  const wake = new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 3_000, toolResultsKeptChars: 1_500, supersedeWindowTurns: 8 });
+  wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   for (let i = 1; i <= 5; i += 1) {
     pushRead(wake, `r${i}`, "terminal:t1");
   }
@@ -403,4 +410,70 @@ test("a tool result's state reaches the wake through the step loop", async () =>
     SUPERSEDED_RESULT,
     "tree from t3",
   ]);
+});
+
+/** Push one reasoning step onto `wake` that cost `outputTokens` to write, with a short result. */
+function pushStep(wake: Wake, id: string, outputTokens: number): void {
+  wake.push(
+    { message: { role: "assistant", content: [call("terminal_read", id)], provider: "anthropic", lane: "reasoning" }, outputTokens },
+    { message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: `${id} `.padEnd(30, "x"), is_error: false }] } },
+  );
+}
+
+/** The tool_use ids a view still carries, in order. */
+function callIds(messages: DwarMessage[]): string[] {
+  return messages.flatMap((message) =>
+    typeof message.content === "string"
+      ? []
+      : message.content.flatMap((block) => (block.type === "tool_use" ? [block.id] : [])),
+  );
+}
+
+const ceilingLimits = { ...roomyWakeLimits, promptCeilingTokens: 1_000, promptTrimTokens: 400 };
+
+test("past its ceiling a lane drops its oldest steps in one jump behind a trimmed note, and the other lane keeps them", () => {
+  const wake = new Wake(ceilingLimits);
+  wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
+  for (let i = 1; i <= 6; i += 1) {
+    pushStep(wake, `s${i}`, 150);
+  }
+  wake.fit("reasoning", []);
+  assert.deepEqual(callIds(wake.view("reasoning")), ["s1", "s2", "s3", "s4", "s5", "s6"]);
+
+  pushStep(wake, "s7", 150);
+  wake.fit("reasoning", []);
+  const trimmed = wake.view("reasoning");
+  assert.deepEqual(callIds(trimmed), ["s5", "s6", "s7"]);
+  assert.equal(trimmed[1]!.content, TRIMMED_TURN);
+  assert.equal(trimmed[2]!.role, "assistant");
+  assert.deepEqual(callIds(wake.view("conversation")), ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
+
+  pushStep(wake, "s8", 150);
+  wake.fit("reasoning", []);
+  const next = wake.view("reasoning");
+  assert.deepEqual(next.slice(0, trimmed.length), trimmed, "the trimmed prefix holds until the next trim");
+});
+
+test("a lane's measured prompt, not its estimate, decides when it trims", () => {
+  const wake = new Wake(ceilingLimits);
+  wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
+  pushStep(wake, "s1", 10);
+  wake.fit("reasoning", []);
+  wake.measure("reasoning", { ...usage, input_tokens: 4, cache_read_input_tokens: 800 });
+
+  pushStep(wake, "s2", 10);
+  wake.fit("reasoning", []);
+  assert.deepEqual(callIds(wake.view("reasoning")), ["s1", "s2"]);
+
+  pushStep(wake, "s3", 200);
+  wake.fit("reasoning", []);
+  assert.deepEqual(callIds(wake.view("reasoning")), ["s3"]);
+});
+
+test("a newest step that alone passes the ceiling fails the lane instead of going out", () => {
+  const wake = new Wake(ceilingLimits);
+  wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
+  pushStep(wake, "s1", 100);
+  pushStep(wake, "s2", 2_000);
+  assert.throws(() => wake.fit("reasoning", []), /over the 1000-token ceiling/);
 });
