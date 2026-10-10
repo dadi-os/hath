@@ -50,10 +50,10 @@ export const TRIMMED_TURN =
 
 /**
  * Characters per token when estimating what Hath has not seen measured: a step
- * since the lane's last call, and a lane's first call. Below English's ~4 so
- * tool output (JSON, trees) is not undercounted.
+ * since the lane's last call, and a lane's first call. Haiku 5.5 counted 2.37 on
+ * a real agent thread (2026-10-10); rounded down so estimates never undercount.
  */
-const CHARS_PER_TOKEN = 3;
+const CHARS_PER_TOKEN = 2.3;
 
 /** How much tool output a wake shows in full before it clears older results. */
 export type WakeLimits = {

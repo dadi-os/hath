@@ -436,12 +436,12 @@ test("past its ceiling a lane drops its oldest steps in one jump behind a trimme
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   for (let i = 1; i <= 6; i += 1) {
-    pushStep(wake, `s${i}`, 150);
+    pushStep(wake, `s${i}`, 140);
   }
   wake.fit("reasoning", []);
   assert.deepEqual(callIds(wake.view("reasoning")), ["s1", "s2", "s3", "s4", "s5", "s6"]);
 
-  pushStep(wake, "s7", 150);
+  pushStep(wake, "s7", 140);
   wake.fit("reasoning", []);
   const trimmed = wake.view("reasoning");
   assert.deepEqual(callIds(trimmed), ["s5", "s6", "s7"]);
@@ -449,7 +449,7 @@ test("past its ceiling a lane drops its oldest steps in one jump behind a trimme
   assert.equal(trimmed[2]!.role, "assistant");
   assert.deepEqual(callIds(wake.view("conversation")), ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
 
-  pushStep(wake, "s8", 150);
+  pushStep(wake, "s8", 140);
   wake.fit("reasoning", []);
   const next = wake.view("reasoning");
   assert.deepEqual(next.slice(0, trimmed.length), trimmed, "the trimmed prefix holds until the next trim");
