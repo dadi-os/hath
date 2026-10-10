@@ -27,6 +27,7 @@ import {
 import { findEmbeddedTool, findTool } from "../tools/registry.js";
 import {
   fail,
+  failOversizedAgentMessage,
   ok,
   requireAgent,
   requireActiveAgent,
@@ -396,6 +397,10 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
     return failWithoutAgentIdentity();
   }
   const input = dispatchInput.parse(raw);
+  const oversized = failOversizedAgentMessage(input.to_agent_id, input.content);
+  if (oversized !== null) {
+    return oversized;
+  }
   if (input.to_agent_id !== null) {
     await requireActiveAgent(ctx.db, input.to_agent_id);
   }

@@ -20,6 +20,7 @@ import { HathError } from "../errors.js";
 import {
   failWithoutAgentIdentity,
   fail,
+  failOversizedAgentMessage,
   ok,
   requireActiveAgent,
   requireToolGrant,
@@ -270,6 +271,10 @@ export async function runForwardAttachment(
     return failWithoutAgentIdentity();
   }
   const input = forwardAttachmentInput.parse(raw);
+  const oversized = failOversizedAgentMessage(input.to_agent_id, input.note);
+  if (oversized !== null) {
+    return oversized;
+  }
   if (input.to_agent_id !== null) {
     await requireActiveAgent(ctx.db, input.to_agent_id);
   }

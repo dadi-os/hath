@@ -105,6 +105,8 @@ Every system prompt starts with the shared system doctrine (`prompts/system.md`)
 
 Files are rows in `attachments`, each bound to the message that carries it (`message_id`) or unbound until one does. Text files (`text/*` and a few textual `application/*` types, strict UTF-8) keep their text in `text_content`; images keep their bytes plus a Dwar `/image/describe` description; other files keep their bytes. One file is at most 10 MB, one message carries at most 8. A message delivers once, however many files it carries.
 
+An agent-to-agent message (`dispatch_message`, a `forward_attachment` note, or a `schedule_message` body) is refused past 4,000 characters (`AGENT_MESSAGE_MAX_CHARS` in `src/tools/shared.ts`) with an error telling the sender to report findings in a few lines and attach raw output; messages to Ankur are not capped.
+
 Transcripts never hold file contents. Each file renders under its message as an `[Attachment <id> · name · type · size]` block: text up to 8,000 characters in full, longer text as a 500-character preview, an image as its description. Agents read text in pages with `read_attachment` (`offset`/`limit` in characters, `next_offset` null at the end) and pass files on by id: conversation's `forward_attachment`, or reasoning's `send_message` `attachment_ids`, which conversation forwards. Sending an unbound file binds it; sending a bound one copies the row, so every message owns its files and deleting it deletes them. `create_attachment` turns a host text file into an unbound attachment owned by the agent (needs the `terminal_read_file` grant; Nas `/fs/read`, line prefixes stripped). `GET /attachments/:id` returns the original file.
 
 ## Tools

@@ -61,6 +61,26 @@ export type ToolContext = {
   enqueueReasoning: (agentId: string) => void;
 };
 
+/**
+ * Longest message one agent may send another. Findings go in a few lines and raw
+ * output travels as an attachment; messages to Ankur are not capped.
+ */
+export const AGENT_MESSAGE_MAX_CHARS = 4000;
+
+/**
+ * failOversizedAgentMessage refuses `content` to another agent when it passes
+ * AGENT_MESSAGE_MAX_CHARS, telling the sender how to send it instead; null when it
+ * may go (any length to Ankur, `toAgentId` null).
+ */
+export function failOversizedAgentMessage(toAgentId: string | null, content: string): ToolExecResult | null {
+  if (toAgentId === null || content.length <= AGENT_MESSAGE_MAX_CHARS) {
+    return null;
+  }
+  return fail(
+    `This message to ${toAgentId} is ${content.length} characters; agent-to-agent messages stop at ${AGENT_MESSAGE_MAX_CHARS}. Send what you found in a few lines, and put raw output, logs, or long text in a file sent as an attachment (create_attachment, then forward_attachment).`,
+  );
+}
+
 /** A tool result the model sees as an error. */
 export function fail(message: string): ToolExecResult {
   return { content: message, isError: true, audit: {} };

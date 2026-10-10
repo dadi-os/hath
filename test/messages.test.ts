@@ -11,6 +11,7 @@ import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.
 import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus } from "../src/runtime/events.js";
 import { executeTool } from "../src/runtime/tools.js";
+import { AGENT_MESSAGE_MAX_CHARS } from "../src/tools/shared.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import {
   endTurn,
@@ -527,6 +528,43 @@ test("child may still send_message and dispatch_message to the user", async () =
     input: { to_agent_id: null, intent: "report to Ankur" },
   });
   assert.equal(rootSend.isError, false);
+  await runtime.waitUntilIdle();
+});
+
+test("an agent-to-agent message past the cap is refused and stores nothing; the same text to Ankur goes", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const senderId = await insertAgent(handle.db, { id: "cap-sender", systemPrompt: "sender" });
+  const peerId = await insertAgent(handle.db, { id: "cap-peer", systemPrompt: "peer" });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const dump = "grep hit\n".repeat(AGENT_MESSAGE_MAX_CHARS / 9 + 1);
+
+  const toPeer = await executeTool(runtime.toolContext(senderId, "conversation"), {
+    type: "tool_use",
+    id: "cap-dispatch-peer",
+    name: "dispatch_message",
+    input: { to_agent_id: peerId, content: dump },
+  });
+  assert.equal(toPeer.isError, true);
+  assert.match(toPeer.content, /attachment/);
+  const stored = await handle.db.select().from(messages).where(eq(messages.toAgentId, peerId));
+  assert.equal(stored.length, 0);
+
+  const toAnkur = await executeTool(runtime.toolContext(senderId, "conversation"), {
+    type: "tool_use",
+    id: "cap-dispatch-ankur",
+    name: "dispatch_message",
+    input: { to_agent_id: null, content: dump },
+  });
+  assert.equal(toAnkur.isError, false);
   await runtime.waitUntilIdle();
 });
 

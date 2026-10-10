@@ -3,7 +3,7 @@ import { z } from "zod";
 import { agentIdSchema } from "../../agent-id.js";
 import { scheduledMessages } from "../../db/schema.js";
 import { defineTool } from "../types.js";
-import { ok, fail, requireActiveAgent, failWithoutAgentIdentity } from "../shared.js";
+import { ok, fail, failOversizedAgentMessage, requireActiveAgent, failWithoutAgentIdentity } from "../shared.js";
 
 const input = z.object({
   to_agent_id: agentIdSchema,
@@ -46,6 +46,10 @@ export const scheduleMessage = defineTool({
     }
     if (parsed.to_agent_id === ctx.callerId) {
       return fail("an agent cannot schedule a message to itself");
+    }
+    const oversized = failOversizedAgentMessage(parsed.to_agent_id, parsed.content);
+    if (oversized !== null) {
+      return oversized;
     }
     await requireActiveAgent(ctx.db, parsed.to_agent_id);
     const runAt = new Date(parsed.run_at);
