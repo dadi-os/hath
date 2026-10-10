@@ -193,11 +193,12 @@ export async function assembleContext(opts: {
 }): Promise<AssembledContext> {
   const system = await composeSystem(opts.db, opts.serviceRoot, opts.agentId);
   const thread = opts.transcript.transcriptFor(opts.agentId);
-  const messages: DwarMessage[] = thread.map((row) => ({
+  const texts = thread.map((row) => transcriptText(row, opts.agentId));
+  const messages: DwarMessage[] = thread.map((row, i) => ({
     role: labelEntry(row, opts.agentId).role,
-    content: transcriptText(row, opts.agentId),
+    content: texts[i]!,
   }));
-  const sizes = messages.map((message) => String(message.content).length);
+  const sizes = texts.map((text) => text.length);
   const windowed = (window: TranscriptWindow) => messages.slice(windowStart(sizes, window));
 
   return {

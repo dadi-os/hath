@@ -429,6 +429,7 @@ function callIds(messages: DwarMessage[]): string[] {
   );
 }
 
+/** Wake limits with a 1000-token prompt ceiling that trims to 600, for tests about trimming. */
 const ceilingLimits = { ...roomyWakeLimits, promptCeilingTokens: 1_000, promptTrimTokens: 400 };
 
 test("past its ceiling a lane drops its oldest steps in one jump behind a trimmed note, and the other lane keeps them", () => {
