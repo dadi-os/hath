@@ -248,7 +248,17 @@ export class BrowserDriver {
     return map;
   }
 
+  /**
+   * The tab a tool call acts on, brought to the front: Nas streams the browser's display, so
+   * only the foreground tab is what Ankur sees while an agent works across several.
+   */
   async resolvePage(browserId: number, tabId?: string): Promise<{ page: Page; tabId: string }> {
+    const resolved = await this.findPage(browserId, tabId);
+    await resolved.page.bringToFront();
+    return resolved;
+  }
+
+  private async findPage(browserId: number, tabId?: string): Promise<{ page: Page; tabId: string }> {
     return this.withBrowser(browserId, async (browser) => {
       const pages = await this.pageMap(browser);
       if (tabId) {
@@ -311,7 +321,7 @@ export class BrowserDriver {
   }
 
   async closeTab(browserId: number, tabId: string): Promise<void> {
-    const { page } = await this.resolvePage(browserId, tabId);
+    const { page } = await this.findPage(browserId, tabId);
     await page.close();
   }
 
