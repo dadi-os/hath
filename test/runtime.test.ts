@@ -2027,6 +2027,48 @@ test("a failed conversation lane is reported to its current requester with a run
   assert.equal(report?.payload[RUNTIME_REPORT], "lane_failed");
 });
 
+test("the same lane failure on every wake is reported once until a run finishes cleanly", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const childId = await insertAgent(handle.db, { id: "repeat-failure-child", systemPrompt: "child" });
+  let broken = true;
+  let call = 0;
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({
+      converse: async (request) => {
+        if (request.system.includes(`Your agent id is ${childId}.`) && broken) {
+          call += 1;
+          throw new Error(`credit balance is too low, request_id req_${call}abc`);
+        }
+        return yieldTurn();
+      },
+    }),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const deps = { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation };
+  const reports = async () =>
+    (await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId))).filter((m) => m.content.startsWith("[runtime]")).length;
+
+  await deliverUserMessage(deps, childId, "status?");
+  await runtime.waitUntilIdle();
+  await deliverUserMessage(deps, childId, "status again?");
+  await runtime.waitUntilIdle();
+  assert.equal(await reports(), 1);
+
+  broken = false;
+  await deliverUserMessage(deps, childId, "back up?");
+  await runtime.waitUntilIdle();
+  broken = true;
+  await deliverUserMessage(deps, childId, "and now?");
+  await runtime.waitUntilIdle();
+  assert.equal(await reports(), 2);
+});
+
 test("queued steers for a missing agent end the reasoning wake instead of re-queuing it", { timeout: 10_000 }, async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const dwar = mockDwar({});

@@ -88,6 +88,12 @@ export function createRuntime(opts: {
 }): Runtime {
   const locks = new LaneLocks();
   const steer = new SteerQueue();
+  /**
+   * Per agent, the lane failure it last reported (request ids stripped), until one of its
+   * runs next finishes cleanly: the same failure on every wake during an outage is reported
+   * once, since each report wakes a requester that would fail the same way.
+   */
+  const reportedFailures = new Map<string, string>();
   const intents = new IntentQueue();
   const transcript = new TranscriptStore();
   const events = new EventBus(opts.log);
@@ -230,6 +236,7 @@ export function createRuntime(opts: {
         } else {
           await runConversationLoop(conversationDeps(agentId));
         }
+        reportedFailures.delete(agentId);
       } finally {
         events.emit({
           type: "lane_finished",
@@ -248,9 +255,15 @@ export function createRuntime(opts: {
         message,
         at: new Date().toISOString(),
       });
-      await reportLaneFailure(agentId, lane, message).catch((reportErr: unknown) => {
-        opts.log.error({ err: reportErr, agentId, lane }, `${lane} failure report failed`);
-      });
+      const failure = message.replace(/req_[A-Za-z0-9]+/g, "req");
+      if (reportedFailures.get(agentId) === failure) {
+        opts.log.warn({ code: "lane_failure_repeat", agentId, lane }, `${lane} lane failed again with the error already reported`);
+      } else {
+        reportedFailures.set(agentId, failure);
+        await reportLaneFailure(agentId, lane, message).catch((reportErr: unknown) => {
+          opts.log.error({ err: reportErr, agentId, lane }, `${lane} failure report failed`);
+        });
+      }
     } finally {
       release?.();
       if (reasoned && steer.hasItems(agentId)) {
