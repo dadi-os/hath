@@ -53,11 +53,18 @@ export const TRIMMED_TURN =
   "[trimmed] Earlier steps of this wake were dropped to keep the prompt small. get_logs has them; redo a step only if you still need its result.";
 
 /**
- * Characters per token when estimating what Hath has not seen measured: a step
- * since the lane's last call, and a lane's first call. Haiku 5.5 counted 2.37 on
- * a real agent thread (2026-10-10); rounded down so estimates never undercount.
+ * Characters per token of prose (messages, thinking) when estimating what Hath has
+ * not seen measured: a step since the lane's last call, and a lane's first call.
+ * Haiku 5.5 counted 2.37 on a real agent thread (2026-10-10), rounded down.
  */
-const CHARS_PER_TOKEN = 2.3;
+const PROSE_CHARS_PER_TOKEN = 2.3;
+
+/**
+ * Characters per token of data (tool results, tool inputs, tool schemas): JSON with
+ * ids and URLs packs denser than prose, about 1.8 on a 45k-character get_logs result
+ * (2026-10-11), rounded down so estimates never undercount.
+ */
+const DATA_CHARS_PER_TOKEN = 1.7;
 
 /** How much tool output a wake shows in full before it clears older results. */
 export type WakeLimits = {
@@ -218,11 +225,9 @@ export class Wake {
   fit(lane: Lane, tools: DwarTool[]): void {
     const base =
       this.baseTokens.get(lane) ??
-      estimateTokens(
-        this.system.length +
-          JSON.stringify(tools).length +
-          this.transcriptFor(lane).reduce((sum, message) => sum + messageChars(message), 0),
-      );
+      Math.ceil(this.system.length / PROSE_CHARS_PER_TOKEN) +
+        Math.ceil(JSON.stringify(tools).length / DATA_CHARS_PER_TOKEN) +
+        this.transcriptFor(lane).reduce((sum, message) => sum + messageTokens(message), 0);
     const visible = this.inView(lane);
     const after = visible.map(() => 0);
     for (let i = visible.length - 1; i >= 0; i -= 1) {
@@ -322,7 +327,7 @@ export class Wake {
         break;
       }
       this.oversized.add(result.id);
-      total -= estimateTokens(result.chars) - estimateTokens(OVERSIZED_RESULT.length);
+      total -= Math.ceil((result.chars - OVERSIZED_RESULT.length) / DATA_CHARS_PER_TOKEN);
     }
     return total;
   }
@@ -353,7 +358,7 @@ export class Wake {
     const own = turn.message.lane === undefined || turn.message.lane === lane;
     return own && turn.outputTokens !== undefined
       ? turn.outputTokens
-      : estimateTokens(messageChars(this.shown(index)));
+      : messageTokens(this.shown(index));
   }
 
   /**
@@ -433,29 +438,25 @@ function replaceResults(
   };
 }
 
-/** estimateTokens is roughly how many tokens `chars` characters of prompt cost. */
-function estimateTokens(chars: number): number {
-  return Math.ceil(chars / CHARS_PER_TOKEN);
-}
-
-/** messageChars is the length of every block of `message` a provider reads. */
-function messageChars(message: DwarMessage): number {
+/** messageTokens estimates what every block of `message` a provider reads costs, prose and data at their own rates. */
+function messageTokens(message: DwarMessage): number {
   if (typeof message.content === "string") {
-    return message.content.length;
+    return Math.ceil(message.content.length / PROSE_CHARS_PER_TOKEN);
   }
-  let total = 0;
+  let prose = 0;
+  let data = 0;
   for (const block of message.content) {
     if (block.type === "text") {
-      total += block.text.length;
+      prose += block.text.length;
     } else if (block.type === "thinking") {
-      total += block.thinking.length;
+      prose += block.thinking.length;
     } else if (block.type === "tool_use") {
-      total += JSON.stringify(block.input).length;
+      data += JSON.stringify(block.input).length;
     } else if (block.type === "tool_result") {
-      total += block.content.length;
+      data += block.content.length;
     }
   }
-  return total;
+  return Math.ceil(prose / PROSE_CHARS_PER_TOKEN) + Math.ceil(data / DATA_CHARS_PER_TOKEN);
 }
 
 /**
