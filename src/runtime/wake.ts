@@ -10,9 +10,11 @@
  *
  * Old tool results are dropped first: once the results still shown in full
  * pass a size budget, every result before the newest ones is replaced by a
- * short cleared note. Old turns go only when a lane's prompt would pass its
- * token ceiling: the oldest steps then leave that lane's view behind one
- * trimmed note. Both cuts only move forward and move in one jump, so the
+ * short cleared note. When a lane's prompt would pass its token ceiling, the
+ * thinking of every model turn before its newest leaves that lane's view first,
+ * since the calls and text it led to stay; only if that is not enough do the
+ * oldest steps leave behind one trimmed note. The cuts only move forward and
+ * move in one jump, so the
  * history stays byte-stable between cuts and the provider's cached prefix
  * survives every step but the one that cuts. A read of state
  * (a tab's tree, a page's text, a terminal's screen) is also replaced by a short
@@ -115,6 +117,8 @@ export class Wake {
   private readonly oversized = new Set<string>();
   /** Per lane, turns before this index are out of its view, behind TRIMMED_TURN. */
   private readonly trimmedThrough = new Map<Lane, number>();
+  /** Per lane, model turns before this index show without their thinking. */
+  private readonly unthoughtThrough = new Map<Lane, number>();
   /**
    * Per lane, its last call's measured prompt tokens less the estimated tokens of
    * the wake turns that call sent: the system, tools, doctrine and transcript.
@@ -208,14 +212,16 @@ export class Wake {
     );
     const trimmed: DwarMessage[] =
       (this.trimmedThrough.get(lane) ?? 0) > 0 ? [{ role: "user", content: TRIMMED_TURN }] : [];
-    const turns = this.inView(lane).map((index) => this.shown(index));
+    const turns = this.inView(lane).map((index) => this.shown(index, lane));
     return [...transcript, ...trimmed, ...turns];
   }
 
   /**
    * fit trims `lane`'s view before a call when its prompt would pass the token
-   * ceiling: the oldest steps leave the view until the prompt is promptTrimTokens
-   * under the ceiling, keeping at least the newest step. The prompt is the lane's
+   * ceiling: first the thinking of every model turn before the lane's newest goes,
+   * then, if the prompt still passes the ceiling, the oldest steps leave the view
+   * until it is promptTrimTokens under the ceiling, keeping at least the newest
+   * step. The prompt is the lane's
    * last measured prompt (see measure) plus the estimated turns added since; a
    * lane's first call estimates all of it from `tools` and the frozen text.
    * When the newest step alone still passes the ceiling, its largest tool results
@@ -228,6 +234,9 @@ export class Wake {
       Math.ceil(this.system.length / PROSE_CHARS_PER_TOKEN) +
         Math.ceil(JSON.stringify(tools).length / DATA_CHARS_PER_TOKEN) +
         this.transcriptFor(lane).reduce((sum, message) => sum + messageTokens(message), 0);
+    if (base + this.viewTokens(lane) > this.limits.promptCeilingTokens) {
+      this.dropThinking(lane);
+    }
     const visible = this.inView(lane);
     const after = visible.map(() => 0);
     for (let i = visible.length - 1; i >= 0; i -= 1) {
@@ -247,7 +256,7 @@ export class Wake {
       }
       let kept = base + (after[cut] ?? 0);
       if (kept > this.limits.promptCeilingTokens) {
-        kept = this.dropOversized(visible.slice(cut), kept);
+        kept = this.dropOversized(visible.slice(cut), kept, lane);
       }
       if (kept > this.limits.promptCeilingTokens) {
         throw new HathError(
@@ -258,10 +267,26 @@ export class Wake {
       }
       this.trimmedThrough.set(lane, visible[cut]!);
     }
-    this.sentTurnTokens.set(
-      lane,
-      this.inView(lane).reduce((sum, index) => sum + this.turnTokens(index, lane), 0),
-    );
+    this.sentTurnTokens.set(lane, this.viewTokens(lane));
+  }
+
+  /** viewTokens is the weight of every wake turn in `lane`'s view. */
+  private viewTokens(lane: Lane): number {
+    return this.inView(lane).reduce((sum, index) => sum + this.turnTokens(index, lane), 0);
+  }
+
+  /**
+   * dropThinking moves `lane`'s thinking cut to its newest model turn, whose thinking
+   * the provider needs to continue the tool loop.
+   */
+  private dropThinking(lane: Lane): void {
+    for (let i = this.turns.length - 1; i >= 0; i -= 1) {
+      const message = this.turns[i]!.message;
+      if (message.role === "assistant" && (message.lane === undefined || message.lane === lane)) {
+        this.unthoughtThrough.set(lane, i);
+        return;
+      }
+    }
   }
 
   /**
@@ -304,13 +329,14 @@ export class Wake {
   }
 
   /**
-   * dropOversized marks the largest tool results in turns `indices`, biggest first, as
-   * OVERSIZED_RESULT until a prompt of `tokens` fits the ceiling, and returns its new size.
+   * dropOversized marks the largest tool results in turns `indices` of `lane`'s view,
+   * biggest first, as OVERSIZED_RESULT until a prompt of `tokens` fits the ceiling, and
+   * returns its new size.
    */
-  private dropOversized(indices: number[], tokens: number): number {
+  private dropOversized(indices: number[], tokens: number, lane: Lane): number {
     const results: { id: string; chars: number }[] = [];
     for (const index of indices) {
-      const message = this.shown(index);
+      const message = this.shown(index, lane);
       if (typeof message.content === "string") {
         continue;
       }
@@ -332,9 +358,14 @@ export class Wake {
     return total;
   }
 
-  /** shown is turn `index` as lanes see it, cleared, superseded and oversized results swapped for their notes. */
-  private shown(index: number): DwarMessage {
-    const message = this.turns[index]!.message;
+  /**
+   * shown is turn `index` as `lane` sees it: thinking dropped behind its thinking cut,
+   * cleared, superseded and oversized results swapped for their notes.
+   */
+  private shown(index: number, lane: Lane): DwarMessage {
+    const message = this.unthought(index, lane)
+      ? withoutThinking(this.turns[index]!.message)
+      : this.turns[index]!.message;
     return index < this.clearedThrough
       ? replaceResults(message, () => CLEARED_RESULT)
       : replaceResults(message, (id) => this.resultNote(id));
@@ -348,17 +379,23 @@ export class Wake {
     return this.superseded.has(toolUseId) ? SUPERSEDED_RESULT : null;
   }
 
+  /** unthought is true when `lane` sees turn `index` with its thinking dropped. */
+  private unthought(index: number, lane: Lane): boolean {
+    return index < (this.unthoughtThrough.get(lane) ?? 0) && hasThinking(this.turns[index]!.message);
+  }
+
   /**
    * turnTokens is turn `index`'s weight in `lane`'s prompt: its provider count in the
-   * lane that wrote it (untagged turns are the router's own), otherwise estimated from
-   * its text, since Dwar shows another lane's turn as a shorter text rendering.
+   * lane that wrote it (untagged turns are the router's own) while it is replayed
+   * whole, otherwise estimated from its text, since Dwar shows another lane's turn as
+   * a shorter text rendering.
    */
   private turnTokens(index: number, lane: Lane): number {
     const turn = this.turns[index]!;
     const own = turn.message.lane === undefined || turn.message.lane === lane;
-    return own && turn.outputTokens !== undefined
+    return own && turn.outputTokens !== undefined && !this.unthought(index, lane)
       ? turn.outputTokens
-      : messageTokens(this.shown(index));
+      : messageTokens(this.shown(index, lane));
   }
 
   /**
@@ -435,6 +472,28 @@ function replaceResults(
       const replacement = note(block.tool_use_id);
       return replacement === null ? block : { ...block, content: replacement };
     }),
+  };
+}
+
+/** hasThinking is true when `message` carries a thinking block and something besides. */
+function hasThinking(message: DwarMessage): boolean {
+  return (
+    typeof message.content !== "string" &&
+    message.content.some((block) => block.type === "thinking" || block.type === "redacted_thinking") &&
+    message.content.some((block) => block.type !== "thinking" && block.type !== "redacted_thinking")
+  );
+}
+
+/** withoutThinking returns `message` with its thinking blocks removed. */
+function withoutThinking(message: DwarMessage): DwarMessage {
+  if (typeof message.content === "string") {
+    return message;
+  }
+  return {
+    ...message,
+    content: message.content.filter(
+      (block) => block.type !== "thinking" && block.type !== "redacted_thinking",
+    ),
   };
 }
 

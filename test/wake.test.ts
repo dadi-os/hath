@@ -473,6 +473,53 @@ test("past its ceiling a lane drops its oldest steps in one jump behind a trimme
   assert.deepEqual(next.slice(0, trimmed.length), trimmed, "the trimmed prefix holds until the next trim");
 });
 
+/** Push one reasoning step onto `wake` whose model turn thought `thought` characters and cost `outputTokens`. */
+function pushThoughtStep(wake: Wake, id: string, thought: number, outputTokens: number): void {
+  wake.push(
+    {
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "t".repeat(thought), signature: "sig" }, call("terminal_read", id)],
+        provider: "anthropic",
+        lane: "reasoning",
+      },
+      outputTokens,
+    },
+    { message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: `${id} `.padEnd(30, "x"), is_error: false }] } },
+  );
+}
+
+/** How many model turns in a view still carry thinking. */
+function thoughtTurns(messages: DwarMessage[]): number {
+  return messages.filter(
+    (message) => typeof message.content !== "string" && message.content.some((block) => block.type === "thinking"),
+  ).length;
+}
+
+test("past its ceiling a lane drops older thinking before any step, keeping the newest turn's", () => {
+  const wake = new Wake(ceilingLimits);
+  wake.begin("sys", frozen("[From: Ankur]\nrebuild the resume"), 1);
+  for (let i = 1; i <= 4; i += 1) {
+    pushThoughtStep(wake, `s${i}`, 200, 200);
+  }
+  wake.fit("reasoning", []);
+  assert.equal(thoughtTurns(wake.view("reasoning")), 4);
+
+  pushThoughtStep(wake, "s5", 200, 200);
+  wake.fit("reasoning", []);
+  const view = wake.view("reasoning");
+  assert.deepEqual(callIds(view), ["s1", "s2", "s3", "s4", "s5"]);
+  assert.equal(thoughtTurns(view), 1);
+  assert.equal((view.at(-2)!.content as DwarResponseBlock[])[0]!.type, "thinking");
+  assert.equal(thoughtTurns(wake.view("conversation")), 5);
+
+  pushThoughtStep(wake, "s6", 200, 200);
+  wake.fit("reasoning", []);
+  const next = wake.view("reasoning");
+  assert.deepEqual(next.slice(0, view.length - 2), view.slice(0, -2), "the thought-free prefix holds until the next cut");
+  assert.equal(thoughtTurns(next), 2);
+});
+
 test("a lane's measured prompt, not its estimate, decides when it trims", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
