@@ -211,11 +211,15 @@ export function createRuntime(opts: {
    * reasoning run that finished its loop queues a follow-up for steers that
    * arrived after its last drain; a run that failed, or found the agent missing
    * or retired, leaves them for the next wake instead of re-queuing itself forever.
+   * A reasoning run whose last turn wrote text without a send_message also queues a
+   * conversation run, so a result written as text instead of handed off still reaches
+   * the requester.
    * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
     let reasoned = false;
+    let unsentReport = false;
     try {
       release = await locks.acquire(agentId, lane, null);
       events.emit({
@@ -231,7 +235,7 @@ export function createRuntime(opts: {
           return;
         }
         if (lane === "reasoning") {
-          await runReasoningLoop(reasoningDeps(agentId));
+          unsentReport = await runReasoningLoop(reasoningDeps(agentId));
           reasoned = true;
         } else {
           await runConversationLoop(conversationDeps(agentId));
@@ -268,6 +272,9 @@ export function createRuntime(opts: {
       release?.();
       if (reasoned && steer.hasItems(agentId)) {
         enqueueReasoning(agentId);
+      }
+      if (unsentReport) {
+        enqueueConversation(agentId);
       }
       releaseWake();
     }

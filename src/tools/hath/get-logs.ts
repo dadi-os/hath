@@ -21,12 +21,18 @@ const MAX_STRING_CHARS = 2_000;
 /** Total serialized size of one result; rows past it are left for the next page. */
 const MAX_RESULT_CHARS = 40_000;
 
-/** clipStrings returns `value` with every string longer than {@link MAX_STRING_CHARS} cut, noting how much was dropped. */
+/**
+ * clipStrings returns `value` with every string longer than {@link MAX_STRING_CHARS} cut to
+ * its head and tail, noting how much of the middle was dropped: a command's result is at
+ * the end of its output, so a head-only cut hides exactly what a reader looks for.
+ */
 function clipStrings(value: unknown): unknown {
   if (typeof value === "string") {
-    return value.length > MAX_STRING_CHARS
-      ? `${value.slice(0, MAX_STRING_CHARS)}… [${value.length - MAX_STRING_CHARS} more chars]`
-      : value;
+    if (value.length <= MAX_STRING_CHARS) {
+      return value;
+    }
+    const half = MAX_STRING_CHARS / 2;
+    return `${value.slice(0, half)}… [${value.length - MAX_STRING_CHARS} chars dropped from the middle] …${value.slice(-half)}`;
   }
   if (Array.isArray(value)) {
     return value.map(clipStrings);

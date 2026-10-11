@@ -527,6 +527,37 @@ test("reasoning exit without send_message does not wake conversation", async () 
   assert.equal(dwar.conversationCalls.length, 0);
 });
 
+test("a reasoning run that ends on a written report without send_message wakes conversation to send it", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const callerId = await insertAgent(handle.db, { name: "text-reporter", systemPrompt: "report" });
+  const dwar = mockDwar({
+    reason: async () => ({
+      provider: "anthropic",
+      content: [
+        { type: "text", text: "Ingestion is done: six family facts saved." },
+        { type: "tool_use", id: "r-yield-text", name: "yield", input: {} },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    }),
+    converse: async () => yieldTurn("c-yield"),
+  });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar,
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    yaad: mockYaad(),
+    config,
+    log: silentLog,
+  });
+  runtime.enqueueReasoning(callerId);
+  await runtime.waitUntilIdle();
+  assert.equal(dwar.conversationCalls.length, 1);
+  assert.match(JSON.stringify(dwar.conversationCalls[0]!.messages), /six family facts saved/);
+});
+
 test("send_message wakes conversation once; reasoning exit does not double-wake", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, {
