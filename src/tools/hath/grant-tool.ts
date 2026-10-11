@@ -26,7 +26,7 @@ const input = z.object({
 export const grantTool = defineTool({
   name: "grant_tool",
   description:
-    "Give one of your direct children one or more tools in one call (the router's direct children are the root agents). Each usage explains when and why that specific agent should reach for that tool, which the child sees alongside the tool's own description; granting a tool it already holds replaces its usage. If any tool name is unknown nothing is granted. When you are unsure of exact registry names for a suite (chaavi_, browser_, terminal_, …), call list_tools first.",
+    "Give one of your direct children one or more tools in one call (the router's direct children are the root agents). You can grant any tool in the registry, whether or not you hold it yourself. Each usage explains when and why that specific agent should reach for that tool, which the child sees alongside the tool's own description; granting a tool it already holds replaces its usage. If any tool name is unknown nothing is granted. When you are unsure of exact registry names for a suite (chaavi_, browser_, terminal_, …), call list_tools first.",
   input,
   inputSchema: {
     type: "object",
