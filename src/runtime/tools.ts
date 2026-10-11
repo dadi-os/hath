@@ -389,7 +389,7 @@ async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecR
     attachmentIds,
   });
   ctx.enqueueConversation(ctx.callerId);
-  return ok({ handed_off: true });
+  return ok({ handed_off: true, sent: false, note: "Not delivered yet: your conversation lane sends it." });
 }
 
 async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {

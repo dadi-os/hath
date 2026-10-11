@@ -44,5 +44,5 @@ export function formatIntentTurn(intents: DispatchIntent[]): string {
         : "";
     return `to_agent_id: ${to}${files}\nintent:\n${item.intent}`;
   });
-  return `[From: your reasoning lane]\nYour reasoning lane asked you to send a message. Send it with dispatch_message, or forward_attachment with the composed note when the intent lists attachment_ids, unless you already sent that recipient the same thing this wake or a newer message makes it wrong: then send nothing for it.\n\n${parts.join("\n\n")}`;
+  return `[From: your reasoning lane]\nYour reasoning lane asked you to send a message. Nothing below has been delivered: its send_message only hands the message to you, and only your dispatch_message or forward_attachment delivers it. Send each one now, unless your own dispatch_message already sent that recipient the same thing this wake or a newer message makes it wrong.\n\n${parts.join("\n\n")}`;
 }

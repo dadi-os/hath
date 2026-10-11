@@ -280,11 +280,29 @@ test("a conversation intent stays in view while the lane keeps calling tools", a
     intents,
   });
 
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 4);
   for (const request of requests) {
     assert.equal(request.tool_choice, "auto");
     assert.ok(JSON.stringify(request.messages).includes("tell Ankur the profile URL"));
   }
+  assert.match(JSON.stringify(requests[3]!.messages), /1 of my hand-offs from this run still unsent/);
+});
+
+test("a delivered hand-off ends the run at the first yield, with no reminder", async () => {
+  const intents = new IntentQueue();
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [] });
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+
+  await runConversationLoop({
+    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return turn("anthropic", n === 1 ? [call("dispatch_message", "d1"), call("yield", "y1")] : [call("yield", `y${n}`)]);
+    }, requests),
+    intents,
+  });
+
+  assert.equal(requests.length, 1);
 });
 
 test("a wake lives while any run holds it and is dropped when the last releases", () => {
@@ -334,7 +352,7 @@ test("a queued conversation run makes no model call until something it can see j
 
   intents.append("agent-1", { toAgentId: null, intent: "tell Ankur it is done", attachmentIds: [] });
   await runConversationLoop(deps);
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 4, "the hand-off's yield without a send gets one reminder");
 });
 
 /** Both lanes' transcripts frozen as one user message of `content`. */
