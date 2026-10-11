@@ -17,9 +17,10 @@
  * move in one jump, so the
  * history stays byte-stable between cuts and the provider's cached prefix
  * survives every step but the one that cuts. A read of state
- * (a tab's tree, a page's text, a terminal's screen) is also replaced by a short
- * note when a newer read of the same state lands within a few turns of it; the
- * window keeps the cache rewrite that causes inside the provider's lookback.
+ * (a tab's tree, a page's text, a terminal's screen) that a newer read of the same
+ * state follows within a few turns is replaced by a short note at the next cut,
+ * never on its own: every cached prefix since the older read holds it whole, so
+ * replacing it mid-wake would rewrite all of them.
  *
  * A wake lasts while any lane run for the agent is queued or running, so a
  * steer from conversation reaches a reasoning run that still sees the steer's
@@ -113,6 +114,8 @@ export class Wake {
   private readonly latestState = new Map<string, { turn: number; toolUseId: string }>();
   /** tool_use_ids whose results a newer read of the same state replaced. */
   private readonly superseded = new Set<string>();
+  /** tool_use_ids a newer read of the same state followed, replaced at the next cut. */
+  private readonly pendingSuperseded = new Set<string>();
   /** tool_use_ids whose results were dropped because their step alone passed a prompt ceiling. */
   private readonly oversized = new Set<string>();
   /** Per lane, turns before this index are out of its view, behind TRIMMED_TURN. */
@@ -177,13 +180,13 @@ export class Wake {
 
   /**
    * supersede records the results of turn `index` as the newest read of their state
-   * keys, replacing the previous read of each key when it is within the window.
+   * keys, queuing the previous read of each key for replacement when it is within the window.
    */
   private supersede(index: number, states: Record<string, string>): void {
     for (const [toolUseId, key] of Object.entries(states)) {
       const previous = this.latestState.get(key);
       if (previous !== undefined && previous.turn >= index - this.limits.supersedeWindowTurns) {
-        this.superseded.add(previous.toolUseId);
+        this.pendingSuperseded.add(previous.toolUseId);
       }
       this.latestState.set(key, { turn: index, toolUseId });
     }
@@ -235,6 +238,7 @@ export class Wake {
         Math.ceil(JSON.stringify(tools).length / DATA_CHARS_PER_TOKEN) +
         this.transcriptFor(lane).reduce((sum, message) => sum + messageTokens(message), 0);
     if (base + this.viewTokens(lane) > this.limits.promptCeilingTokens) {
+      this.applySuperseded();
       this.dropThinking(lane);
     }
     const visible = this.inView(lane);
@@ -268,6 +272,14 @@ export class Wake {
       this.trimmedThrough.set(lane, visible[cut]!);
     }
     this.sentTurnTokens.set(lane, this.viewTokens(lane));
+  }
+
+  /** applySuperseded replaces every queued older read with its note, as part of a cut. */
+  private applySuperseded(): void {
+    for (const id of this.pendingSuperseded) {
+      this.superseded.add(id);
+    }
+    this.pendingSuperseded.clear();
   }
 
   /** viewTokens is the weight of every wake turn in `lane`'s view. */
@@ -415,22 +427,32 @@ export class Wake {
     return total;
   }
 
+  /** shownResultChars is the length of every tool result past the clearing cut, as shown. */
+  private shownResultChars(): number {
+    let shown = 0;
+    for (let i = this.clearedThrough; i < this.turns.length; i += 1) {
+      shown += this.resultChars(this.turns[i]!.message);
+    }
+    return shown;
+  }
+
   /** The wake turns `lane` may see, in order. */
   private visibleTo(lane: Lane): WakeTurn[] {
     return this.turns.filter((turn) => turn.only === undefined || turn.only === lane);
   }
 
   /**
-   * clearOldResults moves the cut when the results shown in full pass
-   * toolResultsMaxChars: walking back from the newest turn, it keeps results
-   * until the next turn would pass toolResultsKeptChars, and clears the rest.
+   * clearOldResults cuts when the results shown in full pass toolResultsMaxChars:
+   * first the queued older reads are replaced, and if that is not enough, walking
+   * back from the newest turn, it keeps results until the next turn would pass
+   * toolResultsKeptChars, and clears the rest.
    */
   private clearOldResults(): void {
-    let shown = 0;
-    for (let i = this.clearedThrough; i < this.turns.length; i += 1) {
-      shown += this.resultChars(this.turns[i]!.message);
+    if (this.shownResultChars() <= this.limits.toolResultsMaxChars) {
+      return;
     }
-    if (shown <= this.limits.toolResultsMaxChars) {
+    this.applySuperseded();
+    if (this.shownResultChars() <= this.limits.toolResultsMaxChars) {
       return;
     }
     let kept = 0;

@@ -24,9 +24,8 @@ tool_debounce_max_ms = 15000
 wake_tool_results_max_chars = 100000
 wake_tool_results_kept_chars = 40000
 # A newer read of the same page tree, page text, screenshot or terminal screen
-# replaces the older read only while the older sits within this many of the
-# newest wake turns: further back, the cache rewrite it causes falls outside
-# the provider's 20-position lookback and rewrites the whole wake.
+# marks the older read for replacement at the next cut (a clear, trim or thinking
+# drop) only while the older sits within this many of the newest wake turns.
 wake_supersede_window_turns = 8
 # At boot, a wake a restart cut short is reported to the agent's requester
 # only when its last step is this recent; older ones are stale and dropped.

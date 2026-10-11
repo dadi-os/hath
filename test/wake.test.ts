@@ -374,8 +374,8 @@ function pushRead(wake: Wake, id: string, state?: string, chars = 1_000): void {
   );
 }
 
-test("a newer read of the same state replaces the older one within the window; other states stay", () => {
-  const wake = new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 1_000_000, toolResultsKeptChars: 500_000, supersedeWindowTurns: 4 });
+test("a newer read of the same state replaces the older one within the window at the next cut, never before; other states stay", () => {
+  const wake = new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 1_000_000, toolResultsKeptChars: 500_000, supersedeWindowTurns: 4, promptCeilingTokens: 1_000, promptTrimTokens: 400 });
   wake.begin("sys", frozen("[From: Ankur]\ncheck the course page"), 1);
   pushRead(wake, "t1", "browser:1:tree:tab");
   pushRead(wake, "x1", "browser:1:text:https://a.example/");
@@ -384,8 +384,10 @@ test("a newer read of the same state replaces the older one within the window; o
   pushRead(wake, "s1");
   pushRead(wake, "s2");
   pushRead(wake, "x3", "browser:1:text:https://a.example/");
+  assert.ok(toolResults(wake.view("conversation")).every((result) => result !== SUPERSEDED_RESULT), "no replacement before a cut");
 
-  const results = toolResults(wake.view("reasoning"));
+  wake.fit("reasoning", []);
+  const results = toolResults(wake.view("conversation"));
   assert.equal(results[0], SUPERSEDED_RESULT);
   assert.ok(results[1]!.startsWith("x1 "), "a.example's text is too far back to replace");
   assert.ok(results[2]!.startsWith("t2 "));
@@ -393,14 +395,15 @@ test("a newer read of the same state replaces the older one within the window; o
   assert.ok(results.slice(4).every((result) => result !== SUPERSEDED_RESULT));
 });
 
-test("replaced reads stop counting toward the wake's clearing budget", () => {
+test("at the clearing budget the queued older reads are replaced first, and clearing waits while that is enough", () => {
   const wake = new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 3_000, toolResultsKeptChars: 1_500, supersedeWindowTurns: 8 });
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   for (let i = 1; i <= 5; i += 1) {
     pushRead(wake, `r${i}`, "terminal:t1");
   }
   const results = toolResults(wake.view("reasoning"));
-  assert.deepEqual(results.slice(0, 4), Array(4).fill(SUPERSEDED_RESULT));
+  assert.deepEqual(results.slice(0, 3), Array(3).fill(SUPERSEDED_RESULT), "r4 passed the budget: the reads queued by then were the cut");
+  assert.ok(results[3]!.startsWith("r4 "), "r4 was queued after that cut and waits for the next");
   assert.ok(results[4]!.startsWith("r5 "));
   assert.ok(!results.includes(CLEARED_RESULT));
 });
@@ -409,14 +412,14 @@ test("a tool result's state reaches the wake through the step loop", async () =>
   const requests: DwarChatRequest[] = [];
   let n = 0;
   await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+    ...stepDeps("reasoning", new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 800, toolResultsKeptChars: 400 }), () => {
       n += 1;
       return n <= 3
         ? turn("anthropic", [call("browser_accessibility_tree", `t${n}`)])
         : turn("anthropic", [call("yield", "y")]);
     }, requests),
     executeTool: async (use) => ({
-      content: `tree from ${use.id}`,
+      content: `tree from ${use.id}`.padEnd(300, "x"),
       isError: false,
       audit: {},
       state: "browser:1:tree:tab",
@@ -426,7 +429,7 @@ test("a tool result's state reaches the wake through the step loop", async () =>
   assert.deepEqual(toolResults(requests.at(-1)!.messages), [
     SUPERSEDED_RESULT,
     SUPERSEDED_RESULT,
-    "tree from t3",
+    "tree from t3".padEnd(300, "x"),
   ]);
 });
 
