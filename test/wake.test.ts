@@ -12,7 +12,7 @@ import { IntentQueue } from "../src/runtime/intents.js";
 import { runReasoningLoop } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
-import { CLEARED_RESULT, CONTINUE_TURN, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
+import { CLEARED_RESULT, CONTINUE_TURN, OVERSIZED_RESULT, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
 import { roomyWakeLimits } from "./helpers.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -477,4 +477,31 @@ test("a newest step that alone passes the ceiling fails the lane instead of goin
   pushStep(wake, "s1", 100);
   pushStep(wake, "s2", 2_000);
   assert.throws(() => wake.fit("reasoning", []), /over the 1000-token ceiling/);
+});
+
+test("a newest step whose results alone pass the ceiling drops its largest results, only as many as it must, instead of failing", () => {
+  const wake = new Wake(ceilingLimits);
+  wake.begin("sys", frozen("[From: Ankur]\nsearch my logs"), 1);
+  wake.push(
+    {
+      message: { role: "assistant", content: [call("get_logs", "g1"), call("get_logs", "g2"), call("recall_memory", "r1")], provider: "anthropic", lane: "reasoning" },
+      outputTokens: 50,
+    },
+    {
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "g1", content: "a".repeat(1_500), is_error: false },
+          { type: "tool_result", tool_use_id: "g2", content: "b".repeat(1_200), is_error: false },
+          { type: "tool_result", tool_use_id: "r1", content: "small recall", is_error: false },
+        ],
+      },
+    },
+  );
+  wake.fit("reasoning", []);
+  const results = toolResults(wake.view("reasoning"));
+  assert.equal(results[0], OVERSIZED_RESULT);
+  assert.equal(results[1], "b".repeat(1_200));
+  assert.equal(results[2], "small recall");
+  assert.equal(toolResults(wake.view("conversation"))[0], OVERSIZED_RESULT);
 });

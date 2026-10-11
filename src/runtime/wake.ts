@@ -44,6 +44,10 @@ export const CLEARED_RESULT =
 export const SUPERSEDED_RESULT =
   "[superseded] A newer read of the same page or terminal follows in this wake; use that one.";
 
+/** What a tool result reads as when its step alone would pass a lane's prompt ceiling. */
+export const OVERSIZED_RESULT =
+  "[too large] This result would have pushed the prompt past its token ceiling, so it was dropped. Call the tool again with a narrower query or a smaller limit.";
+
 /** The turn that stands in for the steps a lane's view trimmed to stay under its token ceiling. */
 export const TRIMMED_TURN =
   "[trimmed] Earlier steps of this wake were dropped to keep the prompt small. get_logs has them; redo a step only if you still need its result.";
@@ -100,6 +104,8 @@ export class Wake {
   private readonly latestState = new Map<string, { turn: number; toolUseId: string }>();
   /** tool_use_ids whose results a newer read of the same state replaced. */
   private readonly superseded = new Set<string>();
+  /** tool_use_ids whose results were dropped because their step alone passed a prompt ceiling. */
+  private readonly oversized = new Set<string>();
   /** Per lane, turns before this index are out of its view, behind TRIMMED_TURN. */
   private readonly trimmedThrough = new Map<Lane, number>();
   /**
@@ -205,7 +211,9 @@ export class Wake {
    * under the ceiling, keeping at least the newest step. The prompt is the lane's
    * last measured prompt (see measure) plus the estimated turns added since; a
    * lane's first call estimates all of it from `tools` and the frozen text.
-   * Throws when the newest step alone still passes the ceiling.
+   * When the newest step alone still passes the ceiling, its largest tool results
+   * read as OVERSIZED_RESULT for both lanes until it fits. Throws only when that
+   * is still not enough.
    */
   fit(lane: Lane, tools: DwarTool[]): void {
     const base =
@@ -232,7 +240,10 @@ export class Wake {
           }
         }
       }
-      const kept = base + (after[cut] ?? 0);
+      let kept = base + (after[cut] ?? 0);
+      if (kept > this.limits.promptCeilingTokens) {
+        kept = this.dropOversized(visible.slice(cut), kept);
+      }
       if (kept > this.limits.promptCeilingTokens) {
         throw new HathError(
           500,
@@ -287,12 +298,49 @@ export class Wake {
     return out;
   }
 
-  /** shown is turn `index` as lanes see it, cleared and superseded results swapped for their notes. */
+  /**
+   * dropOversized marks the largest tool results in turns `indices`, biggest first, as
+   * OVERSIZED_RESULT until a prompt of `tokens` fits the ceiling, and returns its new size.
+   */
+  private dropOversized(indices: number[], tokens: number): number {
+    const results: { id: string; chars: number }[] = [];
+    for (const index of indices) {
+      const message = this.shown(index);
+      if (typeof message.content === "string") {
+        continue;
+      }
+      for (const block of message.content) {
+        if (block.type === "tool_result" && block.content.length > OVERSIZED_RESULT.length) {
+          results.push({ id: block.tool_use_id, chars: block.content.length });
+        }
+      }
+    }
+    results.sort((a, b) => b.chars - a.chars);
+    let total = tokens;
+    for (const result of results) {
+      if (total <= this.limits.promptCeilingTokens) {
+        break;
+      }
+      this.oversized.add(result.id);
+      total -= estimateTokens(result.chars) - estimateTokens(OVERSIZED_RESULT.length);
+    }
+    return total;
+  }
+
+  /** shown is turn `index` as lanes see it, cleared, superseded and oversized results swapped for their notes. */
   private shown(index: number): DwarMessage {
     const message = this.turns[index]!.message;
     return index < this.clearedThrough
       ? replaceResults(message, () => CLEARED_RESULT)
-      : replaceResults(message, (id) => (this.superseded.has(id) ? SUPERSEDED_RESULT : null));
+      : replaceResults(message, (id) => this.resultNote(id));
+  }
+
+  /** resultNote is what a live tool result reads as instead of its content, or null to show it whole. */
+  private resultNote(toolUseId: string): string | null {
+    if (this.oversized.has(toolUseId)) {
+      return OVERSIZED_RESULT;
+    }
+    return this.superseded.has(toolUseId) ? SUPERSEDED_RESULT : null;
   }
 
   /**
@@ -309,8 +357,8 @@ export class Wake {
   }
 
   /**
-   * resultChars is the length every tool result in `message` is shown at, a superseded one
-   * as its note.
+   * resultChars is the length every tool result in `message` is shown at, a superseded or
+   * oversized one as its note.
    */
   private resultChars(message: DwarMessage): number {
     if (typeof message.content === "string") {
@@ -319,9 +367,7 @@ export class Wake {
     let total = 0;
     for (const block of message.content) {
       if (block.type === "tool_result") {
-        total += this.superseded.has(block.tool_use_id)
-          ? SUPERSEDED_RESULT.length
-          : block.content.length;
+        total += (this.resultNote(block.tool_use_id) ?? block.content).length;
       }
     }
     return total;

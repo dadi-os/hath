@@ -29,7 +29,9 @@ export class IntentQueue {
 }
 
 /**
- * The conversation-lane turn that asks the agent to send each queued intent:
+ * The conversation-lane turn that asks the agent to send each queued intent, labelled
+ * as coming from its own reasoning lane: Dwar merges it into the same user turn as
+ * any message that arrived with it, and unlabelled it reads as part of that message.
  * dispatch_message for a plain one, forward_attachment (with the note composed
  * from the intent) for one that carries attachments.
  */
@@ -42,5 +44,5 @@ export function formatIntentTurn(intents: DispatchIntent[]): string {
         : "";
     return `to_agent_id: ${to}${files}\nintent:\n${item.intent}`;
   });
-  return `Your reasoning lane asked you to send a message. Send it with dispatch_message, or forward_attachment with the composed note when the intent lists attachment_ids, unless you already sent that recipient the same thing this wake or a newer message makes it wrong: then send nothing for it.\n\n${parts.join("\n\n")}`;
+  return `[From: your reasoning lane]\nYour reasoning lane asked you to send a message. Send it with dispatch_message, or forward_attachment with the composed note when the intent lists attachment_ids, unless you already sent that recipient the same thing this wake or a newer message makes it wrong: then send nothing for it.\n\n${parts.join("\n\n")}`;
 }
