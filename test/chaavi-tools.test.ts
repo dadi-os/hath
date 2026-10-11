@@ -177,6 +177,81 @@ test("fill_login types username then password and never returns the password", a
   assert.equal(result.content.includes(password), false);
 });
 
+test("fill_login reports a failed password fill without the password or the driver's call log", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const workerId = await insertWorker(handle.db, {
+    name: "thread",
+    systemPrompt: "do the job",
+    tools: ["chaavi_fill_login"],
+  });
+  const password = "s3cret-pass";
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi({ getLogin: () => ({ username: "ada", password }) }),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const ctx = {
+    ...runtime.toolContext(workerId, "reasoning"),
+    browsers: {
+      type: async (_browserId: number, _tabId: string | undefined, _ref: string, text: string) => {
+        throw new Error(`locator.fill: Error: Element is not an <input>\nCall log:\n  - fill("${text}")`);
+      },
+    } as unknown as BrowserDriver,
+  };
+  const result = await executeTool(ctx, {
+    type: "tool_use",
+    id: "fl-leak",
+    name: "chaavi_fill_login",
+    input: { item_id: "item-login-1", browser_id: 10, password_ref: "e2" },
+  });
+  assert.equal(result.isError, true);
+  assert.equal(result.content.includes(password), false);
+  assert.equal(result.content.includes("Call log"), false);
+  assert.match(result.content, /password field e2 was not filled/);
+});
+
+test("fill_login fills a username-only sign-in page and presses Enter on it", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const workerId = await insertWorker(handle.db, {
+    name: "thread",
+    systemPrompt: "do the job",
+    tools: ["chaavi_fill_login"],
+  });
+  const typeCalls: Array<{ ref: string; text: string; submit?: boolean }> = [];
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi({ getLogin: () => ({ username: "ada", password: "s3cret-pass" }) }),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const ctx = {
+    ...runtime.toolContext(workerId, "reasoning"),
+    browsers: {
+      type: async (_browserId: number, tabId: string | undefined, ref: string, text: string, submit?: boolean) => {
+        typeCalls.push({ ref, text, ...(submit !== undefined ? { submit } : {}) });
+        return { tab_id: tabId ?? "t1" };
+      },
+    } as unknown as BrowserDriver,
+  };
+  const result = await executeTool(ctx, {
+    type: "tool_use",
+    id: "fl-user",
+    name: "chaavi_fill_login",
+    input: { item_id: "item-login-1", browser_id: 10, username_ref: "e1", submit: true },
+  });
+  assert.equal(result.isError, false);
+  assert.deepEqual(typeCalls, [{ ref: "e1", text: "ada", submit: true }]);
+});
+
 test("create_login stores a vault item and never returns the password", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {
