@@ -577,7 +577,15 @@ test("send_message wakes conversation once; reasoning exit does not double-wake"
       }
       return yieldTurn("r-yield");
     },
-    converse: async () => yieldTurn("c-yield"),
+    converse: async () => ({
+      provider: "anthropic",
+      content: [
+        { type: "tool_use", id: "c-dispatch", name: DISPATCH_MESSAGE, input: { to_agent_id: null, content: "hi" } },
+        { type: "tool_use", id: "c-yield", name: "yield", input: {} },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    }),
   });
   const runtime = createRuntime({
     db: handle.db,
