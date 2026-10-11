@@ -1797,7 +1797,7 @@ test("get_logs searches, clips long strings, and pages back with next_before", a
 
   const page = await read({ event: "tool_result" });
   assert.ok(page.logs.length > 0 && page.logs.length < 30);
-  assert.match(page.logs[0]?.payload.content ?? "", /\[8000 more chars\]$/);
+  assert.match(page.logs[0]?.payload.content ?? "", /^x{1000}… \[8000 chars dropped from the middle\] …x{1000}$/);
   assert.ok(JSON.stringify(page.logs).length <= 40_000);
   assert.ok(page.next_before !== null);
 
