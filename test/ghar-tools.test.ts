@@ -61,12 +61,9 @@ test("list_devices passes filters through to the Ghar client", async () => {
           node_id: "1",
           endpoint: 1,
           name: "Hall bulb",
-          kind: "light",
-          device_types: [0x0101],
-          bridge_name: "Hue Bridge",
           room: { id: randomUUID(), name: "hall" },
           tags: [{ id: randomUUID(), name: "lighting" }],
-          capabilities: [{ capability: "level", config: { min: 0, max: 100 } }],
+          capabilities: [{ capability: "dimmable", config: {} }],
           online: true,
           last_seen_at: "2026-09-08T12:00:00.000Z",
           vendor_name: null,
@@ -90,17 +87,15 @@ test("list_devices passes filters through to the Ghar client", async () => {
     type: "tool_use",
     id: "ld1",
     name: "ghar_list_devices",
-    input: { room: "hall", tag: "lighting", capability: "level", kind: "light" },
+    input: { room: "hall", tag: "lighting", capability: "dimmable" },
   });
   assert.equal(result.isError, false);
   assert.deepEqual(ghar.listDevicesCalls, [
-    { room: "hall", tag: "lighting", capability: "level", kind: "light" },
+    { room: "hall", tag: "lighting", capability: "dimmable" },
   ]);
   const body = JSON.parse(result.content);
   assert.equal(body.devices[0].id, deviceId);
-  assert.equal(body.devices[0].kind, "light");
-  assert.equal(body.devices[0].bridge_name, "Hue Bridge");
-  assert.equal(body.devices[0].capabilities[0].capability, "level");
+  assert.equal(body.devices[0].capabilities[0].capability, "dimmable");
 });
 
 test("control_device attributes cause to the calling agent, not the parent", async () => {
@@ -138,8 +133,7 @@ test("control_device attributes cause to the calling agent, not the parent", asy
     name: "ghar_control_device",
     input: {
       device_id: deviceId,
-      capability: "level",
-      command: "move_to",
+      capability: "dimmable",
       params: { level: 40 },
     },
   });
@@ -147,8 +141,7 @@ test("control_device attributes cause to the calling agent, not the parent", asy
   assert.equal(ghar.commandCalls.length, 1);
   const call = ghar.commandCalls[0]!;
   assert.equal(call.deviceId, deviceId);
-  assert.equal(call.body.capability, "level");
-  assert.equal(call.body.command, "move_to");
+  assert.equal(call.body.capability, "dimmable");
   assert.deepEqual(call.body.params, { level: 40 });
   assert.equal(call.body.cause, "agent");
   assert.equal(call.body.cause_ref, childId);
@@ -175,8 +168,8 @@ test("control_device cause_ref distinguishes router and user when callerId is nu
     name: "ghar_control_device",
     input: {
       device_id: deviceId,
-      capability: "on_off",
-      command: "on",
+      capability: "switchable",
+      params: { state: "on" },
     },
   });
   assert.equal(asDadi.isError, false);
@@ -188,8 +181,8 @@ test("control_device cause_ref distinguishes router and user when callerId is nu
     name: "ghar_control_device",
     input: {
       device_id: deviceId,
-      capability: "on_off",
-      command: "off",
+      capability: "switchable",
+      params: { state: "off" },
     },
   });
   assert.equal(asUser.isError, false);
@@ -252,7 +245,7 @@ test("capability_unsupported and device_unreachable stay distinguishable", async
         throw new HathError(
           422,
           "capability_unsupported",
-          "device does not support capability level",
+          "device does not support capability dimmable",
         );
       }
       throw new HathError(504, "device_unreachable", "command timed out after 5000ms");
@@ -272,7 +265,7 @@ test("capability_unsupported and device_unreachable stay distinguishable", async
     type: "tool_use",
     id: "cd2",
     name: "ghar_control_device",
-    input: { device_id: deviceId, capability: "level", command: "move_to", params: { level: 10 } },
+    input: { device_id: deviceId, capability: "dimmable", params: { level: 10 } },
   });
   assert.equal(unsupported.isError, true);
   assert.match(unsupported.content, /^capability_unsupported:/);
@@ -282,7 +275,7 @@ test("capability_unsupported and device_unreachable stay distinguishable", async
     type: "tool_use",
     id: "cd3",
     name: "ghar_control_device",
-    input: { device_id: deviceId, capability: "level", command: "move_to", params: { level: 10 } },
+    input: { device_id: deviceId, capability: "dimmable", params: { level: 10 } },
   });
   assert.equal(unreachable.isError, true);
   assert.match(unreachable.content, /^device_unreachable:/);

@@ -6,81 +6,15 @@ import type { Config } from "../config.js";
 import { GHAR_BASE_URL } from "../constants.js";
 import { HathError } from "../errors.js";
 
-/** Ghar capability names, as Ghar's capability table lists them. */
-export const GHAR_CAPABILITIES = [
-  "on_off",
-  "level",
-  "color",
-  "cover",
-  "fan",
-  "thermostat",
-  "lock",
+const capability = z.enum([
+  "switchable",
+  "dimmable",
+  "colorable",
   "sensor",
-  "button",
-  "alarm",
-  "power_source",
-  "energy",
-  "valve",
-  "rvc",
-  "appliance",
-  "mode",
-  "temperature_control",
+  "lockable",
   "media",
-  "camera",
-] as const;
-
-/** Ghar device kinds, from each endpoint's Matter device type. */
-export const GHAR_KINDS = [
-  "light",
-  "plug",
-  "switch",
-  "cover",
-  "fan",
-  "air_purifier",
   "thermostat",
-  "air_conditioner",
-  "heat_pump",
-  "water_heater",
-  "lock",
-  "contact",
-  "occupancy",
-  "light_sensor",
-  "temperature",
-  "humidity",
-  "pressure",
-  "flow",
-  "leak",
-  "freeze",
-  "rain",
-  "air_quality",
-  "smoke_alarm",
-  "energy_meter",
-  "solar",
-  "battery_storage",
-  "ev_charger",
-  "valve",
-  "irrigation",
-  "pump",
-  "robot_vacuum",
-  "washer",
-  "dryer",
-  "dishwasher",
-  "refrigerator",
-  "cabinet",
-  "oven",
-  "cooktop",
-  "microwave",
-  "extractor_hood",
-  "speaker",
-  "tv",
-  "camera",
-  "doorbell",
-  "bridge",
-  "other",
-] as const;
-
-const capability = z.enum(GHAR_CAPABILITIES);
-const kind = z.enum(GHAR_KINDS);
+]);
 
 const attributeStateSchema = z
   .object({
@@ -95,9 +29,6 @@ const deviceSchema = z
     node_id: z.string(),
     endpoint: z.number().int(),
     name: z.string(),
-    kind,
-    device_types: z.array(z.number().int()),
-    bridge_name: z.string().nullable(),
     room: z.object({ id: z.string().uuid(), name: z.string() }).passthrough(),
     tags: z.array(z.object({ id: z.string().uuid(), name: z.string() }).passthrough()),
     capabilities: z.array(
@@ -149,7 +80,6 @@ const eventsResponseSchema = z
   .passthrough();
 
 export type GharCapability = z.infer<typeof capability>;
-export type GharKind = z.infer<typeof kind>;
 export type GharDevice = z.infer<typeof deviceSchema>;
 export type GharAttributeState = z.infer<typeof attributeStateSchema>;
 export type GharEvent = z.infer<typeof eventSchema>;
@@ -158,13 +88,11 @@ export type ListDevicesRequest = {
   room?: string;
   tag?: string;
   capability?: GharCapability;
-  kind?: GharKind;
 };
 
 export type CommandRequest = {
   capability: GharCapability;
-  command: string;
-  params?: Record<string, unknown>;
+  params: Record<string, unknown>;
   cause?: "agent" | "user";
   cause_ref?: string;
 };
@@ -309,7 +237,6 @@ function mapGharError(err: unknown): HathError {
     const { type, message } = gharErrorParts(err.response.data);
     if (
       type === "capability_unsupported" ||
-      type === "command_rejected" ||
       type === "device_unreachable" ||
       type === "commissioning_failed" ||
       type === "conflict" ||
