@@ -8,13 +8,17 @@ import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
 import type { DwarClient } from "../src/dwar/client.js";
 import type { WakeLimits } from "../src/runtime/wake.js";
 import type {
+  ChaaviCard,
   ChaaviClient,
   ChaaviItem,
   ChaaviLogin,
   ChaaviPasskey,
+  ChaaviSavedSecret,
   ChaaviSecret,
   CreateLoginRequest,
   ListItemsRequest,
+  RevealRequest,
+  SaveSecretRequest,
 } from "../src/chaavi/client.js";
 import type {
   CommandRequest,
@@ -299,41 +303,65 @@ export function mockGhar(opts: {
   };
 }
 
-/** Test double for ChaaviClient. Unstubbed getLogin/getPasskey/getSecret throw `not_found`. */
+/** Test double for ChaaviClient. Unstubbed reads that decrypt throw `not_found`. */
 export function mockChaavi(
   opts: {
     listItems?: (
       query?: ListItemsRequest,
     ) => Promise<{ items: ChaaviItem[] }> | { items: ChaaviItem[] };
+    getItem?: (itemId: string) => Promise<ChaaviItem> | ChaaviItem;
     createLogin?: (input: CreateLoginRequest) => Promise<ChaaviItem> | ChaaviItem;
+    reveal?: (itemId: string, request: RevealRequest) => Promise<ChaaviSecret> | ChaaviSecret;
     getLogin?: (itemId: string) => Promise<ChaaviLogin> | ChaaviLogin;
+    getCard?: (itemId: string) => Promise<ChaaviCard> | ChaaviCard;
     getPasskey?: (itemId: string) => Promise<ChaaviPasskey> | ChaaviPasskey;
-    getSecret?: (itemId: string) => Promise<ChaaviSecret> | ChaaviSecret;
+    saveSecret?: (name: string, input: SaveSecretRequest) => Promise<ChaaviSavedSecret> | ChaaviSavedSecret;
+    revealSecret?: (name: string) => Promise<ChaaviSecret> | ChaaviSecret;
   } = {},
 ): ChaaviClient & {
   listItemsCalls: Array<ListItemsRequest | undefined>;
+  getItemCalls: string[];
   createLoginCalls: CreateLoginRequest[];
+  revealCalls: Array<{ itemId: string; request: RevealRequest }>;
   getLoginCalls: string[];
+  getCardCalls: string[];
   getPasskeyCalls: string[];
-  getSecretCalls: string[];
+  saveSecretCalls: Array<{ name: string; input: SaveSecretRequest }>;
+  revealSecretCalls: string[];
 } {
   const listItemsCalls: Array<ListItemsRequest | undefined> = [];
+  const getItemCalls: string[] = [];
   const createLoginCalls: CreateLoginRequest[] = [];
+  const revealCalls: Array<{ itemId: string; request: RevealRequest }> = [];
   const getLoginCalls: string[] = [];
+  const getCardCalls: string[] = [];
   const getPasskeyCalls: string[] = [];
-  const getSecretCalls: string[] = [];
+  const saveSecretCalls: Array<{ name: string; input: SaveSecretRequest }> = [];
+  const revealSecretCalls: string[] = [];
+  const notFound = (what: string) => new HathError(404, "not_found", `${what} not found`);
   return {
     listItemsCalls,
+    getItemCalls,
     createLoginCalls,
+    revealCalls,
     getLoginCalls,
+    getCardCalls,
     getPasskeyCalls,
-    getSecretCalls,
+    saveSecretCalls,
+    revealSecretCalls,
     async listItems(query) {
       listItemsCalls.push(query);
       if (opts.listItems) {
         return opts.listItems(query);
       }
       return { items: [] };
+    },
+    async getItem(itemId) {
+      getItemCalls.push(itemId);
+      if (opts.getItem) {
+        return opts.getItem(itemId);
+      }
+      throw notFound(`item ${itemId}`);
     },
     async createLogin(input) {
       createLoginCalls.push(input);
@@ -342,28 +370,60 @@ export function mockChaavi(
       }
       throw new HathError(500, "chaavi", "createLogin is not stubbed");
     },
+    async reveal(itemId, request) {
+      revealCalls.push({ itemId, request });
+      if (opts.reveal) {
+        return opts.reveal(itemId, request);
+      }
+      throw notFound(`item ${itemId}`);
+    },
     async getLogin(itemId) {
       getLoginCalls.push(itemId);
       if (opts.getLogin) {
         return opts.getLogin(itemId);
       }
-      throw new HathError(404, "not_found", `item ${itemId} not found`);
+      throw notFound(`item ${itemId}`);
+    },
+    async getCard(itemId) {
+      getCardCalls.push(itemId);
+      if (opts.getCard) {
+        return opts.getCard(itemId);
+      }
+      throw notFound(`item ${itemId}`);
     },
     async getPasskey(itemId) {
       getPasskeyCalls.push(itemId);
       if (opts.getPasskey) {
         return opts.getPasskey(itemId);
       }
-      throw new HathError(404, "not_found", `item ${itemId} not found`);
+      throw notFound(`item ${itemId}`);
     },
-    async getSecret(itemId) {
-      getSecretCalls.push(itemId);
-      if (opts.getSecret) {
-        return opts.getSecret(itemId);
+    async saveSecret(name, input) {
+      saveSecretCalls.push({ name, input });
+      if (opts.saveSecret) {
+        return opts.saveSecret(name, input);
       }
-      throw new HathError(404, "not_found", `item ${itemId} not found`);
+      throw new HathError(500, "chaavi", "saveSecret is not stubbed");
+    },
+    async revealSecret(name) {
+      revealSecretCalls.push(name);
+      if (opts.revealSecret) {
+        return opts.revealSecret(name);
+      }
+      throw notFound(`secure note ${name}`);
     },
   };
+}
+
+/** A Chaavi item for tool tests: a login unless `type` and its object say otherwise. */
+export function chaaviItem(overrides: Partial<ChaaviItem> & { id: string; name: string }): ChaaviItem {
+  return {
+    type: "login",
+    folderId: null,
+    hasNotes: false,
+    fields: [],
+    ...overrides,
+  } as ChaaviItem;
 }
 
 export function mockNas(opts: {

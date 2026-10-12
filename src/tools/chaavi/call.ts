@@ -20,3 +20,28 @@ export async function chaaviToolCall<T>(
     throw err;
   }
 }
+
+/**
+ * fillHidden runs a browser fill of a vault value at `ref`. A failure reports only the first
+ * line of the driver's error with every given value scrubbed to `[label]`: Playwright's call
+ * log for a fill can carry the value.
+ */
+export async function fillHidden(
+  fill: () => Promise<unknown>,
+  label: string,
+  ref: string,
+  values: readonly string[],
+): Promise<void> {
+  try {
+    await fill();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    let firstLine = message.split("\n")[0]!;
+    for (const value of values) {
+      if (value.length > 0) {
+        firstLine = firstLine.split(value).join(`[${label}]`);
+      }
+    }
+    throw new HathError(422, "browser", `${label} field ${ref} was not filled: ${firstLine}`);
+  }
+}

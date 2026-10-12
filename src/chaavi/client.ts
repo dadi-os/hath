@@ -1,4 +1,4 @@
-/** HTTP client for Chaavi vault lookup, login create, and credential inject. */
+/** HTTP client for Chaavi: vault lookup, login and secret saves, and decrypt for fills. */
 
 import axios, { type AxiosInstance } from "axios";
 import { z } from "zod";
@@ -6,16 +6,47 @@ import type { Config } from "../config.js";
 import { CHAAVI_BASE_URL } from "../constants.js";
 import { HathError } from "../errors.js";
 
-const kind = z.enum(["login", "note", "secret"]);
+const itemType = z.enum(["login", "note", "card", "identity", "sshKey"]);
+
+const fieldSchema = z.discriminatedUnion("type", [
+  z.object({ name: z.string(), type: z.literal("text"), value: z.string() }),
+  z.object({ name: z.string(), type: z.literal("hidden"), hasValue: z.boolean() }),
+  z.object({ name: z.string(), type: z.literal("boolean"), value: z.boolean() }),
+  z.object({ name: z.string(), type: z.literal("linked"), linkedTo: z.string() }),
+]);
+
+const optionalText = z.string().nullable();
 
 const itemSchema = z
   .object({
     id: z.string().min(1),
     name: z.string(),
-    kind,
-    username: z.string().nullable(),
-    uris: z.array(z.string()),
-    hasPasskey: z.boolean(),
+    type: itemType,
+    folderId: z.string().nullable(),
+    hasNotes: z.boolean(),
+    fields: z.array(fieldSchema),
+    login: z
+      .object({
+        username: optionalText,
+        uris: z.array(z.object({ uri: z.string() }).passthrough()),
+        passkeys: z.array(z.object({ rpId: z.string() }).passthrough()),
+      })
+      .passthrough()
+      .optional(),
+    card: z.object({ brand: optionalText }).passthrough().optional(),
+    identity: z
+      .object({
+        firstName: optionalText,
+        lastName: optionalText,
+        address1: optionalText,
+        address2: optionalText,
+        city: optionalText,
+        state: optionalText,
+        postalCode: optionalText,
+        country: optionalText,
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
@@ -32,9 +63,27 @@ const loginResponseSchema = z
   })
   .passthrough();
 
+const cardResponseSchema = z
+  .object({
+    cardholderName: optionalText,
+    brand: optionalText,
+    number: z.string().min(1),
+    expMonth: optionalText,
+    expYear: optionalText,
+    code: optionalText,
+  })
+  .passthrough();
+
 const secretResponseSchema = z
   .object({
-    value: z.string(),
+    value: z.string().min(1),
+  })
+  .passthrough();
+
+const savedSecretSchema = z
+  .object({
+    item: itemSchema,
+    created: z.boolean(),
   })
   .passthrough();
 
@@ -49,33 +98,50 @@ const passkeyResponseSchema = z
   })
   .passthrough();
 
-export type ChaaviKind = z.infer<typeof kind>;
+export type ChaaviItemType = z.infer<typeof itemType>;
 export type ChaaviItem = z.infer<typeof itemSchema>;
 export type ChaaviLogin = z.infer<typeof loginResponseSchema>;
+export type ChaaviCard = z.infer<typeof cardResponseSchema>;
 export type ChaaviSecret = z.infer<typeof secretResponseSchema>;
+export type ChaaviSavedSecret = z.infer<typeof savedSecretSchema>;
 export type ChaaviPasskey = z.infer<typeof passkeyResponseSchema>;
 
 export type ListItemsRequest = {
   q?: string;
   uri?: string;
-  kind?: ChaaviKind;
+  type?: ChaaviItemType;
 };
 
+/** A new login; Chaavi generates the password when `password` is omitted. */
 export type CreateLoginRequest = {
   name: string;
   username: string;
   uri?: string;
+  password?: string;
   length?: number;
   special?: boolean;
+};
+
+/** One secret to decrypt from an item (`POST /v1/items/:id/reveal`). */
+export type RevealRequest = { field: "notes" | "password" | "number" | "code" } | { field: "custom"; name: string };
+
+/** Value and optional notes for `PUT /v1/secrets/:name`. */
+export type SaveSecretRequest = {
+  value: string;
+  notes?: string;
 };
 
 /** Chaavi surface used by agent tools. Secrets stay off the model-visible path. */
 export type ChaaviClient = {
   listItems: (query?: ListItemsRequest) => Promise<{ items: ChaaviItem[] }>;
+  getItem: (itemId: string) => Promise<ChaaviItem>;
   createLogin: (input: CreateLoginRequest) => Promise<ChaaviItem>;
+  reveal: (itemId: string, request: RevealRequest) => Promise<ChaaviSecret>;
   getLogin: (itemId: string) => Promise<ChaaviLogin>;
+  getCard: (itemId: string) => Promise<ChaaviCard>;
   getPasskey: (itemId: string) => Promise<ChaaviPasskey>;
-  getSecret: (itemId: string) => Promise<ChaaviSecret>;
+  saveSecret: (name: string, input: SaveSecretRequest) => Promise<ChaaviSavedSecret>;
+  revealSecret: (name: string) => Promise<ChaaviSecret>;
 };
 
 /** Build a retrying axios client pointed at `CHAAVI_BASE_URL`. */
@@ -102,14 +168,35 @@ export function createChaaviClient(config: Config): ChaaviClient {
     return parseResponse(schema, data);
   }
 
+  async function put<T>(path: string, schema: z.ZodType<T>, body: unknown): Promise<T> {
+    const data = await withRetry(config, () => http.put(path, body).then((res) => res.data));
+    return parseResponse(schema, data);
+  }
+
+  const item = (itemId: string) => `/v1/items/${encodeURIComponent(itemId)}`;
+  const secret = (name: string) => `/v1/secrets/${encodeURIComponent(name)}`;
+
   return {
     listItems: (query = {}) => get("/v1/items", itemsResponseSchema, omitUndefined(query)),
-    createLogin: (input) => post("/v1/logins", itemSchema, omitUndefined(input)),
-    getLogin: (itemId) => post(`/v1/items/${encodeURIComponent(itemId)}/login`, loginResponseSchema),
-    getPasskey: (itemId) =>
-      post(`/v1/items/${encodeURIComponent(itemId)}/passkey`, passkeyResponseSchema),
-    getSecret: (itemId) =>
-      post(`/v1/items/${encodeURIComponent(itemId)}/secret`, secretResponseSchema),
+    getItem: (itemId) => get(item(itemId), itemSchema),
+    createLogin: (input) =>
+      post("/v1/items", itemSchema, {
+        type: "login",
+        name: input.name,
+        login: omitUndefined({
+          username: input.username,
+          password: input.password,
+          uris: input.uri !== undefined ? [{ uri: input.uri }] : undefined,
+          length: input.length,
+          special: input.special,
+        }),
+      }),
+    reveal: (itemId, request) => post(`${item(itemId)}/reveal`, secretResponseSchema, request),
+    getLogin: (itemId) => post(`${item(itemId)}/login`, loginResponseSchema),
+    getCard: (itemId) => post(`${item(itemId)}/card`, cardResponseSchema),
+    getPasskey: (itemId) => post(`${item(itemId)}/passkey`, passkeyResponseSchema),
+    saveSecret: (name, input) => put(secret(name), savedSecretSchema, omitUndefined(input)),
+    revealSecret: (name) => post(`${secret(name)}/reveal`, secretResponseSchema),
   };
 }
 
@@ -167,6 +254,7 @@ const PASSTHROUGH_TYPES = new Set([
   "vault_unreachable",
   "not_found",
   "invalid_request",
+  "conflict",
   "internal_error",
 ]);
 

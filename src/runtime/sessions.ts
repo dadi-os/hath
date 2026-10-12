@@ -44,7 +44,9 @@ export class HostSessions {
     if (
       toolName.startsWith("browser_") ||
       toolName === "chaavi_fill_login" ||
-      toolName === "chaavi_fill_passkey"
+      toolName === "chaavi_fill_passkey" ||
+      toolName === "chaavi_fill_card" ||
+      (toolName === "chaavi_fill_secret" && numberField(input, "browser_id") !== null)
     ) {
       const id = numberField(input, "browser_id");
       if (id !== null) {

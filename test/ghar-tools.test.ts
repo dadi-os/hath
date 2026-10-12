@@ -41,7 +41,7 @@ test("Ghar tools are registered", async () => {
   for (const name of GHAR_TOOLS) {
     assert.equal(findTool(name)?.name, name);
   }
-  assert.equal(allTools().length, 52);
+  assert.equal(allTools().length, 55);
   await assert.doesNotReject(() => syncTools(handle.db));
 });
 

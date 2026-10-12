@@ -550,6 +550,32 @@ export class BrowserDriver {
   }
 
   /**
+   * Put one value, given in the ways a form may spell it, into the field at `ref`. A
+   * `<select>` takes the first option whose value or label equals any of `forms`
+   * (Playwright's single-select rule); any other field is cleared and filled with `forms[0]`.
+   */
+  async fillField(
+    browserId: number,
+    tabId: string | undefined,
+    ref: string,
+    forms: readonly string[],
+  ): Promise<{ tab_id: string }> {
+    const [first] = forms;
+    if (first === undefined) {
+      throw new HathError(422, "invalid_request", `no value to fill at ${ref}`);
+    }
+    const resolved = await this.resolvePage(browserId, tabId);
+    const locator = await this.locatorForRef(resolved.page, ref);
+    const isSelect = await locator.evaluate((el) => el instanceof HTMLSelectElement);
+    if (isSelect) {
+      await locator.selectOption(forms.flatMap((form) => [{ value: form }, { label: form }]));
+    } else {
+      await locator.fill(first);
+    }
+    return { tab_id: resolved.tabId };
+  }
+
+  /**
    * Attach host files to a file input. Chromium runs on the Nas host and reads `paths` itself
    * over CDP, so they are absolute host paths, never paths inside Hath. A ref on a file input
    * receives the files directly; any other ref is clicked and the file chooser it opens receives

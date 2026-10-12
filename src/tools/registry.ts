@@ -33,6 +33,9 @@ import { createLogin } from "./chaavi/create-login.js";
 import { fillLogin } from "./chaavi/fill-login.js";
 import { fillPasskey } from "./chaavi/fill-passkey.js";
 import { fillSecret } from "./chaavi/fill-secret.js";
+import { fillCard } from "./chaavi/fill-card.js";
+import { readNote } from "./chaavi/read-note.js";
+import { saveSecret } from "./chaavi/save-secret.js";
 import { getStatus as nasGetStatus } from "./nas/get-status.js";
 import { getLogs as nasGetLogs } from "./nas/get-logs.js";
 import { restartModule } from "./nas/restart-module.js";
@@ -79,6 +82,9 @@ const definitions = [
   fillLogin,
   fillPasskey,
   fillSecret,
+  saveSecret,
+  readNote,
+  fillCard,
   spawnTerminal,
   listTerminals,
   closeTerminal,

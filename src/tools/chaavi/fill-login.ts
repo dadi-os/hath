@@ -2,6 +2,7 @@ import { z } from "zod";
 import { HathError } from "../../errors.js";
 import { fail, ok } from "../shared.js";
 import { defineTool } from "../types.js";
+import { fillHidden } from "./call.js";
 
 const input = z
   .object({
@@ -13,27 +14,6 @@ const input = z
     submit: z.boolean().optional(),
   })
   .strict();
-
-/**
- * typeSecret fills `secret` at `ref`. A failure reports only the first line of the driver's
- * error with the secret scrubbed: Playwright's call log for a fill can carry the value.
- */
-async function typeSecret(
-  browsers: { type: (browserId: number, tabId: string | undefined, ref: string, text: string, submit?: boolean) => Promise<unknown> },
-  browserId: number,
-  tabId: string | undefined,
-  ref: string,
-  secret: string,
-  submit: boolean | undefined,
-): Promise<void> {
-  try {
-    await browsers.type(browserId, tabId, ref, secret, submit);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const firstLine = message.split("\n")[0]!.split(secret).join("[password]");
-    throw new HathError(422, "browser", `password field ${ref} was not filled: ${firstLine}`);
-  }
-}
 
 /**
  * Fill a Chaavi login into a Nas browser. The password never appears in tool content or audit.
@@ -77,13 +57,12 @@ export const fillLogin = defineTool({
         );
       }
       if (parsed.password_ref !== undefined) {
-        await typeSecret(
-          ctx.browsers,
-          parsed.browser_id,
-          parsed.tab_id,
-          parsed.password_ref,
-          login.password,
-          parsed.submit,
+        const passwordRef = parsed.password_ref;
+        await fillHidden(
+          () => ctx.browsers.type(parsed.browser_id, parsed.tab_id, passwordRef, login.password, parsed.submit),
+          "password",
+          passwordRef,
+          [login.password],
         );
       }
       return ok(

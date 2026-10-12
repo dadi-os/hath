@@ -8,7 +8,7 @@ Agent runtime for dadi. It owns agent identity, transcripts, the dual-lane loop,
 - Dwar at `http://dwar.dadi` for chat and image describe
 - Yaad at `http://yaad.dadi` for memory tools
 - Ghar at `http://ghar.dadi` for home device tools
-- Chaavi at `http://chaavi.dadi` for vault tools (`chaavi_*`); secrets and passkey keys are never returned to the model
+- Chaavi at `http://chaavi.dadi` for vault tools (`chaavi_*`); passwords, secrets, card numbers and passkey keys are never returned to the model
 - Nas at `http://nas.dadi` for host terminals, project filesystem, and headed Chromium browsers (also mesh DNS / logging)
 - `playwright-core` (no browser download — Chromium comes from Nas over CDP)
 
@@ -22,7 +22,7 @@ hath/
     dwar/         Dwar axios client
     yaad/         Yaad axios client
     ghar/         Ghar axios client
-    chaavi/       Chaavi axios client (vault metadata + inject)
+    chaavi/       Chaavi axios client (vault metadata, saves, decrypt for fills)
     nas/          Nas axios client (terminals + filesystem + browsers)
     browser/      Playwright CDP driver for Nas Chromium
     runtime/      dual-lane engine, transcript cache, attachments, events, locks
@@ -131,15 +131,18 @@ Every reasoning lane holds the two memory tools without a grant, so each agent r
 
 ### Chaavi (vault)
 
-Grantable vault tools. Metadata may reach the model; passwords, passkey keys, and secret values never do.
+Grantable vault tools. Metadata may reach the model; passwords, card numbers and codes, passkey keys, and secret values never do (a Secure Note's text does, through `chaavi_read_note`).
 
 | tool | Chaavi route | when to use |
 | --- | --- | --- |
-| `chaavi_list_items` | `GET /v1/items` | find a vault item id by name or site uri (`hasPasskey`, no secrets) |
-| `chaavi_create_login` | `POST /v1/logins` | create a login with a generated password; never invent or `browser_type` a password |
+| `chaavi_list_items` | `GET /v1/items` | find a vault item id by name, site uri or `type`: logins show `hasPasskey`, cards only their brand, Secure Notes `secret` when they hold one; never a value |
+| `chaavi_create_login` | `POST /v1/items` | save a login: generated password by default, or one the agent was handed or a site issued; never invent or `browser_type` a password |
 | `chaavi_fill_login` | `POST /v1/items/:id/login` | type a login into a Nas browser; never `browser_type` a password |
 | `chaavi_fill_passkey` | `POST /v1/items/:id/passkey` | load a passkey into the tab's Nas browser virtual authenticator, replacing its previous passkey, then reload the tab so the site asks again |
-| `chaavi_fill_secret` | `POST /v1/items/:id/secret` | run a host command with the secret in `env_name`; output is redacted |
+| `chaavi_fill_secret` | `POST /v1/secrets/:name/reveal` | fill a secret by name (the hidden `Secret` field of the Secure Note named for it) into a host command's `env_name` (output redacted) or a Nas browser field |
+| `chaavi_save_secret` | `PUT /v1/secrets/:name` | save a secret an agent obtained or generated into that Secure Note, creating it or replacing its value |
+| `chaavi_read_note` | `GET /v1/items/:id` + reveal `notes` | read a Secure Note's text and non-hidden fields; hidden fields by name only |
+| `chaavi_fill_card` | `POST /v1/items/:id/card` (+ an identity for the billing address) | fill a card and billing address into a Nas browser checkout, matching dropdowns, never submitting; a purchase needs Ankur's yes first |
 
 ### Terminal (shell + files)
 
