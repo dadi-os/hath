@@ -157,6 +157,7 @@ test("list_items shows how to use each item and never a value", async () => {
           ],
         }),
         chaaviItem({ id: "item-note-2", name: "Wifi", type: "note", hasNotes: true }),
+        chaaviItem({ id: "item-passport-1", name: "US passport", type: "passport" }),
       ],
     }),
   });
@@ -173,6 +174,7 @@ test("list_items shows how to use each item and never a value", async () => {
       { id: "item-card-1", name: "Sapphire", type: "card", brand: "Visa" },
       { id: "item-note-1", name: "Stripe API key", type: "note", secret: true },
       { id: "item-note-2", name: "Wifi", type: "note", secret: false },
+      { id: "item-passport-1", name: "US passport", type: "passport" },
     ],
   });
 });
@@ -225,6 +227,30 @@ test("fill_login fills a username-only sign-in page and presses Enter on it", as
   });
   assert.equal(result.isError, false);
   assert.deepEqual(browser.calls, [{ method: "type", ref: "e1", values: ["ada"], submit: true }]);
+});
+
+test("fill_login with a login that has no username fills only the password and says so", async () => {
+  const browser = recordingBrowser();
+  const result = await runTool({
+    tool: "chaavi_fill_login",
+    chaavi: mockChaavi({ getLogin: () => ({ username: null, password: "s3cret-pass" }) }),
+    browsers: browser.browsers,
+    input: { item_id: "item-login-1", browser_id: 10, username_ref: "e1", password_ref: "e2" },
+  });
+  assert.equal(result.isError, false);
+  assert.deepEqual(browser.calls, [{ method: "type", ref: "e2", values: ["s3cret-pass"] }]);
+  const body = JSON.parse(result.content) as Record<string, unknown>;
+  assert.equal(body.username, null);
+  assert.equal(body.username_skipped, "the login has no username");
+
+  const usernameOnly = await runTool({
+    tool: "chaavi_fill_login",
+    chaavi: mockChaavi({ getLogin: () => ({ username: null, password: "s3cret-pass" }) }),
+    browsers: recordingBrowser().browsers,
+    input: { item_id: "item-login-1", browser_id: 10, username_ref: "e1" },
+  });
+  assert.equal(usernameOnly.isError, true);
+  assert.match(usernameOnly.content, /has no username to fill/);
 });
 
 test("create_login saves a generated or given password and never returns it", async () => {

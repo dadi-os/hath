@@ -6,7 +6,7 @@ import type { Config } from "../config.js";
 import { CHAAVI_BASE_URL } from "../constants.js";
 import { HathError } from "../errors.js";
 
-const itemType = z.enum(["login", "note", "card", "identity", "sshKey"]);
+const itemType = z.enum(["login", "note", "card", "identity", "sshKey", "bankAccount", "driversLicense", "passport"]);
 
 const fieldSchema = z.discriminatedUnion("type", [
   z.object({ name: z.string(), type: z.literal("text"), value: z.string() }),
@@ -58,7 +58,7 @@ const itemsResponseSchema = z
 
 const loginResponseSchema = z
   .object({
-    username: z.string(),
+    username: z.string().nullable(),
     password: z.string(),
   })
   .passthrough();

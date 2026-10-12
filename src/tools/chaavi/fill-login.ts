@@ -23,7 +23,7 @@ const input = z
 export const fillLogin = defineTool({
   name: "chaavi_fill_login",
   description:
-    "Fill a login from Chaavi into a Nas browser. Do not use browser_type for passwords or usernames. Give username_ref, password_ref, or both. A site that asks for the username on its own page (an email field and Next, no password field) takes two calls: username_ref alone with submit true, then password_ref on the next page. submit presses Enter after the last field filled. For passkeys use chaavi_fill_passkey. For a new account, chaavi_create_login first.",
+    "Fill a login from Chaavi into a Nas browser. Do not use browser_type for passwords or usernames. Give username_ref, password_ref, or both; a login with no username fills only the password and says so. A site that asks for the username on its own page (an email field and Next, no password field) takes two calls: username_ref alone with submit true, then password_ref on the next page. submit presses Enter after the last field filled. For passkeys use chaavi_fill_passkey. For a new account, chaavi_create_login first.",
   input,
   inputSchema: {
     type: "object",
@@ -47,7 +47,11 @@ export const fillLogin = defineTool({
     }
     try {
       const login = await ctx.chaavi.getLogin(parsed.item_id);
-      if (parsed.username_ref !== undefined) {
+      if (parsed.username_ref !== undefined && login.username === null && parsed.password_ref === undefined) {
+        return fail(`invalid_request: login ${parsed.item_id} has no username to fill`);
+      }
+      const fillUsername = parsed.username_ref !== undefined && login.username !== null;
+      if (parsed.username_ref !== undefined && login.username !== null) {
         await ctx.browsers.type(
           parsed.browser_id,
           parsed.tab_id,
@@ -70,6 +74,7 @@ export const fillLogin = defineTool({
           filled: true,
           item_id: parsed.item_id,
           username: login.username,
+          ...(parsed.username_ref !== undefined && !fillUsername ? { username_skipped: "the login has no username" } : {}),
           browser_id: parsed.browser_id,
         },
         {

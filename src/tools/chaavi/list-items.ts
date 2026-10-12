@@ -3,7 +3,7 @@ import type { ChaaviItem } from "../../chaavi/client.js";
 import { defineTool } from "../types.js";
 import { chaaviToolCall } from "./call.js";
 
-const ITEM_TYPES = ["login", "note", "card", "identity", "sshKey"] as const;
+const ITEM_TYPES = ["login", "note", "card", "identity", "sshKey", "bankAccount", "driversLicense", "passport"] as const;
 
 const input = z
   .object({
@@ -41,7 +41,7 @@ export function listedItem(item: ChaaviItem): Record<string, unknown> {
 export const listItems = defineTool({
   name: "chaavi_list_items",
   description:
-    "Find vault items by name or site uri: logins (with hasPasskey), Secure Notes (secret true when the note holds a secret for chaavi_fill_secret), cards, identities and SSH keys. Never returns a password, card number or other secret value. Call this before chaavi_fill_login, chaavi_fill_passkey, chaavi_fill_card or chaavi_read_note when you do not already have the item_id. For a new site account use chaavi_create_login.",
+    "Find vault items by name or site uri: logins (with hasPasskey), Secure Notes (secret true when the note holds a secret for chaavi_fill_secret), cards, identities, SSH keys, bank accounts, driver's licenses and passports. Never returns a password, card number or other secret value. Call this before chaavi_fill_login, chaavi_fill_passkey, chaavi_fill_card or chaavi_read_note when you do not already have the item_id. For a new site account use chaavi_create_login.",
   input,
   inputSchema: {
     type: "object",
