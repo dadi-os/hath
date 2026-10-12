@@ -629,3 +629,46 @@ test("messaging a retired agent is a retired error on every path and stores noth
   await runtime.waitUntilIdle();
   await app.close();
 });
+
+test("wait for a retired agent ends at once, and for an active one reports how recently its team worked", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const waiterId = await insertAgent(handle.db, { id: "wait-for-waiter", systemPrompt: "waiter" });
+  const ownerId = await insertAgent(handle.db, { id: "wait-for-owner", systemPrompt: "owner" });
+  const helperId = await insertAgent(handle.db, { id: "wait-for-helper", systemPrompt: "helper", parentAgentId: ownerId });
+  const goneId = await insertAgent(handle.db, { id: "wait-for-gone", systemPrompt: "gone" });
+  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, goneId));
+  await writeAgentLog(handle.db, { agentId: helperId, lane: "reasoning", event: "response", payload: {} });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+
+  const started = Date.now();
+  const gone = await executeTool(runtime.toolContext(waiterId, "reasoning"), {
+    type: "tool_use",
+    id: "wait-gone",
+    name: "wait",
+    input: { seconds: 30, for: goneId },
+  });
+  assert.equal(gone.isError, false);
+  assert.ok(Date.now() - started < 1000, "a retired agent never replies, so the wait does not run");
+  assert.equal(JSON.parse(gone.content).for.active, false);
+
+  const owner = await executeTool(runtime.toolContext(waiterId, "reasoning"), {
+    type: "tool_use",
+    id: "wait-owner",
+    name: "wait",
+    input: { seconds: 1, for: ownerId },
+  });
+  const report = JSON.parse(owner.content).for;
+  assert.equal(report.active, true);
+  assert.equal(report.seconds_since_you_asked, null);
+  assert.ok(report.seconds_since_its_team_worked !== null && report.seconds_since_its_team_worked < 10, "the helper under the owner counts as its team");
+  await runtime.waitUntilIdle();
+});

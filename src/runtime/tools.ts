@@ -3,10 +3,10 @@
  * Registry tools are resolved for the reasoning lane; conversation uses the switch below.
  */
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, max } from "drizzle-orm";
 import { z, ZodError } from "zod";
 import { agentIdOrUserSchema, agentIdSchema } from "../agent-id.js";
-import { agents } from "../db/schema.js";
+import { agentLogs, agents, messages } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarTool, DwarToolUseBlock } from "../types/domain.js";
 import {
@@ -180,7 +180,7 @@ export const yieldTool: DwarTool = {
 export const waitTool: DwarTool = {
   name: WAIT,
   description:
-    "Pause your reasoning lane for a number of seconds, then resume automatically where you left off. Use when you must wait for something to settle — a page to load, a job or another agent to finish, a reply you expect shortly — instead of burning turns polling. Unlike yield, this does NOT end your turn: reasoning continues after the pause with no model calls spent while waiting. Unlike schedule_message, it waits here rather than sending a message to another agent later. A steer, a terminate, or a new message to you cuts the wait short, so waiting on a reply returns as soon as it lands. Max " +
+    "Pause your reasoning lane for a number of seconds, then resume automatically where you left off. Use when you must wait for something to settle — a page to load, a job or another agent to finish, a reply you expect shortly — instead of burning turns polling. Unlike yield, this does NOT end your turn: reasoning continues after the pause with no model calls spent while waiting. Unlike schedule_message, it waits here rather than sending a message to another agent later. A steer, a terminate, or a new message to you cuts the wait short, so waiting on a reply returns as soon as it lands. When you wait on another agent's reply, name it in `for`: the wait ends at once if that agent is retired, and the result says how long ago you last messaged it and how recently it or the agents under it last worked, so you judge a silence from facts. For a page to load or change, use browser_wait_for instead. Max " +
     `${WAIT_MAX_SECONDS}s; for longer or cross-agent delays, use scheduling.`,
   input_schema: waitInputSchema,
 };
@@ -224,6 +224,7 @@ const waitInput = z
   .object({
     seconds: z.number().int().min(1).max(WAIT_MAX_SECONDS),
     reason: z.string().min(1).optional(),
+    for: agentIdSchema.optional(),
   })
   .strict();
 
@@ -357,6 +358,12 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
   }
   const input = waitInput.parse(raw);
   const agentId = ctx.callerId;
+  if (input.for !== undefined) {
+    const awaited = await waitedOn(ctx, agentId, input.for);
+    if (!awaited.active) {
+      return ok({ waited_seconds: 0, interrupted: false, for: awaited, note: `${input.for} is retired and will not reply.` });
+    }
+  }
   const totalMs = input.seconds * 1000;
   const deadline = Date.now() + totalMs;
   const inboundAtStart = ctx.transcript.lastInboundSeq(agentId);
@@ -366,11 +373,67 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
       ctx.steer.hasItems(agentId) ||
       ctx.transcript.lastInboundSeq(agentId) > inboundAtStart
     ) {
-      return ok({ waited_seconds: Math.round((totalMs - (deadline - Date.now())) / 1000), interrupted: true });
+      return ok({
+        waited_seconds: Math.round((totalMs - (deadline - Date.now())) / 1000),
+        interrupted: true,
+        ...(input.for !== undefined ? { for: await waitedOn(ctx, agentId, input.for) } : {}),
+      });
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));
   }
-  return ok({ waited_seconds: input.seconds, interrupted: false });
+  return ok({
+    waited_seconds: input.seconds,
+    interrupted: false,
+    ...(input.for !== undefined ? { for: await waitedOn(ctx, agentId, input.for) } : {}),
+  });
+}
+
+/** What a waiting agent knows about the agent it waits on: whether it is active, and how recent the work is. */
+type WaitedOn = {
+  agent_id: string;
+  active: boolean;
+  /** Seconds since the waiting agent last messaged it; null if never. */
+  seconds_since_you_asked: number | null;
+  /** Seconds since it or any active agent under it last logged work; null if never. */
+  seconds_since_its_team_worked: number | null;
+};
+
+/**
+ * waitedOn reports on `targetId` for `callerId`'s wait. Its team is the target and every active
+ * agent under it, since an owner often sits idle while the agents it asked do the work.
+ */
+async function waitedOn(ctx: ToolContext, callerId: string, targetId: string): Promise<WaitedOn> {
+  const roster = await ctx.db
+    .select({ id: agents.id, parentAgentId: agents.parentAgentId, active: agents.active })
+    .from(agents);
+  const target = roster.find((agent) => agent.id === targetId);
+  if (!target) {
+    throw new HathError(404, "not_found", `agent ${targetId} not found`);
+  }
+  const team = [targetId];
+  for (let i = 0; i < team.length; i += 1) {
+    for (const agent of roster) {
+      if (agent.parentAgentId === team[i] && agent.active) {
+        team.push(agent.id);
+      }
+    }
+  }
+  const [worked] = await ctx.db
+    .select({ at: max(agentLogs.createdAt) })
+    .from(agentLogs)
+    .where(inArray(agentLogs.agentId, team));
+  const [asked] = await ctx.db
+    .select({ at: max(messages.createdAt) })
+    .from(messages)
+    .where(and(eq(messages.fromAgentId, callerId), eq(messages.toAgentId, targetId)));
+  const since = (at: Date | null | undefined): number | null =>
+    at ? Math.round((Date.now() - at.getTime()) / 1000) : null;
+  return {
+    agent_id: targetId,
+    active: target.active,
+    seconds_since_you_asked: since(asked?.at),
+    seconds_since_its_team_worked: since(worked?.at),
+  };
 }
 
 async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
