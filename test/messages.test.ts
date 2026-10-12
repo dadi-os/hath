@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
 import { hydrateTranscript, listHumanMessages, listThreads } from "../src/db/messages.js";
-import { agentLogs, agents, messages } from "../src/db/schema.js";
+import { agentLogs, agents, attachments, messages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { arrivalsSince, assembleContext, windowStart } from "../src/runtime/context.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
@@ -531,7 +531,7 @@ test("child may still send_message and dispatch_message to the user", async () =
   await runtime.waitUntilIdle();
 });
 
-test("an agent-to-agent message past the cap is refused and stores nothing; the same text to Ankur goes", async () => {
+test("an agent-to-agent message past the cap goes as its opening with the whole text attached; the same text to Ankur goes whole", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const senderId = await insertAgent(handle.db, { id: "cap-sender", systemPrompt: "sender" });
   const peerId = await insertAgent(handle.db, { id: "cap-peer", systemPrompt: "peer" });
@@ -553,10 +553,14 @@ test("an agent-to-agent message past the cap is refused and stores nothing; the 
     name: "dispatch_message",
     input: { to_agent_id: peerId, content: dump },
   });
-  assert.equal(toPeer.isError, true);
-  assert.match(toPeer.content, /attachment/);
+  assert.equal(toPeer.isError, false);
+  assert.match(toPeer.content, /message\.md/);
   const stored = await handle.db.select().from(messages).where(eq(messages.toAgentId, peerId));
-  assert.equal(stored.length, 0);
+  assert.equal(stored.length, 1);
+  assert.ok(stored[0]!.content.length < AGENT_MESSAGE_MAX_CHARS, "the recipient sees only the opening inline");
+  const files = await handle.db.select().from(attachments).where(eq(attachments.messageId, stored[0]!.id));
+  assert.equal(files.length, 1);
+  assert.equal(files[0]!.textContent, dump, "the whole message travels as the attachment");
 
   const toAnkur = await executeTool(runtime.toolContext(senderId, "conversation"), {
     type: "tool_use",

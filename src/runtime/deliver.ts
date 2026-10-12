@@ -1,4 +1,4 @@
-import { toAttachmentSummary } from "../db/attachments.js";
+import { toAttachmentSummary, type NewAttachment } from "../db/attachments.js";
 import type { Db } from "../db/client.js";
 import { insertMessage, NO_ATTACHMENTS, type MessageAttachments } from "../db/messages.js";
 import { writeAgentLog } from "../db/logs.js";
@@ -100,6 +100,8 @@ export async function deliverAgentMessage(
     content: string;
     /** Existing attachments the message carries, by id. */
     attachmentIds?: string[];
+    /** New files the message carries, stored with it. */
+    uploads?: NewAttachment[];
     extraPayload?: Record<string, unknown>;
     /** False delivers without waking the recipient; it reads the message on its next wake. */
     wake?: boolean;
@@ -110,7 +112,7 @@ export async function deliverAgentMessage(
     fromAgentId: args.fromAgentId,
     toAgentId: args.toAgentId,
     content: args.content,
-    attachments: { uploads: [], forward: args.attachmentIds ?? [] },
+    attachments: { uploads: args.uploads ?? [], forward: args.attachmentIds ?? [] },
   });
   deps.transcript.ingest(row);
   const attached = row.attachments.map(toAttachmentSummary);

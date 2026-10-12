@@ -27,7 +27,7 @@ import {
 import { findEmbeddedTool, findTool } from "../tools/registry.js";
 import {
   fail,
-  failOversizedAgentMessage,
+  AGENT_MESSAGE_MAX_CHARS,
   ok,
   requireAgent,
   requireActiveAgent,
@@ -36,7 +36,7 @@ import {
   type ToolContext,
   type ToolExecResult,
 } from "../tools/shared.js";
-import { requireAttachments } from "../db/attachments.js";
+import { requireAttachments, type NewAttachment } from "../db/attachments.js";
 import {
   MAX_ATTACHMENTS,
   runCreateAttachment,
@@ -392,18 +392,35 @@ async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   return ok({ handed_off: true, sent: false, note: "Not delivered yet: your conversation lane sends it." });
 }
 
+/** How much of an oversized agent message its recipient sees inline, ahead of the attached whole. */
+const OVERSIZED_PREVIEW_CHARS = 1500;
+
+/** oversizedPreview is the inline part of an agent message too long to send whole: its opening and a pointer to the rest. */
+function oversizedPreview(content: string): string {
+  return `${content.slice(0, OVERSIZED_PREVIEW_CHARS)}…\n\n[The whole message, ${content.length} characters, is attached as message.md.]`;
+}
+
+/** messageAsAttachment stores an oversized agent message whole as a Markdown file. */
+function messageAsAttachment(content: string): NewAttachment {
+  return {
+    filename: "message.md",
+    mediaType: "text/markdown",
+    sizeBytes: Buffer.byteLength(content),
+    textContent: content,
+    data: null,
+    description: null,
+  };
+}
+
 async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
   }
   const input = dispatchInput.parse(raw);
-  const oversized = failOversizedAgentMessage(input.to_agent_id, input.content);
-  if (oversized !== null) {
-    return oversized;
-  }
   if (input.to_agent_id !== null) {
     await requireActiveAgent(ctx.db, input.to_agent_id);
   }
+  const oversized = input.to_agent_id !== null && input.content.length > AGENT_MESSAGE_MAX_CHARS;
   const row = await deliverAgentMessage(
     {
       db: ctx.db,
@@ -414,9 +431,18 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
     {
       fromAgentId: ctx.callerId,
       toAgentId: input.to_agent_id,
-      content: input.content,
+      content: oversized ? oversizedPreview(input.content) : input.content,
+      uploads: oversized ? [messageAsAttachment(input.content)] : [],
     },
   );
+  if (oversized) {
+    return ok({
+      to_agent_id: row.toAgentId,
+      seq: row.seq,
+      delivered: true,
+      note: `Delivered, but at ${input.content.length} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`,
+    });
+  }
   return ok({ to_agent_id: row.toAgentId, content: row.content, seq: row.seq });
 }
 
