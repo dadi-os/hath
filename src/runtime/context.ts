@@ -88,11 +88,17 @@ export type AssembledContext = Omit<DwarChatRequest, "tool_choice" | "messages">
   throughSeq: number;
 };
 
+/** A worker's id names its pool and task (`browser-worker-ibio-150-quiz-2`), per the system doctrine. */
+const WORKER_ID = /(^|-)worker-/;
+
 /**
  * hath's system for an identity, in order: the system doctrine
  * (`prompts/system.md`, shared by everyone), the charter (an agent's stored
  * prompt, or `prompts/router.md` for the router), lineage facts, then active
- * direct children — for the router, the active root agents.
+ * direct children other than workers — for the router, the active root agents.
+ * Workers come and go within a wake, and listing them would change a manager's
+ * system with every spawn and retire, so its cached prompt would never survive
+ * to the next wake; `list_agents` shows them.
  */
 async function composeSystem(
   db: Db,
@@ -123,7 +129,7 @@ async function composeSystem(
     .from(agents)
     .where(agentId === null ? isNull(agents.parentAgentId) : eq(agents.parentAgentId, agentId))
     .orderBy(asc(agents.id));
-  const activeChildren = childRows.filter((c) => c.active);
+  const activeChildren = childRows.filter((c) => c.active && !WORKER_ID.test(c.id));
 
   let system = [
     loadPrompt(serviceRoot, "system.md"),
