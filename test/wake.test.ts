@@ -7,7 +7,7 @@ import type {
   DwarResponseBlock,
   Lane,
 } from "../src/types/domain.js";
-import { runConversationLoop } from "../src/runtime/conversation.js";
+import { runConversationLoop, UNSENT_TEXT_TURN } from "../src/runtime/conversation.js";
 import { IntentQueue } from "../src/runtime/intents.js";
 import { runReasoningLoop } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
@@ -286,6 +286,23 @@ test("a conversation intent stays in view while the lane keeps calling tools", a
     assert.ok(JSON.stringify(request.messages).includes("tell Ankur the profile URL"));
   }
   assert.match(JSON.stringify(requests[3]!.messages), /1 of my hand-offs from this run still unsent/);
+});
+
+test("a yield after a message written as text and never sent gets one reminder, and the second yield stands", async () => {
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  const list = "Here is your week, ranked: ".padEnd(600, "x");
+
+  await runConversationLoop({
+    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return turn("anthropic", [{ type: "text", text: list }, call("yield", `c${n}`)]);
+    }, requests),
+    intents: new IntentQueue(),
+  });
+
+  assert.equal(requests.length, 2);
+  assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_TEXT_TURN));
 });
 
 test("a delivered hand-off ends the run at the first yield, with no reminder", async () => {
