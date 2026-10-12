@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import { and, eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { hydrateTranscript, listHumanMessages, listThreads } from "../src/db/messages.js";
+import { hydrateTranscript, insertMessage, listHumanMessages, listThreads, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { agentLogs, agents, attachments, messages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { arrivalsSince, assembleContext, windowStart } from "../src/runtime/context.js";
@@ -671,7 +671,7 @@ test("wait for a retired agent ends at once, and for an active one reports how r
   assert.equal(report.seconds_since_you_asked, null);
   assert.ok(report.seconds_since_its_team_worked !== null && report.seconds_since_its_team_worked < 10, "the helper under the owner counts as its team");
 
-  await handle.db.insert(messages).values({ fromAgentId: waiterId, toAgentId: ownerId, content: "what is due this week?" });
+  await insertMessage(handle.db, { fromAgentId: waiterId, toAgentId: ownerId, content: "what is due this week?", attachments: NO_ATTACHMENTS });
   const open = await executeTool(runtime.toolContext(waiterId, "reasoning"), {
     type: "tool_use",
     id: "wait-open",
