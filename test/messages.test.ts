@@ -670,5 +670,17 @@ test("wait for a retired agent ends at once, and for an active one reports how r
   assert.equal(report.active, true);
   assert.equal(report.seconds_since_you_asked, null);
   assert.ok(report.seconds_since_its_team_worked !== null && report.seconds_since_its_team_worked < 10, "the helper under the owner counts as its team");
+
+  await handle.db.insert(messages).values({ fromAgentId: waiterId, toAgentId: ownerId, content: "what is due this week?" });
+  const open = await executeTool(runtime.toolContext(waiterId, "reasoning"), {
+    type: "tool_use",
+    id: "wait-open",
+    name: "wait",
+    input: { seconds: 1 },
+  });
+  const waitingOn = JSON.parse(open.content).waiting_on;
+  assert.equal(waitingOn.length, 1, "an ask with no answer since is listed without naming it");
+  assert.equal(waitingOn[0].agent_id, ownerId);
+  assert.ok(waitingOn[0].seconds_since_you_asked < 10);
   await runtime.waitUntilIdle();
 });

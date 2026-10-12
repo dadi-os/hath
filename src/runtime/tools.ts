@@ -3,7 +3,7 @@
  * Registry tools are resolved for the reasoning lane; conversation uses the switch below.
  */
 
-import { and, asc, eq, inArray, max } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, max, or } from "drizzle-orm";
 import { z, ZodError } from "zod";
 import { agentIdOrUserSchema, agentIdSchema } from "../agent-id.js";
 import { agentLogs, agents, messages } from "../db/schema.js";
@@ -180,7 +180,7 @@ export const yieldTool: DwarTool = {
 export const waitTool: DwarTool = {
   name: WAIT,
   description:
-    "Pause your reasoning lane for a number of seconds, then resume automatically where you left off. Use when you must wait for something to settle — a page to load, a job or another agent to finish, a reply you expect shortly — instead of burning turns polling. Unlike yield, this does NOT end your turn: reasoning continues after the pause with no model calls spent while waiting. Unlike schedule_message, it waits here rather than sending a message to another agent later. A steer, a terminate, or a new message to you cuts the wait short, so waiting on a reply returns as soon as it lands. When you wait on another agent's reply, name it in `for`: the wait ends at once if that agent is retired, and the result says how long ago you last messaged it and how recently it or the agents under it last worked, so you judge a silence from facts. For a page to load or change, use browser_wait_for instead. Max " +
+    "Pause your reasoning lane for a number of seconds, then resume automatically where you left off. Use when you must wait for something to settle — a page to load, a job or another agent to finish, a reply you expect shortly — instead of burning turns polling. Unlike yield, this does NOT end your turn: reasoning continues after the pause with no model calls spent while waiting. Unlike schedule_message, it waits here rather than sending a message to another agent later. A steer, a terminate, or a new message to you cuts the wait short, so waiting on a reply returns as soon as it lands. Every wait's result lists the agents you asked in the last two hours that have not answered since, with how long ago you asked and how recently each one or the agents under it last worked, so you judge a silence from facts. Name one in `for` to end the wait at once if that agent is retired. For a page to load or change, use browser_wait_for instead. Max " +
     `${WAIT_MAX_SECONDS}s; for longer or cross-agent delays, use scheduling.`,
   input_schema: waitInputSchema,
 };
@@ -376,7 +376,7 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
       return ok({
         waited_seconds: Math.round((totalMs - (deadline - Date.now())) / 1000),
         interrupted: true,
-        ...(input.for !== undefined ? { for: await waitedOn(ctx, agentId, input.for) } : {}),
+        ...(await waitFacts(ctx, agentId, input.for)),
       });
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));
@@ -384,8 +384,38 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
   return ok({
     waited_seconds: input.seconds,
     interrupted: false,
-    ...(input.for !== undefined ? { for: await waitedOn(ctx, agentId, input.for) } : {}),
+    ...(await waitFacts(ctx, agentId, input.for)),
   });
+}
+
+/** How far back a wait looks for asks still open. */
+const OPEN_ASK_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+/** waitFacts is what a finished wait reports: the named agent, and every ask of the caller's still unanswered. */
+async function waitFacts(ctx: ToolContext, callerId: string, forId: string | undefined): Promise<Record<string, unknown>> {
+  const facts: Record<string, unknown> = {};
+  if (forId !== undefined) {
+    facts.for = await waitedOn(ctx, callerId, forId);
+  }
+  const since = new Date(Date.now() - OPEN_ASK_WINDOW_MS);
+  const recent = await ctx.db
+    .select({ from: messages.fromAgentId, to: messages.toAgentId, at: messages.createdAt })
+    .from(messages)
+    .where(and(gte(messages.createdAt, since), or(eq(messages.fromAgentId, callerId), eq(messages.toAgentId, callerId))));
+  const lastAsked = new Map<string, Date>();
+  const lastHeard = new Map<string, Date>();
+  for (const row of recent) {
+    if (row.from === callerId && row.to !== null) {
+      lastAsked.set(row.to, row.at > (lastAsked.get(row.to) ?? new Date(0)) ? row.at : lastAsked.get(row.to)!);
+    } else if (row.to === callerId && row.from !== null) {
+      lastHeard.set(row.from, row.at > (lastHeard.get(row.from) ?? new Date(0)) ? row.at : lastHeard.get(row.from)!);
+    }
+  }
+  const open = [...lastAsked].filter(([id, asked]) => id !== forId && (lastHeard.get(id) ?? new Date(0)) < asked);
+  if (open.length > 0) {
+    facts.waiting_on = await Promise.all(open.map(([id]) => waitedOn(ctx, callerId, id)));
+  }
+  return facts;
 }
 
 /** What a waiting agent knows about the agent it waits on: whether it is active, and how recent the work is. */

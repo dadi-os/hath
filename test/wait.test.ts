@@ -12,9 +12,12 @@ import type { ToolContext } from "../src/tools/shared.js";
 
 const agentId = "wait-worker";
 
+/** A db whose message history is empty, so a wait finds no open asks to report. */
+const noMessages = { select: () => ({ from: () => ({ where: async () => [] }) }) };
+
 function ctxFor(steer: SteerQueue, transcript = new TranscriptStore()): ToolContext {
   return {
-    db: {} as never,
+    db: noMessages as never,
     callerId: agentId,
     callerKind: "agent",
     lane: "reasoning",
