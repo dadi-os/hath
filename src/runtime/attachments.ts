@@ -67,6 +67,16 @@ const TEXT_EXTENSION_TYPES: Record<string, string> = {
   ".toml": "application/toml",
 };
 
+/** Media types create_attachment reads as bytes, by extension; images among them get a Dwar description. */
+const BINARY_EXTENSION_TYPES: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+
 /** How much of a long text attachment its transcript stub previews. */
 const PREVIEW_CHARS = 500;
 
@@ -222,10 +232,10 @@ export const forwardAttachmentTool: DwarTool = {
   },
 };
 
-/** Turn a host text file into an attachment. */
+/** Turn a host file into an attachment. */
 export const createAttachmentTool: DwarTool = {
   name: CREATE_ATTACHMENT,
-  description: `Turn a text file on the host into an attachment and get its id, so it can be sent with send_message's attachment_ids — for example a report a worker wrote for the user. Needs the terminal_read_file grant. Text files only, up to ${MAX_ATTACHMENT_BYTES} bytes.`,
+  description: `Turn a file on the host into an attachment and get its id, so it can be sent with send_message's attachment_ids — for example a report a worker wrote or a built resume PDF for the user. Needs the terminal_read_file grant. Text files, PDFs and images (${Object.keys(BINARY_EXTENSION_TYPES).join(", ")}), up to ${MAX_ATTACHMENT_BYTES} bytes.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -300,8 +310,10 @@ export async function runForwardAttachment(
 }
 
 /**
- * runCreateAttachment reads a host text file through Nas and stores it as an
- * unbound attachment owned by the caller. Nas returns `N\tline` rows; the
+ * runCreateAttachment reads a host file through Nas and stores it as an
+ * unbound attachment owned by the caller. A PDF or image (by extension) is
+ * read whole as bytes and prepared like an upload, so an image gets its Dwar
+ * description. Any other file is read as text: Nas returns `N\tline` rows; the
  * prefixes are stripped and the file is rebuilt with a trailing newline. A Nas
  * failure throws and reaches the model as a tool error.
  */
@@ -314,6 +326,15 @@ export async function runCreateAttachment(
   }
   const input = createAttachmentInput.parse(raw);
   await requireToolGrant(ctx.db, ctx.callerId, "terminal_read_file");
+  const filename = input.filename ?? basename(input.path);
+  const binaryType = BINARY_EXTENSION_TYPES[extname(input.path).toLowerCase()];
+  if (binaryType !== undefined) {
+    const file = await ctx.nas.readFileBytes({ path: input.path, max_bytes: MAX_ATTACHMENT_BYTES });
+    const prepared = await prepareUploads(ctx.dwar, [
+      { filename, media_type: binaryType, data: file.data },
+    ]);
+    return stageHostFile(ctx, ctx.callerId, prepared, input.path);
+  }
   const response = await ctx.nas.readFile({
     path: input.path,
     limit: HOST_READ_MAX_LINES,
@@ -328,20 +349,35 @@ export async function runCreateAttachment(
   if (sizeBytes > MAX_ATTACHMENT_BYTES) {
     return fail(`${input.path} is larger than the ${MAX_ATTACHMENT_BYTES}-byte attachment limit`);
   }
-  const [meta] = await stageAttachments(ctx.db, ctx.callerId, [
-    {
-      filename: input.filename ?? basename(input.path),
-      mediaType: TEXT_EXTENSION_TYPES[extname(input.path).toLowerCase()] ?? "text/plain",
-      sizeBytes,
-      textContent: text,
-      data: null,
-      description: null,
-    },
-  ]);
+  return stageHostFile(
+    ctx,
+    ctx.callerId,
+    [
+      {
+        filename,
+        mediaType: TEXT_EXTENSION_TYPES[extname(input.path).toLowerCase()] ?? "text/plain",
+        sizeBytes,
+        textContent: text,
+        data: null,
+        description: null,
+      },
+    ],
+    input.path,
+  );
+}
+
+/** stageHostFile stores create_attachment's one prepared file as an unbound row owned by callerId. */
+async function stageHostFile(
+  ctx: ToolContext,
+  callerId: string,
+  files: NewAttachment[],
+  path: string,
+): Promise<ToolExecResult> {
+  const [meta] = await stageAttachments(ctx.db, callerId, files);
   if (!meta) {
     throw new Error("create_attachment staged no row");
   }
-  return ok(toAttachmentSummary(meta), { path: input.path });
+  return ok(toAttachmentSummary(meta), { path });
 }
 
 /** True for media types whose bytes are stored and read as UTF-8 text. */

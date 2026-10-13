@@ -51,6 +51,14 @@ const readResponseSchema = z
   })
   .passthrough();
 
+const readBytesResponseSchema = z
+  .object({
+    /** The whole file, base64. */
+    data: z.string(),
+    size_bytes: z.number().int(),
+  })
+  .passthrough();
+
 const writeResponseSchema = z
   .object({
     bytes: z.number().int(),
@@ -123,6 +131,7 @@ export type ReadFileRequest = {
   limit?: number;
   max_bytes?: number;
 };
+export type ReadFileBytesRequest = { path: string; max_bytes: number };
 export type WriteFileRequest = { path: string; content: string };
 export type EditFileRequest = { path: string; old_string: string; new_string: string };
 export type GlobRequest = { pattern: string; cwd?: string; limit?: number };
@@ -212,6 +221,9 @@ export type NasClient = {
   capture: (id: string, query?: CaptureRequest) => Promise<CaptureResponse>;
   sendKeys: (id: string, body: KeysRequest) => Promise<{ sent: true }>;
   readFile: (body: ReadFileRequest) => Promise<z.infer<typeof readResponseSchema>>;
+  readFileBytes: (
+    body: ReadFileBytesRequest,
+  ) => Promise<z.infer<typeof readBytesResponseSchema>>;
   writeFile: (body: WriteFileRequest) => Promise<z.infer<typeof writeResponseSchema>>;
   editFile: (body: EditFileRequest) => Promise<z.infer<typeof editResponseSchema>>;
   glob: (body: GlobRequest) => Promise<z.infer<typeof globResponseSchema>>;
@@ -296,6 +308,7 @@ export function createNasClient(config: Config): NasClient {
     sendKeys: (id, body) =>
       post(`/terminals/${encodeURIComponent(id)}/keys`, body, keysResponseSchema),
     readFile: (body) => post("/fs/read", omitUndefined(body), readResponseSchema),
+    readFileBytes: (body) => post("/fs/read_bytes", body, readBytesResponseSchema),
     writeFile: (body) => post("/fs/write", body, writeResponseSchema),
     editFile: (body) => post("/fs/edit", body, editResponseSchema),
     glob: (body) => post("/fs/glob", omitUndefined(body), globResponseSchema),

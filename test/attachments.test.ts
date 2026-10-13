@@ -7,7 +7,7 @@ import { INLINE_TEXT_CHARS, type AttachmentMeta } from "../src/db/attachments.js
 import { migrate } from "../src/db/migrate.js";
 import { attachments } from "../src/db/schema.js";
 import { HathError } from "../src/errors.js";
-import { attachmentStub, prepareUploads } from "../src/runtime/attachments.js";
+import { MAX_ATTACHMENT_BYTES, attachmentStub, prepareUploads } from "../src/runtime/attachments.js";
 import { assembleContext } from "../src/runtime/context.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
@@ -302,4 +302,39 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
   );
   const [bound] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
   assert.notEqual(bound?.messageId, null);
+});
+
+test("create_attachment reads a host PDF whole as bytes and stores it as application/pdf", async (t) => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x0a]);
+  const nas = mockNas({
+    readFileBytes: () => ({ data: pdf.toString("base64"), size_bytes: pdf.length }),
+  });
+  const workerId = await insertWorker(handle.db, {
+    name: "builder",
+    systemPrompt: "builds",
+    tools: ["terminal_read_file"],
+  });
+  const { app, runtime } = await harness(nas);
+  t.after(async () => {
+    await runtime.waitUntilIdle();
+    await app.close();
+  });
+
+  const created = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+    type: "tool_use",
+    id: "c1",
+    name: CREATE_ATTACHMENT,
+    input: { path: "/var/home/dadi/career/Resume.PDF" },
+  });
+  assert.equal(created.isError, false, created.content);
+  assert.deepEqual(nas.readFileBytesCalls, [
+    { path: "/var/home/dadi/career/Resume.PDF", max_bytes: MAX_ATTACHMENT_BYTES },
+  ]);
+  assert.equal(nas.readFileCalls.length, 0);
+  const staged = JSON.parse(created.content) as { id: string; filename: string; media_type: string };
+  assert.equal(staged.media_type, "application/pdf");
+  const [row] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
+  assert.deepEqual(row?.data, pdf);
+  assert.equal(row?.textContent, null);
 });

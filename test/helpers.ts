@@ -43,6 +43,7 @@ import type {
   GrepRequest,
   KeysRequest,
   NasClient,
+  ReadFileBytesRequest,
   ReadFileRequest,
   TerminalInfo,
   WriteFileRequest,
@@ -446,6 +447,9 @@ export function mockNas(opts: {
   ) =>
     | Promise<{ content: string; total_lines: number; truncated: boolean }>
     | { content: string; total_lines: number; truncated: boolean };
+  readFileBytes?: (
+    body: ReadFileBytesRequest,
+  ) => Promise<{ data: string; size_bytes: number }> | { data: string; size_bytes: number };
   writeFile?: (
     body: WriteFileRequest,
   ) => Promise<{ bytes: number }> | { bytes: number };
@@ -474,6 +478,7 @@ export function mockNas(opts: {
   captureCalls: Array<{ id: string; query?: CaptureRequest }>;
   sendKeysCalls: Array<{ id: string; body: KeysRequest }>;
   readFileCalls: ReadFileRequest[];
+  readFileBytesCalls: ReadFileBytesRequest[];
   writeFileCalls: WriteFileRequest[];
   editFileCalls: EditFileRequest[];
   globCalls: GlobRequest[];
@@ -490,6 +495,7 @@ export function mockNas(opts: {
   const captureCalls: Array<{ id: string; query?: CaptureRequest }> = [];
   const sendKeysCalls: Array<{ id: string; body: KeysRequest }> = [];
   const readFileCalls: ReadFileRequest[] = [];
+  const readFileBytesCalls: ReadFileBytesRequest[] = [];
   const writeFileCalls: WriteFileRequest[] = [];
   const editFileCalls: EditFileRequest[] = [];
   const globCalls: GlobRequest[] = [];
@@ -508,6 +514,7 @@ export function mockNas(opts: {
     captureCalls,
     sendKeysCalls,
     readFileCalls,
+    readFileBytesCalls,
     writeFileCalls,
     editFileCalls,
     globCalls,
@@ -567,6 +574,13 @@ export function mockNas(opts: {
         return opts.readFile(body);
       }
       return { content: "", total_lines: 0, truncated: false };
+    },
+    async readFileBytes(body) {
+      readFileBytesCalls.push(body);
+      if (opts.readFileBytes) {
+        return opts.readFileBytes(body);
+      }
+      return { data: "", size_bytes: 0 };
     },
     async writeFile(body) {
       writeFileCalls.push(body);
