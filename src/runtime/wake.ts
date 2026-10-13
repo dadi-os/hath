@@ -13,10 +13,11 @@
  * short cleared note. When a lane's prompt would pass its token ceiling, the
  * thinking of every model turn before its newest leaves that lane's view first,
  * since the calls and text it led to stay; only if that is not enough do the
- * oldest steps leave behind one trimmed note. The cuts only move forward and
- * move in one jump, so the
- * history stays byte-stable between cuts and the provider's cached prefix
- * survives every step but the one that cuts. A read of state
+ * oldest steps leave behind one trimmed note that lists the actions they took (see
+ * record.ts), so a trimmed lane never redoes a send it can no longer see. The cuts
+ * only move forward and move in one jump, so the history stays byte-stable
+ * between cuts and the provider's cached prefix survives every step but the one
+ * that cuts. A read of state
  * (a tab's tree, a page's text, a terminal's screen) that a newer read of the same
  * state follows within a few turns is replaced by a short note at the next cut,
  * never on its own: every cached prefix since the older read holds it whole, so
@@ -25,11 +26,14 @@
  * A wake lasts while any lane run for the agent is queued or running, so a
  * steer from conversation reaches a reasoning run that still sees the steer's
  * call. When the last run releases, the record is dropped and the next wake
- * starts from the transcript alone — prior steps cannot few-shot it.
+ * starts from the transcript alone — prior steps cannot few-shot it. Before that,
+ * takeRecord gives the engine the actions the wake took, which it writes into the
+ * transcript so the next wake sees what ran, not only what the agent said.
  */
 
 import { HathError } from "../errors.js";
 import type { DwarMessage, DwarTool, DwarUsage, Lane } from "../types/domain.js";
+import { formatActions } from "./record.js";
 
 /**
  * User turn recorded after a model turn with no tool call, so the lane keeps
@@ -51,9 +55,17 @@ export const SUPERSEDED_RESULT =
 export const OVERSIZED_RESULT =
   "[too large] This result would have pushed the prompt past its token ceiling, so it was dropped. Call the tool again with a narrower query or a smaller limit.";
 
-/** The turn that stands in for the steps a lane's view trimmed to stay under its token ceiling. */
+/**
+ * The turn that stands in for the steps a lane's view trimmed to stay under its token
+ * ceiling. It names hath as its author because Dwar folds it into the user turn of
+ * whatever arrived next, where unlabelled it reads as part of that sender's message.
+ */
 export const TRIMMED_TURN =
-  "[trimmed] Earlier steps of this wake were dropped to keep the prompt small. get_logs has them; redo a step only if you still need its result.";
+  "[trimmed] A note from hath, not a message: earlier steps of this wake were dropped to keep the prompt small. get_logs has them; redo a step only if you still need its result.";
+
+/** Introduces the actions of the trimmed steps, listed after TRIMMED_TURN. */
+const TRIMMED_ACTIONS =
+  "Actions those dropped steps took, from hath's tool log. They ran; never redo one:";
 
 /**
  * Characters per token of prose (messages, thinking) when estimating what Hath has
@@ -120,6 +132,8 @@ export class Wake {
   private readonly oversized = new Set<string>();
   /** Per lane, turns before this index are out of its view, behind TRIMMED_TURN. */
   private readonly trimmedThrough = new Map<Lane, number>();
+  /** Turns before this index are covered by a record takeRecord already returned. */
+  private recordedThrough = 0;
   /** Per lane, model turns before this index show without their thinking. */
   private readonly unthoughtThrough = new Map<Lane, number>();
   /**
@@ -213,8 +227,8 @@ export class Wake {
     const transcript = frozen.map((message, index) =>
       index === frozen.length - 1 ? { ...message, cache_breakpoint: true } : message,
     );
-    const trimmed: DwarMessage[] =
-      (this.trimmedThrough.get(lane) ?? 0) > 0 ? [{ role: "user", content: TRIMMED_TURN }] : [];
+    const through = this.trimmedThrough.get(lane) ?? 0;
+    const trimmed: DwarMessage[] = through > 0 ? [{ role: "user", content: this.trimmedNote(through) }] : [];
     const turns = this.inView(lane).map((index) => this.shown(index, lane));
     return [...transcript, ...trimmed, ...turns];
   }
@@ -246,19 +260,19 @@ export class Wake {
     for (let i = visible.length - 1; i >= 0; i -= 1) {
       after[i] = this.turnTokens(visible[i]!, lane) + (after[i + 1] ?? 0);
     }
-    const total = base + (after[0] ?? 0);
+    const total = base + this.noteTokens(this.trimmedThrough.get(lane) ?? 0) + (after[0] ?? 0);
     if (total > this.limits.promptCeilingTokens) {
       const target = this.limits.promptCeilingTokens - this.limits.promptTrimTokens;
       let cut = 0;
       for (let i = 0; i < visible.length; i += 1) {
         if (opensStep(this.turns[visible[i]!]!.message)) {
           cut = i;
-          if (base + after[i]! <= target) {
+          if (base + this.noteTokens(visible[i]!) + after[i]! <= target) {
             break;
           }
         }
       }
-      let kept = base + (after[cut] ?? 0);
+      let kept = base + this.noteTokens(visible[cut]!) + (after[cut] ?? 0);
       if (kept > this.limits.promptCeilingTokens) {
         kept = this.dropOversized(visible.slice(cut), kept, lane);
       }
@@ -282,9 +296,37 @@ export class Wake {
     this.pendingSuperseded.clear();
   }
 
-  /** viewTokens is the weight of every wake turn in `lane`'s view. */
+  /** viewTokens is the weight of every wake turn in `lane`'s view, its trimmed note included. */
   private viewTokens(lane: Lane): number {
-    return this.inView(lane).reduce((sum, index) => sum + this.turnTokens(index, lane), 0);
+    return (
+      this.noteTokens(this.trimmedThrough.get(lane) ?? 0) +
+      this.inView(lane).reduce((sum, index) => sum + this.turnTokens(index, lane), 0)
+    );
+  }
+
+  /**
+   * trimmedNote is the turn that stands in for turns before `through`: TRIMMED_TURN, then
+   * the actions those turns took. It changes only when a cut moves `through`, so the
+   * cached prefix holds between cuts.
+   */
+  private trimmedNote(through: number): string {
+    const actions = formatActions(this.turns.slice(0, through).map((turn) => turn.message));
+    return actions === null ? TRIMMED_TURN : `${TRIMMED_TURN}\n\n${TRIMMED_ACTIONS}\n${actions}`;
+  }
+
+  /** noteTokens is the weight of the trimmed note for a view that starts at turn `through`; none at 0. */
+  private noteTokens(through: number): number {
+    return through > 0 ? Math.ceil(this.trimmedNote(through).length / PROSE_CHARS_PER_TOKEN) : 0;
+  }
+
+  /**
+   * takeRecord returns the actions the reasoning lane took since the last record (see
+   * formatActions), or null when it took none, and marks them recorded.
+   */
+  takeRecord(): string | null {
+    const record = formatActions(this.turns.slice(this.recordedThrough).map((turn) => turn.message));
+    this.recordedThrough = this.turns.length;
+    return record;
   }
 
   /**
@@ -557,6 +599,11 @@ export class WakeStore {
   private readonly holds = new Map<string, number>();
 
   constructor(private readonly limits: WakeLimits) {}
+
+  /** True when exactly one run holds the agent's wake, so releasing it drops the wake. */
+  lastHold(agentId: string): boolean {
+    return this.holds.get(agentId) === 1;
+  }
 
   /** The agent's current wake, created on first use. */
   get(agentId: string): Wake {

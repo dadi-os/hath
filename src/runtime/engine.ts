@@ -38,6 +38,7 @@ import { runReasoningLoop } from "./reasoning.js";
 import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
 import { ToolDebounce } from "./tool-debounce.js";
+import { WAKE_RECORD_HEADER } from "./record.js";
 import { executeTool, type ToolContext, type ToolExecResult } from "./tools.js";
 import type { ToolCallerKind } from "../tools/shared.js";
 import { TranscriptStore } from "./transcript.js";
@@ -213,7 +214,8 @@ export function createRuntime(opts: {
    * or retired, leaves them for the next wake instead of re-queuing itself forever.
    * A reasoning run whose last turn wrote text without a send_message also queues a
    * conversation run, so a result written as text instead of handed off still reaches
-   * the requester.
+   * the requester. The run that holds the wake last writes its record before releasing
+   * it (see recordWake); a failed write is logged, since the wake must still release.
    * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
@@ -276,8 +278,36 @@ export function createRuntime(opts: {
       if (unsentReport) {
         enqueueConversation(agentId);
       }
+      if (wakes.lastHold(agentId)) {
+        await recordWake(agentId).catch((recordErr: unknown) => {
+          opts.log.error({ err: recordErr, agentId, code: "wake_record_failed" }, "wake record failed");
+        });
+      }
       releaseWake();
     }
+  }
+
+  /**
+   * recordWake writes the actions the agent's reasoning lane took this wake into its
+   * transcript as a runtime note to itself, which wakes no one, so the next wake reads
+   * what ran instead of only what the agent said about it. A wake that took no action
+   * writes nothing.
+   */
+  async function recordWake(agentId: string): Promise<void> {
+    const record = wakes.get(agentId).takeRecord();
+    if (record === null) {
+      return;
+    }
+    await deliverAgentMessage(
+      { db: opts.db, transcript, events, enqueueConversation },
+      {
+        fromAgentId: agentId,
+        toAgentId: agentId,
+        content: `${RUNTIME_PREFIX} ${WAKE_RECORD_HEADER}\n\n${record}`,
+        extraPayload: { [RUNTIME_REPORT]: "wake_record" satisfies RuntimeReportKind },
+        wake: false,
+      },
+    );
   }
 
   /**

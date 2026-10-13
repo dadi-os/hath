@@ -543,15 +543,15 @@ test("past its ceiling a lane drops older thinking before any step, keeping the 
 test("a lane's measured prompt, not its estimate, decides when it trims", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
-  pushStep(wake, "s1", 10);
+  pushStep(wake, "s1", 100);
   wake.fit("reasoning", []);
   wake.measure("reasoning", { ...usage, input_tokens: 4, cache_read_input_tokens: 800 });
 
-  pushStep(wake, "s2", 10);
+  pushStep(wake, "s2", 100);
   wake.fit("reasoning", []);
   assert.deepEqual(callIds(wake.view("reasoning")), ["s1", "s2"]);
 
-  pushStep(wake, "s3", 200);
+  pushStep(wake, "s3", 150);
   wake.fit("reasoning", []);
   assert.deepEqual(callIds(wake.view("reasoning")), ["s3"]);
 });
@@ -589,4 +589,65 @@ test("a newest step whose results alone pass the ceiling drops its largest resul
   assert.equal(results[1], "b".repeat(1_200));
   assert.equal(results[2], "small recall");
   assert.equal(toolResults(wake.view("conversation"))[0], OVERSIZED_RESULT);
+});
+
+/** Push one reasoning step onto `wake` that says `text` and calls `name` as `id`, with `result`. */
+function pushAction(wake: Wake, id: string, name: string, text: string, result: string, outputTokens = 1): void {
+  wake.push(
+    {
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }, { type: "tool_use", id, name, input: { ref: id } }],
+        provider: "anthropic",
+        lane: "reasoning",
+      },
+      outputTokens,
+    },
+    { message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: result, is_error: false }] } },
+  );
+}
+
+test("a wake's record lists the reasoning lane's actions with their results, leaves out reads, and covers each step once", () => {
+  const wake = new Wake(roomyWakeLimits);
+  wake.begin("sys", frozen("[From: Ankur]\nreply to Sandra"), 1);
+  pushRead(wake, "r1");
+  pushAction(wake, "c1", "browser_click", "Send is enabled in Sandra's thread; clicking Send.", '{"clicked":true}');
+  pushStep(wake, "s1", 1);
+
+  const record = wake.takeRecord();
+  assert.ok(record !== null);
+  assert.match(record, /Sandra's thread; clicking Send/);
+  assert.match(record, /browser_click \{"ref":"c1"\} → \{"clicked":true\}/);
+  assert.doesNotMatch(record, /r1|s1/, "reads are not actions");
+  assert.equal(wake.takeRecord(), null, "a step is recorded once");
+
+  pushAction(wake, "c2", "browser_type", "", '{"typed":true}');
+  assert.match(wake.takeRecord()!, /\(no note\)\n {2}browser_type/);
+});
+
+test("a trimmed note lists the actions of the steps it dropped, so the lane does not redo them", () => {
+  const wake = new Wake(ceilingLimits);
+  wake.begin("sys", frozen("[From: Ankur]\nsend the invites"), 1);
+  pushAction(wake, "a1", "browser_click", "Clicking Send on Luke's invite.", '{"clicked":true}', 140);
+  for (let i = 2; i <= 7; i += 1) {
+    pushStep(wake, `s${i}`, 140);
+  }
+  wake.fit("reasoning", []);
+  const view = wake.view("reasoning");
+  assert.ok(!callIds(view).includes("a1"), "the action's step left the view");
+  const note = view[1]!.content;
+  assert.ok(typeof note === "string" && note.startsWith(TRIMMED_TURN));
+  assert.match(note, /Luke's invite\.\n {2}browser_click/);
+});
+
+test("lastHold is true only while exactly one run holds the wake", () => {
+  const wakes = new WakeStore(roomyWakeLimits);
+  assert.equal(wakes.lastHold("agent-1"), false);
+  const first = wakes.hold("agent-1");
+  const second = wakes.hold("agent-1");
+  assert.equal(wakes.lastHold("agent-1"), false);
+  first();
+  assert.equal(wakes.lastHold("agent-1"), true);
+  second();
+  assert.equal(wakes.lastHold("agent-1"), false);
 });

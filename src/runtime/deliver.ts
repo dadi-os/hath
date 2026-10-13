@@ -12,8 +12,11 @@ import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
  */
 export const RUNTIME_REPORT = "runtime_report";
 
-/** What a runtime report is about, stored under `RUNTIME_REPORT`. */
-export type RuntimeReportKind = "lane_failed" | "wake_interrupted";
+/**
+ * What a runtime report is about, stored under `RUNTIME_REPORT`. A `wake_record` is the
+ * agent's note to itself listing what a finished wake did (see record.ts).
+ */
+export type RuntimeReportKind = "lane_failed" | "wake_interrupted" | "wake_record";
 
 export type DeliverDeps = {
   db: Db;
