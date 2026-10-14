@@ -207,6 +207,11 @@ export class Wake {
     }
   }
 
+  /** True once the reasoning lane has taken a step in this wake. */
+  reasoned(): boolean {
+    return this.turns.some((turn) => turn.message.role === "assistant" && turn.message.lane === "reasoning");
+  }
+
   /** Record that `lane` yielded with the wake as it stands now. */
   markYield(lane: Lane): void {
     this.yieldedAt.set(lane, this.visibleTo(lane).length);

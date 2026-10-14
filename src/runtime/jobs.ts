@@ -96,6 +96,54 @@ export async function recordDelivery(db: Db, row: TranscriptEntry, scheduled: bo
 }
 
 /**
+ * settleWakeJobs settles `agentId`'s open jobs when its wake ends (gate 6). `lines` are
+ * the agent's transcript rows since its previous wake ended. A job this wake touched (a
+ * message on its line among `lines`, hath's `[runtime]` reports aside) that is still open while the agent has no job of
+ * its own out with another agent is over: if the wake did nothing on it (`reasoned`
+ * false and no message back), it closes as noop, a message that needed no work;
+ * otherwise it closes as blocked and is returned so the caller can tell its requester.
+ * Jobs waiting on the requester's answer stay as they are.
+ */
+export async function settleWakeJobs(
+  db: Db,
+  lines: TranscriptEntry[],
+  agentId: string,
+  reasoned: boolean,
+): Promise<JobRow[]> {
+  const open = await db.select().from(jobs).where(and(eq(jobs.agentId, agentId), eq(jobs.state, "open")));
+  if (open.length === 0) {
+    return [];
+  }
+  const [delegated] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(and(eq(jobs.requesterId, agentId), inArray(jobs.state, [...OPEN_STATES])))
+    .limit(1);
+  if (delegated !== undefined) {
+    return [];
+  }
+  const blocked: JobRow[] = [];
+  for (const job of open) {
+    const onLine = lines.filter(
+      (row) =>
+        !row.content.startsWith(RUNTIME_PREFIX) &&
+        ((row.fromAgentId === job.requesterId && row.toAgentId === agentId) ||
+          (row.fromAgentId === agentId && row.toAgentId === job.requesterId)),
+    );
+    if (onLine.length === 0) {
+      continue;
+    }
+    const answered = onLine.some((row) => row.fromAgentId === agentId);
+    const state = !reasoned && !answered ? "noop" : "blocked";
+    await db.update(jobs).set({ state, updatedAt: new Date() }).where(eq(jobs.id, job.id));
+    if (state === "blocked") {
+      blocked.push(job);
+    }
+  }
+  return blocked;
+}
+
+/**
  * reportRefusal is why `agent`'s message to `to` carrying `status` must not go out, or
  * null when it may. While `to`'s job is open, every message to `to` carries a status
  * (gate 1), the one progress update is spent once (gate 2), and a question waits for

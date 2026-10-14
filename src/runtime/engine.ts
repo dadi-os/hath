@@ -39,6 +39,7 @@ import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
 import { ToolDebounce } from "./tool-debounce.js";
 import { WAKE_RECORD_HEADER } from "./record.js";
+import { settleWakeJobs } from "./jobs.js";
 import { executeTool, type ToolContext, type ToolExecResult } from "./tools.js";
 import type { ToolCallerKind } from "../tools/shared.js";
 import { TranscriptStore } from "./transcript.js";
@@ -47,6 +48,9 @@ import { ROUTER_KEY } from "./router.js";
 import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import { FORWARD_ATTACHMENT, SEND_MESSAGE } from "../types/domain.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
+
+/** How much of an agent's last message a job_unfinished report quotes. */
+const UNFINISHED_QUOTE_CHARS = 300;
 
 export type RuntimeLog = {
   error: (obj: unknown, msg?: string) => void;
@@ -113,6 +117,8 @@ export function createRuntime(opts: {
     promptTrimTokens: opts.config.runtime.prompt_trim_tokens,
   };
   const wakes = new WakeStore(wakeLimits);
+  /** Per agent, the newest transcript seq its last finished wake covered (see settleJobs). */
+  const settledThrough = new Map<string, number>();
   let pending = 0;
   const idleWaiters: Array<() => void> = [];
 
@@ -214,8 +220,9 @@ export function createRuntime(opts: {
    * or retired, leaves them for the next wake instead of re-queuing itself forever.
    * A reasoning run whose last turn wrote text without a send_message also queues a
    * conversation run, so a result written as text instead of handed off still reaches
-   * the requester. The run that holds the wake last writes its record before releasing
-   * it (see recordWake); a failed write is logged, since the wake must still release.
+   * the requester. The run that holds the wake last writes its record and settles the
+   * jobs the wake left open before releasing it (see recordWake, settleJobs); a failure
+   * of either is logged, since the wake must still release.
    * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
@@ -282,6 +289,9 @@ export function createRuntime(opts: {
         await recordWake(agentId).catch((recordErr: unknown) => {
           opts.log.error({ err: recordErr, agentId, code: "wake_record_failed" }, "wake record failed");
         });
+        await settleJobs(agentId).catch((settleErr: unknown) => {
+          opts.log.error({ err: settleErr, agentId, code: "job_settle_failed" }, "job settle failed");
+        });
       }
       releaseWake();
     }
@@ -308,6 +318,35 @@ export function createRuntime(opts: {
         wake: false,
       },
     );
+  }
+
+  /**
+   * settleJobs closes the jobs the ending wake touched but left open (see settleWakeJobs)
+   * and tells each requester whose job closed as blocked, waking it, so a requester never
+   * waits on an agent that stopped. A wake covers the agent's messages since its previous
+   * wake ended; the first wake after boot covers everything since the transcript loaded.
+   */
+  async function settleJobs(agentId: string): Promise<void> {
+    const since = settledThrough.get(agentId) ?? transcript.hydratedThrough;
+    const lines = transcript.transcriptFor(agentId).filter((row) => row.seq > since);
+    settledThrough.set(agentId, lines.at(-1)?.seq ?? since);
+    const blocked = await settleWakeJobs(opts.db, lines, agentId, wakes.get(agentId).reasoned());
+    for (const job of blocked) {
+      const last = lines.filter((row) => row.fromAgentId === agentId && row.toAgentId === job.requesterId).at(-1);
+      const said =
+        last === undefined
+          ? "I sent you nothing on it."
+          : `My last message to you on it: "${last.content.slice(0, UNFINISHED_QUOTE_CHARS)}"`;
+      await deliverAgentMessage(
+        { db: opts.db, transcript, events, enqueueConversation },
+        {
+          fromAgentId: agentId,
+          toAgentId: job.requesterId,
+          content: `${RUNTIME_PREFIX} My wake ended with your job unfinished and no done, blocked or needs_input report to you, so hath closed it as blocked. ${said} Message me to pick it up again.`,
+          extraPayload: { [RUNTIME_REPORT]: "job_unfinished" satisfies RuntimeReportKind },
+        },
+      );
+    }
   }
 
   /**

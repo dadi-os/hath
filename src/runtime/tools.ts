@@ -116,6 +116,9 @@ export const yieldInputSchema: Record<string, unknown> = {
 /** Upper bound on a single in-lane wait; longer or cross-agent delays use scheduling. */
 export const WAIT_MAX_SECONDS = 300;
 
+/** Upper bound on a wait with its renewals while the awaited team keeps working (see runWait). */
+export const WAIT_TOTAL_MAX_SECONDS = 1800;
+
 const WAIT_POLL_MS = 250;
 
 export const waitInputSchema: Record<string, unknown> = {
@@ -358,7 +361,10 @@ async function dispatchTool(
 /**
  * Pause the reasoning lane in place, polling so a steer, a terminate, or a new
  * message to the agent cuts the wait short. No model calls run while waiting;
- * the loop resumes on return and the next step folds in what arrived.
+ * the loop resumes on return and the next step folds in what arrived. A wait that
+ * reaches its end with nothing new renews itself for the same length, still without
+ * a model call, while an agent it waits on (`for`, else every unanswered ask) or the
+ * agents under it worked during that stretch, up to WAIT_TOTAL_MAX_SECONDS in all.
  */
 async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
@@ -372,36 +378,47 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
       return ok({ waited_seconds: 0, interrupted: false, for: awaited, note: `${input.for} is retired and will not reply.` });
     }
   }
-  const totalMs = input.seconds * 1000;
-  const deadline = Date.now() + totalMs;
+  const started = Date.now();
+  const stretchMs = input.seconds * 1000;
   const inboundAtStart = ctx.transcript.lastInboundSeq(agentId);
-  while (Date.now() < deadline) {
-    if (
-      ctx.steer.isTerminate(agentId) ||
-      ctx.steer.hasItems(agentId) ||
-      ctx.transcript.lastInboundSeq(agentId) > inboundAtStart
-    ) {
-      return ok({
-        waited_seconds: Math.round((totalMs - (deadline - Date.now())) / 1000),
-        interrupted: true,
-        ...(await waitFacts(ctx, agentId, input.for)),
-      });
+  let deadline = started + stretchMs;
+  for (;;) {
+    while (Date.now() < deadline) {
+      if (
+        ctx.steer.isTerminate(agentId) ||
+        ctx.steer.hasItems(agentId) ||
+        ctx.transcript.lastInboundSeq(agentId) > inboundAtStart
+      ) {
+        return ok({
+          waited_seconds: Math.round((Date.now() - started) / 1000),
+          interrupted: true,
+          ...(await waitFacts(ctx, agentId, input.for)),
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));
     }
-    await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));
+    const facts = await waitFacts(ctx, agentId, input.for);
+    const awaited = facts.for === undefined ? (facts.waiting_on ?? []) : [facts.for];
+    const stretchSeconds = stretchMs / 1000;
+    const working = awaited.some(
+      (target) => target.seconds_since_its_team_worked !== null && target.seconds_since_its_team_worked < stretchSeconds,
+    );
+    if (!working || deadline + stretchMs - started > WAIT_TOTAL_MAX_SECONDS * 1000) {
+      return ok({ waited_seconds: Math.round((Date.now() - started) / 1000), interrupted: false, ...facts });
+    }
+    deadline += stretchMs;
   }
-  return ok({
-    waited_seconds: input.seconds,
-    interrupted: false,
-    ...(await waitFacts(ctx, agentId, input.for)),
-  });
 }
 
 /** How far back a wait looks for asks still open. */
 const OPEN_ASK_WINDOW_MS = 2 * 60 * 60 * 1000;
 
+/** What a finished wait reports: the agent named in `for`, and every other ask of the caller's still unanswered. */
+type WaitFacts = { for?: WaitedOn; waiting_on?: WaitedOn[] };
+
 /** waitFacts is what a finished wait reports: the named agent, and every ask of the caller's still unanswered. */
-async function waitFacts(ctx: ToolContext, callerId: string, forId: string | undefined): Promise<Record<string, unknown>> {
-  const facts: Record<string, unknown> = {};
+async function waitFacts(ctx: ToolContext, callerId: string, forId: string | undefined): Promise<WaitFacts> {
+  const facts: WaitFacts = {};
   if (forId !== undefined) {
     facts.for = await waitedOn(ctx, callerId, forId);
   }

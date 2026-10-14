@@ -6,9 +6,13 @@ import { jobs, messages } from "../src/db/schema.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime, type Runtime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
-import { DISPATCH_MESSAGE, type MessageStatus } from "../src/types/domain.js";
+import { writeAgentLog } from "../src/db/logs.js";
+import { RUNTIME_PREFIX } from "../src/db/messages.js";
+import { DISPATCH_MESSAGE, LIST_AGENTS, STEER_REASONING, WAIT, type MessageStatus } from "../src/types/domain.js";
 import {
   insertAgent,
+  toolUse,
+  yieldTurn,
   mockChaavi,
   mockDwar,
   mockGhar,
@@ -134,4 +138,71 @@ test("an agent's line to its worker opens a job only one way, and a scheduled tr
   });
   assert.equal((await jobsOf(routineId)).length, 0);
   await runtime.waitUntilIdle();
+});
+
+test("a wake that works a job and stops without reporting closes it as blocked and tells the requester; an FYI that needs nothing closes as noop", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const managerId = await insertAgent(handle.db, { id: "settle-manager", systemPrompt: "manager" });
+  const workerId = await insertAgent(handle.db, { id: "settle-worker", systemPrompt: "STALLER", parentAgentId: managerId });
+  const steered = new Set<string>();
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({
+      converse: (request) => {
+        const job = JSON.stringify(request.messages).includes("read the page");
+        if (request.system.includes("STALLER") && job && !steered.has("worker")) {
+          steered.add("worker");
+          return toolUse(STEER_REASONING, { instruction: "read it" }, "steer-1");
+        }
+        return yieldTurn();
+      },
+      reason: (request) =>
+        JSON.stringify(request.messages).includes("list-1") ? yieldTurn() : toolUse(LIST_AGENTS, {}, "list-1"),
+    }),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+
+  assert.equal((await dispatch(runtime, managerId, workerId, "read the page")).isError, false);
+  await runtime.waitUntilIdle();
+  const [job] = await jobsOf(workerId);
+  assert.equal(job?.state, "blocked");
+  const reports = await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId));
+  assert.equal(reports.length, 1);
+  assert.ok(reports[0]!.content.startsWith(`${RUNTIME_PREFIX} My wake ended with your job unfinished`));
+
+  assert.equal((await dispatch(runtime, managerId, workerId, "Browser 14 is back")).isError, false);
+  await runtime.waitUntilIdle();
+  const states = (await jobsOf(workerId)).map((row) => row.state).sort();
+  assert.deepEqual(states, ["blocked", "noop"]);
+  assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 1);
+});
+
+test("a wait renews without a model call while the awaited team works, and returns at its end once it stops", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const waiterId = await insertAgent(handle.db, { id: "renew-waiter", systemPrompt: "waiter" });
+  const ownerId = await insertAgent(handle.db, { id: "renew-owner", systemPrompt: "owner" });
+  const runtime = idleRuntime();
+  const waitFor = () =>
+    executeTool(runtime.toolContext(waiterId, "reasoning"), {
+      type: "tool_use",
+      id: "renew-wait",
+      name: WAIT,
+      input: { seconds: 2, for: ownerId },
+    });
+
+  const idle = JSON.parse((await waitFor()).content);
+  assert.equal(idle.waited_seconds, 2);
+
+  const working = setTimeout(() => {
+    void writeAgentLog(handle.db, { agentId: ownerId, lane: "reasoning", event: "response", payload: {} });
+  }, 1000);
+  const renewed = JSON.parse((await waitFor()).content);
+  clearTimeout(working);
+  assert.equal(renewed.interrupted, false);
+  assert.equal(renewed.waited_seconds, 4, "one renewal while the owner worked, none after");
 });

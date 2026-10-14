@@ -124,6 +124,7 @@ export async function hydrateTranscript(db: Db, transcript: TranscriptStore): Pr
   for (const row of rows) {
     transcript.ingest(messageToTranscriptEntry(row, attached.get(row.id) ?? []));
   }
+  transcript.markHydrated();
   return rows.length;
 }
 

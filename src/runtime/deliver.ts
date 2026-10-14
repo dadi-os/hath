@@ -16,9 +16,11 @@ export const RUNTIME_REPORT = "runtime_report";
 
 /**
  * What a runtime report is about, stored under `RUNTIME_REPORT`. A `wake_record` is the
- * agent's note to itself listing what a finished wake did (see record.ts).
+ * agent's note to itself listing what a finished wake did (see record.ts); a
+ * `job_unfinished` tells a requester its job closed as blocked when the agent's wake
+ * ended without reporting on it (see jobs.ts).
  */
-export type RuntimeReportKind = "lane_failed" | "wake_interrupted" | "wake_record";
+export type RuntimeReportKind = "lane_failed" | "wake_interrupted" | "wake_record" | "job_unfinished";
 
 export type DeliverDeps = {
   db: Db;

@@ -24,6 +24,7 @@ export type TranscriptEntry = {
 /** In-memory inbox and outbox of messages per agent (null is the user), ordered by a monotonic seq. */
 export class TranscriptStore {
   private counter = 0;
+  private hydrated = 0;
   private readonly inbox = new Map<string | null, TranscriptEntry[]>();
   private readonly outbox = new Map<string | null, TranscriptEntry[]>();
 
@@ -63,6 +64,16 @@ export class TranscriptStore {
     };
     this.ingest(row);
     return row;
+  }
+
+  /** Mark every message ingested so far as loaded at boot (see hydratedThrough). */
+  markHydrated(): void {
+    this.hydrated = this.counter;
+  }
+
+  /** The newest seq loaded at boot: messages after it arrived while this process ran. */
+  get hydratedThrough(): number {
+    return this.hydrated;
   }
 
   /** The seq of the newest message addressed to this agent, or 0 before its first. */
