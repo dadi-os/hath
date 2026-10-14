@@ -122,15 +122,16 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
     });
 
   const whole = await assemble(wideWindows.conversation);
-  const thread = whole.transcripts.conversation!;
+  const thread = whole.transcripts.reasoning!;
   assert.equal(thread.length, 6);
+  assert.match(String(whole.transcripts.conversation!.at(-1)?.content), /^\[Open jobs\] /, "Ankur's open job follows the thread");
 
   const narrow = await assemble({ chars: 500, stepChars: 200, budgetTokens: 10_000_000 });
   const sizes = thread.map((m) => String(m.content).length);
   const start = windowStart(sizes, { chars: 500, stepChars: 200 });
   assert.ok(start > 0);
-  assert.deepEqual(narrow.transcripts.conversation, thread.slice(start));
-  assert.match(String(narrow.transcripts.conversation!.at(-1)?.content), /\nm-5 /);
+  assert.deepEqual(narrow.transcripts.conversation!.slice(0, -1), thread.slice(start));
+  assert.match(String(narrow.transcripts.conversation!.at(-2)?.content), /\nm-5 /);
   assert.deepEqual(narrow.transcripts.reasoning, thread);
   assert.equal(narrow.throughSeq, whole.throughSeq);
 });
@@ -158,14 +159,14 @@ test("assembleContext shortens a lane's window to the room its token budget leav
     });
 
   const whole = await assemble(wideWindows.conversation.budgetTokens);
-  const thread = whole.transcripts.conversation!;
+  const thread = whole.transcripts.reasoning!;
   assert.equal(thread.length, 6);
   const fixedTokens =
     Math.ceil(whole.system.length / PROSE_CHARS_PER_TOKEN) +
     Math.ceil(JSON.stringify(whole.tools).length / DATA_CHARS_PER_TOKEN);
 
   const full = await assemble(fixedTokens);
-  assert.deepEqual(full.transcripts.conversation, thread.slice(-1));
+  assert.deepEqual(full.transcripts.conversation!.slice(0, -1), thread.slice(-1));
   assert.deepEqual(full.transcripts.reasoning, thread);
 });
 
