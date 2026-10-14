@@ -157,6 +157,16 @@ export type DwarUsage = {
   cache_creation_input_tokens: number;
 };
 
+/**
+ * What an agent's message to whoever gave it a job says about that job: its one
+ * progress update, a question only the requester can answer, a wall, or the result.
+ */
+export const MESSAGE_STATUSES = ["running", "needs_input", "blocked", "done"] as const;
+export type MessageStatus = (typeof MESSAGE_STATUSES)[number];
+
+/** Where a job stands: open, waiting on the requester's answer, or closed one of three ways. */
+export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop";
+
 export const SEND_MESSAGE = "send_message";
 export const DISPATCH_MESSAGE = "dispatch_message";
 export const READ_ATTACHMENT = "read_attachment";

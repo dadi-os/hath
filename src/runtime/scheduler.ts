@@ -133,6 +133,7 @@ export function createScheduler(opts: {
         toAgentId: row.toAgentId,
         content: row.content,
         extraPayload: { schedule_id: row.id },
+        scheduled: true,
       },
     );
   }

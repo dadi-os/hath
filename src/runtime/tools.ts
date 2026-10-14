@@ -12,6 +12,7 @@ import type { DwarTool, DwarToolUseBlock } from "../types/domain.js";
 import {
   CREATE_ATTACHMENT,
   DISPATCH_MESSAGE,
+  MESSAGE_STATUSES,
   FORWARD_ATTACHMENT,
   INGEST_MEMORY,
   LIST_AGENTS,
@@ -44,6 +45,7 @@ import {
   runReadAttachment,
 } from "./attachments.js";
 import { deliverAgentMessage } from "./deliver.js";
+import { reportRefusal, STATUS_DESCRIPTION } from "./jobs.js";
 import { runIngestMemory, runRecallMemory } from "./memory.js";
 import { runManageAgent, runModifyAgentPrompt } from "./modify.js";
 import { runRouterTool } from "./router.js";
@@ -79,6 +81,11 @@ export const dispatchMessageInputSchema: Record<string, unknown> = {
       description: "Recipient kebab-case agent id, or null for the user",
     },
     content: { type: "string", description: "The message to persist and deliver" },
+    status: {
+      type: "string",
+      enum: [...MESSAGE_STATUSES],
+      description: STATUS_DESCRIPTION,
+    },
   },
   required: ["to_agent_id", "content"],
 };
@@ -206,6 +213,7 @@ const sendInput = z.object({
 const dispatchInput = z.object({
   to_agent_id: agentIdOrUserSchema,
   content: z.string().min(1),
+  status: z.enum(MESSAGE_STATUSES).optional(),
 });
 
 const steerInput = z
@@ -513,6 +521,10 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
   if (input.to_agent_id !== null) {
     await requireActiveAgent(ctx.db, input.to_agent_id);
   }
+  const refusal = await reportRefusal(ctx.db, ctx.callerId, input.to_agent_id, input.status);
+  if (refusal !== null) {
+    return fail(refusal);
+  }
   const oversized = input.to_agent_id !== null && input.content.length > AGENT_MESSAGE_MAX_CHARS;
   const row = await deliverAgentMessage(
     {
@@ -526,6 +538,7 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
       toAgentId: input.to_agent_id,
       content: oversized ? oversizedPreview(input.content) : input.content,
       uploads: oversized ? [messageAsAttachment(input.content)] : [],
+      ...(input.status !== undefined ? { status: input.status } : {}),
     },
   );
   if (oversized) {

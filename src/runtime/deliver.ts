@@ -2,7 +2,9 @@ import { toAttachmentSummary, type NewAttachment } from "../db/attachments.js";
 import type { Db } from "../db/client.js";
 import { insertMessage, NO_ATTACHMENTS, type MessageAttachments } from "../db/messages.js";
 import { writeAgentLog } from "../db/logs.js";
+import type { MessageStatus } from "../types/domain.js";
 import type { EventBus } from "./events.js";
+import { recordDelivery } from "./jobs.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 
 /**
@@ -44,6 +46,7 @@ export async function deliverUserMessage(
     attachments,
   });
   deps.transcript.ingest(row);
+  await recordDelivery(deps.db, row, false);
   const attached = row.attachments.map(toAttachmentSummary);
   if (row.id === undefined) {
     throw new Error("durable message missing id");
@@ -108,6 +111,10 @@ export async function deliverAgentMessage(
     extraPayload?: Record<string, unknown>;
     /** False delivers without waking the recipient; it reads the message on its next wake. */
     wake?: boolean;
+    /** The job status of an agent's report to whoever gave it the job (see jobs.ts). */
+    status?: MessageStatus;
+    /** True for a scheduled message firing: a routine's trigger, which opens no job. */
+    scheduled?: boolean;
   },
 ): Promise<TranscriptEntry> {
   const extra = args.extraPayload ?? {};
@@ -116,8 +123,10 @@ export async function deliverAgentMessage(
     toAgentId: args.toAgentId,
     content: args.content,
     attachments: { uploads: args.uploads ?? [], forward: args.attachmentIds ?? [] },
+    ...(args.status !== undefined ? { status: args.status } : {}),
   });
   deps.transcript.ingest(row);
+  await recordDelivery(deps.db, row, args.scheduled === true);
   const attached = row.attachments.map(toAttachmentSummary);
   if (row.id === undefined) {
     throw new Error("durable message missing id");
@@ -133,6 +142,7 @@ export async function deliverAgentMessage(
       to_agent_id: row.toAgentId,
       content: row.content,
       attachments: attached,
+      status: row.status,
       seq: row.seq,
       ...extra,
     },

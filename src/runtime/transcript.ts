@@ -5,6 +5,7 @@
  */
 
 import type { AttachmentMeta } from "../db/attachments.js";
+import type { MessageStatus } from "../types/domain.js";
 
 export type TranscriptEntry = {
   /** Durable messages.id when loaded from or written to the messages table. */
@@ -15,6 +16,8 @@ export type TranscriptEntry = {
   content: string;
   /** Files the message carries, in order; metadata only. */
   attachments: AttachmentMeta[];
+  /** What an agent's report to whoever gave it the job says about that job; null otherwise. */
+  status: MessageStatus | null;
   createdAt: Date;
 };
 
@@ -54,6 +57,7 @@ export class TranscriptStore {
       toAgentId: entry.toAgentId,
       content: entry.content,
       attachments: [],
+      status: null,
       createdAt: new Date(),
       ...(entry.id !== undefined ? { id: entry.id } : {}),
     };

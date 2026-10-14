@@ -28,8 +28,9 @@ import {
   type ToolExecResult,
 } from "../tools/shared.js";
 import type { DwarTool } from "../types/domain.js";
-import { CREATE_ATTACHMENT, FORWARD_ATTACHMENT, READ_ATTACHMENT } from "../types/domain.js";
+import { CREATE_ATTACHMENT, FORWARD_ATTACHMENT, MESSAGE_STATUSES, READ_ATTACHMENT } from "../types/domain.js";
 import { deliverAgentMessage } from "./deliver.js";
+import { reportRefusal, STATUS_DESCRIPTION } from "./jobs.js";
 
 /** Mirrors Dwar `image.describe.allowed_media_types`. */
 export const DESCRIBABLE_IMAGE_TYPES = new Set([
@@ -177,6 +178,7 @@ const forwardAttachmentInput = z
       .max(MAX_ATTACHMENTS)
       .refine((ids) => new Set(ids).size === ids.length, "attachment_ids must not repeat"),
     note: z.string().min(1),
+    status: z.enum(MESSAGE_STATUSES).optional(),
   })
   .strict();
 
@@ -228,6 +230,7 @@ export const forwardAttachmentTool: DwarTool = {
         description: `Attachment ids to send, in order (at most ${MAX_ATTACHMENTS})`,
       },
       note: { type: "string", description: "The message the files arrive with" },
+      status: { type: "string", enum: [...MESSAGE_STATUSES], description: STATUS_DESCRIPTION },
     },
   },
 };
@@ -288,6 +291,10 @@ export async function runForwardAttachment(
   if (input.to_agent_id !== null) {
     await requireActiveAgent(ctx.db, input.to_agent_id);
   }
+  const refusal = await reportRefusal(ctx.db, ctx.callerId, input.to_agent_id, input.status);
+  if (refusal !== null) {
+    return fail(refusal);
+  }
   const row = await deliverAgentMessage(
     {
       db: ctx.db,
@@ -300,6 +307,7 @@ export async function runForwardAttachment(
       toAgentId: input.to_agent_id,
       content: input.note,
       attachmentIds: input.attachment_ids,
+      ...(input.status !== undefined ? { status: input.status } : {}),
     },
   );
   return ok({

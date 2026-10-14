@@ -9,7 +9,7 @@ import {
   type AttachmentMeta,
   type NewAttachment,
 } from "./attachments.js";
-import type { AttachmentSummary } from "../types/domain.js";
+import type { AttachmentSummary, MessageStatus } from "../types/domain.js";
 import type { Db } from "./client.js";
 import { agents, messages, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
@@ -77,6 +77,8 @@ export async function insertMessage(
     toAgentId: string | null;
     content: string;
     attachments: MessageAttachments;
+    /** The job status an agent's report carries; absent on every other message. */
+    status?: MessageStatus;
   },
 ): Promise<TranscriptEntry> {
   return db.transaction(async (tx) => {
@@ -87,6 +89,7 @@ export async function insertMessage(
         fromAgentId: args.fromAgentId,
         toAgentId: args.toAgentId,
         content: args.content,
+        status: args.status ?? null,
       })
       .returning();
     if (!row) {
@@ -109,6 +112,7 @@ export function messageToTranscriptEntry(
     toAgentId: row.toAgentId,
     content: row.content,
     attachments,
+    status: row.status,
     createdAt: row.createdAt,
   };
 }

@@ -17,6 +17,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { JobState, MessageStatus } from "../types/domain.js";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -109,6 +110,8 @@ export const messages = pgTable(
     fromAgentId: text("from_agent_id").references(() => agents.id, { onDelete: "cascade" }),
     toAgentId: text("to_agent_id").references(() => agents.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
+    /** What an agent's message to whoever gave it the job says about that job; null on every other message. */
+    status: text("status").$type<MessageStatus>(),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
@@ -116,6 +119,50 @@ export const messages = pgTable(
     index("messages_to_agent_id_seq_idx").on(table.toAgentId, table.seq),
     index("messages_from_agent_id_seq_idx").on(table.fromAgentId, table.seq),
     index("messages_created_at_idx").on(table.createdAt),
+    check(
+      "messages_status_check",
+      sql`${table.status} IS NULL OR ${table.status} IN ('running', 'needs_input', 'blocked', 'done')`,
+    ),
+  ],
+);
+
+/**
+ * The work open on one line: a requester (null for Ankur) that messaged the agent
+ * before the agent ever messaged it. The requester's first message opens a job and
+ * its later ones join it, until the agent reports done or blocked, or hath closes it
+ * when the agent's wake ends (see jobs.ts).
+ *
+ * - `state`: `open`, `needs_input` while the agent's question waits on the requester,
+ *   then `done`, `blocked`, or `noop` for a message that needed no work.
+ * - `progress_seq`: the agent's one `running` message on the job.
+ * - `question_seq`: the agent's open `needs_input` message, cleared by the requester's next message.
+ */
+export const jobs = pgTable(
+  "jobs",
+  {
+    id: uuid("id").primaryKey(),
+    requesterId: text("requester_id").references(() => agents.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    state: text("state").$type<JobState>().notNull(),
+    openedSeq: bigint("opened_seq", { mode: "number" }).notNull(),
+    progressSeq: bigint("progress_seq", { mode: "number" }),
+    questionSeq: bigint("question_seq", { mode: "number" }),
+    closedSeq: bigint("closed_seq", { mode: "number" }),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("jobs_open_line_idx")
+      .on(table.requesterId, table.agentId)
+      .where(sql`${table.state} IN ('open', 'needs_input')`),
+    index("jobs_agent_id_idx").on(table.agentId),
+    index("jobs_requester_id_idx").on(table.requesterId),
+    check(
+      "jobs_state_check",
+      sql`${table.state} IN ('open', 'needs_input', 'done', 'blocked', 'noop')`,
+    ),
   ],
 );
 
@@ -200,3 +247,4 @@ export type AttachmentRow = typeof attachments.$inferSelect;
 export type ToolRow = typeof tools.$inferSelect;
 export type AgentToolRow = typeof agentTools.$inferSelect;
 export type ScheduledMessageRow = typeof scheduledMessages.$inferSelect;
+export type JobRow = typeof jobs.$inferSelect;
