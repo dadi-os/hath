@@ -615,6 +615,53 @@ test("send_message wakes conversation once; reasoning exit does not double-wake"
   assert.equal(last.role, "user");
 });
 
+test("a hand-off queued when its agent is retired still goes out, and the retired agent does nothing else", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const callerId = await insertAgent(handle.db, { name: "retiring-worker", systemPrompt: "report and retire" });
+  let reasonTurn = 0;
+  const dwar = mockDwar({
+    reason: async () => {
+      reasonTurn += 1;
+      return {
+        provider: "anthropic",
+        content: [
+          { type: "tool_use", id: "rt-retire", name: MANAGE_AGENT, input: { agent_id: callerId, retired: true } },
+          { type: "tool_use", id: "rt-report", name: SEND_MESSAGE, input: { to_agent_id: null, intent: "Browser 13 is not running" } },
+          { type: "tool_use", id: "rt-yield", name: "yield", input: {} },
+        ],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      };
+    },
+    converse: async () => ({
+      provider: "anthropic",
+      content: [
+        { type: "tool_use", id: "rt-dispatch", name: DISPATCH_MESSAGE, input: { to_agent_id: null, content: "Browser 13 is not running." } },
+        { type: "tool_use", id: "rt-c-yield", name: "yield", input: {} },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    }),
+  });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar,
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    yaad: mockYaad(),
+    config,
+    log: silentLog,
+  });
+  runtime.enqueueReasoning(callerId);
+  await runtime.waitUntilIdle();
+
+  assert.equal(reasonTurn, 1, "a retired agent's reasoning does not run again");
+  assert.equal(dwar.conversationCalls.length, 1);
+  const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
+  assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[null, "Browser 13 is not running."]]);
+});
+
 test("conversation tools are dispatch_message, steer_reasoning, list_agents, yield — never route_message", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {

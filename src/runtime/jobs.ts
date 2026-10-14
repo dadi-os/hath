@@ -209,7 +209,7 @@ export async function openJobsNote(db: Db, agentId: string): Promise<string | nu
   });
   if (given.length > 0) {
     lines.push(
-      `- You gave work that is still open to ${given.map((job) => job.agentId).join(", ")}: send to them only reasoning's send_message hand-offs; to change that work, steer reasoning.`,
+      `- You gave work that is still open to ${given.map((job) => job.agentId).join(", ")}: send them each hand-off reasoning gives you for them, as soon as you see it, and nothing else; to change that work, steer reasoning.`,
     );
   }
   return [OPEN_JOBS_HEADER, ...lines].join("\n");

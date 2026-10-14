@@ -218,6 +218,8 @@ export function createRuntime(opts: {
    * reasoning run that finished its loop queues a follow-up for steers that
    * arrived after its last drain; a run that failed, or found the agent missing
    * or retired, leaves them for the next wake instead of re-queuing itself forever.
+   * A retired agent's conversation still runs while reasoning's hand-offs wait for it,
+   * so a report handed off just before the agent was retired still goes out.
    * A reasoning run whose last turn wrote text without a send_message also queues a
    * conversation run, so a result written as text instead of handed off still reaches
    * the requester. The run that holds the wake last settles the jobs the wake left open
@@ -240,7 +242,7 @@ export function createRuntime(opts: {
       try {
         const rows = await opts.db.select().from(agents).where(eq(agents.id, agentId));
         const agent = rows[0];
-        if (!agent || !agent.active) {
+        if (!agent || (!agent.active && !(lane === "conversation" && intents.hasItems(agentId)))) {
           return;
         }
         if (lane === "reasoning") {

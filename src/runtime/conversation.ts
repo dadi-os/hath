@@ -136,7 +136,7 @@ async function sendRefusal(
     return `Not sent: ${who} wrote to you after you composed this. Read the new message first, then send what still holds.`;
   }
   if (to !== null && (handoffs.get(to) ?? 0) === 0 && (await opensLine(deps.db, deps.agentId, to))) {
-    return `Not sent: ${to} is an agent you brought in, and your reasoning lane directs its work; it hears from you only through reasoning's hand-offs. Steer reasoning with what should change.`;
+    return `Not sent: ${to} is an agent you brought in, so what it is told comes from your reasoning lane's hand-offs. Send ${to} each hand-off reasoning gives you for it, as soon as you see it; to change ${to}'s work, steer reasoning.`;
   }
   return null;
 }
