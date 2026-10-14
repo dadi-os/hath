@@ -155,6 +155,7 @@ async function deliverAsAnkur(
       transcript: ctx.transcript,
       events: ctx.events,
       enqueueConversation: ctx.enqueueConversation,
+      enqueueReasoning: ctx.enqueueReasoning,
     },
     target.id,
     content,

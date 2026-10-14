@@ -61,7 +61,7 @@ function dispatch(runtime: Runtime, from: string, to: string | null, content: st
 
 /** deps delivers without waking anyone, so no lane runs. */
 function deps(runtime: Runtime) {
-  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: () => {} };
+  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: () => {}, enqueueReasoning: () => {} };
 }
 
 async function jobsOf(agentId: string) {
@@ -205,4 +205,28 @@ test("a wait renews without a model call while the awaited team works, and retur
   clearTimeout(working);
   assert.equal(renewed.interrupted, false);
   assert.equal(renewed.waited_seconds, 4, "one renewal while the owner worked, none after");
+});
+
+test("a report from an agent the recipient brought in wakes its reasoning lane; everything else wakes conversation", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const managerId = await insertAgent(handle.db, { id: "route-manager", systemPrompt: "manager" });
+  const workerId = await insertAgent(handle.db, { id: "route-worker", systemPrompt: "worker", parentAgentId: managerId });
+  const runtime = idleRuntime();
+  const woke: string[] = [];
+  const spy = {
+    db: handle.db,
+    transcript: runtime.transcript,
+    events: runtime.events,
+    enqueueConversation: (agentId: string) => {
+      woke.push(`${agentId}:conversation`);
+    },
+    enqueueReasoning: (agentId: string) => {
+      woke.push(`${agentId}:reasoning`);
+    },
+  };
+
+  await deliverUserMessage(spy, managerId, "book the room");
+  await deliverAgentMessage(spy, { fromAgentId: managerId, toAgentId: workerId, content: "open the booking page" });
+  await deliverAgentMessage(spy, { fromAgentId: workerId, toAgentId: managerId, content: "page open", status: "running" });
+  assert.deepEqual(woke, ["route-manager:conversation", "route-worker:conversation", "route-manager:reasoning"]);
 });

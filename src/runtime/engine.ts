@@ -161,6 +161,7 @@ export function createRuntime(opts: {
     transcript,
     events,
     enqueueConversation,
+    enqueueReasoning,
     log: opts.log,
     tickSeconds: opts.config.schedule.tick_seconds,
   });
@@ -309,7 +310,7 @@ export function createRuntime(opts: {
       return;
     }
     await deliverAgentMessage(
-      { db: opts.db, transcript, events, enqueueConversation },
+      { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning },
       {
         fromAgentId: agentId,
         toAgentId: agentId,
@@ -338,7 +339,7 @@ export function createRuntime(opts: {
           ? "I sent you nothing on it."
           : `My last message to you on it: "${last.content.slice(0, UNFINISHED_QUOTE_CHARS)}"`;
       await deliverAgentMessage(
-        { db: opts.db, transcript, events, enqueueConversation },
+        { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning },
         {
           fromAgentId: agentId,
           toAgentId: job.requesterId,
@@ -359,7 +360,7 @@ export function createRuntime(opts: {
   async function reportLaneFailure(agentId: string, lane: Lane, message: string): Promise<void> {
     const requester = await currentRequester(opts.db, agentId);
     await deliverAgentMessage(
-      { db: opts.db, transcript, events, enqueueConversation },
+      { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning },
       {
         fromAgentId: agentId,
         toAgentId: requester,

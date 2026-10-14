@@ -264,8 +264,10 @@ export async function assembleRouterContext(opts: {
 /**
  * arrivalsSince folds transcript entries newer than `afterSeq` into one user
  * turn, so messages that land mid-wake join the scratchpad at the point they
- * arrived instead of rewriting the history above it. `turn` is null when
- * nothing arrived; `throughSeq` is the newest seq seen.
+ * arrived instead of rewriting the history above it. The agent's own messages to
+ * others are not arrivals: the wake already holds the call that sent each one, and
+ * folding them in again woke its lanes to read their own words back. `turn` is null
+ * when nothing arrived; `throughSeq` is the newest seq seen, own messages included.
  */
 export function arrivalsSince(
   transcript: TranscriptStore,
@@ -276,10 +278,15 @@ export function arrivalsSince(
   if (fresh.length === 0) {
     return { turn: null, throughSeq: afterSeq };
   }
-  const lines = fresh.map((row) => transcriptText(row, agentId));
+  const throughSeq = fresh.at(-1)!.seq;
+  const arrived = fresh.filter((row) => row.fromAgentId !== agentId || row.toAgentId === agentId);
+  if (arrived.length === 0) {
+    return { turn: null, throughSeq };
+  }
+  const lines = arrived.map((row) => transcriptText(row, agentId));
   return {
     turn: { role: "user", content: `[Arrived during this wake]\n\n${lines.join("\n\n")}` },
-    throughSeq: fresh.at(-1)!.seq,
+    throughSeq,
   };
 }
 

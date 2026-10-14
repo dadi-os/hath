@@ -49,6 +49,7 @@ function deliverDeps(transcript: TranscriptStore) {
     transcript,
     events: new EventBus(silentLog),
     enqueueConversation: () => {},
+    enqueueReasoning: () => {},
   };
 }
 
@@ -230,7 +231,8 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
   const last = second!.messages.at(-1)!;
   assert.equal(last.role, "user");
   assert.ok(typeof last.content === "string");
-  assert.ok(last.content.indexOf("status?") < last.content.indexOf("on it"));
+  assert.ok(last.content.includes("status?"));
+  assert.ok(!last.content.includes("on it"), "the agent's own send is already in the wake, so it is no arrival");
   assert.ok(first!.messages.every((m) => !JSON.stringify(m).includes("status?")));
 });
 
@@ -299,6 +301,7 @@ test("GET /threads and GET /agents/:id/messages return human-thread history", as
       transcript: runtime.transcript,
       events: runtime.events,
       enqueueConversation: runtime.enqueueConversation,
+      enqueueReasoning: runtime.enqueueReasoning,
     },
     { fromAgentId: agentId, toAgentId: null, content: "pong" },
   );

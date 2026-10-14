@@ -2048,7 +2048,7 @@ test("a failed conversation lane is reported to its current requester with a run
   });
 
   await deliverUserMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation },
+    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation, enqueueReasoning: runtime.enqueueReasoning },
     childId,
     "status?",
   );
@@ -2089,7 +2089,7 @@ test("the same lane failure on every wake is reported once until a run finishes 
     config,
     log: silentLog,
   });
-  const deps = { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation };
+  const deps = { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation, enqueueReasoning: runtime.enqueueReasoning };
   const reports = async () =>
     (await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId))).filter((m) => m.content.startsWith("[runtime]")).length;
 

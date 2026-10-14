@@ -235,6 +235,7 @@ test("deliverAgentMessage merges extraPayload into both message log rows", async
       enqueueConversation: (agentId) => {
         enqueued.push(agentId);
       },
+      enqueueReasoning: () => {},
     },
     {
       fromAgentId: fromId,

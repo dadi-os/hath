@@ -301,6 +301,7 @@ export async function runForwardAttachment(
       transcript: ctx.transcript,
       events: ctx.events,
       enqueueConversation: ctx.enqueueConversation,
+      enqueueReasoning: ctx.enqueueReasoning,
     },
     {
       fromAgentId: ctx.callerId,

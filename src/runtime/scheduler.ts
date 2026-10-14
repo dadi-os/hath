@@ -38,6 +38,7 @@ export function createScheduler(opts: {
   transcript: TranscriptStore;
   events: EventBus;
   enqueueConversation: (agentId: string) => void;
+  enqueueReasoning: (agentId: string) => void;
   log: SchedulerLog;
   tickSeconds: number;
 }): Scheduler {
@@ -127,6 +128,7 @@ export function createScheduler(opts: {
         transcript: opts.transcript,
         events: opts.events,
         enqueueConversation: opts.enqueueConversation,
+        enqueueReasoning: opts.enqueueReasoning,
       },
       {
         fromAgentId: row.fromAgentId,

@@ -75,6 +75,7 @@ export async function buildApp(
       transcript: runtime.transcript,
       events: runtime.events,
       enqueueConversation: runtime.enqueueConversation,
+      enqueueReasoning: runtime.enqueueReasoning,
       log: app.log,
       recoveryWindowMinutes: config.runtime.recovery_window_minutes,
     });

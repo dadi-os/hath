@@ -4,7 +4,7 @@ import { insertMessage, NO_ATTACHMENTS, type MessageAttachments } from "../db/me
 import { writeAgentLog } from "../db/logs.js";
 import type { MessageStatus } from "../types/domain.js";
 import type { EventBus } from "./events.js";
-import { recordDelivery } from "./jobs.js";
+import { opensLine, recordDelivery } from "./jobs.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 
 /**
@@ -27,6 +27,7 @@ export type DeliverDeps = {
   transcript: TranscriptStore;
   events: EventBus;
   enqueueConversation: (agentId: string) => void;
+  enqueueReasoning: (agentId: string) => void;
 };
 
 /**
@@ -98,7 +99,9 @@ export async function deliverUserMessage(
 /**
  * Persist an agent → agent|user message. Shared by dispatch_message,
  * forward_attachment and the scheduled-message ticker. Caller checks agent
- * existence/active before calling.
+ * existence/active before calling. A message from an agent the recipient opened
+ * the line to (its worker or helper, reporting back) wakes the recipient's reasoning
+ * lane, which directs that work; any other message wakes its conversation lane.
  */
 export async function deliverAgentMessage(
   deps: DeliverDeps,
@@ -166,7 +169,11 @@ export async function deliverAgentMessage(
       },
     });
     if (args.wake !== false) {
-      deps.enqueueConversation(row.toAgentId);
+      if (await opensLine(deps.db, row.toAgentId, args.fromAgentId)) {
+        deps.enqueueReasoning(row.toAgentId);
+      } else {
+        deps.enqueueConversation(row.toAgentId);
+      }
     }
   } else {
     await writeAgentLog(deps.db, {

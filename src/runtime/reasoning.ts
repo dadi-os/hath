@@ -16,7 +16,9 @@ export type ReasoningLoopDeps = StepDeps & {
  * and write before or instead of calling a tool. A turn with no tool call
  * continues; the only clean exit is the embedded yield tool.
  *
- * Steers join the wake as reasoning-only turns where they happened. When
+ * A run that finds nothing new since reasoning last yielded in this wake ends
+ * without a model call, as when a worker's report queues a run behind one that
+ * already read it. Steers join the wake as reasoning-only turns where they happened. When
  * conversation sets terminate, this wake stops in its tracks: no further tool
  * calls run (in-flight model output is logged, then its calls are refused).
  * Resolves true when the turn that ended the run wrote text and handed nothing to
@@ -44,7 +46,7 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<boolean
         only: "reasoning",
       });
     }
-    if (stop()) {
+    if (stop() || deps.wake.unchangedSinceYield(deps.lane)) {
       exit();
       return false;
     }
