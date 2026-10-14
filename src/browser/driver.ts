@@ -12,6 +12,7 @@ import {
   type CDPSession,
   type Download,
   type ElementHandle,
+  type Frame,
   type Locator,
   type Page,
 } from "playwright-core";
@@ -578,8 +579,10 @@ export class BrowserDriver {
   /**
    * Attach host files to a file input. Chromium runs on the Nas host and reads `paths` itself
    * over CDP, so they are absolute host paths, never paths inside Hath. A ref on a file input
-   * receives the files directly; any other ref is clicked and the file chooser it opens receives
-   * them. Resolves with the files as the input reports them after the change.
+   * receives the files directly; any other ref is clicked, and the files go to the file chooser
+   * the click opens or, when it opens an upload dialog instead (D2L's "Add a File" loads one in
+   * a frame), to the one file input that appears in any frame. Resolves with the files as the
+   * input reports them after the change.
    */
   async uploadFile(
     browserId: number,
@@ -604,8 +607,7 @@ export class BrowserDriver {
       }
       input = handle as ElementHandle<HTMLInputElement>;
     } else {
-      const [chooser] = await Promise.all([page.waitForEvent("filechooser"), locator.click()]);
-      input = chooser.element() as ElementHandle<HTMLInputElement>;
+      input = await this.fileInputFromClick(page, locator, ref);
     }
     const multiple = await input.evaluate((el) => el.multiple);
     if (paths.length > 1 && !multiple) {
@@ -618,19 +620,11 @@ export class BrowserDriver {
 
     const marker = randomUUID();
     await input.evaluate((el, value) => el.setAttribute("data-dadi-upload", value), marker);
-    const session = await this.pageSession(page);
-    const { root } = await session.send("DOM.getDocument", { depth: 0 });
-    const { nodeId } = await session.send("DOM.querySelector", {
-      nodeId: root.nodeId,
-      selector: `[data-dadi-upload="${marker}"]`,
-    });
-    if (nodeId === 0) {
-      throw new HathError(
-        422,
-        "invalid_request",
-        `the file input behind ${ref} is inside a frame; navigate to the frame's URL and upload there`,
-      );
+    const frame = await input.ownerFrame();
+    if (!frame) {
+      throw new HathError(409, "stale_ref", `the file input behind ${ref} is gone; take a fresh accessibility_tree`);
     }
+    const { session, nodeId } = await this.markedNode(page, frame, `[data-dadi-upload="${marker}"]`);
     await session.send("DOM.setFileInputFiles", { files: [...paths], nodeId });
 
     const files = await input.evaluate((el) => {
@@ -654,6 +648,100 @@ export class BrowserDriver {
       );
     }
     return { tab_id: resolved.tabId, files };
+  }
+
+  /**
+   * Click `locator` and return the file input it hands files to: the one behind the file chooser
+   * the click opens, or the one new file input that appears in any frame of the page, as an
+   * upload dialog adds it. Waits UPLOAD_TRIGGER_TIMEOUT_MS for either.
+   */
+  private async fileInputFromClick(
+    page: Page,
+    locator: Locator,
+    ref: string,
+  ): Promise<ElementHandle<HTMLInputElement>> {
+    const seen = randomUUID();
+    for (const frame of page.frames()) {
+      if (!frame.isDetached()) {
+        await frame.$$eval(
+          "input[type=file]",
+          (els, value) => els.forEach((el) => el.setAttribute("data-dadi-seen", value)),
+          seen,
+        );
+      }
+    }
+    const chooser = page
+      .waitForEvent("filechooser", { timeout: UPLOAD_TRIGGER_TIMEOUT_MS })
+      .then((opened) => opened.element() as ElementHandle<HTMLInputElement>);
+    await locator.click();
+    try {
+      return await Promise.any([chooser, this.newFileInput(page, seen)]);
+    } catch (err) {
+      const reasons = err instanceof AggregateError ? err.errors : [err];
+      const specific = reasons.find((reason) => reason instanceof HathError);
+      if (specific) {
+        throw specific;
+      }
+      throw new HathError(
+        422,
+        "invalid_request",
+        `clicking ${ref} opened no file chooser and added no file input within ${UPLOAD_TRIGGER_TIMEOUT_MS}ms; take a fresh accessibility_tree and pick the control that opens the upload`,
+      );
+    }
+  }
+
+  /** Resolve with the one file input in any frame not marked `data-dadi-seen=seen`, polling until UPLOAD_TRIGGER_TIMEOUT_MS. */
+  private async newFileInput(page: Page, seen: string): Promise<ElementHandle<HTMLInputElement>> {
+    const deadline = Date.now() + UPLOAD_TRIGGER_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const found: ElementHandle<HTMLInputElement>[] = [];
+      for (const frame of page.frames()) {
+        if (!frame.isDetached()) {
+          found.push(
+            ...((await frame.$$(`input[type=file]:not([data-dadi-seen="${seen}"])`)) as ElementHandle<HTMLInputElement>[]),
+          );
+        }
+      }
+      if (found.length > 1) {
+        throw new HathError(422, "invalid_request", `the click added ${found.length} file inputs; upload to one by its ref`);
+      }
+      const [input] = found;
+      if (input) {
+        return input;
+      }
+      await page.waitForTimeout(UPLOAD_POLL_MS);
+    }
+    throw new Error("no new file input appeared");
+  }
+
+  /**
+   * The CDP session and node id of the one element matching `selector` in `frame`. A frame in
+   * the page's process is reached through the page session, by searching every document and
+   * shadow root a pierced DOM.getDocument returns; an out-of-process frame has its own session.
+   */
+  private async markedNode(
+    page: Page,
+    frame: Frame,
+    selector: string,
+  ): Promise<{ session: CDPSession; nodeId: number }> {
+    const pageSession = await this.pageSession(page);
+    const { root } = await pageSession.send("DOM.getDocument", { depth: -1, pierce: true });
+    for (const searchRoot of searchRootIds(root)) {
+      const { nodeId } = await pageSession.send("DOM.querySelector", { nodeId: searchRoot, selector });
+      if (nodeId !== 0) {
+        return { session: pageSession, nodeId };
+      }
+    }
+    if (frame === page.mainFrame()) {
+      throw new HathError(409, "stale_ref", "the file input left the page before upload; take a fresh accessibility_tree");
+    }
+    const frameSession = await page.context().newCDPSession(frame);
+    const { root: frameRoot } = await frameSession.send("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await frameSession.send("DOM.querySelector", { nodeId: frameRoot.nodeId, selector });
+    if (nodeId === 0) {
+      throw new HathError(409, "stale_ref", "the file input left its frame before upload; take a fresh accessibility_tree");
+    }
+    return { session: frameSession, nodeId };
   }
 
   /** Fail with not_found unless `path` is an absolute path to an existing file on the Nas host. */
@@ -817,6 +905,43 @@ function cdpSend<T>(
     params?: Record<string, unknown>,
   ) => Promise<T>;
   return send(method, params);
+}
+
+/** How long upload_file waits for a clicked control to open a file chooser or add a file input. */
+const UPLOAD_TRIGGER_TIMEOUT_MS = 10_000;
+
+/** How often upload_file looks for a file input a click added. */
+const UPLOAD_POLL_MS = 250;
+
+/** DOM nodeType of a document, and of a document fragment such as a shadow root. */
+const DOCUMENT_NODE = 9;
+const DOCUMENT_FRAGMENT_NODE = 11;
+
+/** A pierced DOM.getDocument node: the fields searchRootIds walks. */
+type DomNode = {
+  nodeId: number;
+  nodeType: number;
+  children?: DomNode[];
+  contentDocument?: DomNode;
+  shadowRoots?: DomNode[];
+};
+
+/** The node ids of `root` and of every frame document and shadow root under it, outermost first. */
+function searchRootIds(root: DomNode): number[] {
+  const ids: number[] = [];
+  const visit = (node: DomNode) => {
+    if (node.nodeType === DOCUMENT_NODE || node.nodeType === DOCUMENT_FRAGMENT_NODE) {
+      ids.push(node.nodeId);
+    }
+    for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) {
+      visit(child);
+    }
+    if (node.contentDocument) {
+      visit(node.contentDocument);
+    }
+  };
+  visit(root);
+  return ids;
 }
 
 /**

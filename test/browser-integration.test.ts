@@ -194,7 +194,7 @@ test("integration: snapshot refs across frames and shadow roots, actions, keys, 
   }
 });
 
-test("integration: upload_file attaches a host file directly and through a file chooser", async (t) => {
+test("integration: upload_file attaches a host file directly, through a file chooser, and through a dialog frame", async (t) => {
   if (!nasUrl) {
     t.skip("NAS_URL not set");
     return;
@@ -231,13 +231,23 @@ test("integration: upload_file attaches a host file directly and through a file 
       <input id="direct" type="file" />
       <button id="pick" onclick="document.getElementById('hidden').click()">Upload resume</button>
       <input id="hidden" type="file" style="display:none" />
+      <button id="dialog" onclick="setTimeout(openDialog, 500)">Add a File</button>
+      <script>
+        function openDialog() {
+          const frame = document.createElement("iframe");
+          frame.id = "upload-dialog";
+          frame.srcdoc = "<div id=host></div><script>document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML = '<input type=file style=opacity:0>';<\\/script>";
+          document.body.appendChild(frame);
+        }
+      </script>
     </body></html>`);
     const nav = await driver.navigate(browserId, undefined, `data:text/html,${pageHtml}`);
     const tabId = nav.tab_id;
     const snap = await driver.accessibilityTree(browserId, tabId);
     const directRef = snap.tree.match(/\[(e\d+)\] input type="file"/)?.[1];
     const pickRef = snap.tree.match(/button \[(e\d+)\] "Upload resume"/)?.[1];
-    assert.ok(directRef && pickRef, snap.tree);
+    const dialogRef = snap.tree.match(/button \[(e\d+)\] "Add a File"/)?.[1];
+    assert.ok(directRef && pickRef && dialogRef, snap.tree);
     assert.doesNotMatch(snap.tree, /name="hidden"/);
 
     const direct = await driver.uploadFile(browserId, tabId, directRef, [hostPath]);
@@ -253,6 +263,15 @@ test("integration: upload_file attaches a host file directly and through a file 
       ),
     );
     assert.deepEqual(names, ["Resume [v1].txt", "Resume [v1].txt"]);
+
+    const dialog = await driver.uploadFile(browserId, tabId, dialogRef, [hostPath]);
+    assert.deepEqual(dialog.files, [{ name: "Resume [v1].txt", size: Buffer.byteLength(content) }]);
+    const inDialog = await page.evaluate(() => {
+      const frame = document.getElementById("upload-dialog") as HTMLIFrameElement;
+      const input = frame.contentDocument?.getElementById("host")?.shadowRoot?.querySelector("input");
+      return input?.files?.[0]?.name ?? null;
+    });
+    assert.equal(inDialog, "Resume [v1].txt");
 
     await assert.rejects(
       () => driver.uploadFile(browserId, tabId, directRef, [`${hostDir}/missing.pdf`]),
