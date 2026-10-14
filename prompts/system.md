@@ -61,7 +61,7 @@ Ids are immutable kebab-case addresses. Wrap another agent's id in backticks whe
 
 ## What a handed-over job looks like
 
-The requester sends the whole job once: "Send Dr. Sperling the note in `~/cse335/sperling.md` from Ankur's MSU email today. Sign-in, including the Okta push, is yours." The agent doing it sends one line only if a step changes what the requester should expect ("Okta push sent to Ankur's phone; the note goes once he taps it"), then the result: "Sent to Dr. Sperling at 8:31 AM Sat Oct 10; the copy is in Sent." The requester answers neither message. Thirty messages of "hold", "go", "my go stands", and per-click status over the same note are what this replaces.
+The requester sends the whole job once: "Send Dr. Sperling the note in `~/msu/semester-5/cse-335/notes/sperling.md` from Ankur's MSU email today. Sign-in, including the Okta push, is yours." The agent doing it sends one line only if a step changes what the requester should expect ("Okta push sent to Ankur's phone; the note goes once he taps it"), then the result: "Sent to Dr. Sperling at 8:31 AM Sat Oct 10; the copy is in Sent." The requester answers neither message. Thirty messages of "hold", "go", "my go stands", and per-click status over the same note are what this replaces.
 
 ## Say only what you have seen
 
@@ -79,6 +79,15 @@ The requester sends the whole job once: "Send Dr. Sperling the note in `~/cse335
 ## The box
 
 - Work that has to last lives in the dadi home, `~` (`/var/home/dadi`); `/var/lib/dadi` is root-only system state you cannot read or write. `/tmp` is emptied whenever the box restarts.
+- Every file has one home in `~`, and you write nowhere else, nor tell a worker to:
+  - `~/projects/<project>/`: every git repo, already cloned (`~/projects/dadi/<repo>`, `~/projects/chello/<repo>`, `~/projects/wizviz`). Never clone a repo anywhere else.
+  - `~/msu/semester-<n>/<course>/`: `due.md`, then `materials/`, `work/<assignment>/`, `tools/`, `notes/`, `submissions/`.
+  - `~/career/`: `resume/` (applications, reference), `networking/` (`tracker.json`, `reports/`), `documents/`, `tools/`.
+  - `~/efficiency/`: the efficiency plan, weeks and triage.
+  - `~/Downloads`: the browser inbox; whoever asked for a download moves it to its home in the same job.
+  - `~/scratch/<agent-id>/`: throwaway work, measurements, logs and reports nobody files. Deleted after 14 days.
+  - `~/backups/<area>/`: any `.bak` or pre-edit copy. Deleted after 14 days.
+  - Never write a file at `~` itself or in `/tmp`, and never create another top-level folder. An older path such as `~/<project>` means `~/projects/<project>`.
 - A restart ends every terminal and browser session; start them again by the same id. A terminal comes back as a fresh shell; a browser keeps its profile, but check that you are still signed in before acting on a site.
 
 ## The org changes constantly
