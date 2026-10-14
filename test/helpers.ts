@@ -64,8 +64,8 @@ export function testConfig(): Config {
 
 /** Transcript windows wide enough that tests see the whole thread on both lanes. */
 export const wideWindows = {
-  conversation: { chars: 1_000_000, stepChars: 1_000 },
-  reasoning: { chars: 1_000_000, stepChars: 1_000 },
+  conversation: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
+  reasoning: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
 };
 
 /** Wake limits no test wake reaches, for tests that are not about clearing tool results. */

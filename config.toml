@@ -4,9 +4,11 @@
 lane_queue_timeout_ms = 30000
 # Each lane's transcript is a rolling window over the agent's thread: the
 # newest messages up to about that lane's chars (about 2.4 chars a token on
-# Haiku 5.5, measured). Conversation fills the prompt ceiling with its thread
-# (about 76k tokens next to about 10k of system and tools); reasoning holds
-# about 42k so its wake keeps about 40k. Older messages fall out and are reached only through
+# Haiku 5.5, measured), and never more than the prompt ceiling less trim
+# tokens leaves after the agent's own system and that lane's tools, so a long
+# charter means a shorter window and the wake keeps its trim headroom.
+# Conversation's chars (about 76k tokens) is reached only by a light charter;
+# reasoning holds about 42k so its wake keeps about 40k. Older messages fall out and are reached only through
 # get_logs and memory. A window's start moves in jumps of step chars instead
 # of sliding with every message, so the provider cache survives everything
 # but the jump.

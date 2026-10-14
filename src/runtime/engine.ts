@@ -27,7 +27,7 @@ import type {
   Lane,
   RoutedMessage,
 } from "../types/domain.js";
-import { arrivalsSince, assembleContext, assembleRouterContext } from "./context.js";
+import { arrivalsSince, assembleContext, assembleRouterContext, type TranscriptWindows } from "./context.js";
 import { deliverAgentMessage, RUNTIME_REPORT, type RuntimeReportKind } from "./deliver.js";
 import { runConversationLoop } from "./conversation.js";
 import { EventBus } from "./events.js";
@@ -361,7 +361,7 @@ export function createRuntime(opts: {
     return { exec, logResponse, logToolResult };
   }
 
-  function stepDeps(agentId: string, lane: Lane) {
+  function stepDeps(agentId: string, lane: keyof TranscriptWindows) {
     const helpers = laneHelpers(agentId, lane);
     return {
       agentId,
@@ -378,10 +378,12 @@ export function createRuntime(opts: {
             conversation: {
               chars: opts.config.runtime.conversation_transcript_window_chars,
               stepChars: opts.config.runtime.transcript_window_step_chars,
+              budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
             },
             reasoning: {
               chars: opts.config.runtime.reasoning_transcript_window_chars,
               stepChars: opts.config.runtime.transcript_window_step_chars,
+              budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
             },
           },
         }),

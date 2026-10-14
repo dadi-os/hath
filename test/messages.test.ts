@@ -6,13 +6,14 @@ import { migrate } from "../src/db/migrate.js";
 import { hydrateTranscript, insertMessage, listHumanMessages, listThreads, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { agentLogs, agents, attachments, messages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { arrivalsSince, assembleContext, windowStart } from "../src/runtime/context.js";
+import { arrivalsSince, assembleContext, type TranscriptWindow, windowStart } from "../src/runtime/context.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus } from "../src/runtime/events.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { AGENT_MESSAGE_MAX_CHARS } from "../src/tools/shared.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
+import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "../src/runtime/wake.js";
 import {
   endTurn,
   insertAgent,
@@ -109,7 +110,7 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
   for (let i = 0; i < 6; i++) {
     await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
   }
-  const assemble = (conversation: { chars: number; stepChars: number }) =>
+  const assemble = (conversation: TranscriptWindow) =>
     assembleContext({
       db: handle.db,
       serviceRoot: config.serviceRoot,
@@ -123,7 +124,7 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
   const thread = whole.transcripts.conversation!;
   assert.equal(thread.length, 6);
 
-  const narrow = await assemble({ chars: 500, stepChars: 200 });
+  const narrow = await assemble({ chars: 500, stepChars: 200, budgetTokens: 10_000_000 });
   const sizes = thread.map((m) => String(m.content).length);
   const start = windowStart(sizes, { chars: 500, stepChars: 200 });
   assert.ok(start > 0);
@@ -131,6 +132,40 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
   assert.match(String(narrow.transcripts.conversation!.at(-1)?.content), /\nm-5 /);
   assert.deepEqual(narrow.transcripts.reasoning, thread);
   assert.equal(narrow.throughSeq, whole.throughSeq);
+});
+
+test("assembleContext shortens a lane's window to the room its token budget leaves after the system and tools", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertWorker(handle.db, {
+    name: "budget-worker",
+    systemPrompt: "system",
+    tools: [],
+  });
+  const transcript = new TranscriptStore();
+  const deps = deliverDeps(transcript);
+  for (let i = 0; i < 6; i++) {
+    await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
+  }
+  const assemble = (budgetTokens: number) =>
+    assembleContext({
+      db: handle.db,
+      serviceRoot: config.serviceRoot,
+      agentId,
+      lane: "conversation",
+      transcript,
+      windows: { conversation: { ...wideWindows.conversation, budgetTokens }, reasoning: wideWindows.reasoning },
+    });
+
+  const whole = await assemble(wideWindows.conversation.budgetTokens);
+  const thread = whole.transcripts.conversation!;
+  assert.equal(thread.length, 6);
+  const fixedTokens =
+    Math.ceil(whole.system.length / PROSE_CHARS_PER_TOKEN) +
+    Math.ceil(JSON.stringify(whole.tools).length / DATA_CHARS_PER_TOKEN);
+
+  const full = await assemble(fixedTokens);
+  assert.deepEqual(full.transcripts.conversation, thread.slice(-1));
+  assert.deepEqual(full.transcripts.reasoning, thread);
 });
 
 test("messages arriving mid-wake join the wake after it and never rewrite earlier turns", async () => {

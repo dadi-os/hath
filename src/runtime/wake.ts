@@ -69,17 +69,18 @@ const TRIMMED_ACTIONS =
 
 /**
  * Characters per token of prose (messages, thinking) when estimating what Hath has
- * not seen measured: a step since the lane's last call, and a lane's first call.
+ * not seen measured: a step since the lane's last call, a lane's first call, and the
+ * room a transcript window has beside the system and tools (see assembleContext).
  * Haiku 5.5 counted 2.37 on a real agent thread (2026-10-10), rounded down.
  */
-const PROSE_CHARS_PER_TOKEN = 2.3;
+export const PROSE_CHARS_PER_TOKEN = 2.3;
 
 /**
  * Characters per token of data (tool results, tool inputs, tool schemas): JSON with
  * ids and URLs packs denser than prose, about 1.8 on a 45k-character get_logs result
  * (2026-10-11), rounded down so estimates never undercount.
  */
-const DATA_CHARS_PER_TOKEN = 1.7;
+export const DATA_CHARS_PER_TOKEN = 1.7;
 
 /** How much tool output a wake shows in full before it clears older results. */
 export type WakeLimits = {

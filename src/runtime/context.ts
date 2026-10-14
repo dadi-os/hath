@@ -38,6 +38,7 @@ import {
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
 import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
+import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "./wake.js";
 import { embeddedAgentTools, embeddedSchedulingTools } from "../tools/registry.js";
 import { asDwarTool } from "../tools/types.js";
 import { routerLaneTools } from "./router.js";
@@ -153,6 +154,12 @@ export type TranscriptWindow = {
   chars: number;
   /** The window's start moves in jumps of this many characters. */
   stepChars: number;
+  /**
+   * The lane's system, tools and window together stay under about this many tokens:
+   * an agent whose charter and tools weigh more gets a shorter window, so its first
+   * call never starts over the prompt ceiling.
+   */
+  budgetTokens: number;
 };
 
 /** Each agent lane's transcript window. */
@@ -168,7 +175,7 @@ export type TranscriptWindows = Record<Exclude<Lane, "router">, TranscriptWindow
  * outgrows the window by another step, which keeps the provider's cached
  * prefix byte-stable between jumps. The newest entry is always shown.
  */
-export function windowStart(sizes: number[], window: TranscriptWindow): number {
+export function windowStart(sizes: number[], window: Omit<TranscriptWindow, "budgetTokens">): number {
   const total = sizes.reduce((sum, size) => sum + size, 0);
   if (total <= window.chars) {
     return 0;
@@ -186,13 +193,14 @@ export function windowStart(sizes: number[], window: TranscriptWindow): number {
 
 /**
  * An agent lane's request: its system, then each lane's rolling window of its
- * thread (see windowStart). Messages that left a window are reached through
- * get_logs and memory. Dwar appends lane doctrine as a cached block.
+ * thread (see windowStart), no wider than the room the window's budget leaves
+ * after the system and that lane's tools. Messages that left a window are reached
+ * through get_logs and memory. Dwar appends lane doctrine as a cached block.
  */
 export async function assembleContext(opts: {
   db: Db;
   agentId: string;
-  lane: Lane;
+  lane: keyof TranscriptWindows;
   transcript: TranscriptStore;
   serviceRoot: string;
   windows: TranscriptWindows;
@@ -205,15 +213,29 @@ export async function assembleContext(opts: {
     content: texts[i]!,
   }));
   const sizes = texts.map((text) => text.length);
-  const windowed = (window: TranscriptWindow) => messages.slice(windowStart(sizes, window));
+  const laneTools = {
+    conversation: await toolsForLane(opts.db, opts.agentId, "conversation"),
+    reasoning: await toolsForLane(opts.db, opts.agentId, "reasoning"),
+  };
+  const windowed = (lane: keyof TranscriptWindows) => {
+    const window = opts.windows[lane];
+    const fixedTokens =
+      Math.ceil(system.length / PROSE_CHARS_PER_TOKEN) +
+      Math.ceil(JSON.stringify(laneTools[lane]).length / DATA_CHARS_PER_TOKEN);
+    const chars = Math.min(
+      window.chars,
+      Math.floor(Math.max(0, window.budgetTokens - fixedTokens) * PROSE_CHARS_PER_TOKEN),
+    );
+    return messages.slice(windowStart(sizes, { ...window, chars }));
+  };
 
   return {
     system,
     transcripts: {
-      conversation: windowed(opts.windows.conversation),
-      reasoning: windowed(opts.windows.reasoning),
+      conversation: windowed("conversation"),
+      reasoning: windowed("reasoning"),
     },
-    tools: await toolsForLane(opts.db, opts.agentId, opts.lane),
+    tools: laneTools[opts.lane],
     throughSeq: thread.at(-1)?.seq ?? 0,
   };
 }
