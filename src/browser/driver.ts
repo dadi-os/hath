@@ -823,6 +823,9 @@ function cdpSend<T>(
  * Evaluated in each frame with the first ref number to hand out: clear old refs (shadow roots
  * included), walk the visible DOM through open shadow roots and slots, assign data-dadi-ref to
  * interactive nodes, and return the indented text tree with the next free ref number.
+ * CSS hiding drops a whole subtree, but an element with no box of its own (a 0×0 portal
+ * wrapper, as Trello puts its board and card dialog in) is only passed through, so the
+ * positioned content inside it still gets refs.
  * A password input (type password, or a password autocomplete once a show-password toggle has
  * made it text) reads `filled` instead of its value, so a filled password never reaches a tree.
  */
@@ -842,16 +845,30 @@ const SNAPSHOT_SCRIPT = `(start) => {
   const lines = [];
   const MIN_TEXT = 2;
 
+  /** True when el and everything inside it are invisible: hidden by CSS, or a 0×0 box that clips its overflow. */
   function isHidden(el) {
     if (!(el instanceof Element)) return true;
     const style = window.getComputedStyle(el);
     if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
       return true;
     }
-    if (style.display === "contents") return false;
+    return (style.overflowX !== "visible" || style.overflowY !== "visible") && hasNoBox(el);
+  }
+
+  /** True when el lays out to 0×0; children positioned outside it can still be on screen. */
+  function hasNoBox(el) {
+    if (window.getComputedStyle(el).display === "contents") return false;
     const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return true;
-    return false;
+    return rect.width === 0 && rect.height === 0;
+  }
+
+  /** The nodes under node that walk visits: its open shadow root, a filled slot's assigned nodes, or its children. */
+  function childrenOf(node, tag) {
+    if (node.shadowRoot) return node.shadowRoot.childNodes;
+    if (tag === "slot" && node.assignedNodes({ flatten: true }).length > 0) {
+      return node.assignedNodes({ flatten: true });
+    }
+    return node.childNodes;
   }
 
   function assignRef(el) {
@@ -890,7 +907,7 @@ const SNAPSHOT_SCRIPT = `(start) => {
       const text = (node.textContent || "").replace(/\\s+/g, " ").trim();
       if (text.length >= MIN_TEXT) {
         const parent = node.parentElement;
-        if (parent && !isHidden(parent) && !["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) {
+        if (parent && !isHidden(parent) && !hasNoBox(parent) && !["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) {
           lines.push(indent(depth) + "text " + JSON.stringify(text));
         }
       }
@@ -902,6 +919,12 @@ const SNAPSHOT_SCRIPT = `(start) => {
 
     const tag = node.tagName.toLowerCase();
     const role = (node.getAttribute("role") || "").toLowerCase();
+    if (hasNoBox(node)) {
+      for (const child of childrenOf(node, tag)) {
+        walk(child, depth);
+      }
+      return;
+    }
     let emitted = false;
 
     if (/^h[1-6]$/.test(tag) || tag === "main" || tag === "nav" || tag === "header"
@@ -966,13 +989,7 @@ const SNAPSHOT_SCRIPT = `(start) => {
     if (tag === "input" || tag === "textarea" || tag === "select" || tag === "img") {
       return;
     }
-    let children = node.childNodes;
-    if (node.shadowRoot) {
-      children = node.shadowRoot.childNodes;
-    } else if (tag === "slot" && node.assignedNodes({ flatten: true }).length > 0) {
-      children = node.assignedNodes({ flatten: true });
-    }
-    for (const child of children) {
+    for (const child of childrenOf(node, tag)) {
       walk(child, childDepth);
     }
   }

@@ -115,6 +115,17 @@ test("integration: snapshot refs across frames and shadow roots, actions, keys, 
     await driver.click(browserId, tabId, laterRef, true);
     assert.match((await driver.extractText(browserId, tabId)).text, /drawn after the click/);
 
+    const portalHtml = encodeURIComponent(`<!doctype html><html><body>
+      <div style="width:0;height:0"><div style="position:fixed;top:20px;left:20px;width:200px">
+        <div contenteditable="true">Add a more detailed description</div>
+      </div></div>
+      <div style="width:0;height:0;overflow:hidden"><button>Clipped</button></div>
+    </body></html>`);
+    await driver.navigate(browserId, tabId, `data:text/html,${portalHtml}`);
+    const portal = (await driver.accessibilityTree(browserId, tabId)).tree;
+    assert.match(portal, /textbox \[e\d+\] editable "Add a more detailed description"/, portal);
+    assert.equal(portal.includes("Clipped"), false, portal);
+
     const tab2 = await driver.newTab(browserId, "about:blank");
     const tabs = await driver.listTabs(browserId);
     assert.ok(tabs.length >= 2);
