@@ -29,12 +29,16 @@ export type ConversationLoopDeps = StepDeps & {
  * counting them, since a send_message in reasoning's turns delivers nothing;
  * a second yield stands. A yield in a turn that wrote a message's worth of text
  * and sent nothing is answered once the same way, since text reaches no one.
- * Every send passes the gates in sendRefusal first.
+ * Every send passes the gates in sendRefusal first. A turn whose send was refused
+ * (here or by the tool's own report gates) does not end on its yield: the lane gets a
+ * turn saying so and sends again, up to REFUSED_SEND_RETRIES times a run, since a
+ * refused message that ends the run is a message nobody sent.
  */
 export async function runConversationLoop(deps: ConversationLoopDeps): Promise<void> {
   let unsent = 0;
   let reminded = false;
   let textReminded = false;
+  let refusedRetries = 0;
   const handoffs = new Map<string | null, number>();
   for (;;) {
     const assembled = await deps.assemble();
@@ -63,6 +67,7 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
     const sent = sends(response.content);
     unsent = Math.max(0, unsent - sent);
     const sentTo = new Set<string | null>();
+    let refused = false;
     const gated = async (call: DwarToolUseBlock): Promise<ToolExecResult> => {
       if (call.name !== DISPATCH_MESSAGE && call.name !== FORWARD_ATTACHMENT) {
         return deps.executeTool(call);
@@ -72,20 +77,24 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
         return deps.executeTool(call);
       }
       const refusal = await sendRefusal(deps, to, sentTo, handoffs);
-      if (refusal !== null) {
-        return fail(refusal);
+      const result = refusal === null ? await deps.executeTool(call) : fail(refusal);
+      if (result.isError) {
+        refused = true;
+        return result;
       }
-      const result = await deps.executeTool(call);
-      if (!result.isError) {
-        sentTo.add(to);
-        const left = handoffs.get(to);
-        if (left !== undefined && left > 0) {
-          handoffs.set(to, left - 1);
-        }
+      sentTo.add(to);
+      const left = handoffs.get(to);
+      if (left !== undefined && left > 0) {
+        handoffs.set(to, left - 1);
       }
       return result;
     };
     if (await runStep({ ...deps, executeTool: gated }, response, () => false)) {
+      if (refused && refusedRetries < REFUSED_SEND_RETRIES) {
+        refusedRetries += 1;
+        deps.wake.push({ message: { role: "user", content: REFUSED_SEND_TURN }, only: "conversation" });
+        continue;
+      }
       if (unsent > 0 && !reminded) {
         reminded = true;
         deps.wake.push({ message: { role: "user", content: unsentTurn(unsent) }, only: "conversation" });
@@ -131,6 +140,13 @@ async function sendRefusal(
   }
   return null;
 }
+
+/** How many times a run answers a yield after a refused send before the yield stands. */
+const REFUSED_SEND_RETRIES = 3;
+
+/** The turn a yield gets when a send in the same turn was refused. */
+export const REFUSED_SEND_TURN =
+  "[continue] A message in your last turn was not sent: its result says why. Send it again the way that result says, or yield if it no longer applies.";
 
 /** A conversation turn whose text is at least this long, sent nowhere, reads as a message left unsent. */
 const UNSENT_TEXT_CHARS = 400;

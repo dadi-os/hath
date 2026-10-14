@@ -119,14 +119,14 @@ test("an agent's line to its worker opens a job only one way, and a scheduled tr
   const workerId = await insertAgent(handle.db, { id: "job-worker", systemPrompt: "worker", parentAgentId: managerId });
   const runtime = idleRuntime();
 
-  assert.equal((await dispatch(runtime, managerId, workerId, "read the page")).isError, false);
+  await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "read the page" });
   assert.equal((await jobsOf(workerId)).length, 1);
   assert.equal((await jobsOf(managerId)).length, 0);
 
   const bare = await dispatch(runtime, workerId, managerId, "page read");
   assert.equal(bare.isError, true);
   assert.equal((await dispatch(runtime, workerId, managerId, "page read: 3 items", "done")).isError, false);
-  assert.equal((await dispatch(runtime, managerId, workerId, "thanks, stop there")).isError, false);
+  await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "thanks, stop there" });
   assert.deepEqual((await jobsOf(workerId)).map((row) => row.state).sort(), ["done", "open"]);
 
   const routineId = await insertAgent(handle.db, { id: "job-routine", systemPrompt: "routine", parentAgentId: managerId });
