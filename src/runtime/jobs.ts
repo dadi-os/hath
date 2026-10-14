@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { RUNTIME_PREFIX } from "../db/messages.js";
 import { jobs, messages, type JobRow } from "../db/schema.js";
@@ -17,6 +17,9 @@ import type { TranscriptEntry } from "./transcript.js";
 /** What a message's status input tells the model, shared by dispatch_message and forward_attachment. */
 export const STATUS_DESCRIPTION =
   "Required on a message to whoever gave you a job that is still open: running for your one progress update on it, needs_input for a question only they can answer, blocked when you cannot finish it, done with the result. Leave it out on messages to agents you brought in.";
+
+/** Opens the note on an agent's open jobs; it names hath so the lane never reads it as part of a message. */
+const OPEN_JOBS_HEADER = "[Open jobs] A note from hath, not a message: what your sends are held to right now.";
 
 /** Job states in which the work is still the agent's. */
 const OPEN_STATES = ["open", "needs_input"] as const;
@@ -170,4 +173,44 @@ export async function reportRefusal(
     return `Not sent: your question to ${who} is still open and ${who} has not replied since. Do not ask again; wait for the reply.`;
   }
   return null;
+}
+
+/**
+ * openJobsNote is hath's note to `agentId`'s conversation lane on the jobs its sends are
+ * held to, so it sends right the first time instead of learning each gate from a
+ * refusal: everyone whose open job it owes a status on every message, with whether its
+ * one progress update is spent or its question still waits (see reportRefusal), and the
+ * agents it gave work that is still open, which hear from it only through reasoning's
+ * hand-offs (see conversation.ts sendRefusal). Null when it has no open job either way.
+ */
+export async function openJobsNote(db: Db, agentId: string): Promise<string | null> {
+  const owed = await db
+    .select()
+    .from(jobs)
+    .where(and(eq(jobs.agentId, agentId), inArray(jobs.state, [...OPEN_STATES])))
+    .orderBy(asc(jobs.openedSeq));
+  const given = await db
+    .select({ agentId: jobs.agentId })
+    .from(jobs)
+    .where(and(eq(jobs.requesterId, agentId), inArray(jobs.state, [...OPEN_STATES])))
+    .orderBy(asc(jobs.agentId));
+  if (owed.length === 0 && given.length === 0) {
+    return null;
+  }
+  const lines = owed.map((job) => {
+    const who = job.requesterId ?? "Ankur";
+    const next =
+      job.state === "needs_input"
+        ? `your question to ${who} waits for a reply, so do not ask again`
+        : job.progressSeq !== null
+          ? "your one progress update is spent, so the next is done, blocked or needs_input"
+          : "running is free for one progress update";
+    return `- ${who} gave you a job that is still open: every message to ${who} carries a status, and ${next}.`;
+  });
+  if (given.length > 0) {
+    lines.push(
+      `- You gave work that is still open to ${given.map((job) => job.agentId).join(", ")}: send to them only reasoning's send_message hand-offs; to change that work, steer reasoning.`,
+    );
+  }
+  return [OPEN_JOBS_HEADER, ...lines].join("\n");
 }

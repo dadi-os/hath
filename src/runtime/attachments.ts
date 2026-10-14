@@ -228,7 +228,7 @@ export const forwardAttachmentTool: DwarTool = {
     properties: {
       to_agent_id: {
         type: ["string", "null"],
-        description: "Recipient kebab-case agent id, or null for the user",
+        description: 'Recipient kebab-case agent id, or null for Ankur (the user); never the string "Ankur"',
       },
       attachment_ids: {
         type: "array",

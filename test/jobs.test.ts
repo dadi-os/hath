@@ -5,6 +5,7 @@ import { migrate } from "../src/db/migrate.js";
 import { jobs, messages } from "../src/db/schema.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime, type Runtime } from "../src/runtime/engine.js";
+import { openJobsNote } from "../src/runtime/jobs.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { RUNTIME_PREFIX } from "../src/db/messages.js";
@@ -137,6 +138,29 @@ test("an agent's line to its worker opens a job only one way, and a scheduled tr
     scheduled: true,
   });
   assert.equal((await jobsOf(routineId)).length, 0);
+  await runtime.waitUntilIdle();
+});
+
+test("the open-jobs note tells conversation whom it owes a status, what it has spent, and whom it reaches only through reasoning", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const managerId = await insertAgent(handle.db, { id: "note-manager", systemPrompt: "manager" });
+  const workerId = await insertAgent(handle.db, { id: "note-worker", systemPrompt: "worker", parentAgentId: managerId });
+  const runtime = idleRuntime();
+  assert.equal(await openJobsNote(handle.db, managerId), null);
+
+  await deliverUserMessage(deps(runtime), managerId, "find my exam times");
+  await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "read the exam page" });
+  let note = await openJobsNote(handle.db, managerId);
+  assert.match(note!, /Ankur gave you a job that is still open: every message to Ankur carries a status, and running is free/);
+  assert.match(note!, /You gave work that is still open to note-worker:/);
+
+  assert.equal((await dispatch(runtime, managerId, null, "on it", "running")).isError, false);
+  note = await openJobsNote(handle.db, managerId);
+  assert.match(note!, /your one progress update is spent/);
+  assert.equal((await dispatch(runtime, managerId, null, "which semester?", "needs_input")).isError, false);
+  assert.match((await openJobsNote(handle.db, managerId))!, /your question to Ankur waits for a reply/);
+
+  assert.match((await openJobsNote(handle.db, workerId))!, /note-manager gave you a job/);
   await runtime.waitUntilIdle();
 });
 

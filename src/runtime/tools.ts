@@ -58,7 +58,7 @@ export const sendMessageInputSchema: Record<string, unknown> = {
   properties: {
     to_agent_id: {
       type: ["string", "null"],
-      description: "Recipient kebab-case agent id, or null for the user",
+      description: 'Recipient kebab-case agent id, or null for Ankur (the user); never the string "Ankur"',
     },
     intent: {
       type: "string",
@@ -83,7 +83,7 @@ export const dispatchMessageInputSchema: Record<string, unknown> = {
   properties: {
     to_agent_id: {
       type: ["string", "null"],
-      description: "Recipient kebab-case agent id, or null for the user",
+      description: 'Recipient kebab-case agent id, or null for Ankur (the user); never the string "Ankur"',
     },
     content: { type: "string", description: "The message to persist and deliver" },
     status: {
@@ -171,7 +171,7 @@ export const sendMessageTool: DwarTool = {
 export const dispatchMessageTool: DwarTool = {
   name: DISPATCH_MESSAGE,
   description:
-    "Write a message to another agent or to the user (to_agent_id null). This is the only way a message addressed to someone else is persisted. Does not end the turn — call yield when done. See the routing block for who to address. Domain work runs on the reasoning lane — use steer_reasoning for that; do not claim grants are missing because conversation cannot see them.",
+    "Write a message to another agent or to the user (to_agent_id null). This is the only way a message addressed to someone else is persisted. Does not end the turn — call yield when done. Hath refuses a send that breaks one of these, so follow them the first time: one message per recipient per turn, text and files together (forward_attachment carries both); a message to whoever gave you a job that is still open carries a status (see the [Open jobs] note); an agent you gave work to gets only your reasoning lane's send_message hand-offs, so steer reasoning to change that work; and a send to someone who wrote after you composed it waits until you have read them. See the routing block for who to address. Domain work runs on the reasoning lane — use steer_reasoning for that; do not claim grants are missing because conversation cannot see them.",
   input_schema: dispatchMessageInputSchema,
 };
 

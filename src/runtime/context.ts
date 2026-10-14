@@ -35,6 +35,7 @@ import {
   waitTool,
   yieldTool,
 } from "./tools.js";
+import { openJobsNote } from "./jobs.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
 import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
 import type { ActionEntry, TranscriptEntry, TranscriptStore } from "./transcript.js";
@@ -195,7 +196,10 @@ export function windowStart(sizes: number[], window: Omit<TranscriptWindow, "bud
  * An agent lane's request: its system, then each lane's rolling window of its
  * history (see historyFor, windowStart), no wider than the room the window's budget leaves
  * after the system and that lane's tools. Messages that left a window are reached
- * through get_logs and memory. Dwar appends lane doctrine as a cached block.
+ * through get_logs and memory. When conversation's history ends on something for it
+ * to answer, hath's note on the agent's open jobs follows it (see openJobsNote); a
+ * history that ends on the agent's own turn gets none, so a run with nothing to
+ * answer still makes no call. Dwar appends lane doctrine as a cached block.
  */
 export async function assembleContext(opts: {
   db: Db;
@@ -225,10 +229,15 @@ export async function assembleContext(opts: {
     return messages.slice(windowStart(sizes, { ...window, chars }));
   };
 
+  const conversation = windowed("conversation");
+  const note = await openJobsNote(opts.db, opts.agentId);
   return {
     system,
     transcripts: {
-      conversation: windowed("conversation"),
+      conversation:
+        note !== null && conversation.at(-1)?.role === "user"
+          ? [...conversation, { role: "user", content: note }]
+          : conversation,
       reasoning: windowed("reasoning"),
     },
     tools: laneTools[opts.lane],
