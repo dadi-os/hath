@@ -1,10 +1,14 @@
 /** Reasoning-lane send_message handoff. Conversation drains this before composing. */
 
+import type { MessageStatus } from "../types/domain.js";
+
 export type DispatchIntent = {
   toAgentId: string | null;
   intent: string;
   /** Attachments the message carries; empty for a plain message. */
   attachmentIds: string[];
+  /** The job status reasoning gave the report, which conversation sends it with; null when it gave none. */
+  status: MessageStatus | null;
 };
 
 /** Per-agent dispatch intents the reasoning lane queued for the conversation lane to compose and send. */
@@ -42,7 +46,8 @@ export function formatIntentTurn(intents: DispatchIntent[]): string {
       item.attachmentIds.length > 0
         ? `\nattachment_ids (send with forward_attachment, never retype them): ${item.attachmentIds.join(", ")}`
         : "";
-    return `to_agent_id: ${to}${files}\nintent:\n${item.intent}`;
+    const status = item.status === null ? "" : `\nstatus: ${item.status}`;
+    return `to_agent_id: ${to}${files}${status}\nintent:\n${item.intent}`;
   });
   return `[From: your reasoning lane]\nYour reasoning lane asked you to send a message. Nothing below has been delivered: its send_message only hands the message to you, and only your dispatch_message or forward_attachment delivers it. Send each one now, unless your own dispatch_message already sent that recipient the same thing this wake or a newer message makes it wrong.\n\n${parts.join("\n\n")}`;
 }

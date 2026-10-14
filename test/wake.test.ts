@@ -7,7 +7,9 @@ import type {
   DwarResponseBlock,
   Lane,
 } from "../src/types/domain.js";
+import type { Db } from "../src/db/client.js";
 import { runConversationLoop, UNSENT_TEXT_TURN } from "../src/runtime/conversation.js";
+import { TranscriptStore } from "../src/runtime/transcript.js";
 import { IntentQueue } from "../src/runtime/intents.js";
 import { runReasoningLoop } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
@@ -245,10 +247,11 @@ test("both lanes share one wake: each sees the other's steps; steers and intents
     steer,
   });
 
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur browser 15 is down", attachmentIds: [] });
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur browser 15 is down", attachmentIds: [], status: null });
   await runConversationLoop({
     ...stepDeps("conversation", wake, () => turn("gemini", [call("yield", "c-y")]), conversationRequests),
     intents,
+    ...conversationGateDeps(),
   });
 
   const seen = JSON.stringify(conversationRequests[0]!.messages);
@@ -268,7 +271,7 @@ test("both lanes share one wake: each sees the other's steps; steers and intents
 
 test("a conversation intent stays in view while the lane keeps calling tools", async () => {
   const intents = new IntentQueue();
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [] });
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [], status: null });
   const requests: DwarChatRequest[] = [];
   let n = 0;
 
@@ -278,6 +281,7 @@ test("a conversation intent stays in view while the lane keeps calling tools", a
       return turn("gemini", [call(n < 3 ? "list_agents" : "yield", `c${n}`)]);
     }, requests),
     intents,
+    ...conversationGateDeps(),
   });
 
   assert.equal(requests.length, 4);
@@ -299,6 +303,7 @@ test("a yield after a message written as text and never sent gets one reminder, 
       return turn("anthropic", [{ type: "text", text: list }, call("yield", `c${n}`)]);
     }, requests),
     intents: new IntentQueue(),
+    ...conversationGateDeps(),
   });
 
   assert.equal(requests.length, 2);
@@ -307,7 +312,7 @@ test("a yield after a message written as text and never sent gets one reminder, 
 
 test("a delivered hand-off ends the run at the first yield, with no reminder", async () => {
   const intents = new IntentQueue();
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [] });
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [], status: null });
   const requests: DwarChatRequest[] = [];
   let n = 0;
 
@@ -317,6 +322,7 @@ test("a delivered hand-off ends the run at the first yield, with no reminder", a
       return turn("anthropic", n === 1 ? [call("dispatch_message", "d1"), call("yield", "y1")] : [call("yield", `y${n}`)]);
     }, requests),
     intents,
+    ...conversationGateDeps(),
   });
 
   assert.equal(requests.length, 1);
@@ -353,6 +359,7 @@ test("a queued conversation run makes no model call until something it can see j
       return next === null ? { turn: null, throughSeq: afterSeq } : { turn: next, throughSeq: afterSeq + 1 };
     },
     intents,
+    ...conversationGateDeps(),
   };
 
   await runConversationLoop(deps);
@@ -367,10 +374,15 @@ test("a queued conversation run makes no model call until something it can see j
   await runConversationLoop(deps);
   assert.equal(requests.length, 2);
 
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur it is done", attachmentIds: [] });
+  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur it is done", attachmentIds: [], status: null });
   await runConversationLoop(deps);
   assert.equal(requests.length, 4, "the hand-off's yield without a send gets one reminder");
 });
+
+/** What the conversation send gates read: a db no test send reaches, and an empty transcript. */
+function conversationGateDeps() {
+  return { db: {} as Db, transcript: new TranscriptStore() };
+}
 
 /** Both lanes' transcripts frozen as one user message of `content`. */
 function frozen(content: string): Record<"reasoning" | "conversation", DwarMessage[]> {

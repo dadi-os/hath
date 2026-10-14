@@ -69,6 +69,11 @@ export const sendMessageInputSchema: Record<string, unknown> = {
       items: { type: "string" },
       description: `Attachments the message should carry, by id (at most ${MAX_ATTACHMENTS}); conversation forwards them as they are`,
     },
+    status: {
+      type: "string",
+      enum: [...MESSAGE_STATUSES],
+      description: STATUS_DESCRIPTION,
+    },
   },
   required: ["to_agent_id", "intent"],
 };
@@ -211,6 +216,7 @@ const sendInput = z.object({
     .max(MAX_ATTACHMENTS)
     .refine((ids) => new Set(ids).size === ids.length, "attachment_ids must not repeat")
     .optional(),
+  status: z.enum(MESSAGE_STATUSES).optional(),
 });
 
 const dispatchInput = z.object({
@@ -505,6 +511,7 @@ async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecR
     toAgentId: input.to_agent_id,
     intent: input.intent,
     attachmentIds,
+    status: input.status ?? null,
   });
   ctx.enqueueConversation(ctx.callerId);
   return ok({ handed_off: true, sent: false, note: "Not delivered yet: your conversation lane sends it." });

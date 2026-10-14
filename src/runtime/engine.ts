@@ -508,6 +508,8 @@ export function createRuntime(opts: {
       ...stepDeps(agentId, "conversation"),
       call: (request: DwarChatRequest) => opts.dwar.converse(request, `hath/${agentId}`),
       intents,
+      db: opts.db,
+      transcript,
     };
   }
 

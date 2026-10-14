@@ -8,7 +8,7 @@ import { createRuntime, type Runtime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { RUNTIME_PREFIX } from "../src/db/messages.js";
-import { DISPATCH_MESSAGE, LIST_AGENTS, STEER_REASONING, WAIT, type MessageStatus } from "../src/types/domain.js";
+import { DISPATCH_MESSAGE, LIST_AGENTS, STEER_REASONING, WAIT, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
 import {
   insertAgent,
   toolUse,
@@ -229,4 +229,87 @@ test("a report from an agent the recipient brought in wakes its reasoning lane; 
   await deliverAgentMessage(spy, { fromAgentId: managerId, toAgentId: workerId, content: "open the booking page" });
   await deliverAgentMessage(spy, { fromAgentId: workerId, toAgentId: managerId, content: "page open", status: "running" });
   assert.deepEqual(woke, ["route-manager:conversation", "route-worker:conversation", "route-manager:reasoning"]);
+});
+
+/** A model turn of `calls`, each [name, input], ending in yield. */
+function turnOf(...calls: Array<[string, Record<string, unknown>]>): DwarChatResponse {
+  return {
+    provider: "anthropic" as const,
+    content: [
+      ...calls.map(([name, input], i) => ({ type: "tool_use" as const, id: `t${i}-${name}`, name, input })),
+      { type: "tool_use" as const, id: "t-yield", name: "yield", input: {} },
+    ],
+    stop_reason: "tool_use",
+    usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  };
+}
+
+/** A runtime whose conversation lane answers each call with the next of `turns`, then yields. */
+function scriptedRuntime(turns: Array<() => DwarChatResponse | Promise<DwarChatResponse>>): Runtime {
+  let n = 0;
+  return createRuntime({
+    db: handle.db,
+    dwar: mockDwar({
+      converse: async () => {
+        const next = turns[n];
+        n += 1;
+        return next === undefined ? yieldTurn() : next();
+      },
+    }),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+}
+
+async function sentBy(agentId: string): Promise<string[]> {
+  const rows = await handle.db.select().from(messages).where(eq(messages.fromAgentId, agentId));
+  return rows.sort((a, b) => a.seq - b.seq).map((row) => row.content);
+}
+
+test("a turn sends one message per recipient", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "turn-agent", systemPrompt: "agent" });
+  const runtime = scriptedRuntime([
+    () =>
+      turnOf(
+        [DISPATCH_MESSAGE, { to_agent_id: null, content: "the times", status: "done" }],
+        [DISPATCH_MESSAGE, { to_agent_id: null, content: "and the file", status: "done" }],
+      ),
+  ]);
+  await deliverUserMessage({ ...deps(runtime), enqueueConversation: runtime.enqueueConversation }, agentId, "exam times?");
+  await runtime.waitUntilIdle();
+  assert.deepEqual(await sentBy(agentId), ["the times"]);
+});
+
+test("a send over a message the lane has not read waits for the next step", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "stale-agent", systemPrompt: "agent" });
+  let runtime: Runtime;
+  runtime = scriptedRuntime([
+    async () => {
+      await deliverUserMessage(deps(runtime), agentId, "actually, Thursday");
+      return turnOf([DISPATCH_MESSAGE, { to_agent_id: null, content: "Wednesday is set", status: "done" }]);
+    },
+    () => turnOf([DISPATCH_MESSAGE, { to_agent_id: null, content: "Thursday is set", status: "done" }]),
+  ]);
+  await deliverUserMessage({ ...deps(runtime), enqueueConversation: runtime.enqueueConversation }, agentId, "book Wednesday");
+  await runtime.waitUntilIdle();
+  assert.deepEqual(await sentBy(agentId), ["Thursday is set"]);
+});
+
+test("conversation messages an agent it brought in only with a reasoning hand-off", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const managerId = await insertAgent(handle.db, { id: "voice-manager", systemPrompt: "manager" });
+  const workerId = await insertAgent(handle.db, { id: "voice-worker", systemPrompt: "worker", parentAgentId: managerId });
+  const runtime = scriptedRuntime([
+    () => turnOf([DISPATCH_MESSAGE, { to_agent_id: workerId, content: "stop now" }]),
+  ]);
+  await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "open the page" });
+  await deliverUserMessage({ ...deps(runtime), enqueueConversation: runtime.enqueueConversation }, managerId, "stop the worker");
+  await runtime.waitUntilIdle();
+  assert.deepEqual(await sentBy(managerId), ["open the page"]);
 });

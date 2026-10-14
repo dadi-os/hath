@@ -1,12 +1,18 @@
-import type { DwarResponseBlock } from "../types/domain.js";
+import type { Db } from "../db/client.js";
+import { fail, type ToolExecResult } from "../tools/shared.js";
+import type { DwarResponseBlock, DwarToolUseBlock } from "../types/domain.js";
 import { DISPATCH_MESSAGE, FORWARD_ATTACHMENT } from "../types/domain.js";
 import type { IntentQueue } from "./intents.js";
 import { formatIntentTurn } from "./intents.js";
+import { opensLine } from "./jobs.js";
 import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
+import type { TranscriptStore } from "./transcript.js";
 
-/** Step deps plus the intent queue reasoning's send_message writes to. */
+/** Step deps plus the intent queue reasoning's send_message writes to, and what the send gates read. */
 export type ConversationLoopDeps = StepDeps & {
   intents: IntentQueue;
+  db: Db;
+  transcript: TranscriptStore;
 };
 
 /**
@@ -23,11 +29,13 @@ export type ConversationLoopDeps = StepDeps & {
  * counting them, since a send_message in reasoning's turns delivers nothing;
  * a second yield stands. A yield in a turn that wrote a message's worth of text
  * and sent nothing is answered once the same way, since text reaches no one.
+ * Every send passes the gates in sendRefusal first.
  */
 export async function runConversationLoop(deps: ConversationLoopDeps): Promise<void> {
   let unsent = 0;
   let reminded = false;
   let textReminded = false;
+  const handoffs = new Map<string | null, number>();
   for (;;) {
     const assembled = await deps.assemble();
     syncWake(deps, assembled);
@@ -38,6 +46,9 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
         only: "conversation",
       });
       unsent += intents.length;
+      for (const intent of intents) {
+        handoffs.set(intent.toAgentId, (handoffs.get(intent.toAgentId) ?? 0) + 1);
+      }
     }
 
     const request = laneRequest(deps, assembled);
@@ -51,7 +62,30 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
 
     const sent = sends(response.content);
     unsent = Math.max(0, unsent - sent);
-    if (await runStep(deps, response, () => false)) {
+    const sentTo = new Set<string | null>();
+    const gated = async (call: DwarToolUseBlock): Promise<ToolExecResult> => {
+      if (call.name !== DISPATCH_MESSAGE && call.name !== FORWARD_ATTACHMENT) {
+        return deps.executeTool(call);
+      }
+      const to = (call.input as { to_agent_id?: string | null }).to_agent_id;
+      if (to === undefined) {
+        return deps.executeTool(call);
+      }
+      const refusal = await sendRefusal(deps, to, sentTo, handoffs);
+      if (refusal !== null) {
+        return fail(refusal);
+      }
+      const result = await deps.executeTool(call);
+      if (!result.isError) {
+        sentTo.add(to);
+        const left = handoffs.get(to);
+        if (left !== undefined && left > 0) {
+          handoffs.set(to, left - 1);
+        }
+      }
+      return result;
+    };
+    if (await runStep({ ...deps, executeTool: gated }, response, () => false)) {
       if (unsent > 0 && !reminded) {
         reminded = true;
         deps.wake.push({ message: { role: "user", content: unsentTurn(unsent) }, only: "conversation" });
@@ -65,6 +99,37 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
       return;
     }
   }
+}
+
+/**
+ * sendRefusal is why this turn's message to `to` must not go out, or null when it may.
+ * One message per recipient per turn (gate 4): everything for one recipient, files
+ * included, goes in one message. No send over a message the lane has not read (gate 5):
+ * when `to` wrote after the lane's last sync, the send waits for the next step, which
+ * shows it. One voice per downstream line (gate 10): an agent this agent brought in (it
+ * opened that line) is directed by the reasoning lane, so conversation messages it only
+ * with one of reasoning's hand-offs.
+ */
+async function sendRefusal(
+  deps: ConversationLoopDeps,
+  to: string | null,
+  sentTo: Set<string | null>,
+  handoffs: Map<string | null, number>,
+): Promise<string | null> {
+  const who = to ?? "Ankur";
+  if (sentTo.has(to)) {
+    return `Not sent: you already sent ${who} a message in this turn. Put everything for ${who} in one message; forward_attachment carries the text and the files together.`;
+  }
+  const unread = deps.transcript
+    .transcriptFor(deps.agentId)
+    .some((row) => row.seq > deps.wake.throughSeq && row.fromAgentId === to && row.toAgentId === deps.agentId);
+  if (unread) {
+    return `Not sent: ${who} wrote to you after you composed this. Read the new message first, then send what still holds.`;
+  }
+  if (to !== null && (handoffs.get(to) ?? 0) === 0 && (await opensLine(deps.db, deps.agentId, to))) {
+    return `Not sent: ${to} is an agent you brought in, and your reasoning lane directs its work; it hears from you only through reasoning's hand-offs. Steer reasoning with what should change.`;
+  }
+  return null;
 }
 
 /** A conversation turn whose text is at least this long, sent nowhere, reads as a message left unsent. */
