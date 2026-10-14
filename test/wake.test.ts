@@ -57,6 +57,7 @@ function stepDeps(
     executeTool: async (use) => ({ content: `full result of ${use.id} `.repeat(200), isError: false, audit: {} }),
     logResponse: async () => {},
     logToolResult: async () => {},
+    recordActions: () => {},
   };
 }
 
@@ -619,22 +620,41 @@ function pushAction(wake: Wake, id: string, name: string, text: string, result: 
   );
 }
 
-test("a wake's record lists the reasoning lane's actions with their results, leaves out reads, and covers each step once", () => {
-  const wake = new Wake(roomyWakeLimits);
-  wake.begin("sys", frozen("[From: Ankur]\nreply to Sandra"), 1);
-  pushRead(wake, "r1");
-  pushAction(wake, "c1", "browser_click", "Send is enabled in Sandra's thread; clicking Send.", '{"clicked":true}');
-  pushStep(wake, "s1", 1);
+test("a reasoning step that acts joins the transcript with its text, calls and results; reads and conversation steps do not", async () => {
+  const recorded: string[] = [];
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      if (n === 1) {
+        return turn("anthropic", [call("browser_accessibility_tree", "r1")]);
+      }
+      if (n === 2) {
+        return turn("anthropic", [{ type: "text", text: "Send is enabled in Sandra's thread; clicking Send." }, call("browser_click", "c1")]);
+      }
+      if (n === 3) {
+        return turn("anthropic", [call("browser_type", "c2")]);
+      }
+      return turn("anthropic", [call("yield", "y")]);
+    }, []),
+    recordActions: (actions) => recorded.push(actions),
+    steer: new SteerQueue(),
+  });
+  assert.equal(recorded.length, 2, "one entry per acting step; the read is not an action");
+  assert.match(recorded[0]!, /^Send is enabled in Sandra's thread; clicking Send\.\n {2}browser_click \{\} → full result of c1/);
+  assert.match(recorded[1]!, /^\(no note\)\n {2}browser_type/);
 
-  const record = wake.takeRecord();
-  assert.ok(record !== null);
-  assert.match(record, /Sandra's thread; clicking Send/);
-  assert.match(record, /browser_click \{"ref":"c1"\} → \{"clicked":true\}/);
-  assert.doesNotMatch(record, /r1|s1/, "reads are not actions");
-  assert.equal(wake.takeRecord(), null, "a step is recorded once");
-
-  pushAction(wake, "c2", "browser_type", "", '{"typed":true}');
-  assert.match(wake.takeRecord()!, /\(no note\)\n {2}browser_type/);
+  const conversed: string[] = [];
+  await runConversationLoop({
+    ...stepDeps("conversation", new Wake(roomyWakeLimits), (request) =>
+      request.messages.some((m) => m.role === "assistant") ? turn("anthropic", [call("yield", "y2")]) : turn("anthropic", [call("forward_attachment", "f1")]),
+    []),
+    recordActions: (actions) => conversed.push(actions),
+    intents: new IntentQueue(),
+    db: {} as Db,
+    transcript: new TranscriptStore(),
+  });
+  assert.deepEqual(conversed, [], "a conversation send is a message, not a [Did] entry");
 });
 
 test("a trimmed note lists the actions of the steps it dropped, so the lane does not redo them", () => {

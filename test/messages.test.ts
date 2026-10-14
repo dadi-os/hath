@@ -222,6 +222,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
     steer: new SteerQueue(),
     logResponse: async () => {},
     logToolResult: async () => {},
+    recordActions: () => {},
   });
 
   assert.equal(requests.length, 3);

@@ -26,9 +26,9 @@
  * A wake lasts while any lane run for the agent is queued or running, so a
  * steer from conversation reaches a reasoning run that still sees the steer's
  * call. When the last run releases, the record is dropped and the next wake
- * starts from the transcript alone — prior steps cannot few-shot it. Before that,
- * takeRecord gives the engine the actions the wake took, which it writes into the
- * transcript so the next wake sees what ran, not only what the agent said.
+ * starts from the transcript alone — prior steps cannot few-shot it. The steps that
+ * acted on the world are in that transcript as `[Did]` entries (see record.ts), so the
+ * next wake sees what ran, not only what the agent said.
  */
 
 import { HathError } from "../errors.js";
@@ -133,8 +133,6 @@ export class Wake {
   private readonly oversized = new Set<string>();
   /** Per lane, turns before this index are out of its view, behind TRIMMED_TURN. */
   private readonly trimmedThrough = new Map<Lane, number>();
-  /** Turns before this index are covered by a record takeRecord already returned. */
-  private recordedThrough = 0;
   /** Per lane, model turns before this index show without their thinking. */
   private readonly unthoughtThrough = new Map<Lane, number>();
   /**
@@ -323,16 +321,6 @@ export class Wake {
   /** noteTokens is the weight of the trimmed note for a view that starts at turn `through`; none at 0. */
   private noteTokens(through: number): number {
     return through > 0 ? Math.ceil(this.trimmedNote(through).length / PROSE_CHARS_PER_TOKEN) : 0;
-  }
-
-  /**
-   * takeRecord returns the actions the reasoning lane took since the last record (see
-   * formatActions), or null when it took none, and marks them recorded.
-   */
-  takeRecord(): string | null {
-    const record = formatActions(this.turns.slice(this.recordedThrough).map((turn) => turn.message));
-    this.recordedThrough = this.turns.length;
-    return record;
   }
 
   /**

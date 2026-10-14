@@ -1,12 +1,14 @@
 /**
- * Wake records: hath's own account of what a wake's reasoning lane did to the
- * world, built from its tool calls and their results. The wake that took the steps
- * keeps them only while it lasts, and a lane's view trims its oldest steps at the
- * prompt ceiling, so without a record the agent later sees only its own claims about
- * what it did and, with nothing behind them, retracts true reports.
+ * Action records: hath's own account of what an agent's reasoning lane did to the
+ * world, built from its tool calls and their results. A wake keeps its steps only
+ * while it lasts, and a lane's view trims its oldest steps at the prompt ceiling, so
+ * without a record the agent later sees only its own claims about what it did and,
+ * with nothing behind them, retracts true reports. Each step that acted joins the
+ * agent's transcript as a `[Did]` entry (see context.ts), and a `[trimmed]` note lists
+ * the actions of the steps it stands in for (see wake.ts).
  */
 
-import type { DwarMessage, DwarToolResultBlock, DwarToolUseBlock } from "../types/domain.js";
+import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock } from "../types/domain.js";
 import {
   CREATE_ATTACHMENT,
   FORWARD_ATTACHMENT,
@@ -22,7 +24,7 @@ import {
  * waits and hand-offs are left out: a read changes nothing, and a hand-off becomes a
  * message the transcript already holds.
  */
-const ACTION_TOOLS = new Set<string>([
+export const ACTION_TOOLS = new Set<string>([
   "browser_click",
   "browser_type",
   "browser_press_key",
@@ -71,25 +73,46 @@ const CALL_INPUT_CHARS = 200;
 /** How much of a call's result a record keeps: one line of outcome. */
 const CALL_RESULT_CHARS = 160;
 
-/** A record keeps its newest steps up to about this many characters. */
+/** A trimmed note keeps its newest steps up to about this many characters. */
 const RECORD_MAX_CHARS = 6_000;
 
+/** What a call reads as when hath stopped before its result was logged. */
+const NO_RESULT = "no result (hath stopped before it returned)";
+
+/** The outcome of one call: its result clipped to a line, marked when it failed. */
+export type ActionResult = Pick<DwarToolResultBlock, "content" | "is_error">;
+
 /**
- * The opening of the transcript note that holds a finished wake's record, after the
- * runtime prefix: it names hath as its author so the agent reads it as evidence, not
- * as a claim of its own to doubt.
+ * stepActions is one model turn's actions as a record shows them: the turn's text, then
+ * each action call with its clipped input and the clipped outcome `results` holds for it
+ * by tool_use_id. Null when the turn called no action tool.
  */
-export const WAKE_RECORD_HEADER =
-  "Wake record, written by hath from my tool log, not a message: the actions my reasoning lane took in the wake that ended here, each with its result. These calls ran.";
+export function stepActions(content: DwarContentBlock[], results: Map<string, ActionResult>): string | null {
+  const actions = content.filter(
+    (block): block is DwarToolUseBlock => block.type === "tool_use" && ACTION_TOOLS.has(block.name),
+  );
+  if (actions.length === 0) {
+    return null;
+  }
+  const text = oneLine(content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join(" "));
+  const lines = actions.map((action) => {
+    const result = results.get(action.id);
+    const outcome =
+      result === undefined
+        ? NO_RESULT
+        : `${result.is_error ? "error: " : ""}${clip(oneLine(result.content), CALL_RESULT_CHARS)}`;
+    return `  ${action.name} ${clip(JSON.stringify(action.input), CALL_INPUT_CHARS)} → ${outcome}`;
+  });
+  return [text.length > 0 ? clip(text, STEP_TEXT_CHARS) : "(no note)", ...lines].join("\n");
+}
 
 /**
  * formatActions lists, oldest first, every step of the reasoning lane in `turns` that
- * called an action tool: the step's text, then each such call with its clipped input and
- * result. Past RECORD_MAX_CHARS it keeps the newest steps and says how many earlier ones
- * get_logs holds. Null when no step acted.
+ * called an action tool (see stepActions). Past RECORD_MAX_CHARS it keeps the newest
+ * steps and says how many earlier ones get_logs holds. Null when no step acted.
  */
 export function formatActions(turns: DwarMessage[]): string | null {
-  const results = new Map<string, DwarToolResultBlock>();
+  const results = new Map<string, ActionResult>();
   for (const turn of turns) {
     if (turn.role === "user" && typeof turn.content !== "string") {
       for (const block of turn.content) {
@@ -105,26 +128,10 @@ export function formatActions(turns: DwarMessage[]): string | null {
     if (turn.role !== "assistant" || turn.lane !== "reasoning" || typeof turn.content === "string") {
       continue;
     }
-    const actions = turn.content.filter(
-      (block): block is DwarToolUseBlock => block.type === "tool_use" && ACTION_TOOLS.has(block.name),
-    );
-    if (actions.length === 0) {
-      continue;
+    const step = stepActions(turn.content, results);
+    if (step !== null) {
+      steps.push(`- ${step}`);
     }
-    const text = oneLine(
-      turn.content
-        .flatMap((block) => (block.type === "text" ? [block.text] : []))
-        .join(" "),
-    );
-    const lines = actions.map((action) => {
-      const result = results.get(action.id);
-      if (result === undefined) {
-        throw new Error(`wake record: ${action.name} call ${action.id} has no result`);
-      }
-      const outcome = `${result.is_error ? "error: " : ""}${clip(oneLine(result.content), CALL_RESULT_CHARS)}`;
-      return `  ${action.name} ${clip(JSON.stringify(action.input), CALL_INPUT_CHARS)} → ${outcome}`;
-    });
-    steps.push([`- ${text.length > 0 ? clip(text, STEP_TEXT_CHARS) : "(no note)"}`, ...lines].join("\n"));
   }
   if (steps.length === 0) {
     return null;

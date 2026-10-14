@@ -49,6 +49,7 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
     steer,
     logResponse: async () => {},
     logToolResult: async () => {},
+    recordActions: () => {},
   });
 
   assert.equal(calls.length, 2);
@@ -86,6 +87,7 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
     steer,
     logResponse: async () => {},
     logToolResult: async () => {},
+    recordActions: () => {},
   });
 
   assert.equal(calls.length, 4);
@@ -193,6 +195,7 @@ test("steer_reasoning with terminate stops the next tool call from running", asy
     steer,
     logResponse: async () => {},
     logToolResult: async () => {},
+    recordActions: () => {},
   });
 
   assert.equal(turn, 1);
@@ -228,6 +231,7 @@ test("steer_reasoning terminate mid-batch blocks remaining domain tools", async 
     steer,
     logResponse: async () => {},
     logToolResult: async () => {},
+    recordActions: () => {},
   });
 
   assert.deepEqual(executed, ["send_message"]);
