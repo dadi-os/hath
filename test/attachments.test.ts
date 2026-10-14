@@ -243,7 +243,7 @@ test("forward_attachment copies a carried file to the recipient and read_attachm
 test("create_attachment needs terminal_read_file, stores the host file, and the first send binds that same row", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const nas = mockNas({
-    readFile: () => ({ content: "1\t# Title\n2\tbody\n", total_lines: 2, truncated: false }),
+    readFileBytes: () => ({ data: Buffer.from("# Title\nbody\n").toString("base64"), size_bytes: 13 }),
   });
   const plainId = await insertWorker(handle.db, { name: "plain", systemPrompt: "no grants", tools: [] });
   const workerId = await insertWorker(handle.db, {
@@ -302,6 +302,46 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
   );
   const [bound] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
   assert.notEqual(bound?.messageId, null);
+});
+
+test("create_attachment stores a Word document and an unlisted binary as bytes with their media types", async (t) => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const zipBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0xfe]);
+  const nas = mockNas({
+    readFileBytes: () => ({ data: zipBytes.toString("base64"), size_bytes: zipBytes.length }),
+  });
+  const workerId = await insertWorker(handle.db, {
+    name: "filer",
+    systemPrompt: "files",
+    tools: ["terminal_read_file"],
+  });
+  const { app, runtime } = await harness(nas);
+  t.after(async () => {
+    await runtime.waitUntilIdle();
+    await app.close();
+  });
+
+  const cases = [
+    {
+      path: "/var/home/dadi/msu/semester-5/ibio-150/work/class-12/filled.docx",
+      mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
+    { path: "/var/home/dadi/scratch/model.onnx", mediaType: "application/octet-stream" },
+  ];
+  for (const [index, { path, mediaType }] of cases.entries()) {
+    const created = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+      type: "tool_use",
+      id: `c${index}`,
+      name: CREATE_ATTACHMENT,
+      input: { path },
+    });
+    assert.equal(created.isError, false, created.content);
+    const staged = JSON.parse(created.content) as { id: string; media_type: string };
+    assert.equal(staged.media_type, mediaType);
+    const [row] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
+    assert.deepEqual(row?.data, zipBytes);
+    assert.equal(row?.textContent, null);
+  }
 });
 
 test("create_attachment reads a host PDF whole as bytes and stores it as application/pdf", async (t) => {

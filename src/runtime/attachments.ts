@@ -4,6 +4,7 @@
  * travel by id, so no lane ever retypes their contents to pass them on.
  */
 
+import { isUtf8 } from "node:buffer";
 import { basename, extname } from "node:path";
 import { z } from "zod";
 import { agentIdOrUserSchema } from "../agent-id.js";
@@ -68,9 +69,16 @@ const TEXT_EXTENSION_TYPES: Record<string, string> = {
   ".toml": "application/toml",
 };
 
-/** Media types create_attachment reads as bytes, by extension; images among them get a Dwar description. */
+/** Binary media types create_attachment gives host files by extension; images among them get a Dwar description. */
 const BINARY_EXTENSION_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".doc": "application/msword",
+  ".xls": "application/vnd.ms-excel",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".zip": "application/zip",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -85,8 +93,6 @@ const PREVIEW_CHARS = 500;
 const READ_DEFAULT_CHARS = 20_000;
 const READ_MAX_CHARS = 50_000;
 
-/** Line ceiling for create_attachment's one nas read; MAX_ATTACHMENT_BYTES binds first. */
-const HOST_READ_MAX_LINES = 1_000_000;
 
 export type MessageAttachment = {
   media_type: string;
@@ -238,7 +244,7 @@ export const forwardAttachmentTool: DwarTool = {
 /** Turn a host file into an attachment. */
 export const createAttachmentTool: DwarTool = {
   name: CREATE_ATTACHMENT,
-  description: `Turn a file on the host into an attachment and get its id, so it can be sent with send_message's attachment_ids — for example a report a worker wrote or a built resume PDF for the user. Needs the terminal_read_file grant. Text files, PDFs and images (${Object.keys(BINARY_EXTENSION_TYPES).join(", ")}), up to ${MAX_ATTACHMENT_BYTES} bytes.`,
+  description: `Turn a file on the host into an attachment and get its id, so it can be sent with send_message's attachment_ids — for example a report a worker wrote or a built resume PDF for the user. Needs the terminal_read_file grant. Any file up to ${MAX_ATTACHMENT_BYTES} bytes: text, PDFs, images, Word, Excel and PowerPoint documents, zips and other binaries.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -319,12 +325,12 @@ export async function runForwardAttachment(
 }
 
 /**
- * runCreateAttachment reads a host file through Nas and stores it as an
- * unbound attachment owned by the caller. A PDF or image (by extension) is
- * read whole as bytes and prepared like an upload, so an image gets its Dwar
- * description. Any other file is read as text: Nas returns `N\tline` rows; the
- * prefixes are stripped and the file is rebuilt with a trailing newline. A Nas
- * failure throws and reaches the model as a tool error.
+ * runCreateAttachment reads any host file whole as bytes through Nas and
+ * stores it as an unbound attachment owned by the caller, prepared like an
+ * upload so an image gets its Dwar description. Its media type comes from the
+ * extension; an unlisted extension is text/plain when the bytes are UTF-8 and
+ * application/octet-stream otherwise. A Nas failure throws and reaches the
+ * model as a tool error.
  */
 export async function runCreateAttachment(
   ctx: ToolContext,
@@ -336,43 +342,14 @@ export async function runCreateAttachment(
   const input = createAttachmentInput.parse(raw);
   await requireToolGrant(ctx.db, ctx.callerId, "terminal_read_file");
   const filename = input.filename ?? basename(input.path);
-  const binaryType = BINARY_EXTENSION_TYPES[extname(input.path).toLowerCase()];
-  if (binaryType !== undefined) {
-    const file = await ctx.nas.readFileBytes({ path: input.path, max_bytes: MAX_ATTACHMENT_BYTES });
-    const prepared = await prepareUploads(ctx.dwar, [
-      { filename, media_type: binaryType, data: file.data },
-    ]);
-    return stageHostFile(ctx, ctx.callerId, prepared, input.path);
-  }
-  const response = await ctx.nas.readFile({
-    path: input.path,
-    limit: HOST_READ_MAX_LINES,
-    max_bytes: 2 * MAX_ATTACHMENT_BYTES,
-  });
-  if (response.truncated) {
-    return fail(`${input.path} is larger than the ${MAX_ATTACHMENT_BYTES}-byte attachment limit`);
-  }
-  const lines = response.content.split("\n").slice(0, -1);
-  const text = lines.map((line) => line.slice(line.indexOf("\t") + 1)).join("\n") + "\n";
-  const sizeBytes = Buffer.byteLength(text, "utf8");
-  if (sizeBytes > MAX_ATTACHMENT_BYTES) {
-    return fail(`${input.path} is larger than the ${MAX_ATTACHMENT_BYTES}-byte attachment limit`);
-  }
-  return stageHostFile(
-    ctx,
-    ctx.callerId,
-    [
-      {
-        filename,
-        mediaType: TEXT_EXTENSION_TYPES[extname(input.path).toLowerCase()] ?? "text/plain",
-        sizeBytes,
-        textContent: text,
-        data: null,
-        description: null,
-      },
-    ],
-    input.path,
-  );
+  const file = await ctx.nas.readFileBytes({ path: input.path, max_bytes: MAX_ATTACHMENT_BYTES });
+  const extension = extname(input.path).toLowerCase();
+  const mediaType =
+    BINARY_EXTENSION_TYPES[extension] ??
+    TEXT_EXTENSION_TYPES[extension] ??
+    (isUtf8(Buffer.from(file.data, "base64")) ? "text/plain" : "application/octet-stream");
+  const prepared = await prepareUploads(ctx.dwar, [{ filename, media_type: mediaType, data: file.data }]);
+  return stageHostFile(ctx, ctx.callerId, prepared, input.path);
 }
 
 /** stageHostFile stores create_attachment's one prepared file as an unbound row owned by callerId. */
