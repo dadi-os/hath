@@ -424,9 +424,12 @@ test("missing target skips delivery with reason missing", async () => {
     intervalMinutes: null,
   });
 
-  await handle.sql`SET session_replication_role = 'replica'`;
-  await handle.db.delete(agents).where(eq(agents.id, toId));
-  await handle.sql`SET session_replication_role = 'origin'`;
+  // One transaction, so the replica role and the delete share a pooled connection: run
+  // apart, the delete can land on another connection, cascade, and take the schedule with it.
+  await handle.sql.begin(async (tx) => {
+    await tx`SET LOCAL session_replication_role = 'replica'`;
+    await tx`DELETE FROM agents WHERE id = ${toId}`;
+  });
 
   const { log, errors } = capturingLog();
   const runtime = createRuntime({
