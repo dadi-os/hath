@@ -3,12 +3,12 @@
  * Registry tools are resolved for the reasoning lane; conversation uses the switch below.
  */
 
-import { and, asc, eq, gte, inArray, max, or } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z, ZodError } from "zod";
 import { agentIdOrUserSchema, agentIdSchema } from "../agent-id.js";
-import { agentLogs, agents, messages } from "../db/schema.js";
+import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
-import type { DwarTool, DwarToolUseBlock } from "../types/domain.js";
+import type { DwarTool, DwarToolUseBlock, MessageStatus } from "../types/domain.js";
 import {
   CREATE_ATTACHMENT,
   DISPATCH_MESSAGE,
@@ -37,7 +37,7 @@ import {
   type ToolContext,
   type ToolExecResult,
 } from "../tools/shared.js";
-import { requireAttachments, type NewAttachment } from "../db/attachments.js";
+import { requireAttachments, toAttachmentSummary, type NewAttachment } from "../db/attachments.js";
 import {
   MAX_ATTACHMENTS,
   runCreateAttachment,
@@ -60,14 +60,14 @@ export const sendMessageInputSchema: Record<string, unknown> = {
       type: ["string", "null"],
       description: 'Recipient kebab-case agent id, or null for Ankur (the user); never the string "Ankur"',
     },
-    intent: {
+    content: {
       type: "string",
-      description: "What you want said, not the final wording",
+      description: "The message itself, exactly as the recipient reads it",
     },
     attachment_ids: {
       type: "array",
       items: { type: "string" },
-      description: `Attachments the message should carry, by id (at most ${MAX_ATTACHMENTS}); conversation forwards them as they are`,
+      description: `Attachments the message carries, by id (at most ${MAX_ATTACHMENTS}); the recipient gets the files themselves`,
     },
     status: {
       type: "string",
@@ -75,7 +75,7 @@ export const sendMessageInputSchema: Record<string, unknown> = {
       description: STATUS_DESCRIPTION,
     },
   },
-  required: ["to_agent_id", "intent"],
+  required: ["to_agent_id", "content"],
 };
 
 export const dispatchMessageInputSchema: Record<string, unknown> = {
@@ -118,11 +118,13 @@ export const yieldInputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/** Upper bound on a single in-lane wait; longer or cross-agent delays use scheduling. */
-export const WAIT_MAX_SECONDS = 300;
-
-/** Upper bound on a wait with its renewals while the awaited team keeps working (see runWait). */
-export const WAIT_TOTAL_MAX_SECONDS = 1800;
+/**
+ * Upper bound on a wait. A wait is for something to settle; a reply is waited for by
+ * yielding, since it wakes the agent. Reply waits held the wake open (282 waits against
+ * 332 yields on 2026-10-14 to 2026-10-16, two thirds of them 60s or longer), and every
+ * unrelated arrival that cut one short cost a full reasoning call.
+ */
+export const WAIT_MAX_SECONDS = 30;
 
 const WAIT_POLL_MS = 250;
 
@@ -159,11 +161,11 @@ export const listAgentsInputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/** Hand intent to conversation; does not persist a message. */
+/** Persist and deliver a message from the reasoning lane. */
 export const sendMessageTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    "Hand an intent to your conversation lane so it can compose and dispatch a message. Does not send anything itself. to_agent_id null is the user. To send files, list their ids in attachment_ids (create_attachment turns a host file into one) instead of putting their contents in the intent. See the routing block for who to address. Report real tool errors honestly; do not invent that grants are missing.",
+    "Send a message to another agent or to the user (to_agent_id null). It is delivered as you write it, when the call returns, and wakes its recipient. To send files, list their ids in attachment_ids (create_attachment turns a host file into one) instead of pasting their contents. A message to whoever gave you a job that is still open carries a status (see the [Open jobs] note); hath refuses one without it, a second progress update, and a second question before their reply, and the refusal says how to send it again. Does not end the turn: to wait for a reply, yield, and the reply wakes you. Report real tool errors honestly; do not invent that grants are missing.",
   input_schema: sendMessageInputSchema,
 };
 
@@ -171,7 +173,7 @@ export const sendMessageTool: DwarTool = {
 export const dispatchMessageTool: DwarTool = {
   name: DISPATCH_MESSAGE,
   description:
-    "Write a message to another agent or to the user (to_agent_id null). This is the only way a message addressed to someone else is persisted. Does not end the turn — call yield when done. Hath refuses a send that breaks one of these, so follow them the first time: one message per recipient per turn, text and files together (forward_attachment carries both); a message to whoever gave you a job that is still open carries a status (see the [Open jobs] note); an agent you gave work to gets each hand-off your reasoning lane gives you for it, sent as soon as you see it, and nothing else, so steer reasoning to change that work; and a send to someone who wrote after you composed it waits until you have read them. See the routing block for who to address. Domain work runs on the reasoning lane — use steer_reasoning for that; do not claim grants are missing because conversation cannot see them.",
+    "Write a message to another agent or to the user (to_agent_id null). This is the only way a message addressed to someone else is persisted. Does not end the turn — call yield when done. Hath refuses a send that breaks one of these, so follow them the first time: one message per recipient per turn, text and files together (forward_attachment carries both); a message to whoever gave you a job that is still open carries a status (see the [Open jobs] note); an agent you gave work to hears only from your reasoning lane, which sends it everything itself, so steer reasoning to change that work; and a send to someone who wrote after you composed it waits until you have read them. See the routing block for who to address. Domain work runs on the reasoning lane — use steer_reasoning for that; do not claim grants are missing because conversation cannot see them.",
   input_schema: dispatchMessageInputSchema,
 };
 
@@ -195,8 +197,8 @@ export const yieldTool: DwarTool = {
 export const waitTool: DwarTool = {
   name: WAIT,
   description:
-    "Pause your reasoning lane for a number of seconds, then resume automatically where you left off. Use when you must wait for something to settle — a page to load, a job or another agent to finish, a reply you expect shortly — instead of burning turns polling. Unlike yield, this does NOT end your turn: reasoning continues after the pause with no model calls spent while waiting. Unlike schedule_message, it waits here rather than sending a message to another agent later. A steer, a terminate, or a new message to you cuts the wait short, so waiting on a reply returns as soon as it lands. Every wait's result lists the agents you asked in the last two hours that have not answered since, with how long ago you asked and how recently each one or the agents under it last worked, so you judge a silence from facts. Name one in `for` to end the wait at once if that agent is retired. For a page to load or change, use browser_wait_for instead. Max " +
-    `${WAIT_MAX_SECONDS}s; for longer or cross-agent delays, use scheduling.`,
+    "Pause your reasoning lane for a few seconds while something you started settles (a command finishing, a file landing), then resume where you left off. Never wait for a person or an agent: yield instead, and their reply wakes you. For a page to load or change, use browser_wait_for. A steer, a terminate, or a new message to you cuts the wait short. Max " +
+    `${WAIT_MAX_SECONDS}s; for a later time, use scheduling.`,
   input_schema: waitInputSchema,
 };
 
@@ -210,7 +212,7 @@ export const listAgentsTool: DwarTool = {
 
 const sendInput = z.object({
   to_agent_id: agentIdOrUserSchema,
-  intent: z.string().min(1),
+  content: z.string().min(1),
   attachment_ids: z
     .array(z.string().uuid())
     .max(MAX_ATTACHMENTS)
@@ -241,7 +243,6 @@ const waitInput = z
   .object({
     seconds: z.number().int().min(1).max(WAIT_MAX_SECONDS),
     reason: z.string().min(1).optional(),
-    for: agentIdSchema.optional(),
   })
   .strict();
 
@@ -365,12 +366,9 @@ async function dispatchTool(
 }
 
 /**
- * Pause the reasoning lane in place, polling so a steer, a terminate, or a new
- * message to the agent cuts the wait short. No model calls run while waiting;
- * the loop resumes on return and the next step folds in what arrived. A wait that
- * reaches its end with nothing new renews itself for the same length, still without
- * a model call, while an agent it waits on (`for`, else every unanswered ask) or the
- * agents under it worked during that stretch, up to WAIT_TOTAL_MAX_SECONDS in all.
+ * Pause the reasoning lane in place for a short settle, polling so a steer, a terminate,
+ * or a new message to the agent cuts it short. No model calls run while waiting; the
+ * loop resumes on return and the next step folds in what arrived.
  */
 async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
@@ -378,143 +376,42 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
   }
   const input = waitInput.parse(raw);
   const agentId = ctx.callerId;
-  if (input.for !== undefined) {
-    const awaited = await waitedOn(ctx, agentId, input.for);
-    if (!awaited.active) {
-      return ok({ waited_seconds: 0, interrupted: false, for: awaited, note: `${input.for} is retired and will not reply.` });
-    }
-  }
   const started = Date.now();
-  const stretchMs = input.seconds * 1000;
+  const deadline = started + input.seconds * 1000;
   const inboundAtStart = ctx.transcript.lastInboundSeq(agentId);
-  let deadline = started + stretchMs;
-  for (;;) {
-    while (Date.now() < deadline) {
-      if (
-        ctx.steer.isTerminate(agentId) ||
-        ctx.steer.hasItems(agentId) ||
-        ctx.transcript.lastInboundSeq(agentId) > inboundAtStart
-      ) {
-        return ok({
-          waited_seconds: Math.round((Date.now() - started) / 1000),
-          interrupted: true,
-          ...(await waitFacts(ctx, agentId, input.for)),
-        });
-      }
-      await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));
+  while (Date.now() < deadline) {
+    if (
+      ctx.steer.isTerminate(agentId) ||
+      ctx.steer.hasItems(agentId) ||
+      ctx.transcript.lastInboundSeq(agentId) > inboundAtStart
+    ) {
+      return ok({ waited_seconds: Math.round((Date.now() - started) / 1000), interrupted: true });
     }
-    const facts = await waitFacts(ctx, agentId, input.for);
-    const awaited = facts.for === undefined ? (facts.waiting_on ?? []) : [facts.for];
-    const stretchSeconds = stretchMs / 1000;
-    const working = awaited.some(
-      (target) => target.seconds_since_its_team_worked !== null && target.seconds_since_its_team_worked < stretchSeconds,
-    );
-    if (!working || deadline + stretchMs - started > WAIT_TOTAL_MAX_SECONDS * 1000) {
-      return ok({ waited_seconds: Math.round((Date.now() - started) / 1000), interrupted: false, ...facts });
-    }
-    deadline += stretchMs;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(WAIT_POLL_MS, deadline - Date.now())));
   }
+  return ok({ waited_seconds: Math.round((Date.now() - started) / 1000), interrupted: false });
 }
-
-/** How far back a wait looks for asks still open. */
-const OPEN_ASK_WINDOW_MS = 2 * 60 * 60 * 1000;
-
-/** What a finished wait reports: the agent named in `for`, and every other ask of the caller's still unanswered. */
-type WaitFacts = { for?: WaitedOn; waiting_on?: WaitedOn[] };
-
-/** waitFacts is what a finished wait reports: the named agent, and every ask of the caller's still unanswered. */
-async function waitFacts(ctx: ToolContext, callerId: string, forId: string | undefined): Promise<WaitFacts> {
-  const facts: WaitFacts = {};
-  if (forId !== undefined) {
-    facts.for = await waitedOn(ctx, callerId, forId);
-  }
-  const since = new Date(Date.now() - OPEN_ASK_WINDOW_MS);
-  const recent = await ctx.db
-    .select({ from: messages.fromAgentId, to: messages.toAgentId, at: messages.createdAt })
-    .from(messages)
-    .where(and(gte(messages.createdAt, since), or(eq(messages.fromAgentId, callerId), eq(messages.toAgentId, callerId))));
-  const lastAsked = new Map<string, Date>();
-  const lastHeard = new Map<string, Date>();
-  for (const row of recent) {
-    if (row.from === callerId && row.to !== null) {
-      lastAsked.set(row.to, row.at > (lastAsked.get(row.to) ?? new Date(0)) ? row.at : lastAsked.get(row.to)!);
-    } else if (row.to === callerId && row.from !== null) {
-      lastHeard.set(row.from, row.at > (lastHeard.get(row.from) ?? new Date(0)) ? row.at : lastHeard.get(row.from)!);
-    }
-  }
-  const open = [...lastAsked].filter(([id, asked]) => id !== forId && (lastHeard.get(id) ?? new Date(0)) < asked);
-  if (open.length > 0) {
-    facts.waiting_on = await Promise.all(open.map(([id]) => waitedOn(ctx, callerId, id)));
-  }
-  return facts;
-}
-
-/** What a waiting agent knows about the agent it waits on: whether it is active, and how recent the work is. */
-type WaitedOn = {
-  agent_id: string;
-  active: boolean;
-  /** Seconds since the waiting agent last messaged it; null if never. */
-  seconds_since_you_asked: number | null;
-  /** Seconds since it or any active agent under it last logged work; null if never. */
-  seconds_since_its_team_worked: number | null;
-};
 
 /**
- * waitedOn reports on `targetId` for `callerId`'s wait. Its team is the target and every active
- * agent under it, since an owner often sits idle while the agents it asked do the work.
+ * runSendMessage delivers the reasoning lane's message as written: the lane that did the
+ * work writes the message, and a refusal (a missing status, a spent progress update) comes
+ * back to it, since it is the one that can fix it. The conversation lane used to compose
+ * each one again from a hand-off, which on 2026-10-14 to 2026-10-16 refused 81 of 855
+ * sends, rewrote others, and left the reasoning lane waiting on messages never sent.
  */
-async function waitedOn(ctx: ToolContext, callerId: string, targetId: string): Promise<WaitedOn> {
-  const roster = await ctx.db
-    .select({ id: agents.id, parentAgentId: agents.parentAgentId, active: agents.active })
-    .from(agents);
-  const target = roster.find((agent) => agent.id === targetId);
-  if (!target) {
-    throw new HathError(404, "not_found", `agent ${targetId} not found`);
-  }
-  const team = [targetId];
-  for (let i = 0; i < team.length; i += 1) {
-    for (const agent of roster) {
-      if (agent.parentAgentId === team[i] && agent.active) {
-        team.push(agent.id);
-      }
-    }
-  }
-  const [worked] = await ctx.db
-    .select({ at: max(agentLogs.createdAt) })
-    .from(agentLogs)
-    .where(inArray(agentLogs.agentId, team));
-  const [asked] = await ctx.db
-    .select({ at: max(messages.createdAt) })
-    .from(messages)
-    .where(and(eq(messages.fromAgentId, callerId), eq(messages.toAgentId, targetId)));
-  const since = (at: Date | null | undefined): number | null =>
-    at ? Math.round((Date.now() - at.getTime()) / 1000) : null;
-  return {
-    agent_id: targetId,
-    active: target.active,
-    seconds_since_you_asked: since(asked?.at),
-    seconds_since_its_team_worked: since(worked?.at),
-  };
-}
-
 async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
   }
   const input = sendInput.parse(raw);
-  if (input.to_agent_id !== null) {
-    await requireActiveAgent(ctx.db, input.to_agent_id);
-  }
   const attachmentIds = input.attachment_ids ?? [];
   await requireAttachments(ctx.db, attachmentIds);
-  ctx.intents.append(ctx.callerId, {
-    toAgentId: input.to_agent_id,
-    intent: input.intent,
+  return deliverFromAgent(ctx, ctx.callerId, {
+    to: input.to_agent_id,
+    content: input.content,
     attachmentIds,
-    status: input.status ?? null,
+    status: input.status,
   });
-  ctx.enqueueConversation(ctx.callerId);
-  return ok({ handed_off: true, sent: false, note: "Not delivered yet: your conversation lane sends it." });
 }
 
 /** How much of an oversized agent message its recipient sees inline, ahead of the attached whole. */
@@ -542,14 +439,32 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
     return failWithoutAgentIdentity();
   }
   const input = dispatchInput.parse(raw);
-  if (input.to_agent_id !== null) {
-    await requireActiveAgent(ctx.db, input.to_agent_id);
+  return deliverFromAgent(ctx, ctx.callerId, {
+    to: input.to_agent_id,
+    content: input.content,
+    attachmentIds: [],
+    status: input.status,
+  });
+}
+
+/**
+ * deliverFromAgent sends `from`'s message after the report gates (see jobs.ts
+ * reportRefusal). A message to an agent past AGENT_MESSAGE_MAX_CHARS arrives as its
+ * opening with the whole text attached as message.md.
+ */
+async function deliverFromAgent(
+  ctx: ToolContext,
+  from: string,
+  message: { to: string | null; content: string; attachmentIds: string[]; status: MessageStatus | undefined },
+): Promise<ToolExecResult> {
+  if (message.to !== null) {
+    await requireActiveAgent(ctx.db, message.to);
   }
-  const refusal = await reportRefusal(ctx.db, ctx.callerId, input.to_agent_id, input.status);
+  const refusal = await reportRefusal(ctx.db, from, message.to, message.status);
   if (refusal !== null) {
     return fail(refusal);
   }
-  const oversized = input.to_agent_id !== null && input.content.length > AGENT_MESSAGE_MAX_CHARS;
+  const oversized = message.to !== null && message.content.length > AGENT_MESSAGE_MAX_CHARS;
   const row = await deliverAgentMessage(
     {
       db: ctx.db,
@@ -560,22 +475,26 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
       wakeOf: ctx.wakeOf,
     },
     {
-      fromAgentId: ctx.callerId,
-      toAgentId: input.to_agent_id,
-      content: oversized ? oversizedPreview(input.content) : input.content,
-      uploads: oversized ? [messageAsAttachment(input.content)] : [],
-      ...(input.status !== undefined ? { status: input.status } : {}),
+      fromAgentId: from,
+      toAgentId: message.to,
+      content: oversized ? oversizedPreview(message.content) : message.content,
+      attachmentIds: message.attachmentIds,
+      uploads: oversized ? [messageAsAttachment(message.content)] : [],
+      ...(message.status !== undefined ? { status: message.status } : {}),
+      lane: ctx.lane === "reasoning" ? "reasoning" : "conversation",
     },
   );
+  const attached = row.attachments.length > 0 ? { attachments: row.attachments.map(toAttachmentSummary) } : {};
   if (oversized) {
     return ok({
       to_agent_id: row.toAgentId,
       seq: row.seq,
       delivered: true,
-      note: `Delivered, but at ${input.content.length} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`,
+      ...attached,
+      note: `Delivered, but at ${message.content.length} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`,
     });
   }
-  return ok({ to_agent_id: row.toAgentId, content: row.content, seq: row.seq });
+  return ok({ to_agent_id: row.toAgentId, content: row.content, seq: row.seq, ...attached });
 }
 
 async function runSteerReasoning(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {

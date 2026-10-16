@@ -123,6 +123,8 @@ export async function deliverAgentMessage(
     status?: MessageStatus;
     /** True for a scheduled message firing: a routine's trigger, which opens no job. */
     scheduled?: boolean;
+    /** The sender's lane that sent it, for its log row; conversation when left out. */
+    lane?: "conversation" | "reasoning";
   },
 ): Promise<TranscriptEntry> {
   const extra = args.extraPayload ?? {};
@@ -141,7 +143,7 @@ export async function deliverAgentMessage(
   }
   await writeAgentLog(deps.db, {
     agentId: args.fromAgentId,
-    lane: "conversation",
+    lane: args.lane ?? "conversation",
     wakeId: deps.wakeOf?.(args.fromAgentId) ?? null,
     event: "message",
     payload: {

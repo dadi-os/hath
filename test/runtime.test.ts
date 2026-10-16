@@ -558,34 +558,22 @@ test("a reasoning run that ends on a written report without send_message wakes c
   assert.match(JSON.stringify(dwar.conversationCalls[0]!.messages), /six family facts saved/);
 });
 
-test("send_message wakes conversation once; reasoning exit does not double-wake", async () => {
+test("reasoning's send_message delivers the message as written, with no conversation run", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, {
-    name: "handoff-reasoner",
-    systemPrompt: "hand off",
+    name: "direct-sender",
+    systemPrompt: "send directly",
   });
   let reasonTurn = 0;
   const dwar = mockDwar({
     reason: async () => {
       reasonTurn += 1;
       if (reasonTurn === 1) {
-        return toolUse(
-          SEND_MESSAGE,
-          { to_agent_id: null, intent: "say hi" },
-          "sm-1",
-        );
+        return toolUse(SEND_MESSAGE, { to_agent_id: null, content: "say hi" }, "sm-1");
       }
       return yieldTurn("r-yield");
     },
-    converse: async () => ({
-      provider: "anthropic",
-      content: [
-        { type: "tool_use", id: "c-dispatch", name: DISPATCH_MESSAGE, input: { to_agent_id: null, content: "hi" } },
-        { type: "tool_use", id: "c-yield", name: "yield", input: {} },
-      ],
-      stop_reason: "tool_use",
-      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-    }),
+    converse: async () => yieldTurn("c-yield"),
   });
   const runtime = createRuntime({
     db: handle.db,
@@ -599,23 +587,17 @@ test("send_message wakes conversation once; reasoning exit does not double-wake"
   });
   await executeTool(runtime.toolContext(callerId, "conversation"), {
     type: "tool_use",
-    id: "s-handoff",
+    id: "s-direct",
     name: "steer_reasoning",
     input: { instruction: "compose a hello" },
   });
   await runtime.waitUntilIdle();
-  assert.ok(dwar.reasoningCalls.length >= 1);
-  assert.equal(dwar.conversationCalls.length, 1);
-  const converse = dwar.conversationCalls[0];
-  assert.ok(converse);
-  const blob = JSON.stringify(converse.messages);
-  assert.match(blob, /say hi/);
-  const last = converse.messages[converse.messages.length - 1];
-  assert.ok(last);
-  assert.equal(last.role, "user");
+  assert.equal(dwar.conversationCalls.length, 0);
+  const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
+  assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[null, "say hi"]]);
 });
 
-test("a hand-off queued when its agent is retired still goes out, and the retired agent does nothing else", async () => {
+test("an agent that retires itself still sends the report in the same turn, and does nothing after", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, { name: "retiring-worker", systemPrompt: "report and retire" });
   let reasonTurn = 0;
@@ -626,22 +608,14 @@ test("a hand-off queued when its agent is retired still goes out, and the retire
         provider: "anthropic",
         content: [
           { type: "tool_use", id: "rt-retire", name: MANAGE_AGENT, input: { agent_id: callerId, retired: true } },
-          { type: "tool_use", id: "rt-report", name: SEND_MESSAGE, input: { to_agent_id: null, intent: "Browser 13 is not running" } },
+          { type: "tool_use", id: "rt-report", name: SEND_MESSAGE, input: { to_agent_id: null, content: "Browser 13 is not running." } },
           { type: "tool_use", id: "rt-yield", name: "yield", input: {} },
         ],
         stop_reason: "tool_use",
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
       };
     },
-    converse: async () => ({
-      provider: "anthropic",
-      content: [
-        { type: "tool_use", id: "rt-dispatch", name: DISPATCH_MESSAGE, input: { to_agent_id: null, content: "Browser 13 is not running." } },
-        { type: "tool_use", id: "rt-c-yield", name: "yield", input: {} },
-      ],
-      stop_reason: "tool_use",
-      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-    }),
+    converse: async () => yieldTurn("rt-c-yield"),
   });
   const runtime = createRuntime({
     db: handle.db,
@@ -657,7 +631,7 @@ test("a hand-off queued when its agent is retired still goes out, and the retire
   await runtime.waitUntilIdle();
 
   assert.equal(reasonTurn, 1, "a retired agent's reasoning does not run again");
-  assert.equal(dwar.conversationCalls.length, 1);
+  assert.equal(dwar.conversationCalls.length, 0);
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
   assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[null, "Browser 13 is not running."]]);
 });
@@ -1277,7 +1251,7 @@ test("as Dadi, send_message and dispatch_message fail and deliver nothing", asyn
     type: "tool_use",
     id: "dadi-send",
     name: SEND_MESSAGE,
-    input: { to_agent_id: targetId, intent: "say hi" },
+    input: { to_agent_id: targetId, content: "say hi" },
   });
   assert.equal(send.isError, true);
   assert.match(send.content, /agent identity/);

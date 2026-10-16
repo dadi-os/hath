@@ -543,7 +543,7 @@ test("child may still send_message and dispatch_message to the user", async () =
     type: "tool_use",
     id: "child-send-user",
     name: "send_message",
-    input: { to_agent_id: null, intent: "status for Ankur" },
+    input: { to_agent_id: null, content: "status for Ankur" },
   });
   assert.equal(send.isError, false);
 
@@ -567,7 +567,7 @@ test("child may still send_message and dispatch_message to the user", async () =
     type: "tool_use",
     id: "root-send-user",
     name: "send_message",
-    input: { to_agent_id: null, intent: "report to Ankur" },
+    input: { to_agent_id: null, content: "report to Ankur" },
   });
   assert.equal(rootSend.isError, false);
   await runtime.waitUntilIdle();
@@ -652,7 +652,7 @@ test("messaging a retired agent is a retired error on every path and stores noth
     type: "tool_use",
     id: "send-retired",
     name: "send_message",
-    input: { to_agent_id: retiredId, intent: "ask it something" },
+    input: { to_agent_id: retiredId, content: "ask it something" },
   });
   assert.equal(send.isError, true);
   assert.equal(send.content, `retired: agent ${retiredId} is retired`);
@@ -672,57 +672,3 @@ test("messaging a retired agent is a retired error on every path and stores noth
   await app.close();
 });
 
-test("wait for a retired agent ends at once, and for an active one reports how recently its team worked", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const waiterId = await insertAgent(handle.db, { id: "wait-for-waiter", systemPrompt: "waiter" });
-  const ownerId = await insertAgent(handle.db, { id: "wait-for-owner", systemPrompt: "owner" });
-  const helperId = await insertAgent(handle.db, { id: "wait-for-helper", systemPrompt: "helper", parentAgentId: ownerId });
-  const goneId = await insertAgent(handle.db, { id: "wait-for-gone", systemPrompt: "gone" });
-  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, goneId));
-  await writeAgentLog(handle.db, { agentId: helperId, lane: "reasoning", event: "response", payload: {} });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-
-  const started = Date.now();
-  const gone = await executeTool(runtime.toolContext(waiterId, "reasoning"), {
-    type: "tool_use",
-    id: "wait-gone",
-    name: "wait",
-    input: { seconds: 30, for: goneId },
-  });
-  assert.equal(gone.isError, false);
-  assert.ok(Date.now() - started < 1000, "a retired agent never replies, so the wait does not run");
-  assert.equal(JSON.parse(gone.content).for.active, false);
-
-  const owner = await executeTool(runtime.toolContext(waiterId, "reasoning"), {
-    type: "tool_use",
-    id: "wait-owner",
-    name: "wait",
-    input: { seconds: 1, for: ownerId },
-  });
-  const report = JSON.parse(owner.content).for;
-  assert.equal(report.active, true);
-  assert.equal(report.seconds_since_you_asked, null);
-  assert.ok(report.seconds_since_its_team_worked !== null && report.seconds_since_its_team_worked < 10, "the helper under the owner counts as its team");
-
-  await insertMessage(handle.db, { fromAgentId: waiterId, toAgentId: ownerId, content: "what is due this week?", attachments: NO_ATTACHMENTS });
-  const open = await executeTool(runtime.toolContext(waiterId, "reasoning"), {
-    type: "tool_use",
-    id: "wait-open",
-    name: "wait",
-    input: { seconds: 1 },
-  });
-  const waitingOn = JSON.parse(open.content).waiting_on;
-  assert.equal(waitingOn.length, 1, "an ask with no answer since is listed without naming it");
-  assert.equal(waitingOn[0].agent_id, ownerId);
-  assert.ok(waitingOn[0].seconds_since_you_asked < 10);
-  await runtime.waitUntilIdle();
-});

@@ -4,7 +4,6 @@ import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
 import { runReasoningLoop } from "../src/runtime/reasoning.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { LaneLocks } from "../src/runtime/locks.js";
-import { IntentQueue } from "../src/runtime/intents.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { HostSessions } from "../src/runtime/sessions.js";
 import { ToolDebounce } from "../src/runtime/tool-debounce.js";
@@ -41,12 +40,13 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
       turn += 1;
       if (turn === 1) {
         steer.append(agentId, "check the voice PR");
-        return toolUse("send_message", { to_agent_id: null, intent: "status" });
+        return toolUse("send_message", { to_agent_id: null, content: "status" });
       }
       return toolUse("yield", {});
     },
     executeTool: async () => ({ content: "{}", isError: false, audit: {} }),
     steer,
+    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
     recordActions: () => {},
@@ -85,6 +85,7 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
     },
     executeTool: async () => ({ content: "{}", isError: false, audit: {} }),
     steer,
+    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
     recordActions: () => {},
@@ -111,7 +112,6 @@ test("steer_reasoning starts a run when reasoning is idle", async () => {
       callerKind: "agent",
       lane: "conversation",
       steer,
-      intents: new IntentQueue(),
       locks,
       transcript: new TranscriptStore(),
       sessions: new HostSessions(),
@@ -146,7 +146,6 @@ test("steer_reasoning does not start a second run while reasoning is busy", asyn
       callerKind: "agent",
       lane: "conversation",
       steer,
-      intents: new IntentQueue(),
       locks,
       transcript: new TranscriptStore(),
       sessions: new HostSessions(),
@@ -184,7 +183,7 @@ test("steer_reasoning with terminate stops the next tool call from running", asy
       turn += 1;
       if (turn === 1) {
         steer.requestTerminate(agentId);
-        return toolUse("send_message", { to_agent_id: null, intent: "should not run" });
+        return toolUse("send_message", { to_agent_id: null, content: "should not run" });
       }
       return toolUse("yield", {});
     },
@@ -193,6 +192,7 @@ test("steer_reasoning with terminate stops the next tool call from running", asy
       return { content: "{}", isError: false, audit: {} };
     },
     steer,
+    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
     recordActions: () => {},
@@ -217,8 +217,8 @@ test("steer_reasoning terminate mid-batch blocks remaining domain tools", async 
     call: async () => ({
       provider: "anthropic",
       content: [
-        { type: "tool_use", id: "a", name: "send_message", input: { to_agent_id: null, intent: "one" } },
-        { type: "tool_use", id: "b", name: "send_message", input: { to_agent_id: null, intent: "two" } },
+        { type: "tool_use", id: "a", name: "send_message", input: { to_agent_id: null, content: "one" } },
+        { type: "tool_use", id: "b", name: "send_message", input: { to_agent_id: null, content: "two" } },
       ],
       stop_reason: "tool_use",
       usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
@@ -229,6 +229,7 @@ test("steer_reasoning terminate mid-batch blocks remaining domain tools", async 
       return { content: "{}", isError: false, audit: {} };
     },
     steer,
+    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
     recordActions: () => {},
@@ -249,7 +250,6 @@ test("steer_reasoning accepts terminate without instruction", async () => {
       callerKind: "agent",
       lane: "conversation",
       steer,
-      intents: new IntentQueue(),
       locks,
       transcript: new TranscriptStore(),
       sessions: new HostSessions(),

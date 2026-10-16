@@ -6,7 +6,6 @@ import { HostSessions } from "../src/runtime/sessions.js";
 import { ToolDebounce } from "../src/runtime/tool-debounce.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { LaneLocks } from "../src/runtime/locks.js";
-import { IntentQueue } from "../src/runtime/intents.js";
 import { WAIT } from "../src/types/domain.js";
 import type { ToolContext } from "../src/tools/shared.js";
 
@@ -22,7 +21,6 @@ function ctxFor(steer: SteerQueue, transcript = new TranscriptStore()): ToolCont
     callerKind: "agent",
     lane: "reasoning",
     steer,
-    intents: new IntentQueue(),
     locks: new LaneLocks(),
     transcript,
     sessions: new HostSessions(),

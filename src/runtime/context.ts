@@ -199,7 +199,9 @@ export function windowStart(sizes: number[], window: Omit<TranscriptWindow, "bud
  * through get_logs and memory. When conversation's history ends on something for it
  * to answer, hath's note on the agent's open jobs follows it (see openJobsNote); a
  * history that ends on the agent's own turn gets none, so a run with nothing to
- * answer still makes no call. Dwar appends lane doctrine as a cached block.
+ * answer still makes no call. Reasoning, which also sends, always gets its note when it
+ * has open jobs; its runs start from a steer or a report, never from the transcript's
+ * end. Dwar appends lane doctrine as a cached block.
  */
 export async function assembleContext(opts: {
   db: Db;
@@ -230,15 +232,17 @@ export async function assembleContext(opts: {
   };
 
   const conversation = windowed("conversation");
-  const note = await openJobsNote(opts.db, opts.agentId);
+  const reasoning = windowed("reasoning");
+  const conversationNote = await openJobsNote(opts.db, opts.agentId, "conversation");
+  const reasoningNote = await openJobsNote(opts.db, opts.agentId, "reasoning");
   return {
     system,
     transcripts: {
       conversation:
-        note !== null && conversation.at(-1)?.role === "user"
-          ? [...conversation, { role: "user", content: note }]
+        conversationNote !== null && conversation.at(-1)?.role === "user"
+          ? [...conversation, { role: "user", content: conversationNote }]
           : conversation,
-      reasoning: windowed("reasoning"),
+      reasoning: reasoningNote !== null ? [...reasoning, { role: "user", content: reasoningNote }] : reasoning,
     },
     tools: laneTools[opts.lane],
     throughSeq: thread.at(-1)?.seq ?? 0,

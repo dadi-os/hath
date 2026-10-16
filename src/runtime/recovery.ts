@@ -40,7 +40,7 @@ type InterruptedWake = {
   conversation_cut: boolean;
   /** A steer was queued after reasoning's last step. */
   steer_lost: boolean;
-  /** A send_message hand-off was queued after conversation's last turn. */
+  /** A send_message hand-off (from before reasoning sent its own messages) was queued after conversation's last turn. */
   hand_off_lost: boolean;
   /** A message arrived after conversation's last turn. */
   unhandled: boolean;
@@ -88,7 +88,7 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
         ) as steered_at,
         max(created_at) filter (
           where lane = 'reasoning' and event = 'tool_result' and payload->>'name' = 'send_message'
-            and payload->>'is_error' = 'false'
+            and payload->>'is_error' = 'false' and payload->>'content' like '%"handed_off":true%'
         ) as handed_off_at
       from recent
       group by agent_id

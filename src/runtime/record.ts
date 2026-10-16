@@ -21,8 +21,8 @@ import {
 /**
  * Tools whose calls change something outside the wake — a page, a file, an account,
  * a device, an agent, a schedule, memory — and so are what a record lists. Reads,
- * waits and hand-offs are left out: a read changes nothing, and a hand-off becomes a
- * message the transcript already holds.
+ * waits and sends are left out: a read changes nothing, and a send is a message the
+ * transcript already holds.
  */
 export const ACTION_TOOLS = new Set<string>([
   "browser_click",

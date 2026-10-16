@@ -13,6 +13,7 @@ import { YIELD } from "../types/domain.js";
 import type { AssembledContext } from "./context.js";
 import { stepActions } from "./record.js";
 import type { ToolExecResult } from "./tools.js";
+import type { TranscriptStore } from "./transcript.js";
 import { CONTINUE_TURN, type Wake } from "./wake.js";
 
 const TERMINATED = "terminated by conversation lane";
@@ -71,6 +72,35 @@ export function laneRequest(deps: StepDeps, assembled: AssembledContext): DwarCh
   };
 }
 
+/** How much of an already-sent message a refusal quotes. */
+const SENT_QUOTE_CHARS = 300;
+
+/**
+ * alreadySentRefusal is why `agentId`'s message to `to`, composed when its wake had read
+ * the transcript through `composedThrough`, must not go out: a message this agent sent
+ * `to` after that point, which the composing lane never saw. Both lanes send, and each
+ * runs while the other may be sending, so without this a lane answers what the other
+ * lane already answered. The refusal quotes what went out, so the lane sends only what
+ * it adds. Null when nothing was sent `to` since.
+ */
+export function alreadySentRefusal(
+  transcript: TranscriptStore,
+  agentId: string,
+  to: string | null,
+  composedThrough: number,
+): string | null {
+  const sent = transcript
+    .transcriptFor(agentId)
+    .filter((row) => row.seq > composedThrough && row.fromAgentId === agentId && row.toAgentId === to && row.fromAgentId !== row.toAgentId)
+    .at(-1);
+  if (sent === undefined) {
+    return null;
+  }
+  const who = to ?? "Ankur";
+  const quote = sent.content.length > SENT_QUOTE_CHARS ? `${sent.content.slice(0, SENT_QUOTE_CHARS)}…` : sent.content;
+  return `Not sent: this agent already sent ${who} a message after you wrote this one: "${quote}" Send ${who} only what that message does not already say, or nothing if it covers this.`;
+}
+
 /** How many times a lane asks again after its model returned an empty turn. */
 const EMPTY_TURN_RETRIES = 1;
 
@@ -98,8 +128,7 @@ export async function callLane(deps: StepDeps, request: DwarChatRequest): Promis
  * no tool call is kept and followed by a neutral continue turn, so the lane
  * keeps going; only yield (or a stop) ends it. An empty turn (see callLane) fails a
  * reasoning lane, but ends a conversation run as a yield would: conversation with
- * nothing to say has nothing to send, and its run's unsent hand-offs are still
- * answered (see runConversationLoop). Returns true when the lane should exit. Agent turns are tagged with their provider and lane so Dwar can
+ * nothing to say has nothing to send. Returns true when the lane should exit. Agent turns are tagged with their provider and lane so Dwar can
  * translate the other lane's turns in a shared wake; the router's wake has one
  * lane on a context-free endpoint, so its turns go untagged.
  */

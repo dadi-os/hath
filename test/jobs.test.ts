@@ -141,26 +141,27 @@ test("an agent's line to its worker opens a job only one way, and a scheduled tr
   await runtime.waitUntilIdle();
 });
 
-test("the open-jobs note tells conversation whom it owes a status, what it has spent, and whom it reaches only through reasoning", async () => {
+test("the open-jobs note tells each lane whom it owes a status, what it has spent, and who directs the agents it brought in", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "note-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "note-worker", systemPrompt: "worker", parentAgentId: managerId });
   const runtime = idleRuntime();
-  assert.equal(await openJobsNote(handle.db, managerId), null);
+  assert.equal(await openJobsNote(handle.db, managerId, "conversation"), null);
 
   await deliverUserMessage(deps(runtime), managerId, "find my exam times");
   await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "read the exam page" });
-  let note = await openJobsNote(handle.db, managerId);
+  let note = await openJobsNote(handle.db, managerId, "conversation");
   assert.match(note!, /Ankur gave you a job that is still open: every message to Ankur carries a status, and running is free/);
-  assert.match(note!, /You gave work that is still open to note-worker:/);
+  assert.match(note!, /You gave work that is still open to note-worker: your reasoning lane directs it and messages them itself/);
+  assert.match((await openJobsNote(handle.db, managerId, "reasoning"))!, /note-worker: their reports come to you/);
 
   assert.equal((await dispatch(runtime, managerId, null, "on it", "running")).isError, false);
-  note = await openJobsNote(handle.db, managerId);
+  note = await openJobsNote(handle.db, managerId, "conversation");
   assert.match(note!, /your one progress update is spent/);
   assert.equal((await dispatch(runtime, managerId, null, "which semester?", "needs_input")).isError, false);
-  assert.match((await openJobsNote(handle.db, managerId))!, /your question to Ankur waits for a reply/);
+  assert.match((await openJobsNote(handle.db, managerId, "conversation"))!, /your question to Ankur waits for a reply/);
 
-  assert.match((await openJobsNote(handle.db, workerId))!, /note-manager gave you a job/);
+  assert.match((await openJobsNote(handle.db, workerId, "reasoning"))!, /note-manager gave you a job/);
   await runtime.waitUntilIdle();
 });
 
@@ -325,7 +326,7 @@ test("a send over a message the lane has not read waits for the next step", asyn
   assert.deepEqual(await sentBy(agentId), ["Thursday is set"]);
 });
 
-test("conversation messages an agent it brought in only with a reasoning hand-off", async () => {
+test("conversation never messages an agent this agent brought in, since reasoning directs it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "voice-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "voice-worker", systemPrompt: "worker", parentAgentId: managerId });

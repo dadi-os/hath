@@ -284,7 +284,7 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
     type: "tool_use",
     id: "s0",
     name: SEND_MESSAGE,
-    input: { to_agent_id: null, intent: "send it", attachment_ids: ["00000000-0000-4000-8000-000000000000"] },
+    input: { to_agent_id: null, content: "send it", attachment_ids: ["00000000-0000-4000-8000-000000000000"] },
   });
   assert.equal(unknown.isError, true);
   assert.match(unknown.content, /^not_found/);

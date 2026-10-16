@@ -10,8 +10,7 @@ import type {
 import type { Db } from "../src/db/client.js";
 import { runConversationLoop, UNSENT_TEXT_TURN } from "../src/runtime/conversation.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { IntentQueue } from "../src/runtime/intents.js";
-import { runReasoningLoop } from "../src/runtime/reasoning.js";
+import { runReasoningLoop, UNSENT_REPORT_TURN } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { CLEARED_RESULT, CONTINUE_TURN, OVERSIZED_RESULT, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
@@ -38,8 +37,9 @@ function stepDeps(
   wake: Wake,
   model: (request: DwarChatRequest) => DwarChatResponse,
   requests: DwarChatRequest[],
-): StepDeps {
+): StepDeps & { transcript: TranscriptStore } {
   return {
+    transcript: new TranscriptStore(),
     agentId: "agent-1",
     lane,
     wake,
@@ -242,16 +242,14 @@ test("a conversation turn still empty after its retry ends the run instead of fa
   const requests: DwarChatRequest[] = [];
   await runConversationLoop({
     ...stepDeps("conversation", new Wake(roomyWakeLimits), () => turn("anthropic", []), requests),
-    intents: new IntentQueue(),
     ...conversationGateDeps(),
   });
   assert.equal(requests.length, 2);
 });
 
-test("both lanes share one wake: each sees the other's steps; steers and intents stay private", async () => {
+test("both lanes share one wake: each sees the other's steps; steers stay private", async () => {
   const wake = new Wake(roomyWakeLimits);
   const steer = new SteerQueue();
-  const intents = new IntentQueue();
   const reasoningRequests: DwarChatRequest[] = [];
   const conversationRequests: DwarChatRequest[] = [];
 
@@ -271,10 +269,8 @@ test("both lanes share one wake: each sees the other's steps; steers and intents
     steer,
   });
 
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur browser 15 is down", attachmentIds: [], status: null });
   await runConversationLoop({
     ...stepDeps("conversation", wake, () => turn("gemini", [call("yield", "c-y")]), conversationRequests),
-    intents,
     ...conversationGateDeps(),
   });
 
@@ -282,38 +278,37 @@ test("both lanes share one wake: each sees the other's steps; steers and intents
   assert.ok(seen.includes("navigate first"));
   assert.ok(seen.includes("browser_navigate"));
   assert.ok(seen.includes("full result of nav-1"));
-  assert.ok(seen.includes("tell Ankur browser 15 is down"));
   assert.ok(!seen.includes(STEER_TURN_PREFIX));
 
   const reasoningView = wake.view("reasoning");
   const reasoningBlob = JSON.stringify(reasoningView);
   assert.ok(reasoningBlob.includes(STEER_TURN_PREFIX));
-  assert.ok(!reasoningBlob.includes("tell Ankur browser 15 is down"));
   const conversationTurn = reasoningView.find((m) => m.lane === "conversation");
   assert.equal(conversationTurn?.provider, "gemini");
 });
 
-test("a conversation intent stays in view while the lane keeps calling tools", async () => {
-  const intents = new IntentQueue();
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [], status: null });
+test("a send to someone the other lane messaged after this one was written is refused with what went out", async () => {
+  const transcript = new TranscriptStore();
+  transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "is HW3 in?" });
   const requests: DwarChatRequest[] = [];
   let n = 0;
-
   await runConversationLoop({
     ...stepDeps("conversation", new Wake(roomyWakeLimits), () => {
       n += 1;
-      return turn("gemini", [call(n < 3 ? "list_agents" : "yield", `c${n}`)]);
+      if (n === 1) {
+        transcript.append({ fromAgentId: "agent-1", toAgentId: null, content: "HW3 is submitted." });
+        return turn("gemini", [
+          { type: "tool_use", id: "d1", name: "dispatch_message", input: { to_agent_id: null, content: "Checking HW3 now." } },
+          call("yield", "y1"),
+        ]);
+      }
+      return turn("gemini", [call("yield", `y${n}`)]);
     }, requests),
-    intents,
-    ...conversationGateDeps(),
+    db: {} as Db,
+    transcript,
   });
-
-  assert.equal(requests.length, 4);
-  for (const request of requests) {
-    assert.equal(request.tool_choice, "auto");
-    assert.ok(JSON.stringify(request.messages).includes("tell Ankur the profile URL"));
-  }
-  assert.match(JSON.stringify(requests[3]!.messages), /1 of my hand-offs from this run still unsent/);
+  assert.equal(requests.length, 2);
+  assert.match(JSON.stringify(requests[1]!.messages), /already sent Ankur a message after you wrote this one: \\"HW3 is submitted\.\\"/);
 });
 
 test("a yield after a message written as text and never sent gets one reminder, and the second yield stands", async () => {
@@ -326,7 +321,6 @@ test("a yield after a message written as text and never sent gets one reminder, 
       n += 1;
       return turn("anthropic", [{ type: "text", text: list }, call("yield", `c${n}`)]);
     }, requests),
-    intents: new IntentQueue(),
     ...conversationGateDeps(),
   });
 
@@ -334,22 +328,19 @@ test("a yield after a message written as text and never sent gets one reminder, 
   assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_TEXT_TURN));
 });
 
-test("a delivered hand-off ends the run at the first yield, with no reminder", async () => {
-  const intents = new IntentQueue();
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur the profile URL", attachmentIds: [], status: null });
+test("a reasoning yield after a report written as text and never sent gets one reminder, and the second yield stands", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-
-  await runConversationLoop({
-    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => {
+  const report = "HW3 is submitted and graded: ".padEnd(600, "x");
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
       n += 1;
-      return turn("anthropic", n === 1 ? [call("dispatch_message", "d1"), call("yield", "y1")] : [call("yield", `y${n}`)]);
+      return turn("anthropic", [{ type: "text", text: report }, call("yield", `y${n}`)]);
     }, requests),
-    intents,
-    ...conversationGateDeps(),
+    steer: new SteerQueue(),
   });
-
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 2);
+  assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_REPORT_TURN));
 });
 
 test("a wake lives while any run holds it and is dropped when the last releases", () => {
@@ -372,7 +363,6 @@ test("a wake lives while any run holds it and is dropped when the last releases"
 
 test("a queued conversation run makes no model call until something it can see joins the wake", async () => {
   const wake = new Wake(roomyWakeLimits);
-  const intents = new IntentQueue();
   const requests: DwarChatRequest[] = [];
   let arrival: DwarMessage | null = null;
   const deps = {
@@ -382,7 +372,6 @@ test("a queued conversation run makes no model call until something it can see j
       arrival = null;
       return next === null ? { turn: null, throughSeq: afterSeq } : { turn: next, throughSeq: afterSeq + 1 };
     },
-    intents,
     ...conversationGateDeps(),
   };
 
@@ -397,10 +386,6 @@ test("a queued conversation run makes no model call until something it can see j
   arrival = { role: "user", content: "[Arrived during this wake]\n\n[From: Ankur]\nany update?" };
   await runConversationLoop(deps);
   assert.equal(requests.length, 2);
-
-  intents.append("agent-1", { toAgentId: null, intent: "tell Ankur it is done", attachmentIds: [], status: null });
-  await runConversationLoop(deps);
-  assert.equal(requests.length, 4, "the hand-off's yield without a send gets one reminder");
 });
 
 /** What the conversation send gates read: a db no test send reaches, and an empty transcript. */
@@ -556,12 +541,12 @@ test("past its ceiling a lane drops older thinking before any step, keeping the 
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nrebuild the resume"), 1);
   for (let i = 1; i <= 4; i += 1) {
-    pushThoughtStep(wake, `s${i}`, 200, 200);
+    pushThoughtStep(wake, `s${i}`, 460, 200);
   }
   wake.fit("reasoning", []);
   assert.equal(thoughtTurns(wake.view("reasoning")), 4);
 
-  pushThoughtStep(wake, "s5", 200, 200);
+  pushThoughtStep(wake, "s5", 460, 200);
   wake.fit("reasoning", []);
   const view = wake.view("reasoning");
   assert.deepEqual(callIds(view), ["s1", "s2", "s3", "s4", "s5"]);
@@ -569,7 +554,7 @@ test("past its ceiling a lane drops older thinking before any step, keeping the 
   assert.equal((view.at(-2)!.content as DwarResponseBlock[])[0]!.type, "thinking");
   assert.equal(thoughtTurns(wake.view("conversation")), 5);
 
-  pushThoughtStep(wake, "s6", 200, 200);
+  pushThoughtStep(wake, "s6", 460, 200);
   wake.fit("reasoning", []);
   const next = wake.view("reasoning");
   assert.deepEqual(next.slice(0, view.length - 2), view.slice(0, -2), "the thought-free prefix holds until the next cut");
@@ -578,8 +563,7 @@ test("past its ceiling a lane drops older thinking before any step, keeping the 
 
 test("a turn that thought weighs what its replay shows, not the thinking its provider billed", () => {
   const wake = new Wake(ceilingLimits);
-  wake.begin("sys", frozen("[From: Ankur]
-rebuild the resume"), 1);
+  wake.begin("sys", frozen("[From: Ankur]\nrebuild the resume"), 1);
   pushThoughtStep(wake, "s1", 460, 2_000);
   assert.doesNotThrow(() => wake.fit("reasoning", []));
   assert.deepEqual(callIds(wake.view("reasoning")), ["s1"]);
@@ -683,7 +667,6 @@ test("a reasoning step that acts joins the transcript with its text, calls and r
       request.messages.some((m) => m.role === "assistant") ? turn("anthropic", [call("yield", "y2")]) : turn("anthropic", [call("forward_attachment", "f1")]),
     []),
     recordActions: (actions) => conversed.push(actions),
-    intents: new IntentQueue(),
     db: {} as Db,
     transcript: new TranscriptStore(),
   });

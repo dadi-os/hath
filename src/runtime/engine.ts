@@ -1,10 +1,10 @@
 /**
- * Agent runtime: lane locks, steer/intent queues, transcript, and lane runners.
+ * Agent runtime: lane locks, the steer queue, transcript, and lane runners.
  * Conversation enqueue always schedules a run — the lane lock serializes concurrent
  * wakes so a second user message is not dropped while conversation is busy.
- * Reasoning does not wake conversation on exit; send_message already enqueues when
- * it queues an intent. A blanket wake races a follow-up run whose transcript ends
- * on an assistant turn, which chat providers reject.
+ * Reasoning does not wake conversation on exit: it sends its own messages. A blanket
+ * wake races a follow-up run whose transcript ends on an assistant turn, which chat
+ * providers reject.
  */
 
 import { eq } from "drizzle-orm";
@@ -32,7 +32,6 @@ import { deliverAgentMessage, RUNTIME_REPORT, type RuntimeReportKind } from "./d
 import { runConversationLoop } from "./conversation.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
-import { IntentQueue } from "./intents.js";
 import { LaneLocks } from "./locks.js";
 import { runReasoningLoop } from "./reasoning.js";
 import { SteerQueue } from "./steer.js";
@@ -60,7 +59,6 @@ export type RuntimeLog = {
 export type Runtime = {
   locks: LaneLocks;
   steer: SteerQueue;
-  intents: IntentQueue;
   transcript: TranscriptStore;
   events: EventBus;
   devices: DeviceGateway;
@@ -101,7 +99,6 @@ export function createRuntime(opts: {
    * once, since each report wakes a requester that would fail the same way.
    */
   const reportedFailures = new Map<string, string>();
-  const intents = new IntentQueue();
   const transcript = new TranscriptStore();
   const events = new EventBus(opts.log);
   const devices = new DeviceGateway(events, opts.config.devices.timeout_ms);
@@ -178,7 +175,6 @@ export function createRuntime(opts: {
   const runtime: Runtime = {
     locks,
     steer,
-    intents,
     transcript,
     events,
     devices,
@@ -211,7 +207,6 @@ export function createRuntime(opts: {
       browsers,
       devices,
       steer,
-      intents,
       locks,
       transcript,
       events,
@@ -230,11 +225,7 @@ export function createRuntime(opts: {
    * reasoning run that finished its loop queues a follow-up for steers that
    * arrived after its last drain; a run that failed, or found the agent missing
    * or retired, leaves them for the next wake instead of re-queuing itself forever.
-   * A retired agent's conversation still runs while reasoning's hand-offs wait for it,
-   * so a report handed off just before the agent was retired still goes out.
-   * A reasoning run whose last turn wrote text without a send_message also queues a
-   * conversation run, so a result written as text instead of handed off still reaches
-   * the requester. The run that holds the wake last settles the jobs the wake left open
+   * The run that holds the wake last settles the jobs the wake left open
    * before releasing it (see settleJobs); a failure is logged, since the wake must still
    * release.
    * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
@@ -242,7 +233,6 @@ export function createRuntime(opts: {
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
     let reasoned = false;
-    let unsentReport = false;
     try {
       release = await locks.acquire(agentId, lane, null);
       events.emit({
@@ -254,11 +244,11 @@ export function createRuntime(opts: {
       try {
         const rows = await opts.db.select().from(agents).where(eq(agents.id, agentId));
         const agent = rows[0];
-        if (!agent || (!agent.active && !(lane === "conversation" && intents.hasItems(agentId)))) {
+        if (!agent || !agent.active) {
           return;
         }
         if (lane === "reasoning") {
-          unsentReport = await runReasoningLoop(reasoningDeps(agentId));
+          await runReasoningLoop(reasoningDeps(agentId));
           reasoned = true;
         } else {
           await runConversationLoop(conversationDeps(agentId));
@@ -295,9 +285,6 @@ export function createRuntime(opts: {
       release?.();
       if (reasoned && steer.hasItems(agentId)) {
         enqueueReasoning(agentId);
-      }
-      if (unsentReport) {
-        enqueueConversation(agentId);
       }
       if (wakes.lastHold(agentId)) {
         await settleJobs(agentId).catch((settleErr: unknown) => {
@@ -503,6 +490,7 @@ export function createRuntime(opts: {
       ...stepDeps(agentId, "reasoning"),
       call: (request: DwarChatRequest) => opts.dwar.reason(request, `hath/${agentId}`),
       steer,
+      transcript,
     };
   }
 
@@ -510,7 +498,6 @@ export function createRuntime(opts: {
     return {
       ...stepDeps(agentId, "conversation"),
       call: (request: DwarChatRequest) => opts.dwar.converse(request, `hath/${agentId}`),
-      intents,
       db: opts.db,
       transcript,
     };

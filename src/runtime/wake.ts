@@ -4,9 +4,9 @@
  * Both lanes read the same record: the system and each lane's transcript
  * window, frozen together when the wake began, then every step either lane took — each model turn whole
  * (thinking, text, tool calls, in provider order) followed by its tool results —
- * plus messages that arrived mid-wake. Only two kinds of turn are lane-private:
- * steers (reasoning's instructions) and intents (conversation's delivery
- * requests), because the other lane already sees the tool call that produced them.
+ * plus messages that arrived mid-wake. Only a few kinds of turn are lane-private:
+ * steers (reasoning's instructions), because conversation already sees the call that
+ * produced them, and each lane's own reminders.
  *
  * Old tool results are dropped first: once the results still shown in full
  * pass a size budget, every result before the newest ones is replaced by a

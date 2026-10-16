@@ -8,7 +8,6 @@ import type { Lane } from "../types/domain.js";
 import type { EventBus } from "../runtime/events.js";
 import type { LaneLocks } from "../runtime/locks.js";
 import type { SteerQueue } from "../runtime/steer.js";
-import type { IntentQueue } from "../runtime/intents.js";
 import type { TranscriptStore } from "../runtime/transcript.js";
 import type { BrowserDriver } from "../browser/driver.js";
 import type { DwarClient } from "../dwar/client.js";
@@ -51,7 +50,6 @@ export type ToolContext = {
   browsers: BrowserDriver;
   devices: DeviceGateway;
   steer: SteerQueue;
-  intents: IntentQueue;
   locks: LaneLocks;
   transcript: TranscriptStore;
   events: EventBus;

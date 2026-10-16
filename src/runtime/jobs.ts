@@ -188,14 +188,14 @@ export async function reportRefusal(
 }
 
 /**
- * openJobsNote is hath's note to `agentId`'s conversation lane on the jobs its sends are
- * held to, so it sends right the first time instead of learning each gate from a
- * refusal: everyone whose open job it owes a status on every message, with whether its
- * one progress update is spent or its question still waits (see reportRefusal), and the
- * agents it gave work that is still open, which hear from it only through reasoning's
- * hand-offs (see conversation.ts sendRefusal). Null when it has no open job either way.
+ * openJobsNote is hath's note to one of `agentId`'s lanes on the jobs its sends are held
+ * to, so it sends right the first time instead of learning each gate from a refusal:
+ * everyone whose open job it owes a status on every message, with whether its one
+ * progress update is spent or its question still waits (see reportRefusal), and the
+ * agents it gave work that is still open, which the reasoning lane directs and messages
+ * itself (see conversation.ts sendRefusal). Null when it has no open job either way.
  */
-export async function openJobsNote(db: Db, agentId: string): Promise<string | null> {
+export async function openJobsNote(db: Db, agentId: string, lane: "conversation" | "reasoning"): Promise<string | null> {
   const owed = await db
     .select()
     .from(jobs)
@@ -220,8 +220,11 @@ export async function openJobsNote(db: Db, agentId: string): Promise<string | nu
     return `- ${who} gave you a job that is still open: every message to ${who} carries a status, and ${next}.`;
   });
   if (given.length > 0) {
+    const names = given.map((job) => job.agentId).join(", ");
     lines.push(
-      `- You gave work that is still open to ${given.map((job) => job.agentId).join(", ")}: send them each hand-off reasoning gives you for them, as soon as you see it, and nothing else; to change that work, steer reasoning.`,
+      lane === "reasoning"
+        ? `- You gave work that is still open to ${names}: their reports come to you, and you send them every next step yourself.`
+        : `- You gave work that is still open to ${names}: your reasoning lane directs it and messages them itself, so never message them; to change that work, steer reasoning.`,
     );
   }
   return [OPEN_JOBS_HEADER, ...lines].join("\n");
