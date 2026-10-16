@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { and, asc, eq } from "drizzle-orm";
 import {
@@ -1870,6 +1871,29 @@ test("every agent's system lists the standing agents with their directory entrie
   const own = await assembleContext({ windows: wideWindows, db: handle.db, serviceRoot: config.serviceRoot, agentId: browserId, lane: "reasoning", transcript: new TranscriptStore() });
   assert.match(own.system, /Your directory entry, which every agent sees:\nOwns: Every browser\./);
   void childId;
+});
+
+test("a wakes read returns whole stamped wakes, then older unstamped rows back to the message that opened them", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "wake-log-reader", systemPrompt: "reads" });
+  const log = (event: "message" | "tool_result", payload: Record<string, unknown>, wakeId: string | null = null) =>
+    writeAgentLog(handle.db, { agentId, lane: "conversation", event, payload, wakeId });
+  await log("message", { direction: "receive", content: "old opener" });
+  for (let i = 0; i < 205; i += 1) {
+    await log("tool_result", { name: "terminal_read_file", content: `old ${i}` });
+  }
+  const wakeId = randomUUID();
+  await log("message", { direction: "receive", content: "new opener" }, wakeId);
+  await log("tool_result", { name: "terminal_read_file", content: "new step" }, wakeId);
+  const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas() });
+
+  const res = await app.inject({ method: "GET", url: `/agents/${agentId}/logs?wakes=10` });
+  assert.equal(res.statusCode, 200, res.body);
+  const logs = (res.json() as { logs: Array<{ wake_id: string | null; payload: { content: string } }> }).logs;
+  assert.deepEqual(logs.slice(0, 2).map((row) => [row.wake_id, row.payload.content]), [[wakeId, "new step"], [wakeId, "new opener"]]);
+  assert.equal(logs.at(-1)?.payload.content, "old opener", "the oldest unstamped wake starts at its opening message");
+  assert.equal(logs.length, 2 + 206);
+  await app.close();
 });
 
 test("get_logs defaults to caller and allows direct children only", async () => {
