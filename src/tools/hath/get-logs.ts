@@ -17,9 +17,13 @@ const input = z
   .strict();
 
 /** Longest string kept whole inside a returned payload; longer ones (page trees, screenshots, file bodies) are clipped. */
-const MAX_STRING_CHARS = 2_000;
-/** Total serialized size of one result; rows past it are left for the next page. */
-const MAX_RESULT_CHARS = 40_000;
+const MAX_STRING_CHARS = 1_200;
+/**
+ * Total serialized size of one result; rows past it are left for the next page. A page
+ * is a search step, not a dump: get_logs averaged 11.9k characters a call on 2026-10-14
+ * to 2026-10-16, and `search` and `before` find the rest.
+ */
+const MAX_RESULT_CHARS = 16_000;
 
 /**
  * clipStrings returns `value` with every string longer than {@link MAX_STRING_CHARS} cut to

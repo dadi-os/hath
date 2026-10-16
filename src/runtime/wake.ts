@@ -10,7 +10,8 @@
  *
  * Old tool results are dropped first: once the results still shown in full
  * pass a size budget, every result before the newest ones is replaced by a
- * short cleared note. When a lane's prompt would pass its token ceiling, the
+ * receipt naming the call, its size and how it began, with the id read_result
+ * reads it back by, so a lane reopens a result instead of running the tool again. When a lane's prompt would pass its token ceiling, the
  * thinking of every model turn before its newest leaves that lane's view first,
  * since the calls and text it led to stay; only if that is not enough do the
  * oldest steps leave behind one trimmed note that lists the actions they took (see
@@ -44,17 +45,49 @@ import { formatActions } from "./record.js";
 export const CONTINUE_TURN =
   "[continue] The text you just wrote reached no one: only a message tool call (send_message or dispatch_message) delivers anything.";
 
-/** What a cleared tool result reads as, in place of its content. */
-export const CLEARED_RESULT =
-  "[cleared] This older tool result was dropped to keep the wake small. Call the tool again if you still need it.";
+/** How a cleared tool result's receipt opens (see receipt). */
+export const CLEARED_PREFIX = "[cleared]";
+
+/** How an oversized tool result's receipt opens (see receipt). */
+export const OVERSIZED_PREFIX = "[too large]";
+
+/** A result this short stays whole when results are cleared: its receipt would save nothing. */
+const KEEP_WHOLE_CHARS = 400;
+
+/** How much of a call's input a receipt names. */
+const RECEIPT_INPUT_CHARS = 160;
+
+/** How much of a result's opening a receipt keeps. */
+const RECEIPT_HEAD_CHARS = 200;
+
+/** A tool call as a receipt names it. */
+type CallInfo = { name: string; input: unknown };
+
+/**
+ * receipt is what a tool result reads as once it leaves full view: the call that made
+ * it, its size, how it began, and the id read_result reads it back by from hath's log,
+ * in pages or by a pattern. It is built only from the call and the result, so it is the
+ * same bytes on every step and the provider's cached prefix holds.
+ */
+export function receipt(prefix: string, toolUseId: string, call: CallInfo | undefined, content: string): string {
+  const what =
+    call === undefined
+      ? "This result"
+      : `${call.name} ${clipText(JSON.stringify(call.input) ?? "{}", RECEIPT_INPUT_CHARS)}`;
+  const why = prefix === OVERSIZED_PREFIX ? "too large for the prompt" : "out of view";
+  const head = clipText(content.replace(/\s+/g, " ").trim(), RECEIPT_HEAD_CHARS);
+  return `${prefix} ${what} · ${content.length} chars, ${why}. read_result ${toolUseId} reopens it (offset/limit, or pattern) instead of rerunning. Began: ${head}`;
+}
+
+/** clipText cuts `text` to `limit` characters, marking the cut. */
+function clipText(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
+}
 
 /** What a tool result reads as once a newer read of the same state replaces it. */
 export const SUPERSEDED_RESULT =
   "[superseded] A newer read of the same page or terminal follows in this wake; use that one.";
 
-/** What a tool result reads as when its step alone would pass a lane's prompt ceiling. */
-export const OVERSIZED_RESULT =
-  "[too large] This result would have pushed the prompt past its token ceiling, so it was dropped. Call the tool again with a narrower query or a smaller limit.";
 
 /**
  * The turn that stands in for the steps a lane's view trimmed to stay under its token
@@ -122,7 +155,9 @@ export class Wake {
   private transcripts: Partial<Record<Lane, DwarMessage[]>> | null = null;
   private seenThrough = 0;
   private readonly turns: WakeTurn[] = [];
-  /** Turns before this index show their tool results as CLEARED_RESULT. */
+  /** Each tool call in the wake by tool_use_id, so a receipt can name the call behind a result. */
+  private readonly calls = new Map<string, CallInfo>();
+  /** Turns before this index show their tool results as cleared receipts (see receipt). */
   private clearedThrough = 0;
   /** How many turns each lane could see when it last yielded. */
   private readonly yieldedAt = new Map<Lane, number>();
@@ -188,6 +223,13 @@ export class Wake {
    */
   push(...turns: WakeTurn[]): void {
     for (const turn of turns) {
+      if (typeof turn.message.content !== "string") {
+        for (const block of turn.message.content) {
+          if (block.type === "tool_use") {
+            this.calls.set(block.id, { name: block.name, input: block.input });
+          }
+        }
+      }
       this.turns.push(turn);
       this.supersede(this.turns.length - 1, turn.states ?? {});
     }
@@ -249,7 +291,7 @@ export class Wake {
    * last measured prompt (see measure) plus the estimated turns added since; a
    * lane's first call estimates all of it from `tools` and the frozen text.
    * When the newest step alone still passes the ceiling, its largest tool results
-   * read as OVERSIZED_RESULT for both lanes until it fits. Throws only when that
+   * read as oversized receipts for both lanes until it fits. Throws only when that
    * is still not enough.
    */
   fit(lane: Lane, tools: DwarTool[]): void {
@@ -381,19 +423,23 @@ export class Wake {
 
   /**
    * dropOversized marks the largest tool results in turns `indices` of `lane`'s view,
-   * biggest first, as OVERSIZED_RESULT until a prompt of `tokens` fits the ceiling, and
+   * biggest first, as oversized receipts until a prompt of `tokens` fits the ceiling, and
    * returns its new size.
    */
   private dropOversized(indices: number[], tokens: number, lane: Lane): number {
-    const results: { id: string; chars: number }[] = [];
+    const results: { id: string; chars: number; saved: number }[] = [];
     for (const index of indices) {
       const message = this.shown(index, lane);
       if (typeof message.content === "string") {
         continue;
       }
       for (const block of message.content) {
-        if (block.type === "tool_result" && block.content.length > OVERSIZED_RESULT.length) {
-          results.push({ id: block.tool_use_id, chars: block.content.length });
+        if (block.type !== "tool_result") {
+          continue;
+        }
+        const note = receipt(OVERSIZED_PREFIX, block.tool_use_id, this.calls.get(block.tool_use_id), block.content);
+        if (block.content.length > note.length) {
+          results.push({ id: block.tool_use_id, chars: block.content.length, saved: block.content.length - note.length });
         }
       }
     }
@@ -404,7 +450,7 @@ export class Wake {
         break;
       }
       this.oversized.add(result.id);
-      total -= Math.ceil((result.chars - OVERSIZED_RESULT.length) / DATA_CHARS_PER_TOKEN);
+      total -= Math.ceil(result.saved / DATA_CHARS_PER_TOKEN);
     }
     return total;
   }
@@ -418,14 +464,22 @@ export class Wake {
       ? withoutThinking(this.turns[index]!.message)
       : this.turns[index]!.message;
     return index < this.clearedThrough
-      ? replaceResults(message, () => CLEARED_RESULT)
-      : replaceResults(message, (id) => this.resultNote(id));
+      ? replaceResults(message, (id, content) => this.clearedNote(id, content))
+      : replaceResults(message, (id, content) => this.resultNote(id, content));
+  }
+
+  /** clearedNote is what a result behind the clearing cut reads as: its receipt, or itself when short. */
+  private clearedNote(toolUseId: string, content: string): string | null {
+    if (this.superseded.has(toolUseId)) {
+      return SUPERSEDED_RESULT;
+    }
+    return content.length <= KEEP_WHOLE_CHARS ? null : receipt(CLEARED_PREFIX, toolUseId, this.calls.get(toolUseId), content);
   }
 
   /** resultNote is what a live tool result reads as instead of its content, or null to show it whole. */
-  private resultNote(toolUseId: string): string | null {
+  private resultNote(toolUseId: string, content: string): string | null {
     if (this.oversized.has(toolUseId)) {
-      return OVERSIZED_RESULT;
+      return receipt(OVERSIZED_PREFIX, toolUseId, this.calls.get(toolUseId), content);
     }
     return this.superseded.has(toolUseId) ? SUPERSEDED_RESULT : null;
   }
@@ -466,7 +520,7 @@ export class Wake {
     let total = 0;
     for (const block of message.content) {
       if (block.type === "tool_result") {
-        total += (this.resultNote(block.tool_use_id) ?? block.content).length;
+        total += (this.resultNote(block.tool_use_id, block.content) ?? block.content).length;
       }
     }
     return total;
@@ -520,12 +574,12 @@ export class Wake {
  */
 function replaceResults(
   message: DwarMessage,
-  note: (toolUseId: string) => string | null,
+  note: (toolUseId: string, content: string) => string | null,
 ): DwarMessage {
   if (
     typeof message.content === "string" ||
     !message.content.some(
-      (block) => block.type === "tool_result" && note(block.tool_use_id) !== null,
+      (block) => block.type === "tool_result" && note(block.tool_use_id, block.content) !== null,
     )
   ) {
     return message;
@@ -536,7 +590,7 @@ function replaceResults(
       if (block.type !== "tool_result") {
         return block;
       }
-      const replacement = note(block.tool_use_id);
+      const replacement = note(block.tool_use_id, block.content);
       return replacement === null ? block : { ...block, content: replacement };
     }),
   };

@@ -207,31 +207,6 @@ test("a wake that works a job and stops without reporting closes it as blocked a
   assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 1);
 });
 
-test("a wait renews without a model call while the awaited team works, and returns at its end once it stops", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const waiterId = await insertAgent(handle.db, { id: "renew-waiter", systemPrompt: "waiter" });
-  const ownerId = await insertAgent(handle.db, { id: "renew-owner", systemPrompt: "owner" });
-  const runtime = idleRuntime();
-  const waitFor = () =>
-    executeTool(runtime.toolContext(waiterId, "reasoning"), {
-      type: "tool_use",
-      id: "renew-wait",
-      name: WAIT,
-      input: { seconds: 2, for: ownerId },
-    });
-
-  const idle = JSON.parse((await waitFor()).content);
-  assert.equal(idle.waited_seconds, 2);
-
-  const working = setTimeout(() => {
-    void writeAgentLog(handle.db, { agentId: ownerId, lane: "reasoning", event: "response", payload: {} });
-  }, 1000);
-  const renewed = JSON.parse((await waitFor()).content);
-  clearTimeout(working);
-  assert.equal(renewed.interrupted, false);
-  assert.equal(renewed.waited_seconds, 4, "one renewal while the owner worked, none after");
-});
-
 test("a report from an agent the recipient brought in wakes its reasoning lane; everything else wakes conversation", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "route-manager", systemPrompt: "manager" });

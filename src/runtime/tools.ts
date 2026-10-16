@@ -19,12 +19,14 @@ import {
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
   READ_ATTACHMENT,
+  READ_RESULT,
   RECALL_MEMORY,
   SEND_MESSAGE,
   STEER_REASONING,
   WAIT,
   YIELD,
 } from "../types/domain.js";
+import { runReadResult } from "./results.js";
 import { findEmbeddedTool, findTool } from "../tools/registry.js";
 import {
   fail,
@@ -314,6 +316,9 @@ async function dispatchTool(
       }
       if (call.name === WAIT) {
         return await runWait(ctx, call.input);
+      }
+      if (call.name === READ_RESULT) {
+        return await runReadResult(ctx, call.input);
       }
       if (call.name === CREATE_ATTACHMENT) {
         return await runCreateAttachment(ctx, call.input);

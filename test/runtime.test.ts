@@ -703,6 +703,7 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
       "create_attachment",
       LIST_AGENTS,
       "wait",
+      "read_result",
       "recall_memory",
       "ingest_memory",
       "manage_agent",
@@ -1498,6 +1499,7 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     "create_attachment",
     LIST_AGENTS,
     "wait",
+    "read_result",
     "recall_memory",
     "ingest_memory",
     "manage_agent",
@@ -1826,12 +1828,52 @@ test("get_logs searches, clips long strings, and pages back with next_before", a
 
   const page = await read({ event: "tool_result" });
   assert.ok(page.logs.length > 0 && page.logs.length < 30);
-  assert.match(page.logs[0]?.payload.content ?? "", /^x{1000}… \[8000 chars dropped from the middle\] …x{1000}$/);
-  assert.ok(JSON.stringify(page.logs).length <= 40_000);
+  assert.match(page.logs[0]?.payload.content ?? "", /^x{600}… \[8800 chars dropped from the middle\] …x{600}$/);
+  assert.ok(JSON.stringify(page.logs).length <= 16_000);
   assert.ok(page.next_before !== null);
 
   const older = await read({ event: "tool_result", before: page.next_before });
   assert.ok(older.logs.length > 0);
+});
+
+test("read_result reopens the caller's own logged result by id, in pages or by pattern, and no one else's", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const ownerId = await insertAgent(handle.db, { id: "result-owner", systemPrompt: "reads" });
+  const otherId = await insertAgent(handle.db, { id: "result-other", systemPrompt: "other" });
+  const body = Array.from({ length: 50 }, (_, i) => `line ${i + 1}${i === 41 ? " deadline Friday" : ""}`).join("
+");
+  await writeAgentLog(handle.db, {
+    agentId: ownerId,
+    lane: "reasoning",
+    event: "tool_result",
+    payload: { tool_use_id: "toolu_read_1", name: "terminal_read_file", content: body, is_error: false },
+  });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const read = (agentId: string, input: Record<string, unknown>) =>
+    executeTool(runtime.toolContext(agentId, "reasoning"), { type: "tool_use", id: "rr", name: "read_result", input });
+
+  const page = JSON.parse((await read(ownerId, { id: "toolu_read_1", limit: 20 })).content);
+  assert.equal(page.tool, "terminal_read_file");
+  assert.equal(page.total_chars, body.length);
+  assert.equal(page.content, body.slice(0, 20));
+  assert.equal(page.next_offset, 20);
+
+  const found = JSON.parse((await read(ownerId, { id: "toolu_read_1", pattern: "deadline" })).content);
+  assert.equal(found.matches, 1);
+  assert.equal(found.lines, "42: line 42 deadline Friday");
+
+  const theirs = await read(otherId, { id: "toolu_read_1" });
+  assert.equal(theirs.isError, true);
+  assert.match(theirs.content, /^not_found/);
 });
 
 test("get_logs defaults to caller and allows direct children only", async () => {

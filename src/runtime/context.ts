@@ -15,12 +15,14 @@ import {
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
   READ_ATTACHMENT,
+  READ_RESULT,
   RECALL_MEMORY,
   SEND_MESSAGE,
   STEER_REASONING,
   WAIT,
   YIELD,
 } from "../types/domain.js";
+import { readResultTool } from "./results.js";
 import {
   attachmentStub,
   createAttachmentTool,
@@ -400,6 +402,7 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
     createAttachmentTool,
     listAgentsTool,
     waitTool,
+    readResultTool,
     recallMemoryTool,
     ingestMemoryTool,
     manageAgentTool,
@@ -416,6 +419,7 @@ export const embeddedReasoningTools = [
   CREATE_ATTACHMENT,
   LIST_AGENTS,
   WAIT,
+  READ_RESULT,
   RECALL_MEMORY,
   INGEST_MEMORY,
   MANAGE_AGENT,

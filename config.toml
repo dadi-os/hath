@@ -20,11 +20,14 @@ transcript_window_step_chars = 30000
 tool_debounce_base_ms = 1200
 tool_debounce_max_ms = 15000
 # Once a wake's tool results still shown in full pass max chars, older results
-# are cleared down to the newest kept chars. Clearing in one jump keeps the
-# history byte-stable between clears, so the provider cache survives every
-# step but the clearing one; a wider gap clears less often.
-wake_tool_results_max_chars = 100000
-wake_tool_results_kept_chars = 40000
+# are cleared down to the newest kept chars. A cleared result leaves a receipt
+# (the call, its size, how it began, and the id read_result reopens it by), so
+# clearing loses little; every character still shown is re-read on every call.
+# Clearing in one jump keeps the history byte-stable between clears, so the
+# provider cache survives every step but the clearing one; a wider gap clears
+# less often.
+wake_tool_results_max_chars = 48000
+wake_tool_results_kept_chars = 16000
 # A newer read of the same page tree, page text, screenshot or terminal screen
 # marks the older read for replacement at the next cut (a clear, trim or thinking
 # drop) only while the older sits within this many of the newest wake turns.

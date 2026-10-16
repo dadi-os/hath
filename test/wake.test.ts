@@ -13,7 +13,7 @@ import { TranscriptStore } from "../src/runtime/transcript.js";
 import { runReasoningLoop, UNSENT_REPORT_TURN } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
-import { CLEARED_RESULT, CONTINUE_TURN, OVERSIZED_RESULT, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
+import { CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
 import { roomyWakeLimits } from "./helpers.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -133,7 +133,8 @@ test("past its budget the wake clears older tool results in jumps, keeping every
 
   const results = toolResults(requests.at(-1)!.messages);
   assert.equal(results.length, 12);
-  assert.ok(results.slice(0, 10).every((result) => result === CLEARED_RESULT));
+  assert.ok(results.slice(0, 10).every((result) => result.startsWith(CLEARED_PREFIX)));
+  assert.match(results[0]!, /read_result \S+ reopens it/);
   assert.ok(results.slice(10).every((result) => result.startsWith("full result of s")));
 
   let rewrites = 0;
@@ -443,7 +444,7 @@ test("at the clearing budget the queued older reads are replaced first, and clea
   assert.deepEqual(results.slice(0, 3), Array(3).fill(SUPERSEDED_RESULT), "r4 passed the budget: the reads queued by then were the cut");
   assert.ok(results[3]!.startsWith("r4 "), "r4 was queued after that cut and waits for the next");
   assert.ok(results[4]!.startsWith("r5 "));
-  assert.ok(!results.includes(CLEARED_RESULT));
+  assert.ok(!results.some((result) => result.startsWith(CLEARED_PREFIX)));
 });
 
 test("a tool result's state reaches the wake through the step loop", async () => {
@@ -615,10 +616,11 @@ test("a newest step whose results alone pass the ceiling drops its largest resul
   );
   wake.fit("reasoning", []);
   const results = toolResults(wake.view("reasoning"));
-  assert.equal(results[0], OVERSIZED_RESULT);
+  assert.ok(results[0]!.startsWith(OVERSIZED_PREFIX));
+  assert.match(results[0]!, /get_logs \{\} · 1500 chars, too large for the prompt\. read_result g1 reopens it/);
   assert.equal(results[1], "b".repeat(1_200));
   assert.equal(results[2], "small recall");
-  assert.equal(toolResults(wake.view("conversation"))[0], OVERSIZED_RESULT);
+  assert.ok(toolResults(wake.view("conversation"))[0]!.startsWith(OVERSIZED_PREFIX));
 });
 
 /** Push one reasoning step onto `wake` that says `text` and calls `name` as `id`, with `result`. */
@@ -637,7 +639,7 @@ function pushAction(wake: Wake, id: string, name: string, text: string, result: 
   );
 }
 
-test("a reasoning step that acts joins the transcript with its text, calls and results; reads and conversation steps do not", async () => {
+test("each reasoning step joins the transcript: actions with their outcome, reads with their size and read_result id; conversation steps do not", async () => {
   const recorded: string[] = [];
   let n = 0;
   await runReasoningLoop({
@@ -657,9 +659,10 @@ test("a reasoning step that acts joins the transcript with its text, calls and r
     recordActions: (actions) => recorded.push(actions),
     steer: new SteerQueue(),
   });
-  assert.equal(recorded.length, 2, "one entry per acting step; the read is not an action");
-  assert.match(recorded[0]!, /^Send is enabled in Sandra's thread; clicking Send\.\n {2}browser_click \{\} → full result of c1/);
-  assert.match(recorded[1]!, /^\(no note\)\n {2}browser_type/);
+  assert.equal(recorded.length, 3, "one entry per step that made a recorded call");
+  assert.match(recorded[0]!, /^\(no note\)\n {2}browser_accessibility_tree \{\} → read \d+ chars \(read_result r1\)$/);
+  assert.match(recorded[1]!, /^Send is enabled in Sandra's thread; clicking Send\.\n {2}browser_click \{\} → full result of c1.*\(\d+ chars, read_result c1\)$/);
+  assert.match(recorded[2]!, /^\(no note\)\n {2}browser_type/);
 
   const conversed: string[] = [];
   await runConversationLoop({

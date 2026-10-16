@@ -324,6 +324,7 @@ test("worker granted execute_shell and read_file sees those plus send_message an
       "create_attachment",
       LIST_AGENTS,
       "wait",
+      "read_result",
       "recall_memory",
       "ingest_memory",
       "manage_agent",

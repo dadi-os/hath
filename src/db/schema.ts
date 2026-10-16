@@ -69,6 +69,9 @@ export const agentLogs = pgTable(
   (table) => [
     index("agent_logs_agent_id_created_at_idx").on(table.agentId, table.createdAt),
     index("agent_logs_wake_id_idx").on(table.wakeId),
+    index("agent_logs_tool_use_id_idx")
+      .on(sql`(${table.payload}->>'tool_use_id')`)
+      .where(sql`${table.event} = 'tool_result'`),
     check("agent_logs_lane_check", sql`${table.lane} IN ('reasoning', 'conversation', 'router')`),
     check(
       "agent_logs_event_check",

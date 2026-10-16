@@ -177,6 +177,7 @@ export const CREATE_ATTACHMENT = "create_attachment";
 export const STEER_REASONING = "steer_reasoning";
 export const YIELD = "yield";
 export const WAIT = "wait";
+export const READ_RESULT = "read_result";
 export const RECALL_MEMORY = "recall_memory";
 export const INGEST_MEMORY = "ingest_memory";
 export const LIST_AGENTS = "list_agents";

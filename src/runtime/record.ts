@@ -1,11 +1,12 @@
 /**
- * Action records: hath's own account of what an agent's reasoning lane did to the
- * world, built from its tool calls and their results. A wake keeps its steps only
- * while it lasts, and a lane's view trims its oldest steps at the prompt ceiling, so
- * without a record the agent later sees only its own claims about what it did and,
- * with nothing behind them, retracts true reports. Each step that acted joins the
- * agent's transcript as a `[Did]` entry (see context.ts), and a `[trimmed]` note lists
- * the actions of the steps it stands in for (see wake.ts).
+ * Action records: hath's own account of what an agent's reasoning lane did, built from
+ * its tool calls and their results. A wake keeps its steps only while it lasts, and a
+ * lane's view trims its oldest steps at the prompt ceiling, so without a record the
+ * agent later sees only its own claims about what it did and, with nothing behind them,
+ * retracts true reports, or reads again what it already read. Each step that made a
+ * recorded call joins the agent's transcript as a `[Did]` entry (see context.ts): its
+ * actions with their outcomes, its reads with their size and the id read_result reopens
+ * them by. A `[trimmed]` note lists the steps it stands in for (see wake.ts).
  */
 
 import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock } from "../types/domain.js";
@@ -13,16 +14,20 @@ import {
   CREATE_ATTACHMENT,
   FORWARD_ATTACHMENT,
   INGEST_MEMORY,
+  LIST_AGENTS,
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
+  READ_RESULT,
+  SEND_MESSAGE,
   SPAWN_AGENT,
+  WAIT,
+  YIELD,
 } from "../types/domain.js";
 
 /**
  * Tools whose calls change something outside the wake — a page, a file, an account,
- * a device, an agent, a schedule, memory — and so are what a record lists. Reads,
- * waits and sends are left out: a read changes nothing, and a send is a message the
- * transcript already holds.
+ * a device, an agent, a schedule, memory — so a record shows their outcome. Every other
+ * recorded call is a read, which a record shows by its size.
  */
 export const ACTION_TOOLS = new Set<string>([
   "browser_click",
@@ -79,36 +84,66 @@ const RECORD_MAX_CHARS = 6_000;
 /** What a call reads as when hath stopped before its result was logged. */
 const NO_RESULT = "no result (hath stopped before it returned)";
 
-/** The outcome of one call: its result clipped to a line, marked when it failed. */
-export type ActionResult = Pick<DwarToolResultBlock, "content" | "is_error">;
+/**
+ * Calls a record leaves out: ending or pausing a turn, a send (the transcript already
+ * holds the message), reopening a result, and the roster.
+ */
+export const UNRECORDED_TOOLS = new Set<string>([YIELD, WAIT, SEND_MESSAGE, READ_RESULT, LIST_AGENTS]);
+
+/** How much of a read's input a record keeps: enough to name what was read. */
+const READ_INPUT_CHARS = 120;
 
 /**
- * stepActions is one model turn's actions as a record shows them: the turn's text, then
- * each action call with its clipped input and the clipped outcome `results` holds for it
- * by tool_use_id. Null when the turn called no action tool.
+ * The outcome of one call: its result, marked when it failed. `chars` is the result's
+ * full length when `content` holds only its opening (hydration reads a prefix).
  */
-export function stepActions(content: DwarContentBlock[], results: Map<string, ActionResult>): string | null {
-  const actions = content.filter(
-    (block): block is DwarToolUseBlock => block.type === "tool_use" && ACTION_TOOLS.has(block.name),
+export type ActionResult = Pick<DwarToolResultBlock, "content" | "is_error"> & { chars?: number };
+
+/**
+ * stepActions is one model turn as a record shows it: the turn's text, then each call
+ * it made (UNRECORDED_TOOLS aside). An action shows its clipped input and outcome; a
+ * read shows what it read and how large the result was, since its content is what
+ * fills a prompt. A result too long to show whole names the id read_result reopens it
+ * by, so a later wake reads it back instead of running the tool again. With
+ * `actionsOnly` (a trimmed note, which must stay small inside the wake) reads are left
+ * out. Null when the turn made no call the record shows.
+ */
+export function stepActions(
+  content: DwarContentBlock[],
+  results: Map<string, ActionResult>,
+  actionsOnly = false,
+): string | null {
+  const calls = content.filter(
+    (block): block is DwarToolUseBlock =>
+      block.type === "tool_use" &&
+      !UNRECORDED_TOOLS.has(block.name) &&
+      (!actionsOnly || ACTION_TOOLS.has(block.name)),
   );
-  if (actions.length === 0) {
+  if (calls.length === 0) {
     return null;
   }
   const text = oneLine(content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join(" "));
-  const lines = actions.map((action) => {
-    const result = results.get(action.id);
-    const outcome =
-      result === undefined
-        ? NO_RESULT
-        : `${result.is_error ? "error: " : ""}${clip(oneLine(result.content), CALL_RESULT_CHARS)}`;
-    return `  ${action.name} ${clip(JSON.stringify(action.input), CALL_INPUT_CHARS)} → ${outcome}`;
+  const lines = calls.map((call) => {
+    const result = results.get(call.id);
+    if (result === undefined) {
+      return `  ${call.name} ${clip(JSON.stringify(call.input), CALL_INPUT_CHARS)} → ${NO_RESULT}`;
+    }
+    const chars = result.chars ?? result.content.length;
+    const outcome = oneLine(result.content);
+    if (result.is_error || chars <= CALL_RESULT_CHARS) {
+      return `  ${call.name} ${clip(JSON.stringify(call.input), ACTION_TOOLS.has(call.name) ? CALL_INPUT_CHARS : READ_INPUT_CHARS)} → ${result.is_error ? "error: " : ""}${clip(outcome, CALL_RESULT_CHARS)}`;
+    }
+    if (ACTION_TOOLS.has(call.name)) {
+      return `  ${call.name} ${clip(JSON.stringify(call.input), CALL_INPUT_CHARS)} → ${outcome.slice(0, CALL_RESULT_CHARS)}… (${chars} chars, read_result ${call.id})`;
+    }
+    return `  ${call.name} ${clip(JSON.stringify(call.input), READ_INPUT_CHARS)} → read ${chars} chars (read_result ${call.id})`;
   });
   return [text.length > 0 ? clip(text, STEP_TEXT_CHARS) : "(no note)", ...lines].join("\n");
 }
 
 /**
  * formatActions lists, oldest first, every step of the reasoning lane in `turns` that
- * called an action tool (see stepActions). Past RECORD_MAX_CHARS it keeps the newest
+ * called an action tool, with its actions only (see stepActions). Past RECORD_MAX_CHARS it keeps the newest
  * steps and says how many earlier ones get_logs holds. Null when no step acted.
  */
 export function formatActions(turns: DwarMessage[]): string | null {
@@ -128,7 +163,7 @@ export function formatActions(turns: DwarMessage[]): string | null {
     if (turn.role !== "assistant" || turn.lane !== "reasoning" || typeof turn.content === "string") {
       continue;
     }
-    const step = stepActions(turn.content, results);
+    const step = stepActions(turn.content, results, true);
     if (step !== null) {
       steps.push(`- ${step}`);
     }
