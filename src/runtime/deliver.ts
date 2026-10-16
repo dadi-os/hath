@@ -8,18 +8,18 @@ import { opensLine, recordDelivery } from "./jobs.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 
 /**
- * Audit-payload key on a message the runtime sends on an agent's behalf (a
- * failed lane, or a wake a restart cut short). Boot recovery reads it to find
- * where an agent's settled history ends, without parsing message text.
+ * Audit-payload key on a notice's log rows, naming what it is about (see NoticeKind).
+ * Boot recovery reads notices to find where an agent's settled history ends.
  */
-export const RUNTIME_REPORT = "runtime_report";
+export const NOTICE = "notice";
 
 /**
- * What a runtime report is about, stored under `RUNTIME_REPORT`. A `job_unfinished`
- * tells a requester its job closed as blocked when the agent's wake ended without
- * reporting on it (see jobs.ts).
+ * What a notice is about: a lane that failed, a wake a restart cut short, or a job an
+ * agent's wake left unfinished, which hath closed as blocked (see jobs.ts). A notice is
+ * hath's word between the agent it is about and that agent's requester, never chat:
+ * stored with kind notice, it opens no job and makes no one a requester.
  */
-export type RuntimeReportKind = "lane_failed" | "wake_interrupted" | "job_unfinished";
+export type NoticeKind = "lane_failed" | "wake_interrupted" | "job_unfinished";
 
 export type DeliverDeps = {
   db: Db;
@@ -123,17 +123,20 @@ export async function deliverAgentMessage(
     status?: MessageStatus;
     /** True for a scheduled message firing: a routine's trigger, which opens no job. */
     scheduled?: boolean;
+    /** Set for hath's notice that this agent's work stopped, instead of a message it wrote. */
+    notice?: NoticeKind;
     /** The sender's lane that sent it, for its log row; conversation when left out. */
     lane?: "conversation" | "reasoning";
   },
 ): Promise<TranscriptEntry> {
-  const extra = args.extraPayload ?? {};
+  const extra = { ...(args.extraPayload ?? {}), ...(args.notice !== undefined ? { kind: "notice", [NOTICE]: args.notice } : {}) };
   const row = await insertMessage(deps.db, {
     fromAgentId: args.fromAgentId,
     toAgentId: args.toAgentId,
     content: args.content,
     attachments: { uploads: args.uploads ?? [], forward: args.attachmentIds ?? [] },
     ...(args.status !== undefined ? { status: args.status } : {}),
+    ...(args.notice !== undefined ? { kind: "notice" as const } : {}),
   });
   deps.transcript.ingest(row);
   await recordDelivery(deps.db, row, args.scheduled === true);
@@ -206,6 +209,7 @@ export async function deliverAgentMessage(
     content: row.content,
     attachments: attached,
     seq: row.seq,
+    ...(row.kind === "notice" ? { kind: "notice" as const } : {}),
     at: row.createdAt.toISOString(),
   });
   return row;

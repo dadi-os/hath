@@ -8,7 +8,6 @@ import { createRuntime, type Runtime } from "../src/runtime/engine.js";
 import { openJobsNote } from "../src/runtime/jobs.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { RUNTIME_PREFIX } from "../src/db/messages.js";
 import { DISPATCH_MESSAGE, LIST_AGENTS, STEER_REASONING, WAIT, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
 import {
   insertAgent,
@@ -198,7 +197,8 @@ test("a wake that works a job and stops without reporting closes it as blocked a
   assert.equal(job?.state, "blocked");
   const reports = await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId));
   assert.equal(reports.length, 1);
-  assert.ok(reports[0]!.content.startsWith(`${RUNTIME_PREFIX} My wake ended with your job unfinished`));
+  assert.equal(reports[0]?.kind, "notice");
+  assert.ok(reports[0]!.content.startsWith("settle-worker stopped working with your job unfinished"));
 
   assert.equal((await dispatch(runtime, managerId, workerId, "Browser 14 is back")).isError, false);
   await runtime.waitUntilIdle();

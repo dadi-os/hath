@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
 import { agentLogs, agents, messages } from "../src/db/schema.js";
-import { RUNTIME_REPORT } from "../src/runtime/deliver.js";
+import { NOTICE } from "../src/runtime/deliver.js";
 import { EventBus } from "../src/runtime/events.js";
 import { recoverInterruptedWakes } from "../src/runtime/recovery.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
@@ -96,14 +96,16 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
   const reports = await handle.db.select().from(messages).where(eq(messages.fromAgentId, cutId));
   assert.equal(reports.length, 1);
   assert.equal(reports[0]?.toAgentId, parentId);
-  assert.match(reports[0]!.content, /^\[runtime\] Hath restarted/);
+  assert.equal(reports[0]?.kind, "notice");
+  assert.match(reports[0]!.content, /^Hath restarted while recovery-cut was working/);
   assert.match(reports[0]!.content, /started browser_click .* may or may not have run/);
   const [sendLog] = await handle.db
     .select()
     .from(agentLogs)
     .where(eq(agentLogs.agentId, cutId))
     .then((rows) => rows.filter((row) => row.event === "message" && row.payload.direction === "send"));
-  assert.equal(sendLog?.payload[RUNTIME_REPORT], "wake_interrupted");
+  assert.equal(sendLog?.payload[NOTICE], "wake_interrupted");
+  assert.equal(sendLog?.payload.kind, "notice");
   assert.doesNotMatch(reports[0]!.content, /wake me/);
   assert.deepEqual(woken, [waitingId]);
   const staleReports = await handle.db.select().from(messages).where(eq(messages.fromAgentId, staleId));

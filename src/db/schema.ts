@@ -17,7 +17,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { JobState, MessageStatus } from "../types/domain.js";
+import type { JobState, MessageStatus, MessageKind } from "../types/domain.js";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -124,10 +124,17 @@ export const messages = pgTable(
     content: text("content").notNull(),
     /** What an agent's message to whoever gave it the job says about that job; null on every other message. */
     status: text("status").$type<MessageStatus>(),
+    /**
+     * message, or notice: hath's own word that an agent's work stopped (a failed lane, a job
+     * left unfinished, a restart), between the agent it is about and its requester. A notice
+     * is never chat: no one wrote it, it opens no job and makes no one a requester.
+     */
+    kind: text("kind").$type<MessageKind>().notNull().default("message"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("messages_seq_idx").on(table.seq),
+    check("messages_kind_check", sql`${table.kind} IN ('message', 'notice')`),
     index("messages_to_agent_id_seq_idx").on(table.toAgentId, table.seq),
     index("messages_from_agent_id_seq_idx").on(table.fromAgentId, table.seq),
     index("messages_created_at_idx").on(table.createdAt),

@@ -300,7 +300,7 @@ export function arrivalsSince(
 }
 
 /**
- * labelEntry gives a transcript row its turn role and `[From:]`/`[To:]`/`[Thought]`
+ * labelEntry gives a transcript row its turn role and `[From:]`/`[To:]`/`[Thought]`/`[Notice from hath]`
  * label from this agent's point of view, stamped with when the row was written (ISO 8601
  * in the box's `TZ` with its offset, `2026-10-02T13:14:48-04:00`) so the agent knows the
  * date and time it is acting at. A report's job status follows the time.
@@ -310,6 +310,9 @@ function labelEntry(
   agentId: string,
 ): { role: "user" | "assistant"; label: string } {
   const at = row.status === null ? formatISO(row.createdAt) : `${formatISO(row.createdAt)} · ${row.status}`;
+  if (row.kind === "notice") {
+    return { role: "user", label: `[Notice from hath · ${at}]` };
+  }
   if (row.fromAgentId === agentId && row.toAgentId === agentId) {
     return { role: "assistant", label: `[Thought · ${at}]` };
   }

@@ -12,7 +12,7 @@ import {
 } from "../src/types/domain.js";
 import { currentRequester, insertMessage, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { assembleContext } from "../src/runtime/context.js";
-import { deliverUserMessage, RUNTIME_REPORT } from "../src/runtime/deliver.js";
+import { deliverUserMessage, NOTICE } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
@@ -2087,15 +2087,15 @@ test("currentRequester is whoever most recently wrote after opening the line, ne
   const askerId = await insertAgent(handle.db, { id: "req-asker", systemPrompt: "asker" });
   const managerId = await insertAgent(handle.db, { id: "req-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "req-worker", systemPrompt: "worker", parentAgentId: managerId });
-  const send = (fromAgentId: string | null, toAgentId: string | null, content: string) =>
-    insertMessage(handle.db, { fromAgentId, toAgentId, content, attachments: NO_ATTACHMENTS });
+  const send = (fromAgentId: string | null, toAgentId: string | null, content: string, kind: "message" | "notice" = "message") =>
+    insertMessage(handle.db, { fromAgentId, toAgentId, content, attachments: NO_ATTACHMENTS, kind });
 
   assert.equal(await currentRequester(handle.db, agentId), parentId);
   await send(null, agentId, "check my email");
   assert.equal(await currentRequester(handle.db, agentId), null);
   await send(askerId, agentId, "find me a browser");
   await send(agentId, agentId, "note to self");
-  await send(workerId, agentId, "[runtime] My reasoning lane failed");
+  await send(workerId, agentId, "req-worker stopped before finishing because of an error.", "notice");
   assert.equal(await currentRequester(handle.db, agentId), askerId);
 
   await send(agentId, workerId, "search for MSU alumni");
@@ -2104,7 +2104,7 @@ test("currentRequester is whoever most recently wrote after opening the line, ne
   assert.equal(await currentRequester(handle.db, workerId), agentId);
 });
 
-test("a failed conversation lane is reported to its current requester with a runtime_report marker", async () => {
+test("a failed conversation lane becomes a notice to its current requester, never a message from the agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "conv-failure-parent", systemPrompt: "parent" });
   const childId = await insertAgent(handle.db, {
@@ -2140,13 +2140,15 @@ test("a failed conversation lane is reported to its current requester with a run
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
   assert.equal(sent.length, 1);
   assert.equal(sent[0]?.toAgentId, null);
-  assert.match(sent[0]!.content, /^\[runtime\] My conversation lane failed .*quota exceeded/);
+  assert.equal(sent[0]?.kind, "notice");
+  assert.match(sent[0]!.content, /stopped before finishing because of an error: .*quota exceeded/);
+  assert.doesNotMatch(sent[0]!.content, /\[runtime\]|lane/);
   const logs = await handle.db
     .select()
     .from(agentLogs)
     .where(and(eq(agentLogs.agentId, childId), eq(agentLogs.event, "message")));
   const report = logs.find((log) => log.payload.direction === "send");
-  assert.equal(report?.payload[RUNTIME_REPORT], "lane_failed");
+  assert.equal(report?.payload[NOTICE], "lane_failed");
 });
 
 test("a reasoning lane that fails after working on a job reports once and closes the job, and the wake's rows share its id", async () => {
@@ -2190,7 +2192,8 @@ test("a reasoning lane that fails after working on a job reports once and closes
 
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
   assert.equal(sent.length, 1, sent.map((row) => row.content).join(" | "));
-  assert.match(sent[0]!.content, /^\[runtime\] My reasoning lane failed .*over the ceiling/);
+  assert.equal(sent[0]?.kind, "notice");
+  assert.match(sent[0]!.content, /^failing-reasoner stopped before finishing because of an error: .*over the ceiling/);
   const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, childId));
   assert.equal(job?.state, "blocked");
 
@@ -2225,7 +2228,7 @@ test("the same lane failure on every wake is reported once until a run finishes 
   });
   const deps = { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation, enqueueReasoning: runtime.enqueueReasoning };
   const reports = async () =>
-    (await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId))).filter((m) => m.content.startsWith("[runtime]")).length;
+    (await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId))).filter((m) => m.kind === "notice").length;
 
   await deliverUserMessage(deps, childId, "status?");
   await runtime.waitUntilIdle();

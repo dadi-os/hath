@@ -9,7 +9,6 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { RUNTIME_PREFIX } from "../db/messages.js";
 import { jobs, messages, type JobRow } from "../db/schema.js";
 import type { MessageStatus } from "../types/domain.js";
 import type { TranscriptEntry } from "./transcript.js";
@@ -31,18 +30,18 @@ function requesterIs(requester: string | null) {
 
 /**
  * opensLine is true when `requester` opened the line to `agent`: its first message to
- * the agent came before the agent's first to it. Hath's `[runtime]` reports never
- * count, as in currentRequester.
+ * the agent came before the agent's first to it. Hath's notices never count,
+ * as in currentRequester.
  */
 export async function opensLine(db: Db, requester: string | null, agent: string): Promise<boolean> {
   const [row] = await db.execute<{ first_in: string | null; first_out: string | null }>(sql`
     select
       (select min(seq) from ${messages}
         where from_agent_id is not distinct from ${requester} and to_agent_id = ${agent}
-          and content not like ${`${RUNTIME_PREFIX}%`}) as first_in,
+          and kind = 'message') as first_in,
       (select min(seq) from ${messages}
         where from_agent_id = ${agent} and to_agent_id is not distinct from ${requester}
-          and content not like ${`${RUNTIME_PREFIX}%`}) as first_out
+          and kind = 'message') as first_out
   `);
   if (!row) {
     throw new Error("line query returned no row");
@@ -75,11 +74,11 @@ export async function blockOpenJob(db: Db, requester: string | null, agent: stri
  * recordDelivery keeps jobs in step with one delivered message. A requester's message on
  * its line opens a job, or joins the open one and answers the agent's open question.
  * An agent's status on a message to whoever gave it a job records its progress update,
- * its question, or the job's close. Hath's `[runtime]` reports, an agent's notes to
+ * its question, or the job's close. Hath's notices, an agent's notes to
  * itself, and scheduled triggers (a routine's clock, not a request) never touch a job.
  */
 export async function recordDelivery(db: Db, row: TranscriptEntry, scheduled: boolean): Promise<void> {
-  if (scheduled || row.fromAgentId === row.toAgentId || row.content.startsWith(RUNTIME_PREFIX)) {
+  if (scheduled || row.fromAgentId === row.toAgentId || row.kind === "notice") {
     return;
   }
   if (row.toAgentId !== null && (await opensLine(db, row.fromAgentId, row.toAgentId))) {
@@ -113,7 +112,7 @@ export async function recordDelivery(db: Db, row: TranscriptEntry, scheduled: bo
 /**
  * settleWakeJobs settles `agentId`'s open jobs when its wake ends (gate 6). `lines` are
  * the agent's transcript rows since its previous wake ended. A job this wake touched (a
- * message on its line among `lines`, hath's `[runtime]` reports aside) that is still open while the agent has no job of
+ * message on its line among `lines`, hath's notices aside) that is still open while the agent has no job of
  * its own out with another agent is over: if the wake did nothing on it (`reasoned`
  * false and no message back), it closes as noop, a message that needed no work;
  * otherwise it closes as blocked and is returned so the caller can tell its requester.
@@ -141,7 +140,7 @@ export async function settleWakeJobs(
   for (const job of open) {
     const onLine = lines.filter(
       (row) =>
-        !row.content.startsWith(RUNTIME_PREFIX) &&
+        row.kind !== "notice" &&
         ((row.fromAgentId === job.requesterId && row.toAgentId === agentId) ||
           (row.fromAgentId === agentId && row.toAgentId === job.requesterId)),
     );

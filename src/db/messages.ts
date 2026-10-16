@@ -9,21 +9,18 @@ import {
   type AttachmentMeta,
   type NewAttachment,
 } from "./attachments.js";
-import type { AttachmentSummary, MessageStatus } from "../types/domain.js";
+import type { AttachmentSummary, MessageKind, MessageStatus } from "../types/domain.js";
 import type { Db } from "./client.js";
 import { agents, messages, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
 
-/** Files a new message carries: fresh uploads, then existing attachments by id (bound if loose, copied if not). */
-/** Prefix of Hath's own `[runtime]` reports, which never make their sender anyone's requester. */
-export const RUNTIME_PREFIX = "[runtime]";
 
 /**
  * currentRequester returns who an agent is working for right now: of everyone
  * who opened a line to it (messaged it before it ever messaged them), the one
  * who wrote to it most recently, with null for Ankur. Agents it brought in
  * itself, such as a worker reporting back, are downstream and never count, and
- * Hath's `[runtime]` reports are skipped in both directions. An agent no one has opened a line to
+ * hath's notices are skipped in both directions. An agent no one has opened a line to
  * answers to its parent. Throws when the agent does not exist.
  */
 export async function currentRequester(db: Db, agentId: string): Promise<string | null> {
@@ -33,14 +30,14 @@ export async function currentRequester(db: Db, agentId: string): Promise<string 
       from ${messages}
       where to_agent_id = ${agentId}
         and from_agent_id is distinct from ${agentId}
-        and content not like ${`${RUNTIME_PREFIX}%`}
+        and kind = 'message'
       group by from_agent_id
     ),
     outbound as (
       select to_agent_id as recipient, min(seq) as first_out
       from ${messages}
       where from_agent_id = ${agentId}
-        and content not like ${`${RUNTIME_PREFIX}%`}
+        and kind = 'message'
       group by to_agent_id
     )
     select i.sender
@@ -79,6 +76,8 @@ export async function insertMessage(
     attachments: MessageAttachments;
     /** The job status an agent's report carries; absent on every other message. */
     status?: MessageStatus;
+    /** notice for hath's word that an agent's work stopped; message when left out. */
+    kind?: MessageKind;
   },
 ): Promise<TranscriptEntry> {
   return db.transaction(async (tx) => {
@@ -90,6 +89,7 @@ export async function insertMessage(
         toAgentId: args.toAgentId,
         content: args.content,
         status: args.status ?? null,
+        kind: args.kind ?? "message",
       })
       .returning();
     if (!row) {
@@ -113,6 +113,7 @@ export function messageToTranscriptEntry(
     content: row.content,
     attachments,
     status: row.status,
+    kind: row.kind,
     createdAt: row.createdAt,
   };
 }
@@ -198,6 +199,8 @@ export type HumanMessageRecord = {
   to_agent_id: string | null;
   content: string;
   attachments: AttachmentSummary[];
+  /** notice: hath's word that the agent's work stopped, shown as a system line, never as its message. */
+  kind: MessageKind;
   created_at: string;
 };
 
@@ -240,6 +243,7 @@ export async function listHumanMessages(
     to_agent_id: row.toAgentId,
     content: row.content,
     attachments: (attached.get(row.id) ?? []).map(toAttachmentSummary),
+    kind: row.kind,
     created_at: row.createdAt.toISOString(),
   }));
 }

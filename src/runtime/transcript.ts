@@ -6,7 +6,7 @@
  */
 
 import type { AttachmentMeta } from "../db/attachments.js";
-import type { MessageStatus } from "../types/domain.js";
+import type { MessageKind, MessageStatus } from "../types/domain.js";
 
 export type TranscriptEntry = {
   /** Durable messages.id when loaded from or written to the messages table. */
@@ -19,6 +19,8 @@ export type TranscriptEntry = {
   attachments: AttachmentMeta[];
   /** What an agent's report to whoever gave it the job says about that job; null otherwise. */
   status: MessageStatus | null;
+  /** A notice is hath's word that an agent's work stopped, never chat; absent means message. */
+  kind?: MessageKind;
   createdAt: Date;
 };
 

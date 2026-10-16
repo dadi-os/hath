@@ -8,26 +8,24 @@
  *
  * An agent that had only received a message — no lane step had started — is
  * simply woken to handle it. Anything further along is never replayed: a click
- * or submit may already have happened, so the agent reports to its current
- * requester (whoever it is working for, Ankur included), naming its last step.
- * The report does not wake the requester, and it is sent only when the wake's
+ * or submit may already have happened, so hath sends a notice to the agent's
+ * current requester (whoever it is working for, Ankur included), naming its last
+ * step. The notice does not wake the requester, and it is sent only when the wake's
  * last step falls inside `[runtime].recovery_window_minutes` of boot: a wake
  * that died long before the restart is stale, and reporting it would restart
- * work nobody is waiting on. Runtime reports never count as messages waiting
- * to be handled, so one boot's reports do not wake anyone on the next.
+ * work nobody is waiting on. Notices never count as messages waiting to be
+ * handled, so one boot's notices do not wake anyone on the next.
  */
 
 import { formatISO } from "date-fns";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { currentRequester, RUNTIME_PREFIX } from "../db/messages.js";
+import { currentRequester } from "../db/messages.js";
 import { agentLogs } from "../db/schema.js";
 import type { DwarResponseBlock } from "../types/domain.js";
 import {
   deliverAgentMessage,
-  RUNTIME_REPORT,
   type DeliverDeps,
-  type RuntimeReportKind,
 } from "./deliver.js";
 import type { RuntimeLog } from "./engine.js";
 
@@ -44,7 +42,7 @@ type InterruptedWake = {
   hand_off_lost: boolean;
   /** A message arrived after conversation's last turn. */
   unhandled: boolean;
-  /** The newest audit row since the agent's last runtime report. */
+  /** The newest audit row since the agent's last notice. */
   last_at: Date;
 };
 
@@ -57,7 +55,7 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
     with reported as (
       select agent_id, max(created_at) as at
       from agent_logs
-      where event = 'message' and payload->>'direction' = 'send' and payload ? ${RUNTIME_REPORT}
+      where event = 'message' and payload->>'direction' = 'send' and payload->>'kind' = 'notice'
       group by agent_id
     ),
     recent as (
@@ -72,7 +70,7 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
         agent_id,
         max(created_at) as last_at,
         max(created_at) filter (
-          where event = 'message' and payload->>'direction' = 'receive' and not payload ? ${RUNTIME_REPORT}
+          where event = 'message' and payload->>'direction' = 'receive' and payload->>'kind' is distinct from 'notice'
         ) as received_at,
         max(created_at) filter (where lane = 'conversation' and event = 'response') as conversed_at,
         max(created_at) filter (where lane = 'conversation' and event in ('response', 'tool_result')) as conversation_at,
@@ -127,15 +125,15 @@ async function lastReasoningStep(db: Db, agentId: string): Promise<string> {
   }
   const at = formatISO(last.createdAt);
   if (last.event === "tool_result") {
-    return `My reasoning lane's last finished step was ${String(last.payload.name)} at ${at}.`;
+    return `Its last finished step was ${String(last.payload.name)} at ${at}.`;
   }
   const started = (last.payload.content as DwarResponseBlock[])
     .filter((block) => block.type === "tool_use")
     .map((block) => block.name);
   if (started.length === 0) {
-    return `My reasoning lane was mid-thought at ${at}.`;
+    return `It was mid-thought at ${at}.`;
   }
-  return `My reasoning lane had started ${started.join(", ")} at ${at} and no result was recorded, so it may or may not have run.`;
+  return `It had started ${started.join(", ")} at ${at} and no result was recorded, so that may or may not have run.`;
 }
 
 /**
@@ -166,16 +164,16 @@ export async function recoverInterruptedWakes(
       details.push(await lastReasoningStep(deps.db, wake.agent_id));
     }
     if (wake.conversation_cut) {
-      details.push("My conversation lane was mid-turn.");
+      details.push("It was mid-reply.");
     }
     if (wake.steer_lost) {
-      details.push("An instruction steered to my reasoning lane was never picked up.");
+      details.push("An instruction it had queued for itself was never picked up.");
     }
     if (wake.hand_off_lost) {
-      details.push("A message my reasoning lane handed to my conversation lane was never sent.");
+      details.push("A message it had written was never sent.");
     }
     if (wake.unhandled) {
-      details.push("A message I received was never handled.");
+      details.push("A message it received was never handled.");
     }
     const requester = await currentRequester(deps.db, wake.agent_id);
     deps.log.warn(
@@ -185,8 +183,8 @@ export async function recoverInterruptedWakes(
     await deliverAgentMessage(deps, {
       fromAgentId: wake.agent_id,
       toAgentId: requester,
-      content: `${RUNTIME_PREFIX} Hath restarted while my wake was running, so it stopped before finishing. ${details.join(" ")} Work after my last update was not done. If you still need it, message me and I will check my logs before redoing anything; otherwise nothing is needed.`,
-      extraPayload: { [RUNTIME_REPORT]: "wake_interrupted" satisfies RuntimeReportKind },
+      content: `Hath restarted while ${wake.agent_id} was working, so it stopped before finishing. ${details.join(" ")} Work after its last update was not done. If you still need it, message ${wake.agent_id}; it checks its logs before redoing anything. Otherwise nothing is needed.`,
+      notice: "wake_interrupted",
       wake: false,
     });
   }

@@ -171,6 +171,9 @@ export type MessageStatus = (typeof MESSAGE_STATUSES)[number];
 /** Where a job stands: open, waiting on the requester's answer, or closed one of three ways. */
 export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop";
 
+/** A message someone wrote, or hath's notice that an agent's work stopped (see deliver.ts). */
+export type MessageKind = "message" | "notice";
+
 export const SEND_MESSAGE = "send_message";
 export const DISPATCH_MESSAGE = "dispatch_message";
 export const READ_ATTACHMENT = "read_attachment";

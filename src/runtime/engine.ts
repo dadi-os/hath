@@ -12,7 +12,7 @@ import type { Config } from "../config.js";
 import type { Db } from "../db/client.js";
 import { HathError } from "../errors.js";
 import { writeAgentLog } from "../db/logs.js";
-import { currentRequester, RUNTIME_PREFIX } from "../db/messages.js";
+import { currentRequester } from "../db/messages.js";
 import { agents } from "../db/schema.js";
 import { BrowserDriver } from "../browser/driver.js";
 import type { ChaaviClient } from "../chaavi/client.js";
@@ -28,7 +28,7 @@ import type {
   RoutedMessage,
 } from "../types/domain.js";
 import { arrivalsSince, assembleContext, assembleRouterContext, type TranscriptWindows } from "./context.js";
-import { deliverAgentMessage, RUNTIME_REPORT, type RuntimeReportKind } from "./deliver.js";
+import { deliverAgentMessage } from "./deliver.js";
 import { runConversationLoop } from "./conversation.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
@@ -310,20 +310,20 @@ export function createRuntime(opts: {
       const last = lines
         .filter(
           (row) =>
-            row.fromAgentId === agentId && row.toAgentId === job.requesterId && !row.content.startsWith(RUNTIME_PREFIX),
+            row.fromAgentId === agentId && row.toAgentId === job.requesterId && row.kind !== "notice",
         )
         .at(-1);
       const said =
         last === undefined
-          ? "I sent you nothing on it."
-          : `My last message to you on it: "${last.content.slice(0, UNFINISHED_QUOTE_CHARS)}"`;
+          ? "It sent you nothing on it."
+          : `Its last message to you on it: "${last.content.slice(0, UNFINISHED_QUOTE_CHARS)}"`;
       await deliverAgentMessage(
         { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning, wakeOf },
         {
           fromAgentId: agentId,
           toAgentId: job.requesterId,
-          content: `${RUNTIME_PREFIX} My wake ended with your job unfinished and no done, blocked or needs_input report to you, so hath closed it as blocked. ${said} Message me to pick it up again.`,
-          extraPayload: { [RUNTIME_REPORT]: "job_unfinished" satisfies RuntimeReportKind },
+          content: `${agentId} stopped working with your job unfinished and sent you no done, blocked or needs_input report, so hath closed the job as blocked. ${said} Message ${agentId} to pick it up again.`,
+          notice: "job_unfinished",
         },
       );
     }
@@ -346,8 +346,8 @@ export function createRuntime(opts: {
       {
         fromAgentId: agentId,
         toAgentId: requester,
-        content: `${RUNTIME_PREFIX} My ${lane} lane failed and this wake stopped before finishing: ${message}. Work after my last update was not done; wake me with a message to retry.`,
-        extraPayload: { [RUNTIME_REPORT]: "lane_failed" satisfies RuntimeReportKind },
+        content: `${agentId} stopped before finishing because of an error: ${message}. Work after its last update was not done; message ${agentId} to try again.`,
+        notice: "lane_failed",
       },
     );
     await blockOpenJob(opts.db, requester, agentId, row.seq);
