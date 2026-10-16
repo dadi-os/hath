@@ -32,6 +32,8 @@ export const agents = pgTable(
     /** Immutable kebab-case id; also the human-readable address (`browser-manager`). */
     id: text("id").primaryKey(),
     systemPrompt: text("system_prompt").notNull(),
+    /** The agent's entry in the agent directory, in its template (see runtime/directory.ts); null until set. */
+    description: text("description"),
     /** Deleting a parent deletes its whole subtree. */
     parentAgentId: text("parent_agent_id").references((): AnyPgColumn => agents.id, {
       onDelete: "cascade",

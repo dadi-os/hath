@@ -35,6 +35,7 @@ export function toAgentRecord(row: AgentRow): Omit<AgentRecord, "running" | "ses
     /** Display alias of the immutable kebab-case id (desktop / roster compat). */
     name: row.id,
     system_prompt: row.systemPrompt,
+    description: row.description,
     parent_agent_id: row.parentAgentId,
     active: row.active,
     created_at: row.createdAt.toISOString(),

@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { agents } from "../../db/schema.js";
 import { agentIdSchema } from "../../agent-id.js";
+import { DESCRIPTION_TEMPLATE, descriptionSchema } from "../../runtime/directory.js";
 import { defineTool } from "../types.js";
 import { ok, fail, requireAgent, isUniqueViolation } from "../shared.js";
 
 const input = z.object({
   id: agentIdSchema,
   system_prompt: z.string().min(1),
+  description: descriptionSchema.optional(),
 });
 
 /** Create a child of the caller, or a root when the caller is the router. */
@@ -28,6 +30,10 @@ export const spawnAgent = defineTool({
         description:
           "Prompt for both of the child's lanes. Write one that fits the job you are spawning it for.",
       },
+      description: {
+        type: "string",
+        description: `The child's agent directory entry, which every agent sees. Required for a standing agent (a specialist, manager or thread); leave it out for a worker. ${DESCRIPTION_TEMPLATE}`,
+      },
     },
     required: ["id", "system_prompt"],
   },
@@ -39,6 +45,7 @@ export const spawnAgent = defineTool({
       await ctx.db.insert(agents).values({
         id: parsed.id,
         systemPrompt: parsed.system_prompt,
+        description: parsed.description ?? null,
         parentAgentId: ctx.callerId,
         active: true,
       });

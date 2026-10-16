@@ -1840,8 +1840,7 @@ test("read_result reopens the caller's own logged result by id, in pages or by p
   await resetRuntime(handle.sql, handle.db, config);
   const ownerId = await insertAgent(handle.db, { id: "result-owner", systemPrompt: "reads" });
   const otherId = await insertAgent(handle.db, { id: "result-other", systemPrompt: "other" });
-  const body = Array.from({ length: 50 }, (_, i) => `line ${i + 1}${i === 41 ? " deadline Friday" : ""}`).join("
-");
+  const body = Array.from({ length: 50 }, (_, i) => `line ${i + 1}${i === 41 ? " deadline Friday" : ""}`).join("\n");
   await writeAgentLog(handle.db, {
     agentId: ownerId,
     lane: "reasoning",
@@ -1874,6 +1873,34 @@ test("read_result reopens the caller's own logged result by id, in pages or by p
   const theirs = await read(otherId, { id: "toolu_read_1" });
   assert.equal(theirs.isError, true);
   assert.match(theirs.content, /^not_found/);
+});
+
+test("every agent's system lists the standing agents with their directory entries, and an agent sets its own entry in the template", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const browserId = await insertAgent(handle.db, { id: "dir-browser-manager", systemPrompt: "You run browsers." });
+  const ownerId = await insertAgent(handle.db, { id: "dir-course-owner", systemPrompt: "You own a course." });
+  const childId = await insertAgent(handle.db, { id: "dir-course-helper", systemPrompt: "You help.", parentAgentId: ownerId });
+  await insertAgent(handle.db, { id: "dir-browser-worker-1", systemPrompt: "One job.", parentAgentId: browserId });
+  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), config, log: silentLog });
+  const modify = (input: Record<string, unknown>) =>
+    executeTool(runtime.toolContext(browserId, "reasoning"), { type: "tool_use", id: "md", name: "modify_agent_prompt", input });
+
+  const refused = await modify({ agent_id: browserId, description: "I do browsers" });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content, /must follow the template/);
+  const set = await modify({ agent_id: browserId, description: "Owns: Every browser.\nAsk for: a browser worker for a site you name." });
+  assert.equal(set.isError, false, set.content);
+
+  const ctx = await assembleContext({ windows: wideWindows, db: handle.db, serviceRoot: config.serviceRoot, agentId: ownerId, lane: "reasoning", transcript: new TranscriptStore() });
+  assert.match(ctx.system, /- dir-browser-manager\n {2}Owns: Every browser\.\n {2}Ask for: a browser worker for a site you name\./);
+  assert.match(ctx.system, /- dir-course-helper \(your child\)\n {2}\(no description yet\) You help\./);
+  assert.doesNotMatch(ctx.system, /- dir-course-owner\n/, "an agent is not listed in its own directory");
+  assert.doesNotMatch(ctx.system, /dir-browser-worker-1/);
+  assert.match(ctx.system, /You have no directory entry yet/);
+
+  const own = await assembleContext({ windows: wideWindows, db: handle.db, serviceRoot: config.serviceRoot, agentId: browserId, lane: "reasoning", transcript: new TranscriptStore() });
+  assert.match(own.system, /Your directory entry, which every agent sees:\nOwns: Every browser\./);
+  void childId;
 });
 
 test("get_logs defaults to caller and allows direct children only", async () => {

@@ -21,6 +21,7 @@ import {
 } from "../tools/shared.js";
 import type { DwarTool } from "../types/domain.js";
 import { MANAGE_AGENT, MODIFY_AGENT_PROMPT } from "../types/domain.js";
+import { DESCRIPTION_TEMPLATE, descriptionSchema } from "./directory.js";
 
 const manageAgentInput = z
   .object({
@@ -41,9 +42,14 @@ const modifyAgentPromptInput = z
           })
           .strict(),
       )
-      .min(1),
+      .min(1)
+      .optional(),
+    description: descriptionSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((input) => input.edits !== undefined || input.description !== undefined, {
+    message: "pass edits, description, or both",
+  });
 
 /** Retire the caller or a direct child, or reactivate a retired direct child. */
 export const manageAgentTool: DwarTool = {
@@ -71,7 +77,7 @@ export const manageAgentTool: DwarTool = {
 export const modifyAgentPromptTool: DwarTool = {
   name: MODIFY_AGENT_PROMPT,
   description:
-    "Edit your own system prompt or a direct child's. Use it when your job itself changes — you are told to take on new responsibilities, organize differently, or stop doing something — so the change outlives this wake. Each edit replaces exactly one occurrence of old_string with new_string; edits apply in order, each against the prompt the previous one left. If any old_string matches zero or many times nothing is saved and the tool errors with the match count — widen or narrow old_string and retry. To add a section, anchor on nearby text and repeat it in new_string; to delete, pass an empty new_string. Read the current prompt with get_agent. The change takes effect from the agent's next wake; the wake in progress keeps its current prompt.",
+    "Edit your own system prompt or a direct child's, and/or set its agent directory entry (description), which every agent sees in its system. Use it when your job itself changes — you are told to take on new responsibilities, organize differently, or stop doing something — so the change outlives this wake. Each edit replaces exactly one occurrence of old_string with new_string; edits apply in order, each against the prompt the previous one left. If any old_string matches zero or many times nothing is saved and the tool errors with the match count — widen or narrow old_string and retry. To add a section, anchor on nearby text and repeat it in new_string; to delete, pass an empty new_string. Read the current prompt with get_agent. The change takes effect from the agent's next wake; the wake in progress keeps its current prompt.",
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -94,8 +100,12 @@ export const modifyAgentPromptTool: DwarTool = {
           required: ["old_string", "new_string"],
         },
       },
+      description: {
+        type: "string",
+        description: `The agent's directory entry, replacing the old one. ${DESCRIPTION_TEMPLATE}`,
+      },
     },
-    required: ["agent_id", "edits"],
+    required: ["agent_id"],
   },
 };
 
@@ -180,7 +190,8 @@ export async function runModifyAgentPrompt(
   );
   const oldPrompt = target.systemPrompt;
   let newPrompt = oldPrompt;
-  for (const [index, edit] of parsed.edits.entries()) {
+  const edits = parsed.edits ?? [];
+  for (const [index, edit] of edits.entries()) {
     const matches = newPrompt.split(edit.old_string).length - 1;
     if (matches !== 1) {
       return fail(
@@ -195,7 +206,11 @@ export async function runModifyAgentPrompt(
   const now = new Date();
   await ctx.db
     .update(agents)
-    .set({ systemPrompt: newPrompt, updatedAt: now })
+    .set({
+      systemPrompt: newPrompt,
+      ...(parsed.description !== undefined ? { description: parsed.description } : {}),
+      updatedAt: now,
+    })
     .where(eq(agents.id, target.id));
 
   ctx.events.emit({
@@ -207,7 +222,15 @@ export async function runModifyAgentPrompt(
   });
 
   return ok(
-    { agent_id: target.id, edits_applied: parsed.edits.length },
-    { old_system_prompt: oldPrompt, new_system_prompt: newPrompt },
+    {
+      agent_id: target.id,
+      edits_applied: edits.length,
+      ...(parsed.description !== undefined ? { description: parsed.description } : {}),
+    },
+    {
+      old_system_prompt: oldPrompt,
+      new_system_prompt: newPrompt,
+      ...(parsed.description !== undefined ? { old_description: target.description, new_description: parsed.description } : {}),
+    },
   );
 }

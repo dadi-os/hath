@@ -99,6 +99,13 @@
       "when": 1791470000000,
       "tag": "0013_tool_result_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1791580000000,
+      "tag": "0014_agent_descriptions",
+      "breakpoints": true
     }
   ]
 }

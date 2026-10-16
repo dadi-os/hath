@@ -17,6 +17,8 @@ export type AgentRecord = {
   id: string;
   name: string;
   system_prompt: string;
+  /** The agent's directory entry (see runtime/directory.ts); null until it sets one. */
+  description: string | null;
   parent_agent_id: string | null;
   active: boolean;
   /** In-memory lane lock ownership. Always false right after a process restart. */

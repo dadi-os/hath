@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { formatISO } from "date-fns";
-import { asc, eq, isNull } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { agentTools, agents, tools } from "../db/schema.js";
 import { HathError } from "../errors.js";
@@ -37,6 +37,7 @@ import {
   waitTool,
   yieldTool,
 } from "./tools.js";
+import { directoryBlock, ownDescriptionLine } from "./directory.js";
 import { openJobsNote } from "./jobs.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
 import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
@@ -98,11 +99,12 @@ const WORKER_ID = /(^|-)worker-/;
 /**
  * hath's system for an identity, in order: the system doctrine
  * (`prompts/system.md`, shared by everyone), the charter (an agent's stored
- * prompt, or `prompts/router.md` for the router), lineage facts, then active
- * direct children other than workers — for the router, the active root agents.
- * Workers come and go within a wake, and listing them would change a manager's
- * system with every spawn and retire, so its cached prompt would never survive
- * to the next wake; `list_agents` shows them.
+ * prompt, or `prompts/router.md` for the router), lineage facts with the agent's own
+ * directory entry, then the agent directory: every active agent other than workers,
+ * each with the description it wrote (see directory.ts), so an agent knows who owns
+ * what across the org, not only its own children. Workers come and go within a wake,
+ * and listing them would change every system with each spawn and retire, so no cached
+ * prompt would survive to the next wake; `list_agents` shows them.
  */
 async function composeSystem(
   db: Db,
@@ -112,6 +114,7 @@ async function composeSystem(
 ): Promise<string> {
   let charter: string;
   let parentAgentId: string | null = null;
+  let description: string | null = null;
   if (agentId === null) {
     charter = loadPrompt(serviceRoot, "router.md");
   } else {
@@ -122,33 +125,28 @@ async function composeSystem(
     }
     charter = agent.systemPrompt;
     parentAgentId = agent.parentAgentId;
+    description = agent.description;
   }
 
-  const childRows = await db
-    .select({
-      id: agents.id,
-      active: agents.active,
-      systemPrompt: agents.systemPrompt,
-    })
-    .from(agents)
-    .where(agentId === null ? isNull(agents.parentAgentId) : eq(agents.parentAgentId, agentId))
-    .orderBy(asc(agents.id));
-  const activeChildren = childRows.filter((c) => c.active && !WORKER_ID.test(c.id));
+  const standing = (
+    await db
+      .select({
+        id: agents.id,
+        description: agents.description,
+        systemPrompt: agents.systemPrompt,
+        parentAgentId: agents.parentAgentId,
+      })
+      .from(agents)
+      .where(eq(agents.active, true))
+      .orderBy(asc(agents.id))
+  ).filter((agent) => !WORKER_ID.test(agent.id));
 
-  let system = [
+  return [
     loadPrompt(serviceRoot, "system.md"),
     charter,
-    lineageBlock(agentId, parentAgentId),
+    agentId === null ? lineageBlock(agentId, parentAgentId) : `${lineageBlock(agentId, parentAgentId)}\n${ownDescriptionLine(description)}`,
+    directoryBlock(standing, agentId, parentAgentId),
   ].join("\n\n");
-  if (activeChildren.length > 0) {
-    const lines = activeChildren.map((c) => {
-      const purpose = c.systemPrompt.trim().replace(/\n[\s\S]*$/, "");
-      const brief = purpose.length > 120 ? `${purpose.slice(0, 117)}…` : purpose;
-      return brief ? `- ${c.id}: ${brief}` : `- ${c.id}`;
-    });
-    system = `${system}\n\nYour active direct children:\n${lines.join("\n")}`;
-  }
-  return system;
 }
 
 /** How much of an agent's thread its transcript holds. */

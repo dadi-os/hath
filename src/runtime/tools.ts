@@ -208,7 +208,7 @@ export const waitTool: DwarTool = {
 export const listAgentsTool: DwarTool = {
   name: LIST_AGENTS,
   description:
-    "List agents visible to you: id, name (alias of id), parent, and whether each is retired. Retired agents are left out unless show_retired is true. Pass id for an exact kebab-case lookup (empty list on miss, including a retired id without show_retired).",
+    "List agents visible to you: id, name (alias of id), parent, directory description (null for workers and agents that set none), and whether each is retired. Retired agents are left out unless show_retired is true. Pass id for an exact kebab-case lookup (empty list on miss, including a retired id without show_retired).",
   input_schema: listAgentsInputSchema,
 };
 
@@ -537,6 +537,7 @@ async function runListAgents(ctx: ToolContext, raw: unknown): Promise<ToolExecRe
     .select({
       id: agents.id,
       parentAgentId: agents.parentAgentId,
+      description: agents.description,
       active: agents.active,
     })
     .from(agents)
@@ -550,6 +551,7 @@ async function runListAgents(ctx: ToolContext, raw: unknown): Promise<ToolExecRe
       name: row.id,
       parent_agent_id: row.parentAgentId,
       parent_name: row.parentAgentId,
+      description: row.description,
       retired: !row.active,
     })),
   });

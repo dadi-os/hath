@@ -129,7 +129,7 @@ test("POST /router spawns a root, grants it, sends as Ankur, and returns what it
 test("POST /router composes system doctrine, charter, identity, and roots; offers router tools only", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "finance-specialist", systemPrompt: "Owns Ankur's money." });
-  await insertAgent(handle.db, { id: "finance-worker", systemPrompt: "One job.", parentAgentId: "finance-specialist" });
+  await insertAgent(handle.db, { id: "finance-worker-1", systemPrompt: "One job.", parentAgentId: "finance-specialist" });
   const dwar = scripted([]);
   const { app, runtime } = await appWith(dwar);
 
@@ -142,7 +142,7 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
   const doctrine = readFileSync(join(config.serviceRoot, "prompts/system.md"), "utf8").trim();
   const charter = readFileSync(join(config.serviceRoot, "prompts/router.md"), "utf8").trim();
   assert.ok(system.startsWith(`${doctrine}\n\n${charter}\n\n`));
-  assert.match(system, /- finance-specialist: Owns Ankur's money\./);
+  assert.match(system, /Agent directory: [^\n]*\n- finance-specialist\n {2}\(no description yet\) Owns Ankur's money\./);
   assert.doesNotMatch(system, /finance-worker/);
   assert.match(String(request.messages.at(-1)?.content), /^\[From: Ankur · \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\]\nhi$/);
 
