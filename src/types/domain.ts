@@ -53,6 +53,8 @@ export type LogRecord = {
   lane: Lane;
   event: LogEvent;
   payload: Record<string, unknown>;
+  /** The wake the row belongs to; null for the router, rows from before wake ids, and boot recovery's reports. */
+  wake_id: string | null;
   created_at: string;
 };
 

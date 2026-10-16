@@ -557,6 +557,7 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
       events: ctx.events,
       enqueueConversation: ctx.enqueueConversation,
       enqueueReasoning: ctx.enqueueReasoning,
+      wakeOf: ctx.wakeOf,
     },
     {
       fromAgentId: ctx.callerId,

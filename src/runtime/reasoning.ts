@@ -2,7 +2,7 @@ import type { DwarResponseBlock } from "../types/domain.js";
 import { SEND_MESSAGE } from "../types/domain.js";
 import type { SteerQueue } from "./steer.js";
 import { formatSteerTurn } from "./steer.js";
-import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
+import { callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 
 /** Step deps plus the steer queue the conversation lane writes to. */
 export type ReasoningLoopDeps = StepDeps & {
@@ -51,8 +51,7 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<boolean
       return false;
     }
 
-    const response = await deps.call(laneRequest(deps, assembled));
-    await deps.logResponse(response);
+    const response = await callLane(deps, laneRequest(deps, assembled));
 
     if (await runStep(deps, response, stop)) {
       exit();

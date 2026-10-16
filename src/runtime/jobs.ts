@@ -60,6 +60,18 @@ export async function openJob(db: Db, requester: string | null, agent: string): 
 }
 
 /**
+ * blockOpenJob closes `requester`'s open job with `agent` as blocked at `seq`, for a
+ * runtime report that already told the requester the work stopped (a failed lane), so
+ * the wake's end does not report the same job a second time as unfinished.
+ */
+export async function blockOpenJob(db: Db, requester: string | null, agent: string, seq: number): Promise<void> {
+  await db
+    .update(jobs)
+    .set({ state: "blocked", closedSeq: seq, updatedAt: new Date() })
+    .where(and(requesterIs(requester), eq(jobs.agentId, agent), eq(jobs.state, "open")));
+}
+
+/**
  * recordDelivery keeps jobs in step with one delivered message. A requester's message on
  * its line opens a job, or joins the open one and answers the agent's open question.
  * An agent's status on a message to whoever gave it a job records its progress update,

@@ -5,7 +5,7 @@ import { DISPATCH_MESSAGE, FORWARD_ATTACHMENT } from "../types/domain.js";
 import type { IntentQueue } from "./intents.js";
 import { formatIntentTurn } from "./intents.js";
 import { opensLine } from "./jobs.js";
-import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
+import { callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import type { TranscriptStore } from "./transcript.js";
 
 /** Step deps plus the intent queue reasoning's send_message writes to, and what the send gates read. */
@@ -61,8 +61,7 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
       return;
     }
 
-    const response = await deps.call(request);
-    await deps.logResponse(response);
+    const response = await callLane(deps, request);
 
     const sent = sends(response.content);
     unsent = Math.max(0, unsent - sent);

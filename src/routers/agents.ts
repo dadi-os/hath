@@ -1,6 +1,6 @@
 /** Agent list/detail/log routes. */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { listHumanMessages } from "../db/messages.js";
 import { agentLogs, agents, agentTools, tools } from "../db/schema.js";
@@ -8,7 +8,43 @@ import type { AgentRow } from "../db/schema.js";
 import { requireAgent } from "../runtime/tools.js";
 import { toAgentRecord, toLogRecord } from "../serialize.js";
 import type { AgentRecord } from "../types/domain.js";
-import { agentMessagesQuery, idParam, logsQuery, parse } from "./schemas.js";
+import { agentLogsQuery, agentMessagesQuery, idParam, logsQuery, parse } from "./schemas.js";
+
+/** The most rows a `wakes` read of an agent's logs returns, newest first. */
+const WAKE_LOGS_MAX_ROWS = 3_000;
+
+/**
+ * agentWakeLogs is every log row of agent `id`'s newest `wakes` wakes, newest first,
+ * with the rows outside any wake (boot recovery's reports, rows from before wake ids)
+ * written since the oldest of them began. A wake is whole however many rows it wrote,
+ * so the activity feed never shows one without the message that started it. Null
+ * when the agent has no row with a wake id yet.
+ */
+async function agentWakeLogs(app: FastifyInstance, id: string, wakes: number) {
+  const newest = await app.db
+    .select({ wakeId: agentLogs.wakeId, startedAt: sql<string>`min(${agentLogs.createdAt})` })
+    .from(agentLogs)
+    .where(and(eq(agentLogs.agentId, id), sql`${agentLogs.wakeId} is not null`))
+    .groupBy(agentLogs.wakeId)
+    .orderBy(sql`max(${agentLogs.createdAt}) desc`)
+    .limit(wakes);
+  if (newest.length === 0) {
+    return null;
+  }
+  const ids = newest.map((row) => row.wakeId!);
+  const since = newest.reduce((oldest, row) => (row.startedAt < oldest ? row.startedAt : oldest), newest[0]!.startedAt);
+  return app.db
+    .select()
+    .from(agentLogs)
+    .where(
+      and(
+        eq(agentLogs.agentId, id),
+        sql`(${agentLogs.wakeId} in (${sql.join(ids.map((wakeId) => sql`${wakeId}::uuid`), sql`, `)}) or (${agentLogs.wakeId} is null and ${agentLogs.createdAt} >= ${since}::timestamptz))`,
+      ),
+    )
+    .orderBy(desc(agentLogs.createdAt))
+    .limit(WAKE_LOGS_MAX_ROWS);
+}
 
 /** Attach ephemeral running locks and host sessions for API responses. */
 function withLive(row: AgentRow, runtime: FastifyInstance["runtime"]): AgentRecord {
@@ -76,7 +112,13 @@ export async function registerAgents(app: FastifyInstance): Promise<void> {
   app.get("/agents/:id/logs", async (request) => {
     const { id } = parse(idParam, request.params);
     await requireAgent(app.db, id);
-    const query = parse(logsQuery, request.query);
+    const query = parse(agentLogsQuery, request.query);
+    if (query.wakes !== undefined && query.event === undefined) {
+      const rows = await agentWakeLogs(app, id, query.wakes);
+      if (rows !== null) {
+        return { logs: rows.map(toLogRecord) };
+      }
+    }
     const limit = query.limit ?? 50;
     const rows = await app.db
       .select()

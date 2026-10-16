@@ -225,6 +225,29 @@ test("an empty turn or a provider error with no tool call fails the lane instead
   }
 });
 
+test("an empty turn is asked again once, and the retry's answer is the step", async () => {
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return n === 1 ? turn("anthropic", []) : turn("anthropic", [call("yield", "y")]);
+    }, requests),
+    steer: new SteerQueue(),
+  });
+  assert.equal(requests.length, 2);
+});
+
+test("a conversation turn still empty after its retry ends the run instead of failing the wake", async () => {
+  const requests: DwarChatRequest[] = [];
+  await runConversationLoop({
+    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => turn("anthropic", []), requests),
+    intents: new IntentQueue(),
+    ...conversationGateDeps(),
+  });
+  assert.equal(requests.length, 2);
+});
+
 test("both lanes share one wake: each sees the other's steps; steers and intents stay private", async () => {
   const wake = new Wake(roomyWakeLimits);
   const steer = new SteerQueue();
@@ -551,6 +574,16 @@ test("past its ceiling a lane drops older thinking before any step, keeping the 
   const next = wake.view("reasoning");
   assert.deepEqual(next.slice(0, view.length - 2), view.slice(0, -2), "the thought-free prefix holds until the next cut");
   assert.equal(thoughtTurns(next), 2);
+});
+
+test("a turn that thought weighs what its replay shows, not the thinking its provider billed", () => {
+  const wake = new Wake(ceilingLimits);
+  wake.begin("sys", frozen("[From: Ankur]
+rebuild the resume"), 1);
+  pushThoughtStep(wake, "s1", 460, 2_000);
+  assert.doesNotThrow(() => wake.fit("reasoning", []));
+  assert.deepEqual(callIds(wake.view("reasoning")), ["s1"]);
+  assert.equal(thoughtTurns(wake.view("reasoning")), 1);
 });
 
 test("a lane's measured prompt, not its estimate, decides when it trims", () => {

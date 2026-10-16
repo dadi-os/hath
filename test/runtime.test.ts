@@ -17,7 +17,7 @@ import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, agents, agentTools, messages, scheduledMessages, tools } from "../src/db/schema.js";
+import { agentLogs, agents, agentTools, jobs, messages, scheduledMessages, tools } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { toolId } from "../src/tools/sync.js";
 import { allTools, findTool } from "../src/tools/registry.js";
@@ -2111,6 +2111,57 @@ test("a failed conversation lane is reported to its current requester with a run
     .where(and(eq(agentLogs.agentId, childId), eq(agentLogs.event, "message")));
   const report = logs.find((log) => log.payload.direction === "send");
   assert.equal(report?.payload[RUNTIME_REPORT], "lane_failed");
+});
+
+test("a reasoning lane that fails after working on a job reports once and closes the job, and the wake's rows share its id", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const childId = await insertAgent(handle.db, { id: "failing-reasoner", systemPrompt: "child" });
+  let reasoned = 0;
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({
+      converse: async () => ({
+        provider: "anthropic",
+        content: [
+          { type: "tool_use", id: "c-steer", name: "steer_reasoning", input: { instruction: "fix the resume" } },
+          { type: "tool_use", id: "c-yield", name: "yield", input: {} },
+        ],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      }),
+      reason: async () => {
+        reasoned += 1;
+        if (reasoned === 1) {
+          return toolUse("list_agents", {}, "r-list");
+        }
+        throw new Error("prompt over the ceiling");
+      },
+    }),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+
+  await deliverUserMessage(
+    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation, enqueueReasoning: runtime.enqueueReasoning },
+    childId,
+    "fix my resume",
+  );
+  await runtime.waitUntilIdle();
+
+  const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
+  assert.equal(sent.length, 1, sent.map((row) => row.content).join(" | "));
+  assert.match(sent[0]!.content, /^\[runtime\] My reasoning lane failed .*over the ceiling/);
+  const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, childId));
+  assert.equal(job?.state, "blocked");
+
+  const logs = await handle.db.select().from(agentLogs).where(eq(agentLogs.agentId, childId));
+  const wakeIds = new Set(logs.map((log) => log.wakeId));
+  assert.equal(wakeIds.size, 1);
+  assert.notEqual([...wakeIds][0], null);
 });
 
 test("the same lane failure on every wake is reported once until a run finishes cleanly", async () => {

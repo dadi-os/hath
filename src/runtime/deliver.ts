@@ -25,8 +25,11 @@ export type DeliverDeps = {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  enqueueConversation: (agentId: string) => void;
-  enqueueReasoning: (agentId: string) => void;
+  /** Queue a lane run; returns the id of the wake it joins (see engine.ts). */
+  enqueueConversation: (agentId: string) => string;
+  enqueueReasoning: (agentId: string) => string;
+  /** The id of an agent's current wake, stamped on the log of a message it sends; null outside a wake. */
+  wakeOf?: (agentId: string) => string | null;
 };
 
 /**
@@ -67,9 +70,11 @@ export async function deliverUserMessage(
       seq: row.seq,
     },
   });
+  const wakeId = deps.enqueueConversation(toAgentId);
   await writeAgentLog(deps.db, {
     agentId: toAgentId,
     lane: "conversation",
+    wakeId,
     event: "message",
     payload: {
       direction: "receive",
@@ -91,7 +96,6 @@ export async function deliverUserMessage(
     seq: row.seq,
     at: row.createdAt.toISOString(),
   });
-  deps.enqueueConversation(toAgentId);
   return row;
 }
 
@@ -138,6 +142,7 @@ export async function deliverAgentMessage(
   await writeAgentLog(deps.db, {
     agentId: args.fromAgentId,
     lane: "conversation",
+    wakeId: deps.wakeOf?.(args.fromAgentId) ?? null,
     event: "message",
     payload: {
       direction: "send",
@@ -152,9 +157,16 @@ export async function deliverAgentMessage(
     },
   });
   if (row.toAgentId !== null) {
+    let wakeId: string | null = null;
+    if (args.wake !== false) {
+      wakeId = (await opensLine(deps.db, row.toAgentId, args.fromAgentId))
+        ? deps.enqueueReasoning(row.toAgentId)
+        : deps.enqueueConversation(row.toAgentId);
+    }
     await writeAgentLog(deps.db, {
       agentId: row.toAgentId,
       lane: "conversation",
+      wakeId,
       event: "message",
       payload: {
         direction: "receive",
@@ -167,13 +179,6 @@ export async function deliverAgentMessage(
         ...extra,
       },
     });
-    if (args.wake !== false) {
-      if (await opensLine(deps.db, row.toAgentId, args.fromAgentId)) {
-        deps.enqueueReasoning(row.toAgentId);
-      } else {
-        deps.enqueueConversation(row.toAgentId);
-      }
-    }
   } else {
     await writeAgentLog(deps.db, {
       agentId: null,

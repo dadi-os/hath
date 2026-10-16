@@ -49,6 +49,7 @@ export function toLogRecord(row: AgentLogRow): LogRecord {
     lane: parseLane(row.lane),
     event: parseLogEvent(row.event),
     payload: row.payload,
+    wake_id: row.wakeId,
     created_at: row.createdAt.toISOString(),
   };
 }

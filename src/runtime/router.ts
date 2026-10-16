@@ -156,6 +156,7 @@ async function deliverAsAnkur(
       events: ctx.events,
       enqueueConversation: ctx.enqueueConversation,
       enqueueReasoning: ctx.enqueueReasoning,
+      wakeOf: ctx.wakeOf,
     },
     target.id,
     content,

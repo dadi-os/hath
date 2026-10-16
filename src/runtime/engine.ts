@@ -38,7 +38,7 @@ import { runReasoningLoop } from "./reasoning.js";
 import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
 import { ToolDebounce } from "./tool-debounce.js";
-import { settleWakeJobs } from "./jobs.js";
+import { blockOpenJob, settleWakeJobs } from "./jobs.js";
 import { executeTool, type ToolContext, type ToolExecResult } from "./tools.js";
 import type { ToolCallerKind } from "../tools/shared.js";
 import { TranscriptStore } from "./transcript.js";
@@ -67,8 +67,11 @@ export type Runtime = {
   browsers: BrowserDriver;
   sessions: HostSessions;
   scheduler: Scheduler;
-  enqueueConversation: (agentId: string) => void;
-  enqueueReasoning: (agentId: string) => void;
+  /** Queue a lane run; returns the id of the wake it joins. */
+  enqueueConversation: (agentId: string) => string;
+  enqueueReasoning: (agentId: string) => string;
+  /** The id of the agent's current wake, or null when it has none. */
+  wakeOf: (agentId: string) => string | null;
   waitUntilIdle: () => Promise<void>;
   /** Run the router on one utterance from Ankur; resolves with every message it sent as him. */
   route: (content: string) => Promise<RoutedMessage[]>;
@@ -145,14 +148,21 @@ export function createRuntime(opts: {
 
   /**
    * Always schedule a conversation run. The lane lock serializes concurrent wakes;
-   * dropping here would lose a second user message that arrives while busy.
+   * dropping here would lose a second user message that arrives while busy. Returns
+   * the id of the wake the run joins: the agent's current one, or a new one.
    */
-  function enqueueConversation(agentId: string): void {
+  function enqueueConversation(agentId: string): string {
     track(runLane(agentId, "conversation", wakes.hold(agentId)));
+    return wakes.get(agentId).id;
   }
 
-  function enqueueReasoning(agentId: string): void {
+  function enqueueReasoning(agentId: string): string {
     track(runLane(agentId, "reasoning", wakes.hold(agentId)));
+    return wakes.get(agentId).id;
+  }
+
+  function wakeOf(agentId: string): string | null {
+    return wakes.idOf(agentId);
   }
 
   const scheduler = createScheduler({
@@ -177,6 +187,7 @@ export function createRuntime(opts: {
     scheduler,
     enqueueConversation,
     enqueueReasoning,
+    wakeOf,
     waitUntilIdle,
     route,
     toolContext,
@@ -208,6 +219,7 @@ export function createRuntime(opts: {
       toolDebounce,
       enqueueConversation,
       enqueueReasoning,
+      wakeOf,
     };
   }
 
@@ -308,13 +320,18 @@ export function createRuntime(opts: {
     settledThrough.set(agentId, lines.at(-1)?.seq ?? since);
     const blocked = await settleWakeJobs(opts.db, lines, agentId, wakes.get(agentId).reasoned());
     for (const job of blocked) {
-      const last = lines.filter((row) => row.fromAgentId === agentId && row.toAgentId === job.requesterId).at(-1);
+      const last = lines
+        .filter(
+          (row) =>
+            row.fromAgentId === agentId && row.toAgentId === job.requesterId && !row.content.startsWith(RUNTIME_PREFIX),
+        )
+        .at(-1);
       const said =
         last === undefined
           ? "I sent you nothing on it."
           : `My last message to you on it: "${last.content.slice(0, UNFINISHED_QUOTE_CHARS)}"`;
       await deliverAgentMessage(
-        { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning },
+        { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning, wakeOf },
         {
           fromAgentId: agentId,
           toAgentId: job.requesterId,
@@ -329,13 +346,16 @@ export function createRuntime(opts: {
    * reportLaneFailure tells the failed agent's current requester (whoever it is
    * working for, Ankur included) that a lane died and its wake stopped, as a
    * durable message that also wakes the recipient — otherwise a crashed wake is
-   * indistinguishable from a slow one and the requester waits on a dead worker. Tool errors never get
-   * here: they come back to the model as tool results.
+   * indistinguishable from a slow one and the requester waits on a dead worker. The report
+   * closes the requester's open job as blocked, since it says the work stopped; left open,
+   * the wake's end closed it again with a second report quoting this one (resume-specialist
+   * sent Ankur both on 2026-10-15). Tool errors never get here: they come back to the
+   * model as tool results.
    */
   async function reportLaneFailure(agentId: string, lane: Lane, message: string): Promise<void> {
     const requester = await currentRequester(opts.db, agentId);
-    await deliverAgentMessage(
-      { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning },
+    const row = await deliverAgentMessage(
+      { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning, wakeOf },
       {
         fromAgentId: agentId,
         toAgentId: requester,
@@ -343,15 +363,18 @@ export function createRuntime(opts: {
         extraPayload: { [RUNTIME_REPORT]: "lane_failed" satisfies RuntimeReportKind },
       },
     );
+    await blockOpenJob(opts.db, requester, agentId, row.seq);
   }
 
   /** Tool execution and audit logging for a lane. Null agentId is the router. */
   function laneHelpers(agentId: string | null, lane: Lane) {
     const exec = (call: DwarToolUseBlock) => executeTool(toolContext(agentId, lane), call);
+    const wakeId = () => (agentId === null ? null : wakes.idOf(agentId));
     const logResponse = (response: DwarChatResponse) =>
       writeAgentLog(opts.db, {
         agentId,
         lane,
+        wakeId: wakeId(),
         event: "response",
         payload: {
           provider: response.provider,
@@ -364,6 +387,7 @@ export function createRuntime(opts: {
       writeAgentLog(opts.db, {
         agentId,
         lane,
+        wakeId: wakeId(),
         event: "tool_result",
         payload: {
           tool_use_id: call.id,

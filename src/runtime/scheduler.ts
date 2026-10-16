@@ -37,8 +37,8 @@ export function createScheduler(opts: {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  enqueueConversation: (agentId: string) => void;
-  enqueueReasoning: (agentId: string) => void;
+  enqueueConversation: (agentId: string) => string;
+  enqueueReasoning: (agentId: string) => string;
   log: SchedulerLog;
   tickSeconds: number;
 }): Scheduler {

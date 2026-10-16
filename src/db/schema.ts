@@ -58,10 +58,17 @@ export const agentLogs = pgTable(
     lane: text("lane").notNull(),
     event: text("event").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    /**
+     * The wake this row belongs to (see runtime/wake.ts): its lanes' turns and tool results,
+     * the messages it received and sent. Null for the router, rows from before wake ids,
+     * and runtime reports written outside any wake (boot recovery).
+     */
+    wakeId: uuid("wake_id"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     index("agent_logs_agent_id_created_at_idx").on(table.agentId, table.createdAt),
+    index("agent_logs_wake_id_idx").on(table.wakeId),
     check("agent_logs_lane_check", sql`${table.lane} IN ('reasoning', 'conversation', 'router')`),
     check(
       "agent_logs_event_check",

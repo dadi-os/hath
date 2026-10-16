@@ -71,14 +71,35 @@ export function laneRequest(deps: StepDeps, assembled: AssembledContext): DwarCh
   };
 }
 
+/** How many times a lane asks again after its model returned an empty turn. */
+const EMPTY_TURN_RETRIES = 1;
+
+/**
+ * callLane makes a lane's model call and logs the response, asking once more when the
+ * model returned an empty turn (no thinking, text or call), which Gemini does now and
+ * then on the conversation lane: three wakes failed that way between 2026-10-14 and
+ * 2026-10-16, each sending its requester a lane-failure report.
+ */
+export async function callLane(deps: StepDeps, request: DwarChatRequest): Promise<DwarChatResponse> {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await deps.call(request);
+    await deps.logResponse(response);
+    if (response.content.length > 0 || response.stop_reason === "error" || attempt >= EMPTY_TURN_RETRIES) {
+      return response;
+    }
+  }
+}
+
 /**
  * runStep records one model turn and its tool results on the wake, with what the
  * call measured (see Wake.measure) and what the turn cost to write; a reasoning
  * turn that called an action tool also joins the agent's transcript as a `[Did]`
  * entry, so the steps outlive the wake. A turn with
  * no tool call is kept and followed by a neutral continue turn, so the lane
- * keeps going; only yield (or a stop) ends it. Returns true when the lane
- * should exit. Agent turns are tagged with their provider and lane so Dwar can
+ * keeps going; only yield (or a stop) ends it. An empty turn (see callLane) fails a
+ * reasoning lane, but ends a conversation run as a yield would: conversation with
+ * nothing to say has nothing to send, and its run's unsent hand-offs are still
+ * answered (see runConversationLoop). Returns true when the lane should exit. Agent turns are tagged with their provider and lane so Dwar can
  * translate the other lane's turns in a shared wake; the router's wake has one
  * lane on a context-free endpoint, so its turns go untagged.
  */
@@ -102,6 +123,10 @@ export async function runStep(
       throw new HathError(502, "dwar", `${deps.lane} model stopped with an error and no tool call`);
     }
     if (response.content.length === 0) {
+      if (deps.lane === "conversation") {
+        deps.wake.markYield(deps.lane);
+        return true;
+      }
       throw new HathError(502, "dwar", `${deps.lane} model returned an empty turn`);
     }
     deps.wake.push(

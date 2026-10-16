@@ -31,6 +31,7 @@
  * next wake sees what ran, not only what the agent said.
  */
 
+import { randomUUID } from "node:crypto";
 import { HathError } from "../errors.js";
 import type { DwarMessage, DwarTool, DwarUsage, Lane } from "../types/domain.js";
 import { formatActions } from "./record.js";
@@ -115,6 +116,8 @@ export type WakeTurn = {
 
 /** Wake is one agent's shared lane history for the current wake. */
 export class Wake {
+  /** Stamped on every log row of this wake, so the activity feed groups by wake instead of guessing. */
+  readonly id = randomUUID();
   private frozenSystem: string | null = null;
   private transcripts: Partial<Record<Lane, DwarMessage[]>> | null = null;
   private seenThrough = 0;
@@ -436,14 +439,20 @@ export class Wake {
    * turnTokens is turn `index`'s weight in `lane`'s prompt: its provider count in the
    * lane that wrote it (untagged turns are the router's own) while it is replayed
    * whole, otherwise estimated from its text, since Dwar shows another lane's turn as
-   * a shorter text rendering.
+   * a shorter text rendering. A turn that thought weighs at most its estimate as shown:
+   * providers bill the whole thinking but hand back (and replay) only its summary, so
+   * on 2026-10-15 a resume-specialist turn billed 29,677 output tokens for 23k
+   * characters of thinking, and counting the bill failed its lane at a prompt that fit.
    */
   private turnTokens(index: number, lane: Lane): number {
     const turn = this.turns[index]!;
     const own = turn.message.lane === undefined || turn.message.lane === lane;
-    return own && turn.outputTokens !== undefined && !this.unthought(index, lane)
-      ? turn.outputTokens
-      : messageTokens(this.shown(index, lane));
+    if (!own || turn.outputTokens === undefined || this.unthought(index, lane)) {
+      return messageTokens(this.shown(index, lane));
+    }
+    return hasThinking(turn.message)
+      ? Math.min(turn.outputTokens, messageTokens(this.shown(index, lane)))
+      : turn.outputTokens;
   }
 
   /**
@@ -597,6 +606,11 @@ export class WakeStore {
   /** True when exactly one run holds the agent's wake, so releasing it drops the wake. */
   lastHold(agentId: string): boolean {
     return this.holds.get(agentId) === 1;
+  }
+
+  /** The id of the agent's current wake, or null when it has none. */
+  idOf(agentId: string): string | null {
+    return this.wakes.get(agentId)?.id ?? null;
   }
 
   /** The agent's current wake, created on first use. */

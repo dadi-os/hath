@@ -91,6 +91,16 @@ export const logsQuery = z
   })
   .strict();
 
+/**
+ * An agent's logs: the newest `limit` rows, or with `wakes` every row of its newest
+ * that many wakes (see agentWakeLogs), which `limit` then does not cap.
+ */
+export const agentLogsQuery = logsQuery
+  .extend({
+    wakes: z.coerce.number().int().positive().max(50).optional(),
+  })
+  .strict();
+
 export const agentMessagesQuery = z
   .object({
     since_seq: z.coerce.number().int().nonnegative().optional(),
