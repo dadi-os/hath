@@ -110,51 +110,31 @@ export async function recordDelivery(db: Db, row: TranscriptEntry, scheduled: bo
 }
 
 /**
- * settleWakeJobs settles `agentId`'s open jobs when its wake ends (gate 6). `lines` are
- * the agent's transcript rows since its previous wake ended. A job this wake touched (a
- * message on its line among `lines`, hath's notices aside) that is still open while the agent has no job of
- * its own out with another agent is over: if the wake did nothing on it (`reasoned`
- * false and no message back), it closes as noop, a message that needed no work;
- * otherwise it closes as blocked and is returned so the caller can tell its requester.
- * Jobs waiting on the requester's answer stay as they are.
+ * settleWakeJobs closes, when an agent's wake ends, each job opened during that wake (by a
+ * message among `lines`, the agent's transcript rows since its previous wake) that the wake
+ * did nothing on: no reasoning step and no message back, so it was a message that needed
+ * no work (noop). Every other job stays open until the agent reports on it: hath
+ * never decides from outside that a job stalled, since an agent that yielded may be
+ * waiting on a reply that wakes it (health-specialist's Dr. Zubair job was closed as
+ * "unfinished" on 2026-10-19 while it waited on efficiency-specialist).
  */
-export async function settleWakeJobs(
-  db: Db,
-  lines: TranscriptEntry[],
-  agentId: string,
-  reasoned: boolean,
-): Promise<JobRow[]> {
+export async function settleWakeJobs(db: Db, lines: TranscriptEntry[], agentId: string, reasoned: boolean): Promise<void> {
+  const firstSeq = lines[0]?.seq;
+  if (reasoned || firstSeq === undefined) {
+    return;
+  }
   const open = await db.select().from(jobs).where(and(eq(jobs.agentId, agentId), eq(jobs.state, "open")));
-  if (open.length === 0) {
-    return [];
-  }
-  const [delegated] = await db
-    .select({ id: jobs.id })
-    .from(jobs)
-    .where(and(eq(jobs.requesterId, agentId), inArray(jobs.state, [...OPEN_STATES])))
-    .limit(1);
-  if (delegated !== undefined) {
-    return [];
-  }
-  const blocked: JobRow[] = [];
-  for (const job of open) {
+  for (const job of open.filter((row) => row.openedSeq >= firstSeq)) {
     const onLine = lines.filter(
       (row) =>
         row.kind !== "notice" &&
         ((row.fromAgentId === job.requesterId && row.toAgentId === agentId) ||
           (row.fromAgentId === agentId && row.toAgentId === job.requesterId)),
     );
-    if (onLine.length === 0) {
-      continue;
-    }
-    const answered = onLine.some((row) => row.fromAgentId === agentId);
-    const state = !reasoned && !answered ? "noop" : "blocked";
-    await db.update(jobs).set({ state, updatedAt: new Date() }).where(eq(jobs.id, job.id));
-    if (state === "blocked") {
-      blocked.push(job);
+    if (onLine.length > 0 && !onLine.some((row) => row.fromAgentId === agentId)) {
+      await db.update(jobs).set({ state: "noop", updatedAt: new Date() }).where(eq(jobs.id, job.id));
     }
   }
-  return blocked;
 }
 
 /**

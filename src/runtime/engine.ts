@@ -47,9 +47,6 @@ import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import { FORWARD_ATTACHMENT, SEND_MESSAGE } from "../types/domain.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
 
-/** How much of an agent's last message a job_unfinished report quotes. */
-const UNFINISHED_QUOTE_CHARS = 300;
-
 export type RuntimeLog = {
   error: (obj: unknown, msg?: string) => void;
   info: (obj: unknown, msg?: string) => void;
@@ -296,51 +293,30 @@ export function createRuntime(opts: {
   }
 
   /**
-   * settleJobs closes the jobs the ending wake touched but left open (see settleWakeJobs)
-   * and tells each requester whose job closed as blocked, waking it, so a requester never
-   * waits on an agent that stopped. A wake covers the agent's messages since its previous
-   * wake ended; the first wake after boot covers everything since the transcript loaded.
+   * settleJobs files away the jobs the ending wake touched but did nothing on (see
+   * settleWakeJobs). A wake covers the agent's messages since its previous wake ended;
+   * the first wake after boot covers everything since the transcript loaded.
    */
   async function settleJobs(agentId: string): Promise<void> {
     const since = settledThrough.get(agentId) ?? transcript.hydratedThrough;
     const lines = transcript.transcriptFor(agentId).filter((row) => row.seq > since);
     settledThrough.set(agentId, lines.at(-1)?.seq ?? since);
-    const blocked = await settleWakeJobs(opts.db, lines, agentId, wakes.get(agentId).reasoned());
-    for (const job of blocked) {
-      const last = lines
-        .filter(
-          (row) =>
-            row.fromAgentId === agentId && row.toAgentId === job.requesterId && row.kind !== "notice",
-        )
-        .at(-1);
-      const said =
-        last === undefined
-          ? "It sent you nothing on it."
-          : `Its last message to you on it: "${last.content.slice(0, UNFINISHED_QUOTE_CHARS)}"`;
-      await deliverAgentMessage(
-        { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning, wakeOf },
-        {
-          fromAgentId: agentId,
-          toAgentId: job.requesterId,
-          content: `${agentId} stopped working with your job unfinished and sent you no done, blocked or needs_input report, so hath closed the job as blocked. ${said} Message ${agentId} to pick it up again.`,
-          notice: "job_unfinished",
-        },
-      );
-    }
+    await settleWakeJobs(opts.db, lines, agentId, wakes.get(agentId).reasoned());
   }
 
   /**
-   * reportLaneFailure tells the failed agent's current requester (whoever it is
-   * working for, Ankur included) that a lane died and its wake stopped, as a
-   * durable message that also wakes the recipient — otherwise a crashed wake is
-   * indistinguishable from a slow one and the requester waits on a dead worker. The report
-   * closes the requester's open job as blocked, since it says the work stopped; left open,
-   * the wake's end closed it again with a second report quoting this one (resume-specialist
-   * sent Ankur both on 2026-10-15). Tool errors never get here: they come back to the
-   * model as tool results.
+   * reportLaneFailure tells an agent that is waiting on the failed one that its work
+   * stopped, as a notice that wakes it, so it does not wait on a dead worker; the notice
+   * closes that agent's job with it as blocked. Ankur never gets one: hath's failures are
+   * its own to log, never his to read, and his job stays open for the agent's next wake.
+   * Tool errors never get here: they come back to the model as tool results.
    */
   async function reportLaneFailure(agentId: string, lane: Lane, message: string): Promise<void> {
     const requester = await currentRequester(opts.db, agentId);
+    if (requester === null) {
+      opts.log.error({ code: "lane_failed", agentId, lane, message }, "lane failed on Ankur's job; not messaging him");
+      return;
+    }
     const row = await deliverAgentMessage(
       { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning, wakeOf },
       {

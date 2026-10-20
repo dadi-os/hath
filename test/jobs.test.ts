@@ -182,7 +182,7 @@ test("the open-jobs note tells each lane whom it owes a status, what it has spen
   await runtime.waitUntilIdle();
 });
 
-test("a wake that works a job and stops without reporting closes it as blocked and tells the requester; an FYI that needs nothing closes as noop", async () => {
+test("a wake that works a job and stops without reporting leaves it open and tells no one, and a follow-up joins it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "settle-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "settle-worker", systemPrompt: "STALLER", parentAgentId: managerId });
@@ -212,17 +212,13 @@ test("a wake that works a job and stops without reporting closes it as blocked a
   assert.equal((await dispatch(runtime, managerId, workerId, "read the page")).isError, false);
   await runtime.waitUntilIdle();
   const [job] = await jobsOf(workerId);
-  assert.equal(job?.state, "blocked");
-  const reports = await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId));
-  assert.equal(reports.length, 1);
-  assert.equal(reports[0]?.kind, "notice");
-  assert.ok(reports[0]!.content.startsWith("settle-worker stopped working with your job unfinished"));
+  assert.equal(job?.state, "open", "hath never decides from outside that a job stalled");
+  assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 0);
 
   assert.equal((await dispatch(runtime, managerId, workerId, "Browser 14 is back")).isError, false);
   await runtime.waitUntilIdle();
-  const states = (await jobsOf(workerId)).map((row) => row.state).sort();
-  assert.deepEqual(states, ["blocked", "noop"]);
-  assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 1);
+  assert.deepEqual((await jobsOf(workerId)).map((row) => row.state), ["open"], "a follow-up joins the open job and never files it away");
+  assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 0);
 });
 
 test("a report from an agent the recipient brought in wakes its reasoning lane; everything else wakes conversation", async () => {

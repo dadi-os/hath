@@ -12,7 +12,7 @@ import {
 } from "../src/types/domain.js";
 import { currentRequester, insertMessage, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { assembleContext } from "../src/runtime/context.js";
-import { deliverUserMessage, NOTICE } from "../src/runtime/deliver.js";
+import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
@@ -2112,7 +2112,7 @@ test("currentRequester is whoever most recently wrote after opening the line, ne
   assert.equal(await currentRequester(handle.db, workerId), agentId);
 });
 
-test("a failed conversation lane becomes a notice to its current requester, never a message from the agent", async () => {
+test("a lane that fails on Ankur's job sends him nothing: hath logs its own failures", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "conv-failure-parent", systemPrompt: "parent" });
   const childId = await insertAgent(handle.db, {
@@ -2146,20 +2146,10 @@ test("a failed conversation lane becomes a notice to its current requester, neve
   await runtime.waitUntilIdle();
 
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0]?.toAgentId, null);
-  assert.equal(sent[0]?.kind, "notice");
-  assert.match(sent[0]!.content, /stopped before finishing because of an error: .*quota exceeded/);
-  assert.doesNotMatch(sent[0]!.content, /\[runtime\]|lane/);
-  const logs = await handle.db
-    .select()
-    .from(agentLogs)
-    .where(and(eq(agentLogs.agentId, childId), eq(agentLogs.event, "message")));
-  const report = logs.find((log) => log.payload.direction === "send");
-  assert.equal(report?.payload[NOTICE], "lane_failed");
+  assert.deepEqual(sent, [], "no notice, no message to Ankur");
 });
 
-test("a reasoning lane that fails after working on a job reports once and closes the job, and the wake's rows share its id", async () => {
+test("a reasoning lane that fails on Ankur's job sends him nothing and leaves the job open, and the wake's rows share its id", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const childId = await insertAgent(handle.db, { id: "failing-reasoner", systemPrompt: "child" });
   let reasoned = 0;
@@ -2199,11 +2189,9 @@ test("a reasoning lane that fails after working on a job reports once and closes
   await runtime.waitUntilIdle();
 
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
-  assert.equal(sent.length, 1, sent.map((row) => row.content).join(" | "));
-  assert.equal(sent[0]?.kind, "notice");
-  assert.match(sent[0]!.content, /^failing-reasoner stopped before finishing because of an error: .*over the ceiling/);
+  assert.deepEqual(sent, [], sent.map((row) => row.content).join(" | "));
   const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, childId));
-  assert.equal(job?.state, "blocked");
+  assert.equal(job?.state, "open", "hath never decides from outside that a job stalled");
 
   const logs = await handle.db.select().from(agentLogs).where(eq(agentLogs.agentId, childId));
   const wakeIds = new Set(logs.map((log) => log.wakeId));
@@ -2211,8 +2199,9 @@ test("a reasoning lane that fails after working on a job reports once and closes
   assert.notEqual([...wakeIds][0], null);
 });
 
-test("the same lane failure on every wake is reported once until a run finishes cleanly", async () => {
+test("the same lane failure on every wake is reported once to a waiting agent until a run finishes cleanly", async () => {
   await resetRuntime(handle.sql, handle.db, config);
+  const requesterId = await insertAgent(handle.db, { id: "repeat-failure-requester", systemPrompt: "requester" });
   const childId = await insertAgent(handle.db, { id: "repeat-failure-child", systemPrompt: "child" });
   let broken = true;
   let call = 0;
@@ -2238,17 +2227,17 @@ test("the same lane failure on every wake is reported once until a run finishes 
   const reports = async () =>
     (await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId))).filter((m) => m.kind === "notice").length;
 
-  await deliverUserMessage(deps, childId, "status?");
+  await deliverAgentMessage(deps, { fromAgentId: requesterId, toAgentId: childId, content: "status?" });
   await runtime.waitUntilIdle();
-  await deliverUserMessage(deps, childId, "status again?");
+  await deliverAgentMessage(deps, { fromAgentId: requesterId, toAgentId: childId, content: "status again?" });
   await runtime.waitUntilIdle();
   assert.equal(await reports(), 1);
 
   broken = false;
-  await deliverUserMessage(deps, childId, "back up?");
+  await deliverAgentMessage(deps, { fromAgentId: requesterId, toAgentId: childId, content: "back up?" });
   await runtime.waitUntilIdle();
   broken = true;
-  await deliverUserMessage(deps, childId, "and now?");
+  await deliverAgentMessage(deps, { fromAgentId: requesterId, toAgentId: childId, content: "and now?" });
   await runtime.waitUntilIdle();
   assert.equal(await reports(), 2);
 });

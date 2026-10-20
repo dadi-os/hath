@@ -14,12 +14,12 @@ import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 export const NOTICE = "notice";
 
 /**
- * What a notice is about: a lane that failed, a wake a restart cut short, or a job an
- * agent's wake left unfinished, which hath closed as blocked (see jobs.ts). A notice is
- * hath's word between the agent it is about and that agent's requester, never chat:
+ * What a notice is about: a lane that failed or a wake a restart cut short. A notice is
+ * hath's word between the agent it is about and an agent waiting on it, never chat, and
+ * never sent to Ankur:
  * stored with kind notice, it opens no job and makes no one a requester.
  */
-export type NoticeKind = "lane_failed" | "wake_interrupted" | "job_unfinished";
+export type NoticeKind = "lane_failed" | "wake_interrupted";
 
 export type DeliverDeps = {
   db: Db;

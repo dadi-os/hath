@@ -178,8 +178,11 @@ export async function recoverInterruptedWakes(
     const requester = await currentRequester(deps.db, wake.agent_id);
     deps.log.warn(
       { code: "wake_interrupted", agent_id: wake.agent_id, report_to: requester },
-      "restart cut a wake short; reporting to the requester",
+      "restart cut a wake short",
     );
+    if (requester === null) {
+      continue;
+    }
     await deliverAgentMessage(deps, {
       fromAgentId: wake.agent_id,
       toAgentId: requester,
