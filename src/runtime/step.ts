@@ -14,7 +14,7 @@ import type { AssembledContext } from "./context.js";
 import { stepActions } from "./record.js";
 import type { ToolExecResult } from "./tools.js";
 import type { TranscriptStore } from "./transcript.js";
-import { CONTINUE_TURN, type Wake } from "./wake.js";
+import { CAPPED_TURN, CAPPED_TURNS_MAX, CONTINUE_TURN, type Wake } from "./wake.js";
 
 const TERMINATED = "terminated by conversation lane";
 
@@ -147,6 +147,14 @@ export async function runStep(
     (block): block is DwarToolUseBlock => block.type === "tool_use",
   );
 
+  const capped = deps.wake.noteTurn(deps.lane, uses.length === 0 && response.stop_reason === "max_tokens");
+  if (capped >= CAPPED_TURNS_MAX) {
+    throw new HathError(
+      502,
+      "dwar",
+      `${deps.lane} model ran out of output room while thinking ${capped} turns in a row without acting`,
+    );
+  }
   if (uses.length === 0) {
     if (response.stop_reason === "error") {
       throw new HathError(502, "dwar", `${deps.lane} model stopped with an error and no tool call`);
@@ -160,7 +168,7 @@ export async function runStep(
     }
     deps.wake.push(
       { message: assistant, outputTokens },
-      { message: { role: "user", content: CONTINUE_TURN } },
+      { message: { role: "user", content: capped > 0 ? CAPPED_TURN : CONTINUE_TURN } },
     );
     return false;
   }

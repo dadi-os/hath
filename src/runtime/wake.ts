@@ -45,6 +45,18 @@ import { formatActions } from "./record.js";
 export const CONTINUE_TURN =
   "[continue] The text you just wrote reached no one: only a message tool call (send_message or dispatch_message) delivers anything.";
 
+/**
+ * User turn recorded after a turn that ran out of output room while thinking and did
+ * nothing. Its thinking is not kept, so without this the lane plans the same thing from
+ * the start and runs out again: schedule-specialist did that 32 times on 2026-10-18,
+ * about two and a half minutes a turn, laying out a week in its head.
+ */
+export const CAPPED_TURN =
+  "[continue] Your last turn ran out of output room while thinking and did nothing, and that thinking is gone. Do not plan it all again in your head: take the next step now, and for a large piece of work write the plan down first (a file, or a message) and then act on it a part at a time.";
+
+/** How many turns in a row may run out of output room while thinking before the lane stops. */
+export const CAPPED_TURNS_MAX = 3;
+
 /** How a cleared tool result's receipt opens (see receipt). */
 export const CLEARED_PREFIX = "[cleared]";
 
@@ -253,6 +265,16 @@ export class Wake {
   /** True once the reasoning lane has taken a step in this wake. */
   reasoned(): boolean {
     return this.turns.some((turn) => turn.message.role === "assistant" && turn.message.lane === "reasoning");
+  }
+
+  /** Per lane, how many turns in a row ran out of output room while thinking (see CAPPED_TURN). */
+  private readonly cappedRuns = new Map<Lane, number>();
+
+  /** noteTurn counts a turn of `lane` toward its run of capped turns, or resets the run; returns the run's length. */
+  noteTurn(lane: Lane, capped: boolean): number {
+    const run = capped ? (this.cappedRuns.get(lane) ?? 0) + 1 : 0;
+    this.cappedRuns.set(lane, run);
+    return run;
   }
 
   /** Record that `lane` yielded with the wake as it stands now. */
@@ -493,20 +515,18 @@ export class Wake {
    * turnTokens is turn `index`'s weight in `lane`'s prompt: its provider count in the
    * lane that wrote it (untagged turns are the router's own) while it is replayed
    * whole, otherwise estimated from its text, since Dwar shows another lane's turn as
-   * a shorter text rendering. A turn that thought weighs at most its estimate as shown:
-   * providers bill the whole thinking but hand back (and replay) only its summary, so
-   * on 2026-10-15 a resume-specialist turn billed 29,677 output tokens for 23k
-   * characters of thinking, and counting the bill failed its lane at a prompt that fit.
+   * a shorter text rendering. A turn that thought replays at about what it billed, not
+   * what its visible summary suggests: on 2026-10-18 a schedule-specialist turn showed
+   * 20k characters of thinking, billed 25,792 output tokens, and grew the next prompt by
+   * 27k; counting the summary instead (from 2026-10-16 to 2026-10-20) let 17 reasoning
+   * prompts pass 100k tokens, where Haiku's price rises 5x.
    */
   private turnTokens(index: number, lane: Lane): number {
     const turn = this.turns[index]!;
     const own = turn.message.lane === undefined || turn.message.lane === lane;
-    if (!own || turn.outputTokens === undefined || this.unthought(index, lane)) {
-      return messageTokens(this.shown(index, lane));
-    }
-    return hasThinking(turn.message)
-      ? Math.min(turn.outputTokens, messageTokens(this.shown(index, lane)))
-      : turn.outputTokens;
+    return own && turn.outputTokens !== undefined && !this.unthought(index, lane)
+      ? turn.outputTokens
+      : messageTokens(this.shown(index, lane));
   }
 
   /**

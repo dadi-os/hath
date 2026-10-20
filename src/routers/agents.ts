@@ -59,24 +59,35 @@ async function agentWakeLogs(app: FastifyInstance, id: string, wakes: number) {
   if (newest.length >= wakes) {
     return stamped;
   }
-  const before = stamped.at(-1)?.createdAt;
-  const unstampedBefore = (cutoff: Date | undefined, limit: number) =>
-    app.db
-      .select()
-      .from(agentLogs)
-      .where(
-        and(
-          eq(agentLogs.agentId, id),
-          sql`${agentLogs.wakeId} is null`,
-          ...(cutoff !== undefined ? [sql`${agentLogs.createdAt} < ${cutoff.toISOString()}::timestamptz`] : []),
-        ),
-      )
-      .orderBy(desc(agentLogs.createdAt))
-      .limit(limit);
-  const unstamped = await unstampedBefore(before, UNSTAMPED_ROWS);
+  // Boundaries compare in SQL against a row's own created_at, by id: a JS Date keeps only
+  // milliseconds, and rows written within the same millisecond would fall between.
+  const seen = new Set(stamped.map((row) => row.id));
+  const unstampedUpTo = async (boundaryId: string | undefined, limit: number) =>
+    (
+      await app.db
+        .select()
+        .from(agentLogs)
+        .where(
+          and(
+            eq(agentLogs.agentId, id),
+            sql`${agentLogs.wakeId} is null`,
+            ...(boundaryId !== undefined
+              ? [sql`${agentLogs.createdAt} <= (select created_at from agent_logs where id = ${boundaryId}::uuid)`]
+              : []),
+          ),
+        )
+        .orderBy(desc(agentLogs.createdAt), desc(agentLogs.id))
+        .limit(limit + seen.size)
+    )
+      .filter((row) => !seen.has(row.id))
+      .slice(0, limit);
+  const unstamped = await unstampedUpTo(stamped.at(-1)?.id, UNSTAMPED_ROWS);
+  for (const row of unstamped) {
+    seen.add(row.id);
+  }
   const oldest = unstamped.at(-1);
   if (oldest !== undefined && !(oldest.event === "message" && oldest.payload.direction === "receive")) {
-    const earlier = await unstampedBefore(oldest.createdAt, OPENING_LOOKBACK_ROWS);
+    const earlier = await unstampedUpTo(oldest.id, OPENING_LOOKBACK_ROWS);
     const opening = earlier.findIndex((row) => row.event === "message" && row.payload.direction === "receive");
     if (opening !== -1) {
       unstamped.push(...earlier.slice(0, opening + 1));

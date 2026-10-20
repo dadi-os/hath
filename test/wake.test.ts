@@ -13,7 +13,7 @@ import { TranscriptStore } from "../src/runtime/transcript.js";
 import { runReasoningLoop, UNSENT_REPORT_TURN } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
-import { CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
+import { CAPPED_TURN, CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
 import { roomyWakeLimits } from "./helpers.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -224,6 +224,25 @@ test("an empty turn or a provider error with no tool call fails the lane instead
       }),
     );
   }
+});
+
+test("a turn that runs out of room while thinking is told to write its plan down and act, and three in a row stop the lane", async () => {
+  const capped = { ...turn("anthropic", [{ type: "thinking", thinking: "laying out the week", signature: "sig" }]), stop_reason: "max_tokens" as const };
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return n === 1 ? capped : turn("anthropic", [call("yield", "y")]);
+    }, requests),
+    steer: new SteerQueue(),
+  });
+  assert.ok(JSON.stringify(requests[1]!.messages).includes(CAPPED_TURN));
+
+  await assert.rejects(
+    runReasoningLoop({ ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => capped, []), steer: new SteerQueue() }),
+    /ran out of output room while thinking 3 turns in a row/,
+  );
 });
 
 test("an empty turn is asked again once, and the retry's answer is the step", async () => {
@@ -562,13 +581,11 @@ test("past its ceiling a lane drops older thinking before any step, keeping the 
   assert.equal(thoughtTurns(next), 2);
 });
 
-test("a turn that thought weighs what its replay shows, not the thinking its provider billed", () => {
+test("a turn that thought weighs what its provider billed, not its shorter visible thinking", () => {
   const wake = new Wake(ceilingLimits);
-  wake.begin("sys", frozen("[From: Ankur]\nrebuild the resume"), 1);
+  wake.begin("sys", frozen("[From: Ankur]\nplan the week"), 1);
   pushThoughtStep(wake, "s1", 460, 2_000);
-  assert.doesNotThrow(() => wake.fit("reasoning", []));
-  assert.deepEqual(callIds(wake.view("reasoning")), ["s1"]);
-  assert.equal(thoughtTurns(wake.view("reasoning")), 1);
+  assert.throws(() => wake.fit("reasoning", []), /over the 1000-token ceiling/, "billed thinking past the ceiling never goes out under it");
 });
 
 test("a lane's measured prompt, not its estimate, decides when it trims", () => {
