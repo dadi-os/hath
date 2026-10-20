@@ -41,7 +41,7 @@ import { directoryBlock, ownDescriptionLine } from "./directory.js";
 import { openJobsNote } from "./jobs.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
 import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
-import type { ActionEntry, TranscriptEntry, TranscriptStore } from "./transcript.js";
+import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "./wake.js";
 import { embeddedAgentTools, embeddedSchedulingTools } from "../tools/registry.js";
 import { asDwarTool } from "../tools/types.js";
@@ -213,7 +213,7 @@ export async function assembleContext(opts: {
 }): Promise<AssembledContext> {
   const system = await composeSystem(opts.db, opts.serviceRoot, opts.agentId);
   const thread = opts.transcript.transcriptFor(opts.agentId);
-  const messages = historyFor(thread, opts.transcript.actionsFor(opts.agentId), opts.agentId);
+  const messages = historyFor(thread, opts.agentId);
   const sizes = messages.map((message) => message.content.length);
   const laneTools = {
     conversation: await toolsForLane(opts.db, opts.agentId, "conversation"),
@@ -326,32 +326,13 @@ function labelEntry(
 type TextMessage = DwarMessage & { content: string };
 
 /**
- * historyFor is an agent's history as it reads it, oldest first: each message in
- * `thread` with its label (see transcriptText), and among them each step of `actions`
- * as a `[Did]` entry of its own, placed by when the step's calls returned.
+ * historyFor is an agent's history as it reads it, oldest first: each message in `thread`
+ * with its label (see transcriptText). What the agent did and read lives in its tool log,
+ * which get_logs searches; the history holds what it said and was told, and the agent
+ * treats its own messages as true.
  */
-function historyFor(thread: TranscriptEntry[], actions: ActionEntry[], agentId: string): TextMessage[] {
-  const history: TextMessage[] = [];
-  let next = 0;
-  for (const row of thread) {
-    while (next < actions.length && actions[next]!.createdAt <= row.createdAt) {
-      history.push(didEntry(actions[next]!));
-      next += 1;
-    }
-    history.push({ role: labelEntry(row, agentId).role, content: transcriptText(row, agentId) });
-  }
-  for (; next < actions.length; next += 1) {
-    history.push(didEntry(actions[next]!));
-  }
-  return history;
-}
-
-/**
- * didEntry is one acting step as its agent reads it: hath's record of what its
- * reasoning lane did, labelled `[Did]` and stamped like a message.
- */
-function didEntry(action: ActionEntry): TextMessage {
-  return { role: "assistant", content: `[Did · ${formatISO(action.createdAt)}]\n${action.text}` };
+function historyFor(thread: TranscriptEntry[], agentId: string): TextMessage[] {
+  return thread.map((row) => ({ role: labelEntry(row, agentId).role, content: transcriptText(row, agentId) }));
 }
 
 /** transcriptText is a transcript row as this agent reads it: its label, then its body. */

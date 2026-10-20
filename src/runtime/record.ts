@@ -1,12 +1,9 @@
 /**
- * Action records: hath's own account of what an agent's reasoning lane did, built from
- * its tool calls and their results. A wake keeps its steps only while it lasts, and a
- * lane's view trims its oldest steps at the prompt ceiling, so without a record the
- * agent later sees only its own claims about what it did and, with nothing behind them,
- * retracts true reports, or reads again what it already read. Each step that made a
- * recorded call joins the agent's transcript as a `[Did]` entry (see context.ts): its
- * actions with their outcomes, its reads with their size and the id read_result reopens
- * them by. A `[trimmed]` note lists the steps it stands in for (see wake.ts).
+ * Action records: hath's own account of what a reasoning lane did inside one wake, built
+ * from its tool calls and their results. A lane's view trims its oldest steps at the
+ * prompt ceiling, and the `[trimmed]` note that stands in for them lists the actions those
+ * steps took (see wake.ts), so a trimmed lane never redoes a click or a send it can no
+ * longer see. Across wakes, the agent's tool log (get_logs) holds what it did.
  */
 
 import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock } from "../types/domain.js";

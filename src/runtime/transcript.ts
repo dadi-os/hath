@@ -1,6 +1,5 @@
 /**
- * In-process cache of durable messages and of the steps each agent's reasoning lane
- * took that acted on the world. Hydrated from DB on boot; dies with the process.
+ * In-process cache of durable messages. Hydrated from DB on boot; dies with the process.
  * Rows key by sender and recipient, where null is Ankur. Only agents read a
  * transcript: the router is ephemeral and has none.
  */
@@ -24,24 +23,12 @@ export type TranscriptEntry = {
   createdAt: Date;
 };
 
-/**
- * One reasoning step that called an action tool, as its agent's transcript shows it
- * (see record.ts stepActions). Built from the step's tool calls, not from a message.
- */
-export type ActionEntry = {
-  /** When the step's last call returned. */
-  createdAt: Date;
-  /** The step's text and each action call with its outcome. */
-  text: string;
-};
-
 /** In-memory inbox and outbox of messages per agent (null is the user), ordered by a monotonic seq. */
 export class TranscriptStore {
   private counter = 0;
   private hydrated = 0;
   private readonly inbox = new Map<string | null, TranscriptEntry[]>();
   private readonly outbox = new Map<string | null, TranscriptEntry[]>();
-  private readonly actions = new Map<string, ActionEntry[]>();
 
   /**
    * Ingest a durable (or test) row into inbox/outbox. Advances the local seq
@@ -79,18 +66,6 @@ export class TranscriptStore {
     };
     this.ingest(row);
     return row;
-  }
-
-  /** Add one of `agentId`'s acting steps; entries arrive oldest first. */
-  recordAction(agentId: string, entry: ActionEntry): void {
-    const steps = this.actions.get(agentId) ?? [];
-    steps.push(entry);
-    this.actions.set(agentId, steps);
-  }
-
-  /** Every acting step of `agentId`'s reasoning lane, oldest first. */
-  actionsFor(agentId: string): ActionEntry[] {
-    return this.actions.get(agentId) ?? [];
   }
 
   /** Mark every message ingested so far as loaded at boot (see hydratedThrough). */

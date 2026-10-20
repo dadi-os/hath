@@ -27,9 +27,8 @@
  * A wake lasts while any lane run for the agent is queued or running, so a
  * steer from conversation reaches a reasoning run that still sees the steer's
  * call. When the last run releases, the record is dropped and the next wake
- * starts from the transcript alone — prior steps cannot few-shot it. The steps that
- * acted on the world are in that transcript as `[Did]` entries (see record.ts), so the
- * next wake sees what ran, not only what the agent said.
+ * starts from the transcript alone — prior steps cannot few-shot it. What earlier wakes
+ * did is in the agent's tool log, which get_logs searches.
  */
 
 import { randomUUID } from "node:crypto";

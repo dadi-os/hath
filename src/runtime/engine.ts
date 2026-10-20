@@ -417,7 +417,6 @@ export function createRuntime(opts: {
       executeTool: helpers.exec,
       logResponse: helpers.logResponse,
       logToolResult: helpers.logToolResult,
-      recordActions: (actions: string) => transcript.recordAction(agentId, { createdAt: new Date(), text: actions }),
     };
   }
 
@@ -466,9 +465,6 @@ export function createRuntime(opts: {
         },
         logResponse: helpers.logResponse,
         logToolResult: helpers.logToolResult,
-        recordActions: () => {
-          throw new Error("the router keeps no transcript to record actions in");
-        },
       };
       for (;;) {
         const assembled = await deps.assemble();

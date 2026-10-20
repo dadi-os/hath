@@ -11,7 +11,6 @@ import type {
 } from "../types/domain.js";
 import { YIELD } from "../types/domain.js";
 import type { AssembledContext } from "./context.js";
-import { stepActions } from "./record.js";
 import type { ToolExecResult } from "./tools.js";
 import type { TranscriptStore } from "./transcript.js";
 import { CAPPED_TURN, CAPPED_TURNS_MAX, CONTINUE_TURN, type Wake } from "./wake.js";
@@ -34,8 +33,6 @@ export type StepDeps = {
   logResponse: (response: DwarChatResponse) => Promise<void>;
   /** Writes the `tool_result` log row with the tool's name. */
   logToolResult: (call: DwarToolUseBlock, result: ToolExecResult) => Promise<void>;
-  /** Adds a reasoning step that acted on the world to the agent's transcript (see record.ts). */
-  recordActions: (actions: string) => void;
 };
 
 /**
@@ -123,8 +120,7 @@ export async function callLane(deps: StepDeps, request: DwarChatRequest): Promis
 /**
  * runStep records one model turn and its tool results on the wake, with what the
  * call measured (see Wake.measure) and what the turn cost to write; a reasoning
- * turn that called an action tool also joins the agent's transcript as a `[Did]`
- * entry, so the steps outlive the wake. A turn with
+ * A turn with
  * no tool call is kept and followed by a neutral continue turn, so the lane
  * keeps going; only yield (or a stop) ends it. An empty turn (see callLane) fails a
  * reasoning lane, but ends a conversation run as a yield would: conversation with
@@ -204,12 +200,6 @@ export async function runStep(
     }
   }
   deps.wake.push({ message: assistant, outputTokens }, { message: { role: "user", content: results }, states });
-  if (deps.lane === "reasoning") {
-    const actions = stepActions(response.content, new Map(results.map((result) => [result.tool_use_id, result])));
-    if (actions !== null) {
-      deps.recordActions(actions);
-    }
-  }
   if (yielded) {
     deps.wake.markYield(deps.lane);
   }

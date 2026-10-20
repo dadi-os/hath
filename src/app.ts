@@ -9,7 +9,6 @@ import type { YaadClient } from "./yaad/client.js";
 import { HathError } from "./errors.js";
 import { registerRequestLogging } from "./logging.js";
 import { createRuntime, type Runtime } from "./runtime/engine.js";
-import { hydrateActions } from "./db/logs.js";
 import { hydrateTranscript } from "./db/messages.js";
 import { recoverInterruptedWakes } from "./runtime/recovery.js";
 import { registerV1 } from "./routers/index.js";
@@ -71,7 +70,6 @@ export async function buildApp(
     });
   if (!deps.runtime) {
     await hydrateTranscript(deps.db, runtime.transcript);
-    await hydrateActions(deps.db, runtime.transcript);
     await recoverInterruptedWakes({
       db: deps.db,
       transcript: runtime.transcript,

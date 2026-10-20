@@ -656,43 +656,6 @@ function pushAction(wake: Wake, id: string, name: string, text: string, result: 
   );
 }
 
-test("each reasoning step joins the transcript: actions with their outcome, reads with their size and read_result id; conversation steps do not", async () => {
-  const recorded: string[] = [];
-  let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
-      n += 1;
-      if (n === 1) {
-        return turn("anthropic", [call("browser_accessibility_tree", "r1")]);
-      }
-      if (n === 2) {
-        return turn("anthropic", [{ type: "text", text: "Send is enabled in Sandra's thread; clicking Send." }, call("browser_click", "c1")]);
-      }
-      if (n === 3) {
-        return turn("anthropic", [call("browser_type", "c2")]);
-      }
-      return turn("anthropic", [call("yield", "y")]);
-    }, []),
-    recordActions: (actions) => recorded.push(actions),
-    steer: new SteerQueue(),
-  });
-  assert.equal(recorded.length, 3, "one entry per step that made a recorded call");
-  assert.match(recorded[0]!, /^\(no note\)\n {2}browser_accessibility_tree \{\} → read \d+ chars \(read_result r1\)$/);
-  assert.match(recorded[1]!, /^Send is enabled in Sandra's thread; clicking Send\.\n {2}browser_click \{\} → full result of c1.*\(\d+ chars, read_result c1\)$/);
-  assert.match(recorded[2]!, /^\(no note\)\n {2}browser_type/);
-
-  const conversed: string[] = [];
-  await runConversationLoop({
-    ...stepDeps("conversation", new Wake(roomyWakeLimits), (request) =>
-      request.messages.some((m) => m.role === "assistant") ? turn("anthropic", [call("yield", "y2")]) : turn("anthropic", [call("forward_attachment", "f1")]),
-    []),
-    recordActions: (actions) => conversed.push(actions),
-    db: {} as Db,
-    transcript: new TranscriptStore(),
-  });
-  assert.deepEqual(conversed, [], "a conversation send is a message, not a [Did] entry");
-});
-
 test("a trimmed note lists the actions of the steps it dropped, so the lane does not redo them", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nsend the invites"), 1);

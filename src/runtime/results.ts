@@ -1,7 +1,7 @@
 /**
  * read_result: a lane reopens one of its own earlier tool results from hath's log by the
  * call's tool_use_id, a page at a time or by a pattern, instead of running the tool again.
- * Receipts (wake.ts) and `[Did]` entries (record.ts) name the id. Results are stored whole
+ * Receipts (wake.ts) and get_logs name the id. Results are stored whole
  * in agent_logs, so nothing is lost when a result leaves the prompt; a tool that shows less
  * than it read (web_fetch shows answers, not pages) stores the whole under `full`, which
  * this reads instead.
@@ -37,7 +37,7 @@ const readResultInput = z
 
 export const readResultTool: DwarTool = {
   name: READ_RESULT,
-  description: `Reopen one of your own earlier tool results by its id (a call's tool_use_id, which a [cleared] or [too large] receipt and a [Did] entry name) without running the tool again: the page went on loading, the file may have changed, and the action may not be safe to repeat. Returns ${DEFAULT_PAGE_CHARS} characters from offset (or limit, up to ${MAX_PAGE_CHARS}) with next_offset while more remains, or with pattern (a case-insensitive regex) the matching lines with their line numbers.`,
+  description: `Reopen one of your own earlier tool results by its id (a call's tool_use_id, which a [cleared] or [too large] receipt names, and get_logs shows for any earlier call) without running the tool again: the page went on loading, the file may have changed, and the action may not be safe to repeat. Returns ${DEFAULT_PAGE_CHARS} characters from offset (or limit, up to ${MAX_PAGE_CHARS}) with next_offset while more remains, or with pattern (a case-insensitive regex) the matching lines with their line numbers.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
