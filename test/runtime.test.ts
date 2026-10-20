@@ -1885,15 +1885,19 @@ test("a wakes read returns whole stamped wakes, then older unstamped rows back t
   const wakeId = randomUUID();
   await log("message", { direction: "receive", content: "new opener" }, wakeId);
   await log("tool_result", { name: "terminal_read_file", content: "new step" }, wakeId);
-  const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas() });
-
-  const res = await app.inject({ method: "GET", url: `/agents/${agentId}/logs?wakes=10` });
-  assert.equal(res.statusCode, 200, res.body);
-  const logs = (res.json() as { logs: Array<{ wake_id: string | null; payload: { content: string } }> }).logs;
-  assert.deepEqual(logs.slice(0, 2).map((row) => [row.wake_id, row.payload.content]), [[wakeId, "new step"], [wakeId, "new opener"]]);
-  assert.equal(logs.at(-1)?.payload.content, "old opener", "the oldest unstamped wake starts at its opening message");
-  assert.equal(logs.length, 2 + 206);
-  await app.close();
+  // A runtime of the test's own, so boot recovery does not wake the agent over the unanswered openers.
+  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), config, log: silentLog });
+  const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), runtime });
+  try {
+    const res = await app.inject({ method: "GET", url: `/agents/${agentId}/logs?wakes=10` });
+    assert.equal(res.statusCode, 200, res.body);
+    const logs = (res.json() as { logs: Array<{ wake_id: string | null; payload: { content: string } }> }).logs;
+    assert.deepEqual(logs.slice(0, 2).map((row) => [row.wake_id, row.payload.content]), [[wakeId, "new step"], [wakeId, "new opener"]]);
+    assert.equal(logs.at(-1)?.payload.content, "old opener", "the oldest unstamped wake starts at its opening message");
+    assert.equal(logs.length, 2 + 206);
+  } finally {
+    await app.close();
+  }
 });
 
 test("get_logs defaults to caller and allows direct children only", async () => {

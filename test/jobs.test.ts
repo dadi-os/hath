@@ -140,6 +140,24 @@ test("an agent's line to its worker opens a job only one way, and a scheduled tr
   await runtime.waitUntilIdle();
 });
 
+test("a status sent to an agent that gave no job, while someone else's job is open, is refused and names the real requester", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const parentId = await insertAgent(handle.db, { id: "misaddr-parent", systemPrompt: "parent" });
+  const courseId = await insertAgent(handle.db, { id: "misaddr-course", systemPrompt: "course", parentAgentId: parentId });
+  const runtime = idleRuntime();
+
+  const before = await dispatch(runtime, courseId, parentId, "FYI with a status", "done");
+  assert.equal(before.isError, false, "with no open job anywhere, a status is harmless");
+
+  await deliverUserMessage(deps(runtime), courseId, "what did I get on the last exam?");
+  const refused = await dispatch(runtime, courseId, parentId, "Exam answers for Ankur", "done");
+  assert.equal(refused.isError, true);
+  assert.match(refused.content, /misaddr-parent gave you no open job.*Your open job is from Ankur \(to_agent_id null\)/);
+  assert.equal((await dispatch(runtime, courseId, parentId, "FYI: Ankur asked about his exam")).isError, false, "without a status it still goes");
+  assert.equal((await dispatch(runtime, courseId, null, "Exam 2: not recorded yet", "done")).isError, false);
+  await runtime.waitUntilIdle();
+});
+
 test("the open-jobs note tells each lane whom it owes a status, what it has spent, and who directs the agents it brought in", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "note-manager", systemPrompt: "manager" });

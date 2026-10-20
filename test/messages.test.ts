@@ -433,6 +433,7 @@ test("backfill migration smoke: agent_logs message events land in messages after
       "to_agent_id" text,
       "content" text NOT NULL,
       "status" text,
+      "kind" text DEFAULT 'message' NOT NULL,
       "created_at" timestamp with time zone DEFAULT now() NOT NULL,
       CONSTRAINT "messages_party_check" CHECK ("from_agent_id" IS NOT NULL OR "to_agent_id" IS NOT NULL),
       CONSTRAINT "messages_status_check" CHECK ("status" IS NULL OR "status" IN ('running', 'needs_input', 'blocked', 'done'))

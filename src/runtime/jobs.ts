@@ -161,7 +161,7 @@ export async function settleWakeJobs(
  * reportRefusal is why `agent`'s message to `to` carrying `status` must not go out, or
  * null when it may. While `to`'s job is open, every message to `to` carries a status
  * (gate 1), the one progress update is spent once (gate 2), and a question waits for
- * `to`'s reply before another goes (gate 3). Messages on no open job pass.
+ * `to`'s reply before another goes (gate 3). A message on no open job passes, unless it carries a status while someone else's job is open (see misaddressedReport).
  */
 export async function reportRefusal(
   db: Db,
@@ -170,10 +170,10 @@ export async function reportRefusal(
   status: MessageStatus | undefined,
 ): Promise<string | null> {
   const job = await openJob(db, to, agent);
-  if (job === undefined) {
-    return null;
-  }
   const who = to ?? "Ankur";
+  if (job === undefined) {
+    return status === undefined ? null : await misaddressedReport(db, agent, who);
+  }
   if (status === undefined) {
     return `Not sent: ${who} gave you a job that is still open, so every message to ${who} carries status: running (your one progress update), needs_input (a question only ${who} can answer), blocked (you cannot finish), or done (the result). Send it again with its status.`;
   }
@@ -184,6 +184,26 @@ export async function reportRefusal(
     return `Not sent: your question to ${who} is still open and ${who} has not replied since. Do not ask again; wait for the reply.`;
   }
   return null;
+}
+
+/**
+ * misaddressedReport is why a message carrying a job status must not go to `who`, which
+ * gave `agent` no open job, while someone else did: a status is a report on a job, so it
+ * belongs to that job's requester. On 2026-10-19 ibio-150-specialist answered Ankur's
+ * exam-and-drop question with status done to its parent, education-specialist, and
+ * Ankur never got the answer. Null when the agent owes no one a report.
+ */
+async function misaddressedReport(db: Db, agent: string, who: string): Promise<string | null> {
+  const owed = await db
+    .select({ requesterId: jobs.requesterId })
+    .from(jobs)
+    .where(and(eq(jobs.agentId, agent), inArray(jobs.state, [...OPEN_STATES])))
+    .orderBy(asc(jobs.openedSeq));
+  if (owed.length === 0) {
+    return null;
+  }
+  const requesters = owed.map((job) => (job.requesterId === null ? "Ankur (to_agent_id null)" : job.requesterId)).join(", ");
+  return `Not sent: ${who} gave you no open job, so a status does not belong on this message. Your open job is from ${requesters}: send its result there. If ${who} should hear about it too, send that without a status.`;
 }
 
 /**
