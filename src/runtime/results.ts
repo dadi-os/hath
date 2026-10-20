@@ -2,7 +2,9 @@
  * read_result: a lane reopens one of its own earlier tool results from hath's log by the
  * call's tool_use_id, a page at a time or by a pattern, instead of running the tool again.
  * Receipts (wake.ts) and `[Did]` entries (record.ts) name the id. Results are stored whole
- * in agent_logs, so nothing is lost when a result leaves the prompt.
+ * in agent_logs, so nothing is lost when a result leaves the prompt; a tool that shows less
+ * than it read (web_fetch shows answers, not pages) stores the whole under `full`, which
+ * this reads instead.
  */
 
 import { and, eq, sql } from "drizzle-orm";
@@ -69,7 +71,8 @@ export async function runReadResult(ctx: ToolContext, raw: unknown): Promise<Too
   if (row === undefined) {
     return fail(`not_found: no result of yours has id ${input.id}`);
   }
-  const content = typeof row.payload.content === "string" ? row.payload.content : JSON.stringify(row.payload.content);
+  const stored = row.payload.full ?? row.payload.content;
+  const content = typeof stored === "string" ? stored : JSON.stringify(stored);
   const tool = typeof row.payload.name === "string" ? row.payload.name : null;
   if (input.pattern !== undefined) {
     let regex: RegExp;

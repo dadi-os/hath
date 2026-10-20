@@ -79,6 +79,9 @@ const routerForwardAttachmentTool: DwarTool = {
   },
 };
 
+/** Embedded tools that do an agent's work, which the router hands off rather than does. */
+const AGENT_ONLY_TOOLS = new Set(["web_search", "web_fetch"]);
+
 /**
  * Registry-style tools the router holds without grants: spawning roots and the
  * embedded agent-management set.
@@ -86,7 +89,7 @@ const routerForwardAttachmentTool: DwarTool = {
 function routerRegistryTools(): ToolDefinition[] {
   return [
     spawnAgent as unknown as ToolDefinition,
-    ...embeddedAgentTools(),
+    ...embeddedAgentTools().filter((tool) => !AGENT_ONLY_TOOLS.has(tool.name)),
   ];
 }
 

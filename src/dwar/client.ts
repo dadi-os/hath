@@ -70,7 +70,46 @@ export type DwarClient = {
     request: DwarDescribeImageRequest,
     caller: string,
   ) => Promise<DwarDescribeImageResponse>;
+  webSearch: (request: DwarWebSearchRequest, caller: string) => Promise<DwarWebSearchResponse>;
+  webFetch: (request: DwarWebFetchRequest, caller: string) => Promise<DwarWebFetchResponse>;
 };
+
+export type DwarWebSearchRequest = {
+  query: string;
+  max_results?: number | undefined;
+  allowed_domains?: string[] | undefined;
+  blocked_domains?: string[] | undefined;
+};
+
+const webSearchResponseSchema = z.object({
+  results: z.array(
+    z.object({
+      title: z.string(),
+      url: z.string(),
+      page_age: z.string().nullable().optional(),
+      about: z.string().nullable().optional(),
+    }),
+  ),
+  searches: z.number(),
+});
+export type DwarWebSearchResponse = z.infer<typeof webSearchResponseSchema>;
+
+export type DwarWebFetchRequest = { urls: string[]; question?: string | undefined };
+
+const webFetchResponseSchema = z.object({
+  pages: z.array(
+    z.object({
+      url: z.string(),
+      final_url: z.string(),
+      status: z.number().nullable(),
+      title: z.string(),
+      text: z.string(),
+      error: z.string().nullable(),
+      answer: z.string().nullable().optional(),
+    }),
+  ),
+});
+export type DwarWebFetchResponse = z.infer<typeof webFetchResponseSchema>;
 
 /** Build a retrying axios client pointed at `DWAR_BASE_URL`. */
 export function createDwarClient(config: Config): DwarClient {
@@ -115,7 +154,20 @@ export function createDwarClient(config: Config): DwarClient {
     return parsed.data;
   }
 
+  async function postWeb<T>(path: string, body: unknown, caller: string, schema: z.ZodType<T>): Promise<T> {
+    const data = await withRetry(config, () =>
+      http.post(path, body, { headers: { "x-dadi-caller": caller } }).then((res) => res.data),
+    );
+    const parsed = schema.safeParse(data);
+    if (!parsed.success) {
+      throw new HathError(502, "dwar", `Dwar ${path} response is malformed`);
+    }
+    return parsed.data;
+  }
+
   return {
+    webSearch: (request, caller) => postWeb("/web/search", request, caller, webSearchResponseSchema),
+    webFetch: (request, caller) => postWeb("/web/fetch", request, caller, webFetchResponseSchema),
     reason: (request, caller) => postChat("/chat/reasoning", request, caller),
     converse: (request, caller) => postChat("/chat/conversation", request, caller),
     complete: (request, caller) => postChat("/chat/complete", request, caller),

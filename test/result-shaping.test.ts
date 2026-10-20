@@ -60,3 +60,38 @@ test("a record shows a long read by its size and id, a short one whole, and leav
   );
   assert.equal(stepActions([{ type: "tool_use", id: "r1", name: "terminal_read_file", input: {} }], new Map(), true), null, "a trimmed note lists actions only");
 });
+
+test("web_search shows one line per result and web_fetch shows answers while storing every page whole", async () => {
+  const { webFetch, webSearch } = await import("../src/tools/web/web.js");
+  const dwar = {
+    webSearch: async () => ({
+      searches: 1,
+      results: [
+        { title: "Registrar calendar", url: "https://reg.msu.edu/cal", page_age: "48 days ago", about: "Lists Fall 2026 drop dates." },
+        { title: "Forum thread", url: "https://forum.example/t/1", page_age: null, about: null },
+      ],
+    }),
+    webFetch: async () => ({
+      pages: [
+        { url: "https://reg.msu.edu/cal", final_url: "https://reg.msu.edu/cal", status: 200, title: "Calendar", text: "Fall 2026\nLast day to drop with no grade: Sept 9.\n" + "x".repeat(5_000), error: null, answer: "\"Last day to drop with no grade: Sept 9.\"" },
+        { url: "https://example.com/a.pdf", final_url: "https://example.com/a.pdf", status: 200, title: "", text: "", error: "not a text page (application/pdf)", answer: null },
+      ],
+    }),
+  };
+  const ctx = { callerId: "cse-431-specialist", dwar } as never;
+
+  const searched = await webSearch.handler(ctx, { query: "msu drop deadline fall 2026" });
+  assert.equal(searched.isError, false);
+  assert.equal(
+    searched.content,
+    '2 results for "msu drop deadline fall 2026"\n1. Registrar calendar — https://reg.msu.edu/cal (48 days ago)\n   Lists Fall 2026 drop dates.\n2. Forum thread — https://forum.example/t/1',
+  );
+
+  const fetched = await webFetch.handler(ctx, { urls: ["https://reg.msu.edu/cal", "https://example.com/a.pdf"], question: "When is the last no-grade drop day?" });
+  assert.equal(fetched.isError, false);
+  assert.match(fetched.content, /^1 of 2 pages read, each answering: When is the last no-grade drop day\?/);
+  assert.match(fetched.content, /1\. Calendar — https:\/\/reg\.msu\.edu\/cal · \d+ chars\n {3}"Last day to drop with no grade: Sept 9\."/);
+  assert.match(fetched.content, /2\. https:\/\/example\.com\/a\.pdf\n {3}failed: not a text page/);
+  assert.ok(fetched.content.length < 600, "the prompt sees answers, never pages");
+  assert.match(String(fetched.audit.full), /=== 1\. https:\/\/reg\.msu\.edu\/cal — Calendar\nFall 2026\nLast day to drop/);
+});

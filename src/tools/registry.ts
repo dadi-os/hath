@@ -24,6 +24,7 @@ import { scheduleMessage } from "./hath/schedule-message.js";
 import { listSchedules } from "./hath/list-schedules.js";
 import { cancelSchedule } from "./hath/cancel-schedule.js";
 import { getLogs as hathGetLogs } from "./hath/get-logs.js";
+import { webFetch, webSearch } from "./web/web.js";
 import { listDevices } from "./ghar/list-devices.js";
 import { getState } from "./ghar/get-state.js";
 import { controlDevice } from "./ghar/control-device.js";
@@ -157,6 +158,8 @@ const embeddedDefinitions = [
   revokeTool,
   listTools,
   hathGetLogs,
+  webSearch,
+  webFetch,
 ] as unknown as ToolDefinition[];
 
 /**

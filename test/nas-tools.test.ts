@@ -334,6 +334,8 @@ test("worker granted execute_shell and read_file sees those plus send_message an
       "revoke_tool",
       "list_tools",
       "get_logs",
+      "web_search",
+      "web_fetch",
       "schedule_message",
       "list_schedules",
       "cancel_schedule",
