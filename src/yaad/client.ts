@@ -157,7 +157,9 @@ export function createYaadClient(config: Config): YaadClient {
   }
 
   async function del<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-    const data = await withRetry(config, () => http.delete(path).then((res) => res.data));
+    const data = await withRetry(config, () =>
+      http.delete(path, { headers: { "content-type": false } }).then((res) => res.data),
+    );
     return parseResponse(schema, data);
   }
 
