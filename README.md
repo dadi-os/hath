@@ -142,7 +142,8 @@ Grantable vault tools. Metadata may reach the model; passwords, card numbers and
 
 | tool | Chaavi route | when to use |
 | --- | --- | --- |
-| `chaavi_list_items` | `GET /v1/items` | find a vault item id by name, site uri or `type`: logins show `hasPasskey`, cards only their brand, Secure Notes `secret` when they hold one; never a value |
+| `chaavi_list_items` | `GET /v1/items` | find a vault item id by name, site uri, `type` or `folder` (a folder name; it takes the folders nested under it): every item names its folder, logins show `hasPasskey`, cards only their brand, Secure Notes `secret` when they hold one; never a value |
+| `chaavi_list_folders` | `GET /v1/folders` | the vault's folder names, sorted; a slash nests a folder (`development/fliks-gg` is inside `development`) |
 | `chaavi_create_login` | `POST /v1/items` | save a login: generated password by default, or one the agent was handed or a site issued; never invent or `browser_type` a password |
 | `chaavi_fill_login` | `POST /v1/items/:id/login` | type a login into a Nas browser; never `browser_type` a password |
 | `chaavi_fill_passkey` | `POST /v1/items/:id/passkey` | load a passkey into the tab's Nas browser virtual authenticator, replacing its previous passkey, then reload the tab so the site asks again |

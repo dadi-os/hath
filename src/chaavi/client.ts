@@ -50,6 +50,14 @@ const itemSchema = z
   })
   .passthrough();
 
+const foldersResponseSchema = z
+  .object({
+    folders: z.array(z.object({ id: z.string().min(1), name: z.string() }).passthrough()),
+  })
+  .passthrough();
+
+export type ChaaviFolder = z.infer<typeof foldersResponseSchema>["folders"][number];
+
 const itemsResponseSchema = z
   .object({
     items: z.array(itemSchema),
@@ -110,6 +118,8 @@ export type ListItemsRequest = {
   q?: string;
   uri?: string;
   type?: ChaaviItemType;
+  /** A folder name; Chaavi takes the items in it and in every folder nested under it. */
+  folder?: string;
 };
 
 /** A new login; Chaavi generates the password when `password` is omitted. */
@@ -134,6 +144,7 @@ export type SaveSecretRequest = {
 /** Chaavi surface used by agent tools. Secrets stay off the model-visible path. */
 export type ChaaviClient = {
   listItems: (query?: ListItemsRequest) => Promise<{ items: ChaaviItem[] }>;
+  listFolders: () => Promise<{ folders: ChaaviFolder[] }>;
   getItem: (itemId: string) => Promise<ChaaviItem>;
   createLogin: (input: CreateLoginRequest) => Promise<ChaaviItem>;
   reveal: (itemId: string, request: RevealRequest) => Promise<ChaaviSecret>;
@@ -178,6 +189,7 @@ export function createChaaviClient(config: Config): ChaaviClient {
 
   return {
     listItems: (query = {}) => get("/v1/items", itemsResponseSchema, omitUndefined(query)),
+    listFolders: () => get("/v1/folders", foldersResponseSchema),
     getItem: (itemId) => get(item(itemId), itemSchema),
     createLogin: (input) =>
       post("/v1/items", itemSchema, {

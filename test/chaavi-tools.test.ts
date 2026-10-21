@@ -37,6 +37,7 @@ after(async () => {
 
 const CHAAVI_TOOLS = [
   "chaavi_list_items",
+  "chaavi_list_folders",
   "chaavi_create_login",
   "chaavi_fill_login",
   "chaavi_fill_passkey",
@@ -126,7 +127,7 @@ test("Chaavi tools are registered", async () => {
   for (const name of CHAAVI_TOOLS) {
     assert.equal(findTool(name)?.name, name);
   }
-  assert.equal(allTools().length, 60);
+  assert.equal(allTools().length, 61);
   await assert.doesNotReject(() => syncTools(handle.db));
 });
 
@@ -170,13 +171,53 @@ test("list_items shows how to use each item and never a value", async () => {
   assert.deepEqual(chaavi.listItemsCalls, [{ q: "Bank", uri: "https://bank.example", type: "login" }]);
   assert.deepEqual(JSON.parse(result.content), {
     items: [
-      { id: "item-login-1", name: "Bank", type: "login", username: "ada", uris: ["https://bank.example"], hasPasskey: true },
-      { id: "item-card-1", name: "Sapphire", type: "card", brand: "Visa" },
-      { id: "item-note-1", name: "Stripe API key", type: "note", secret: true },
-      { id: "item-note-2", name: "Wifi", type: "note", secret: false },
-      { id: "item-passport-1", name: "US passport", type: "passport" },
+      { id: "item-login-1", name: "Bank", type: "login", folder: null, username: "ada", uris: ["https://bank.example"], hasPasskey: true },
+      { id: "item-card-1", name: "Sapphire", type: "card", folder: null, brand: "Visa" },
+      { id: "item-note-1", name: "Stripe API key", type: "note", folder: null, secret: true },
+      { id: "item-note-2", name: "Wifi", type: "note", folder: null, secret: false },
+      { id: "item-passport-1", name: "US passport", type: "passport", folder: null },
     ],
   });
+});
+
+test("list_items passes a folder to Chaavi and names each item's folder; list_folders lists the names", async () => {
+  const folders = [
+    { id: "f-dev", name: "development" },
+    { id: "f-fliks", name: "development/fliks-gg" },
+    { id: "f-acct", name: "google/work" },
+  ];
+  const chaavi = mockChaavi({
+    listFolders: () => ({ folders: [folders[2]!, folders[1]!, folders[0]!] }),
+    listItems: () => ({
+      items: [
+        chaaviItem({ id: "item-1", name: "AWS", folderId: "f-fliks" }),
+        chaaviItem({ id: "item-2", name: "Vercel", folderId: "f-dev" }),
+      ],
+    }),
+  });
+  const listed = await runTool({ tool: "chaavi_list_items", chaavi, input: { folder: "development" } });
+  assert.equal(listed.isError, false);
+  assert.deepEqual(chaavi.listItemsCalls, [{ folder: "development" }]);
+  assert.deepEqual(
+    JSON.parse(listed.content).items.map((item: { name: string; folder: string }) => [item.name, item.folder]),
+    [
+      ["AWS", "development/fliks-gg"],
+      ["Vercel", "development"],
+    ],
+  );
+  const names = await runTool({ tool: "chaavi_list_folders", chaavi, input: {} });
+  assert.deepEqual(JSON.parse(names.content), { folders: ["development", "development/fliks-gg", "google/work"] });
+});
+
+test("list_items passes Chaavi's unknown-folder error to the agent", async () => {
+  const chaavi = mockChaavi({
+    listItems: () => {
+      throw new HathError(404, "chaavi", 'no folder named "Nope"');
+    },
+  });
+  const result = await runTool({ tool: "chaavi_list_items", chaavi, input: { folder: "Nope" } });
+  assert.equal(result.isError, true);
+  assert.match(result.content, /no folder named "Nope"/);
 });
 
 test("fill_login types username then password and never returns the password", async () => {

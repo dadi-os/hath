@@ -29,6 +29,7 @@ import { listDevices } from "./ghar/list-devices.js";
 import { getState } from "./ghar/get-state.js";
 import { controlDevice } from "./ghar/control-device.js";
 import { getDeviceEvents } from "./ghar/get-device-events.js";
+import { listFolders } from "./chaavi/list-folders.js";
 import { listItems } from "./chaavi/list-items.js";
 import { createLogin } from "./chaavi/create-login.js";
 import { fillLogin } from "./chaavi/fill-login.js";
@@ -89,6 +90,7 @@ const definitions = [
   controlDevice,
   getDeviceEvents,
   listItems,
+  listFolders,
   createLogin,
   fillLogin,
   fillPasskey,

@@ -10,6 +10,7 @@ import type { WakeLimits } from "../src/runtime/wake.js";
 import type {
   ChaaviCard,
   ChaaviClient,
+  ChaaviFolder,
   ChaaviItem,
   ChaaviLogin,
   ChaaviPasskey,
@@ -347,6 +348,7 @@ export function mockChaavi(
     listItems?: (
       query?: ListItemsRequest,
     ) => Promise<{ items: ChaaviItem[] }> | { items: ChaaviItem[] };
+    listFolders?: () => Promise<{ folders: ChaaviFolder[] }> | { folders: ChaaviFolder[] };
     getItem?: (itemId: string) => Promise<ChaaviItem> | ChaaviItem;
     createLogin?: (input: CreateLoginRequest) => Promise<ChaaviItem> | ChaaviItem;
     reveal?: (itemId: string, request: RevealRequest) => Promise<ChaaviSecret> | ChaaviSecret;
@@ -393,6 +395,12 @@ export function mockChaavi(
         return opts.listItems(query);
       }
       return { items: [] };
+    },
+    async listFolders() {
+      if (opts.listFolders) {
+        return opts.listFolders();
+      }
+      return { folders: [] };
     },
     async getItem(itemId) {
       getItemCalls.push(itemId);
