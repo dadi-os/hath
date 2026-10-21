@@ -128,6 +128,13 @@ Every reasoning lane holds the two memory tools without a grant, so each agent r
 | --- | --- | --- |
 | `yaad_get_node_history` | `GET /nodes/:id/history` | correction log for one node |
 | `yaad_search_history` | `POST /history/search` | semantic search over corrections |
+| `planner_list_range` | `POST /planner/query` | blocks on Ankur's planner in a time range |
+| `planner_replace_range` | `POST /planner/replace` | write the caller's whole plan for a day or week in one call; only the caller's own blocks in the range are replaced |
+| `planner_add_block` | `POST /planner/blocks` | add one block |
+| `planner_update_block` | `PATCH /planner/blocks/:id` | change one block's fields |
+| `planner_delete_block` | `DELETE /planner/blocks/:id` | delete one block |
+
+The planner tools write timed blocks (kind, icon, note) that the Timeline's Day and Week views draw. Blocks may not overlap unless `overlap_ok`; Yaad refuses an overlap and names the pair, and the tool returns it as an error. A block's `source` is the calling agent.
 
 ### Chaavi (vault)
 

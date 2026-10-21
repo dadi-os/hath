@@ -61,6 +61,11 @@ import { readTerminal } from "./terminal/read-terminal.js";
 import { sendKeys } from "./terminal/send-keys.js";
 import { spawnTerminal } from "./terminal/spawn-terminal.js";
 import { writeFile } from "./terminal/write-file.js";
+import { plannerAddBlock } from "./planner/add-block.js";
+import { plannerDeleteBlock } from "./planner/delete-block.js";
+import { plannerListRange } from "./planner/list-range.js";
+import { plannerReplaceRange } from "./planner/replace-range.js";
+import { plannerUpdateBlock } from "./planner/update-block.js";
 import { getNodeHistory } from "./yaad/get-node-history.js";
 import { searchHistory } from "./yaad/search-history.js";
 
@@ -74,6 +79,11 @@ const definitions = [
   spawnAgent,
   getNodeHistory,
   searchHistory,
+  plannerListRange,
+  plannerReplaceRange,
+  plannerAddBlock,
+  plannerUpdateBlock,
+  plannerDeleteBlock,
   listDevices,
   getState,
   controlDevice,

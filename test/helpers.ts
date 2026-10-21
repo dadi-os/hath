@@ -52,6 +52,8 @@ import type {
   IngestRequest,
   IngestResponse,
   RecallRequest,
+  PlannerBlock,
+  PlannerBlockFields,
   RecallResponse,
   YaadClient,
 } from "../src/yaad/client.js";
@@ -195,11 +197,14 @@ export function mockYaad(opts: {
   recallCalls: RecallRequest[];
   ingestCalls: IngestRequest[];
   searchHistoryCalls: Array<{ query: string; limit?: number }>;
+  plannerCalls: Array<{ op: string; id?: string; body?: unknown }>;
 } {
   const recallCalls: RecallRequest[] = [];
   const ingestCalls: IngestRequest[] = [];
   const searchHistoryCalls: Array<{ query: string; limit?: number }> = [];
+  const plannerCalls: Array<{ op: string; id?: string; body?: unknown }> = [];
   return {
+    plannerCalls,
     recallCalls,
     ingestCalls,
     searchHistoryCalls,
@@ -239,6 +244,38 @@ export function mockYaad(opts: {
       searchHistoryCalls.push(body);
       return { results: [] };
     },
+    async plannerQuery(body) {
+      plannerCalls.push({ op: "query", body });
+      return { blocks: [] };
+    },
+    async plannerReplace(body) {
+      plannerCalls.push({ op: "replace", body });
+      return { blocks: [] };
+    },
+    async plannerCreate(body) {
+      plannerCalls.push({ op: "create", body });
+      return plannerBlockStub(body);
+    },
+    async plannerUpdate(id, body) {
+      plannerCalls.push({ op: "update", id, body });
+      return plannerBlockStub({ start_at: "2026-10-21T07:00:00Z", end_at: "2026-10-21T08:00:00Z", title: "Study", kind: "study", icon: "pencil", ...body });
+    },
+    async plannerDelete(id) {
+      plannerCalls.push({ op: "delete", id });
+      return { id };
+    },
+  };
+}
+
+function plannerBlockStub(fields: PlannerBlockFields): PlannerBlock {
+  return {
+    id: "00000000-0000-4000-8000-000000000001",
+    note: null,
+    fixed: true,
+    overlap_ok: false,
+    done_at: null,
+    source: "manual",
+    ...fields,
   };
 }
 

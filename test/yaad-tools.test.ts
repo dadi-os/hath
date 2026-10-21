@@ -60,7 +60,7 @@ test("only the Yaad history tools stay grantable and syncTools does not auto-gra
   for (const removed of ["yaad_recall", "yaad_query", "yaad_get_node", "yaad_ingest"]) {
     assert.equal(findTool(removed), undefined);
   }
-  assert.equal(allTools().length, 55);
+  assert.equal(allTools().length, 60);
   await assert.doesNotReject(() => syncTools(handle.db));
   const grants = await handle.db.select().from(agentTools);
   assert.equal(grants.length, 0);

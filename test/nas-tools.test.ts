@@ -65,7 +65,7 @@ test("Nas terminal tools and destructive ops are registered", async () => {
   for (const name of [...NAS_TOOLS, ...NAS_DESTRUCTIVE]) {
     assert.equal(findTool(name)?.name, name);
   }
-  assert.equal(allTools().length, 55);
+  assert.equal(allTools().length, 60);
   await assert.doesNotReject(() => syncTools(handle.db));
 });
 
