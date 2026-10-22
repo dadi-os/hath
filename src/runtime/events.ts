@@ -19,6 +19,8 @@ export type RuntimeEvent =
       kind?: MessageKind;
       at: string;
     }
+  /** Ankur read `agent_id`'s thread through `read_seq`, on any device. */
+  | { type: "thread_read"; agent_id: string; read_seq: number; unread: number; at: string }
   | { type: "lane_started"; agent_id: string; lane: Lane; at: string }
   | { type: "lane_finished"; agent_id: string; lane: Lane; at: string }
   | {

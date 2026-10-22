@@ -146,6 +146,19 @@ export const messages = pgTable(
 );
 
 /**
+ * How far Ankur has read each agent's thread: messages to him at or below
+ * `read_seq` are read. One row per agent, moved only forward, so every device
+ * agrees on what is unread.
+ */
+export const threadReads = pgTable("thread_reads", {
+  agentId: text("agent_id")
+    .primaryKey()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  readSeq: bigint("read_seq", { mode: "number" }).notNull(),
+  readAt: timestamptz("read_at").notNull().defaultNow(),
+});
+
+/**
  * The work open on one line: a requester (null for Ankur) that messaged the agent
  * before the agent ever messaged it. The requester's first message opens a job and
  * its later ones join it, until the agent reports done or blocked, or hath closes it

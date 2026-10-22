@@ -2,13 +2,13 @@
 
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { listHumanMessages } from "../db/messages.js";
+import { listHumanMessages, markThreadRead } from "../db/messages.js";
 import { agentLogs, agents, agentTools, tools } from "../db/schema.js";
 import type { AgentRow } from "../db/schema.js";
 import { requireAgent } from "../runtime/tools.js";
 import { toAgentRecord, toLogRecord } from "../serialize.js";
 import type { AgentRecord } from "../types/domain.js";
-import { agentLogsQuery, agentMessagesQuery, idParam, logsQuery, parse } from "./schemas.js";
+import { agentLogsQuery, agentMessagesQuery, idParam, logsQuery, parse, threadReadBody } from "./schemas.js";
 
 /** The most rows a `wakes` read of an agent's logs returns, newest first. */
 const WAKE_LOGS_MAX_ROWS = 3_000;
@@ -157,6 +157,21 @@ export async function registerAgents(app: FastifyInstance): Promise<void> {
       limit: query.limit,
     });
     return { messages };
+  });
+
+  app.post("/agents/:id/read", async (request) => {
+    const { id } = parse(idParam, request.params);
+    await requireAgent(app.db, id);
+    const { seq } = parse(threadReadBody, request.body);
+    const mark = await markThreadRead(app.db, id, seq);
+    app.runtime.events.emit({
+      type: "thread_read",
+      agent_id: id,
+      read_seq: mark.read_seq,
+      unread: mark.unread,
+      at: new Date().toISOString(),
+    });
+    return { agent_id: id, ...mark };
   });
 
   app.get("/agents/:id/logs", async (request) => {
