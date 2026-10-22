@@ -66,6 +66,7 @@ export const scheduleMessage = defineTool({
       runAt,
       intervalMinutes,
     });
+    ctx.events.emit({ type: "schedules_changed", at: new Date().toISOString() });
     return ok({
       schedule_id: id,
       to_agent_id: parsed.to_agent_id,

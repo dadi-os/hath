@@ -44,6 +44,7 @@ export async function registerSchedules(app: FastifyInstance): Promise<void> {
     if (!row) {
       throw new HathError(404, "not_found", `schedule ${id} not found`);
     }
+    app.runtime.events.emit({ type: "schedules_changed", at: new Date().toISOString() });
     return toScheduledMessageRecord(row);
   });
 
@@ -56,6 +57,7 @@ export async function registerSchedules(app: FastifyInstance): Promise<void> {
     if (rows.length === 0) {
       throw new HathError(404, "not_found", `schedule ${id} not found`);
     }
+    app.runtime.events.emit({ type: "schedules_changed", at: new Date().toISOString() });
     return { cancelled: true, schedule_id: id };
   });
 }

@@ -111,14 +111,19 @@ test("due one-shot delivers once and deletes the row", async () => {
     log,
   });
   const seen: RuntimeEvent[] = [];
+  let scheduleChanges = 0;
   runtime.events.subscribe((event) => {
     if (event.type === "message") {
       seen.push(event);
+    }
+    if (event.type === "schedules_changed") {
+      scheduleChanges += 1;
     }
   });
 
   await runtime.scheduler.tick();
   await runtime.waitUntilIdle();
+  assert.equal(scheduleChanges, 1);
 
   const transcript = runtime.transcript.transcriptFor(toId);
   assert.equal(transcript.length, 1);
@@ -528,6 +533,12 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
     config,
     log: capturingLog().log,
   });
+  let scheduleChanges = 0;
+  runtime.events.subscribe((event) => {
+    if (event.type === "schedules_changed") {
+      scheduleChanges += 1;
+    }
+  });
   const ctx = runtime.toolContext(fromId, "reasoning");
   const future = new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, "+00:00");
 
@@ -582,6 +593,7 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
     },
   });
   assert.equal(zero.isError, true);
+  assert.equal(scheduleChanges, 0);
 
   const ok = await executeTool(ctx, {
     type: "tool_use",
@@ -597,6 +609,7 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
   assert.equal(ok.isError, false);
   const body = JSON.parse(ok.content) as { schedule_id: string; to_agent_id: string };
   assert.equal(body.to_agent_id, peerId);
+  assert.equal(scheduleChanges, 1);
   const rows = await handle.db
     .select()
     .from(scheduledMessages)
@@ -653,6 +666,13 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
     log: capturingLog().log,
   });
 
+  let scheduleChanges = 0;
+  runtime.events.subscribe((event) => {
+    if (event.type === "schedules_changed") {
+      scheduleChanges += 1;
+    }
+  });
+
   const listed = await executeTool(runtime.toolContext(creatorId, "reasoning"), {
     type: "tool_use",
     id: "list",
@@ -685,6 +705,7 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
   });
   assert.equal(unknown.isError, true);
   assert.match(unknown.content, /not found/);
+  assert.equal(scheduleChanges, 0);
 
   const cancelled = await executeTool(runtime.toolContext(creatorId, "reasoning"), {
     type: "tool_use",
@@ -693,6 +714,7 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
     input: { schedule_id: mine },
   });
   assert.equal(cancelled.isError, false);
+  assert.equal(scheduleChanges, 1);
   const left = await handle.db
     .select()
     .from(scheduledMessages)
@@ -739,6 +761,12 @@ test("schedule routes list an agent's schedules both ways, edit them, and cancel
   };
   const runtime = createRuntime({ ...deps, config, log: capturingLog().log });
   const app = await buildApp(config, { ...deps, sql: handle.sql, runtime });
+  const changes: string[] = [];
+  runtime.events.subscribe((event) => {
+    if (event.type === "schedules_changed") {
+      changes.push(event.at);
+    }
+  });
 
   const senderList = await app.inject({ method: "GET", url: `/agents/${senderId}/schedules` });
   assert.equal(senderList.statusCode, 200, senderList.body);
@@ -763,6 +791,7 @@ test("schedule routes list an agent's schedules both ways, edit them, and cancel
   assert.equal(row?.runAt.getTime(), runAt.getTime());
   assert.equal(row?.intervalMinutes, null);
   assert.equal(row?.content, "weekly triage");
+  assert.equal(changes.length, 1);
 
   const past = await app.inject({
     method: "PATCH",
@@ -773,11 +802,14 @@ test("schedule routes list an agent's schedules both ways, edit them, and cancel
   assert.match(past.body, /run_at must be in the future/);
   const empty = await app.inject({ method: "PATCH", url: `/schedules/${sent}`, payload: {} });
   assert.equal(empty.statusCode, 422);
+  assert.equal(changes.length, 1);
 
   const cancelled = await app.inject({ method: "DELETE", url: `/schedules/${sent}` });
   assert.equal(cancelled.statusCode, 200, cancelled.body);
   assert.equal((await handle.db.select().from(scheduledMessages).where(eq(scheduledMessages.id, sent))).length, 0);
+  assert.equal(changes.length, 2);
   const again = await app.inject({ method: "DELETE", url: `/schedules/${sent}` });
   assert.equal(again.statusCode, 404);
+  assert.equal(changes.length, 2);
   await app.close();
 });

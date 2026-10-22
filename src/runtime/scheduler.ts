@@ -147,6 +147,9 @@ export function createScheduler(opts: {
     ticking = true;
     try {
       const fired = await advanceDue(now);
+      if (fired.length > 0) {
+        opts.events.emit({ type: "schedules_changed", at: new Date().toISOString() });
+      }
       for (const row of fired) {
         await deliverFired(row);
       }

@@ -43,6 +43,7 @@ export const cancelSchedule = defineTool({
           eq(scheduledMessages.fromAgentId, ctx.callerId),
         ),
       );
+    ctx.events.emit({ type: "schedules_changed", at: new Date().toISOString() });
     return ok({ cancelled: true, schedule_id: parsed.schedule_id });
   },
 });
