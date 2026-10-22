@@ -285,7 +285,11 @@ export async function executeTool(
     result = unexpectedToolError(err);
   }
   if (ctx.callerId !== null) {
+    const sessionsBefore = JSON.stringify(ctx.sessions.forAgent(ctx.callerId));
     ctx.sessions.observe(ctx.callerId, call.name, call.input, result.isError);
+    if (JSON.stringify(ctx.sessions.forAgent(ctx.callerId)) !== sessionsBefore) {
+      ctx.events.emit({ type: "sessions_changed", at: new Date().toISOString() });
+    }
     ctx.toolDebounce.record(ctx.callerId, result.isError);
   }
   return result;

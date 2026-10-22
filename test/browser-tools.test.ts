@@ -152,6 +152,13 @@ test("close_browser calls Nas and drops the local connection entry", async () =>
     cdpUrl: "ws://example/devtools/browser/x",
     downloadsDir: "/home/dadi/Downloads",
   });
+  runtime.sessions.observe(workerId, "browser_navigate", { browser_id: 10, url: "https://x" }, false);
+  let sessionChanges = 0;
+  runtime.events.subscribe((event) => {
+    if (event.type === "sessions_changed") {
+      sessionChanges += 1;
+    }
+  });
   const closed = await executeTool(runtime.toolContext(workerId, "reasoning"), {
     type: "tool_use",
     id: "cb1",
@@ -160,6 +167,14 @@ test("close_browser calls Nas and drops the local connection entry", async () =>
   });
   assert.equal(closed.isError, false, closed.content);
   assert.deepEqual(nas.closeBrowserCalls, [10]);
+  assert.equal(sessionChanges, 1);
+  await executeTool(runtime.toolContext(workerId, "reasoning"), {
+    type: "tool_use",
+    id: "cb2",
+    name: "browser_close",
+    input: { browser_id: 10 },
+  });
+  assert.equal(sessionChanges, 1);
 });
 
 test("upload_file fails not_found for a missing host file before touching the browser", async () => {

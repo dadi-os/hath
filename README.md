@@ -262,7 +262,7 @@ Schedule tools (`schedule_message`, `list_schedules`, `cancel_schedule`) persist
 | `GET` | `/threads` | human↔agent conversation summaries (active agents only), each with `unread` (the agent's messages to Ankur after `read_seq`, notices left out) and `read_seq` (null until read) |
 | `GET` | `/agents/:id/messages` | durable human-thread messages with attachment summaries (`since_seq`, `limit`) |
 | `POST` | `/agents/:id/read` | `{ seq }`: Ankur has read the thread through `seq`; the mark only moves forward, `seq` past the newest message is `422`; returns `{ agent_id, read_seq, unread }` and emits SSE `thread_read` so every device clears it |
-| `GET` | `/events` | SSE live events; no replay. `schedules_changed` fires when a scheduled message is created, edited, cancelled, delivered or advanced, and names no schedule: clients refetch the lists they show |
+| `GET` | `/events` | SSE live events; no replay. `schedules_changed` fires when a scheduled message is created, edited, cancelled, delivered or advanced, and names no schedule: clients refetch the lists they show; `sessions_changed` fires when a tool call changes the browsers or terminals an agent is remembered to use (the `sessions` on `GET /agents`) |
 | `GET` | `/agents` | all agents + `running` + `sessions` |
 | `GET` | `/agents/:id` | agent, children, grants |
 | `GET` | `/agents/:id/logs` | per-agent audit trail |
