@@ -10,8 +10,9 @@ import {
   type NewAttachment,
 } from "./attachments.js";
 import type { AttachmentSummary, MessageKind, MessageStatus } from "../types/domain.js";
+import { HathError } from "../errors.js";
 import type { Db } from "./client.js";
-import { agents, messages, type MessageRow } from "./schema.js";
+import { agents, messages, threadReads, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
 
 
@@ -141,6 +142,10 @@ export type ThreadSummary = {
   last_message: string;
   last_at: string;
   from_user: boolean;
+  /** The agent's messages to Ankur after `read_seq`; notices are not counted. */
+  unread: number;
+  /** The last message Ankur has read in this thread; null until he reads it. */
+  read_seq: number | null;
 };
 
 /**
@@ -155,18 +160,26 @@ export async function listThreads(db: Db): Promise<ThreadSummary[]> {
     .where(humanThread)
     .orderBy(asc(messages.seq));
 
+  const reads = await db.select().from(threadReads);
+  const readSeqByAgent = new Map(reads.map((row) => [row.agentId, row.readSeq]));
+
   const byAgent = new Map<string, { summary: Omit<ThreadSummary, "agent_name"> }>();
   for (const row of rows) {
     const agentId = row.fromAgentId ?? row.toAgentId;
     if (!agentId) {
       throw new Error("human-thread message missing agent party");
     }
+    const readSeq = readSeqByAgent.get(agentId) ?? null;
+    const unseen = row.fromAgentId !== null && row.kind === "message" && (readSeq === null || row.seq > readSeq);
+    const unread = (byAgent.get(agentId)?.summary.unread ?? 0) + (unseen ? 1 : 0);
     byAgent.set(agentId, {
       summary: {
         agent_id: agentId,
         last_message: row.content,
         last_at: row.createdAt.toISOString(),
         from_user: row.fromAgentId === null,
+        unread,
+        read_seq: readSeq,
       },
     });
   }
@@ -190,6 +203,52 @@ export async function listThreads(db: Db): Promise<ThreadSummary[]> {
     })
     .map(({ summary }) => ({ ...summary, agent_name: summary.agent_id }))
     .sort((a, b) => (a.last_at < b.last_at ? 1 : -1));
+}
+
+/**
+ * Marks `agentId`'s thread read through `seq`, never moving the mark back, and
+ * returns where it now stands with what is still unread.
+ * @throws `422 invalid_request` when `seq` is past the thread's newest message.
+ */
+export async function markThreadRead(
+  db: Db,
+  agentId: string,
+  seq: number,
+): Promise<{ read_seq: number; unread: number }> {
+  const [newest] = await db
+    .select({ seq: sql<number | null>`max(${messages.seq})` })
+    .from(messages)
+    .where(and(humanThread, or(eq(messages.fromAgentId, agentId), eq(messages.toAgentId, agentId))));
+  const newestSeq = newest?.seq;
+  if (newestSeq === null || newestSeq === undefined || seq > Number(newestSeq)) {
+    throw new HathError(422, "invalid_request", `seq ${seq} is past the newest message in ${agentId}'s thread`);
+  }
+  const [mark] = await db
+    .insert(threadReads)
+    .values({ agentId, readSeq: seq })
+    .onConflictDoUpdate({
+      target: threadReads.agentId,
+      set: { readSeq: sql`greatest(${threadReads.readSeq}, excluded.read_seq)`, readAt: sql`now()` },
+    })
+    .returning({ readSeq: threadReads.readSeq });
+  if (!mark) {
+    throw new Error(`thread read mark for ${agentId} was not written`);
+  }
+  const [count] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.fromAgentId, agentId),
+        isNull(messages.toAgentId),
+        eq(messages.kind, "message"),
+        gt(messages.seq, mark.readSeq),
+      ),
+    );
+  if (!count) {
+    throw new Error(`unread count for ${agentId} returned no row`);
+  }
+  return { read_seq: mark.readSeq, unread: count.n };
 }
 
 export type HumanMessageRecord = {

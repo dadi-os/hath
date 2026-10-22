@@ -674,3 +674,81 @@ test("messaging a retired agent is a retired error on every path and stores noth
   await app.close();
 });
 
+
+test("POST /agents/:id/read marks a thread read across devices and /threads counts what is left", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertWorker(handle.db, { name: "reader", systemPrompt: "system", tools: [] });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const app = await buildApp(config, {
+    db: handle.db,
+    sql: handle.sql,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    runtime,
+  });
+  const deps = {
+    db: handle.db,
+    transcript: runtime.transcript,
+    events: runtime.events,
+    enqueueConversation: runtime.enqueueConversation,
+    enqueueReasoning: runtime.enqueueReasoning,
+  };
+  await deliverUserMessage(deps, agentId, "ping");
+  const first = await deliverAgentMessage(deps, { fromAgentId: agentId, toAgentId: null, content: "one" });
+  const second = await deliverAgentMessage(deps, { fromAgentId: agentId, toAgentId: null, content: "two" });
+  await insertMessage(handle.db, {
+    fromAgentId: agentId,
+    toAgentId: null,
+    content: "lane failed",
+    attachments: NO_ATTACHMENTS,
+    kind: "notice",
+  });
+
+  type Thread = { agent_id: string; unread: number; read_seq: number | null };
+  const thread = async (): Promise<Thread | undefined> => {
+    const res = await app.inject({ method: "GET", url: "/threads" });
+    assert.equal(res.statusCode, 200);
+    return (res.json() as { threads: Thread[] }).threads.find((t) => t.agent_id === agentId);
+  };
+  const before = await thread();
+  assert.equal(before?.unread, 2);
+  assert.equal(before?.read_seq, null);
+
+  const seen: unknown[] = [];
+  const unsubscribe = runtime.events.subscribe((event) => {
+    if (event.type === "thread_read") seen.push(event);
+  });
+  const read = await app.inject({ method: "POST", url: `/agents/${agentId}/read`, payload: { seq: first.seq } });
+  assert.equal(read.statusCode, 200);
+  assert.deepEqual(read.json(), { agent_id: agentId, read_seq: first.seq, unread: 1 });
+  assert.equal(seen.length, 1);
+  assert.equal((await thread())?.unread, 1);
+
+  const back = await app.inject({ method: "POST", url: `/agents/${agentId}/read`, payload: { seq: 1 } });
+  assert.equal(back.statusCode, 200);
+  assert.equal((back.json() as { read_seq: number }).read_seq, first.seq);
+
+  const all = await app.inject({ method: "POST", url: `/agents/${agentId}/read`, payload: { seq: second.seq } });
+  assert.deepEqual(all.json(), { agent_id: agentId, read_seq: second.seq, unread: 0 });
+  assert.equal((await thread())?.read_seq, second.seq);
+
+  const past = await app.inject({ method: "POST", url: `/agents/${agentId}/read`, payload: { seq: second.seq + 1000 } });
+  assert.equal(past.statusCode, 422);
+  const unknown = await app.inject({ method: "POST", url: "/agents/no-such-agent/read", payload: { seq: 1 } });
+  assert.equal(unknown.statusCode, 404);
+
+  unsubscribe();
+  await app.close();
+});

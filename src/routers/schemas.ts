@@ -68,6 +68,9 @@ export const postMessageBody = z
 
 export const idParam = z.object({ id: agentIdSchema }).strict();
 
+/** Body of `POST /agents/:id/read`: the last message Ankur has read in that thread. */
+export const threadReadBody = z.object({ seq: z.number().int().positive() }).strict();
+
 /** Path params for one scheduled message, addressed by its uuid. */
 export const scheduleIdParam = z.object({ id: z.string().uuid() }).strict();
 
