@@ -12,7 +12,7 @@ const input = z
 export const restartModule = defineTool({
   name: "nas_restart_module",
   description:
-    "Restart a host module by name (dwar, yaad, hath, ghar, chaavi, chaavi-vault, nas, caddy, headscale, loki, alloy, tailscale). Restarting hath ends this process — do not expect a reply after that call.",
+    "Restart a host module by name (dwar, yaad, hath, ghar, chaavi, nas, caddy, headscale, loki, alloy, tailscale). Restarting hath ends this process — do not expect a reply after that call.",
   input,
   inputSchema: {
     type: "object",
