@@ -6,12 +6,17 @@
 import { and, asc, eq } from "drizzle-orm";
 import { z, ZodError } from "zod";
 import { agentIdOrUserSchema, agentIdSchema } from "../agent-id.js";
+import type { TranscriptEntry } from "./transcript.js";
+import { getHandoff, markSent } from "../db/handoffs.js";
 import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarTool, DwarToolUseBlock, MessageStatus } from "../types/domain.js";
 import {
   CREATE_ATTACHMENT,
+  DECLINE_HANDOFF,
   DISPATCH_MESSAGE,
+  HAND_OFF,
+  HANDOFF_STATUS,
   MESSAGE_STATUSES,
   FORWARD_ATTACHMENT,
   INGEST_MEMORY,
@@ -47,6 +52,7 @@ import {
   runReadAttachment,
 } from "./attachments.js";
 import { deliverAgentMessage } from "./deliver.js";
+import { isControlChannel, runDeclineHandoff, runHandOff } from "./handoffs.js";
 import { reportRefusal, STATUS_DESCRIPTION } from "./jobs.js";
 import { runIngestMemory, runRecallMemory } from "./memory.js";
 import { runManageAgent, runModifyAgentPrompt } from "./modify.js";
@@ -59,8 +65,8 @@ export const sendMessageInputSchema: Record<string, unknown> = {
   type: "object",
   properties: {
     to_agent_id: {
-      type: ["string", "null"],
-      description: 'Recipient kebab-case agent id, or null for Ankur (the user); never the string "Ankur"',
+      type: "string",
+      description: "Kebab-case id of an agent you brought in; anyone else, Ankur included, is reached with hand_off",
     },
     content: {
       type: "string",
@@ -71,11 +77,6 @@ export const sendMessageInputSchema: Record<string, unknown> = {
       items: { type: "string" },
       description: `Attachments the message carries, by id (at most ${MAX_ATTACHMENTS}); the recipient gets the files themselves`,
     },
-    status: {
-      type: "string",
-      enum: [...MESSAGE_STATUSES],
-      description: STATUS_DESCRIPTION,
-    },
   },
   required: ["to_agent_id", "content"],
 };
@@ -83,18 +84,22 @@ export const sendMessageInputSchema: Record<string, unknown> = {
 export const dispatchMessageInputSchema: Record<string, unknown> = {
   type: "object",
   properties: {
+    handoff_id: {
+      type: "integer",
+      description:
+        "Send a waiting hand-off from your reasoning lane. Its recipient, attachments and job status are set from it. Leave content out to send it as written; content rewords a hand-off to Ankur only. Leave to_agent_id and status out.",
+    },
     to_agent_id: {
       type: ["string", "null"],
-      description: 'Recipient kebab-case agent id, or null for Ankur (the user); never the string "Ankur"',
+      description: "For a message of your own: recipient kebab-case agent id, or null for Ankur (the user)",
     },
-    content: { type: "string", description: "The message to persist and deliver" },
+    content: { type: "string", description: "For a message of your own: the message to persist and deliver" },
     status: {
       type: "string",
       enum: [...MESSAGE_STATUSES],
       description: STATUS_DESCRIPTION,
     },
   },
-  required: ["to_agent_id", "content"],
 };
 
 export const steerReasoningInputSchema: Record<string, unknown> = {
@@ -163,11 +168,11 @@ export const listAgentsInputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/** Persist and deliver a message from the reasoning lane. */
+/** Persist and deliver the reasoning lane's message to an agent it brought in. */
 export const sendMessageTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    "Send a message to another agent or to the user (to_agent_id null). It is delivered as you write it, when the call returns, and wakes its recipient. To send files, list their ids in attachment_ids (create_attachment turns a host file into one) instead of pasting their contents. A message to whoever gave you a job that is still open carries a status (see the [Open jobs] note); hath refuses one without it, a second progress update, and a second question before their reply, and the refusal says how to send it again. Does not end the turn: to wait for a reply, yield, and the reply wakes you. Report real tool errors honestly; do not invent that grants are missing.",
+    "Send a message to an agent you brought in, a worker or helper you gave work to. It is delivered as you write it, when the call returns, and wakes its recipient. To send files, list their ids in attachment_ids (create_attachment turns a host file into one) instead of pasting their contents. Ankur, whoever gave you your job, and every other agent are reached with hand_off: your conversation lane sends it. Does not end the turn: to wait for a reply, yield, and the reply wakes you.",
   input_schema: sendMessageInputSchema,
 };
 
@@ -175,7 +180,7 @@ export const sendMessageTool: DwarTool = {
 export const dispatchMessageTool: DwarTool = {
   name: DISPATCH_MESSAGE,
   description:
-    "Write a message to another agent or to the user (to_agent_id null). This is the only way a message addressed to someone else is persisted. Does not end the turn — call yield when done. Hath refuses a send that breaks one of these, so follow them the first time: one message per recipient per turn, text and files together (forward_attachment carries both); a message to whoever gave you a job that is still open carries a status (see the [Open jobs] note); an agent you gave work to hears only from your reasoning lane, which sends it everything itself, so steer reasoning to change that work; and a send to someone who wrote after you composed it waits until you have read them. See the routing block for who to address. Domain work runs on the reasoning lane — use steer_reasoning for that; do not claim grants are missing because conversation cannot see them.",
+    "Write a message to another agent or to the user (to_agent_id null), or send a hand-off waiting from your reasoning lane (handoff_id). This is the only way a message addressed to someone but the agents you brought in is persisted. Does not end the turn — call yield when done, and not while a hand-off is waiting: send it or decline it. Hath refuses a send that breaks one of these, so follow them the first time: one message per recipient per turn, text and files together (forward_attachment carries both); a message of your own to whoever gave you a job that is still open carries a status (see the [Open jobs] note; a hand-off's status is set from its kind); an agent you gave work to hears only from your reasoning lane, which sends it everything itself, so steer reasoning to change that work; and a send to someone who wrote after you composed it waits until you have read them. See the routing block for who to address. Domain work runs on the reasoning lane — use steer_reasoning for that; do not claim grants are missing because conversation cannot see them.",
   input_schema: dispatchMessageInputSchema,
 };
 
@@ -213,21 +218,27 @@ export const listAgentsTool: DwarTool = {
 };
 
 const sendInput = z.object({
-  to_agent_id: agentIdOrUserSchema,
+  to_agent_id: agentIdSchema,
   content: z.string().min(1),
   attachment_ids: z
     .array(z.string().uuid())
     .max(MAX_ATTACHMENTS)
     .refine((ids) => new Set(ids).size === ids.length, "attachment_ids must not repeat")
     .optional(),
-  status: z.enum(MESSAGE_STATUSES).optional(),
 });
 
-const dispatchInput = z.object({
-  to_agent_id: agentIdOrUserSchema,
-  content: z.string().min(1),
-  status: z.enum(MESSAGE_STATUSES).optional(),
-});
+const dispatchInput = z
+  .object({
+    handoff_id: z.number().int().positive().optional(),
+    to_agent_id: agentIdOrUserSchema.optional(),
+    content: z.string().min(1).optional(),
+    status: z.enum(MESSAGE_STATUSES).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.handoff_id === undefined && (value.to_agent_id === undefined || value.content === undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "send a message of your own with to_agent_id and content, or a hand-off with handoff_id" });
+    }
+  });
 
 const steerInput = z
   .object({
@@ -318,6 +329,9 @@ async function dispatchTool(
       if (call.name === SEND_MESSAGE) {
         return await runSendMessage(ctx, call.input);
       }
+      if (call.name === HAND_OFF) {
+        return await runHandOff(ctx, call.input);
+      }
       if (call.name === WAIT) {
         return await runWait(ctx, call.input);
       }
@@ -359,11 +373,13 @@ async function dispatchTool(
         return await runDispatchMessage(ctx, call.input);
       case FORWARD_ATTACHMENT:
         return await runForwardAttachment(ctx, call.input);
+      case DECLINE_HANDOFF:
+        return await runDeclineHandoff(ctx, call.input);
       case STEER_REASONING:
         return await runSteerReasoning(ctx, call.input);
       default:
         return fail(
-          `${call.name} is not a conversation tool. Yours are ${DISPATCH_MESSAGE}, ${FORWARD_ATTACHMENT}, ${READ_ATTACHMENT}, ${STEER_REASONING}, ${LIST_AGENTS} and ${YIELD}. Every other tool this agent holds, ${call.name} included if it is granted, runs in the reasoning lane: call ${STEER_REASONING} with what you need done.`,
+          `${call.name} is not a conversation tool. Yours are ${DISPATCH_MESSAGE}, ${DECLINE_HANDOFF}, ${FORWARD_ATTACHMENT}, ${READ_ATTACHMENT}, ${STEER_REASONING}, ${LIST_AGENTS} and ${YIELD}. Every other tool this agent holds, ${call.name} included if it is granted, runs in the reasoning lane: call ${STEER_REASONING} with what you need done.`,
         );
     }
   } catch (err) {
@@ -402,25 +418,31 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
 }
 
 /**
- * runSendMessage delivers the reasoning lane's message as written: the lane that did the
- * work writes the message, and a refusal (a missing status, a spent progress update) comes
- * back to it, since it is the one that can fix it. The conversation lane used to compose
- * each one again from a hand-off, which on 2026-10-14 to 2026-10-16 refused 81 of 855
- * sends, rewrote others, and left the reasoning lane waiting on messages never sent.
+ * runSendMessage delivers the reasoning lane's message, as written, to an agent it brought
+ * in: its own subordinates are directed by the lane that does their work. Everyone else
+ * is reached by hand_off and the conversation lane (see handoffs.ts).
  */
 async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
   }
   const input = sendInput.parse(raw);
+  await requireActiveAgent(ctx.db, input.to_agent_id);
+  if (!(await isControlChannel(ctx.db, ctx.callerId, input.to_agent_id))) {
+    return fail(
+      `Not sent: ${input.to_agent_id} is not an agent you brought in. send_message is for your own workers and helpers; to reach anyone else, Ankur included, call hand_off and your conversation lane sends it.`,
+    );
+  }
   const attachmentIds = input.attachment_ids ?? [];
   await requireAttachments(ctx.db, attachmentIds);
-  return deliverFromAgent(ctx, ctx.callerId, {
-    to: input.to_agent_id,
-    content: input.content,
-    attachmentIds,
-    status: input.status,
-  });
+  return (
+    await deliverFromAgent(ctx, ctx.callerId, {
+      to: input.to_agent_id,
+      content: input.content,
+      attachmentIds,
+      status: undefined,
+    })
+  ).result;
 }
 
 /** How much of an oversized agent message its recipient sees inline, ahead of the attached whole. */
@@ -448,12 +470,50 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
     return failWithoutAgentIdentity();
   }
   const input = dispatchInput.parse(raw);
-  return deliverFromAgent(ctx, ctx.callerId, {
-    to: input.to_agent_id,
-    content: input.content,
-    attachmentIds: [],
-    status: input.status,
+  if (input.handoff_id !== undefined) {
+    return runSendHandoff(ctx, ctx.callerId, { ...input, handoff_id: input.handoff_id });
+  }
+  return (
+    await deliverFromAgent(ctx, ctx.callerId, {
+      to: input.to_agent_id!,
+      content: input.content!,
+      attachmentIds: [],
+      status: input.status,
+    })
+  ).result;
+}
+
+/**
+ * runSendHandoff sends a waiting hand-off from the agent's reasoning lane. Its recipient,
+ * files and job status come from the hand-off, so this lane cannot misaddress it or pick
+ * the wrong status; a hand-off to an agent goes as written, and one to Ankur may be
+ * reworded. A refused send leaves it waiting, so the lane can send it again or decline it.
+ */
+async function runSendHandoff(
+  ctx: ToolContext,
+  caller: string,
+  input: { handoff_id: number; to_agent_id?: string | null | undefined; content?: string | undefined; status?: MessageStatus | undefined },
+): Promise<ToolExecResult> {
+  const handoff = await getHandoff(ctx.db, input.handoff_id);
+  if (handoff === undefined || handoff.agentId !== caller || handoff.state !== "pending") {
+    return fail(`Hand-off #${input.handoff_id} is not waiting to be sent.`);
+  }
+  if (input.to_agent_id !== undefined || input.status !== undefined) {
+    return fail("A hand-off goes to its own recipient with the status its kind sets: leave to_agent_id and status out.");
+  }
+  if (input.content !== undefined && handoff.toAgentId !== null) {
+    return fail("A hand-off to an agent is sent as written: leave content out, or decline_handoff with what should change.");
+  }
+  const sent = await deliverFromAgent(ctx, caller, {
+    to: handoff.toAgentId,
+    content: input.content ?? handoff.content,
+    attachmentIds: handoff.attachmentIds,
+    status: HANDOFF_STATUS[handoff.kind],
   });
+  if (sent.row !== null) {
+    await markSent(ctx.db, handoff.id, sent.row.id!, handoff.kind === "question" || handoff.kind === "request");
+  }
+  return sent.result;
 }
 
 /**
@@ -465,13 +525,13 @@ async function deliverFromAgent(
   ctx: ToolContext,
   from: string,
   message: { to: string | null; content: string; attachmentIds: string[]; status: MessageStatus | undefined },
-): Promise<ToolExecResult> {
+): Promise<{ result: ToolExecResult; row: TranscriptEntry | null }> {
   if (message.to !== null) {
     await requireActiveAgent(ctx.db, message.to);
   }
   const refusal = await reportRefusal(ctx.db, from, message.to, message.status);
   if (refusal !== null) {
-    return fail(refusal);
+    return { result: fail(refusal), row: null };
   }
   const oversized = message.to !== null && message.content.length > AGENT_MESSAGE_MAX_CHARS;
   const row = await deliverAgentMessage(
@@ -495,15 +555,18 @@ async function deliverFromAgent(
   );
   const attached = row.attachments.length > 0 ? { attachments: row.attachments.map(toAttachmentSummary) } : {};
   if (oversized) {
-    return ok({
-      to_agent_id: row.toAgentId,
-      seq: row.seq,
-      delivered: true,
-      ...attached,
-      note: `Delivered, but at ${message.content.length} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`,
-    });
+    return {
+      row,
+      result: ok({
+        to_agent_id: row.toAgentId,
+        seq: row.seq,
+        delivered: true,
+        ...attached,
+        note: `Delivered, but at ${message.content.length} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`,
+      }),
+    };
   }
-  return ok({ to_agent_id: row.toAgentId, content: row.content, seq: row.seq, ...attached });
+  return { row, result: ok({ to_agent_id: row.toAgentId, content: row.content, seq: row.seq, ...attached }) };
 }
 
 async function runSteerReasoning(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {

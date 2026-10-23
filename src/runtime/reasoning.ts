@@ -1,16 +1,13 @@
-import { fail, type ToolExecResult } from "../tools/shared.js";
-import type { DwarResponseBlock, DwarToolUseBlock } from "../types/domain.js";
-import { SEND_MESSAGE } from "../types/domain.js";
+import type { DwarResponseBlock } from "../types/domain.js";
+import { HAND_OFF, SEND_MESSAGE } from "../types/domain.js";
 import type { SteerQueue } from "./steer.js";
 import { formatSteerTurn } from "./steer.js";
 import { textChars } from "./conversation.js";
-import { alreadySentRefusal, callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
-import type { TranscriptStore } from "./transcript.js";
+import { callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 
-/** Step deps plus the steer queue the conversation lane writes to, and the transcript the send gate reads. */
+/** Step deps plus the steer queue the conversation lane writes to. */
 export type ReasoningLoopDeps = StepDeps & {
   steer: SteerQueue;
-  transcript: TranscriptStore;
 };
 
 /**
@@ -25,10 +22,10 @@ export type ReasoningLoopDeps = StepDeps & {
  * already read it. Steers join the wake as reasoning-only turns where they happened. When
  * conversation sets terminate, this wake stops in its tracks: no further tool
  * calls run (in-flight model output is logged, then its calls are refused).
- * A yield in a turn that wrote a message's worth of text and sent nothing is answered
+ * A yield in a turn that wrote a message's worth of text and handed off nothing is answered
  * once with UNSENT_REPORT_TURN, since that text is a report nobody would otherwise get.
- * A send_message to someone this agent messaged after the step was composed (the
- * conversation lane, meanwhile) is refused with what went out (see alreadySentRefusal).
+ * This lane messages only the agents it brought in (send_message); everything it has to
+ * say to anyone else goes to the conversation lane as a hand_off.
  */
 export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
   const stop = () => deps.steer.isTerminate(deps.agentId);
@@ -58,20 +55,9 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
       return;
     }
 
-    const composedThrough = deps.wake.throughSeq;
     const response = await callLane(deps, laneRequest(deps, assembled));
-    const gated = async (call: DwarToolUseBlock): Promise<ToolExecResult> => {
-      const to = (call.input as { to_agent_id?: string | null }).to_agent_id;
-      if (call.name === SEND_MESSAGE && to !== undefined) {
-        const refusal = alreadySentRefusal(deps.transcript, deps.agentId, to, composedThrough);
-        if (refusal !== null) {
-          return fail(refusal);
-        }
-      }
-      return deps.executeTool(call);
-    };
 
-    if (await runStep({ ...deps, executeTool: gated }, response, stop)) {
+    if (await runStep(deps, response, stop)) {
       if (!stop() && !reminded && unsentReport(response.content)) {
         reminded = true;
         deps.wake.push({ message: { role: "user", content: UNSENT_REPORT_TURN }, only: "reasoning" });
@@ -86,17 +72,17 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
 /** A reasoning turn whose text is at least this long, sent nowhere, reads as a report left unsent. */
 const UNSENT_REPORT_CHARS = 400;
 
-/** The reminder a yield gets after a turn wrote a report as text and sent nothing. */
+/** The reminder a yield gets after a turn wrote a report as text and handed off nothing. */
 export const UNSENT_REPORT_TURN =
-  "[continue] Your last turn wrote a report as text and sent nothing: text reaches no one. If it was meant for someone, send it with send_message now; otherwise yield again.";
+  "[continue] Your last turn wrote a report as text and handed off nothing: text reaches no one. If it was meant for Ankur or any agent but one you brought in, hand it off with hand_off now; otherwise yield again.";
 
 /**
- * unsentReport is true when a turn wrote a message's worth of text but called no
- * send_message, so whatever it reported went nowhere.
+ * unsentReport is true when a turn wrote a message's worth of text but called neither
+ * hand_off nor send_message, so whatever it reported went nowhere.
  */
 function unsentReport(content: DwarResponseBlock[]): boolean {
   return (
     textChars(content) >= UNSENT_REPORT_CHARS &&
-    !content.some((block) => block.type === "tool_use" && block.name === SEND_MESSAGE)
+    !content.some((block) => block.type === "tool_use" && (block.name === HAND_OFF || block.name === SEND_MESSAGE))
   );
 }

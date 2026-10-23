@@ -42,7 +42,7 @@ import { formatActions } from "./record.js";
  * `[To: …]` text believes it was sent, and then waits on a reply that never comes.
  */
 export const CONTINUE_TURN =
-  "[continue] The text you just wrote reached no one: only a message tool call (send_message or dispatch_message) delivers anything.";
+  "[continue] The text you just wrote reached no one: only a message tool call (hand_off, send_message or dispatch_message) delivers anything.";
 
 /**
  * User turn recorded after a turn that ran out of output room while thinking and did
@@ -170,6 +170,8 @@ export class Wake {
   private readonly calls = new Map<string, CallInfo>();
   /** Turns before this index show their tool results as cleared receipts (see receipt). */
   private clearedThrough = 0;
+  /** The ids of the hand-offs already shown to the conversation lane in this wake. */
+  readonly handoffsShown = new Set<number>();
   /** How many turns each lane could see when it last yielded. */
   private readonly yieldedAt = new Map<Lane, number>();
   /** The newest result read under each state key: its turn index and tool_use_id. */

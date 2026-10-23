@@ -174,8 +174,31 @@ export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop";
 /** A message someone wrote, or hath's notice that an agent's work stopped (see deliver.ts). */
 export type MessageKind = "message" | "notice";
 
+/**
+ * What a hand-off from the reasoning lane is: the result of the work, a wall, a question
+ * only the recipient can answer, the one progress update, something to tell, or something
+ * to ask for. Hath sets the message's job status from it (see HANDOFF_STATUS).
+ */
+export const HANDOFF_KINDS = ["result", "blocker", "question", "progress", "note", "request"] as const;
+export type HandoffKind = (typeof HANDOFF_KINDS)[number];
+
+/** The job status a hand-off's message carries; none for a note or a request. */
+export const HANDOFF_STATUS: Record<HandoffKind, MessageStatus | undefined> = {
+  result: "done",
+  blocker: "blocked",
+  question: "needs_input",
+  progress: "running",
+  note: undefined,
+  request: undefined,
+};
+
+/** Where a hand-off stands: waiting for the conversation lane, sent, declined by it, or lost with its lane. */
+export type HandoffState = "pending" | "sent" | "declined" | "failed";
+
 export const SEND_MESSAGE = "send_message";
 export const DISPATCH_MESSAGE = "dispatch_message";
+export const HAND_OFF = "hand_off";
+export const DECLINE_HANDOFF = "decline_handoff";
 export const READ_ATTACHMENT = "read_attachment";
 export const FORWARD_ATTACHMENT = "forward_attachment";
 export const CREATE_ATTACHMENT = "create_attachment";

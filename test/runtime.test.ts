@@ -3,8 +3,10 @@ import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { and, asc, eq } from "drizzle-orm";
 import {
+  DECLINE_HANDOFF,
   DISPATCH_MESSAGE,
   GET_AGENT,
+  HAND_OFF,
   LIST_AGENTS,
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
@@ -37,6 +39,7 @@ import {
   silentLog,
   testConfig,
   toolUse,
+  waitingHandoffId,
   yieldTurn,
   wideWindows,
 } from "./helpers.js";
@@ -409,7 +412,7 @@ test("manage_agent retires without touching the prompt", async () => {
   );
 });
 
-test("reasoning context has send_message, list_agents, and no dispatch_message", async () => {
+test("reasoning context has hand_off, send_message, list_agents, and no dispatch_message", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {
     name: "thread",
@@ -425,10 +428,12 @@ test("reasoning context has send_message, list_agents, and no dispatch_message",
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
+  assert.ok(names.includes(HAND_OFF));
   assert.ok(names.includes(SEND_MESSAGE));
   assert.ok(names.includes(LIST_AGENTS));
   assert.ok(names.includes("yield"));
   assert.equal(names.includes(DISPATCH_MESSAGE), false);
+  assert.equal(names.includes(DECLINE_HANDOFF), false);
 });
 
 test("reasoning cannot write another agent's mailbox", async () => {
@@ -528,18 +533,19 @@ test("reasoning exit without send_message does not wake conversation", async () 
   assert.equal(dwar.conversationCalls.length, 0);
 });
 
-test("reasoning's send_message delivers the message as written, with no conversation run", async () => {
+test("reasoning's send_message delivers the message as written to an agent it brought in", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, {
     name: "direct-sender",
     systemPrompt: "send directly",
   });
+  const childId = await insertAgent(handle.db, { id: "direct-child", systemPrompt: "child", parentAgentId: callerId });
   let reasonTurn = 0;
   const dwar = mockDwar({
     reason: async () => {
       reasonTurn += 1;
       if (reasonTurn === 1) {
-        return toolUse(SEND_MESSAGE, { to_agent_id: null, content: "say hi" }, "sm-1");
+        return toolUse(SEND_MESSAGE, { to_agent_id: childId, content: "say hi" }, "sm-1");
       }
       return yieldTurn("r-yield");
     },
@@ -562,15 +568,48 @@ test("reasoning's send_message delivers the message as written, with no conversa
     input: { instruction: "compose a hello" },
   });
   await runtime.waitUntilIdle();
-  assert.equal(dwar.conversationCalls.length, 0);
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
-  assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[null, "say hi"]]);
+  assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[childId, "say hi"]]);
 });
 
-test("an agent that retires itself still sends the report in the same turn, and does nothing after", async () => {
+test("reasoning's send_message to Ankur or to an agent it did not bring in is refused and points to hand_off", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const callerId = await insertAgent(handle.db, { id: "refused-sender", systemPrompt: "sender" });
+  const peerId = await insertAgent(handle.db, { id: "refused-peer", systemPrompt: "peer" });
+  const runtime = createRuntime({
+    db: handle.db,
+    dwar: mockDwar({}),
+    yaad: mockYaad(),
+    ghar: mockGhar(),
+    chaavi: mockChaavi(),
+    nas: mockNas(),
+    config,
+    log: silentLog,
+  });
+  const toPeer = await executeTool(runtime.toolContext(callerId, "reasoning"), {
+    type: "tool_use",
+    id: "sm-peer",
+    name: SEND_MESSAGE,
+    input: { to_agent_id: peerId, content: "hello" },
+  });
+  assert.equal(toPeer.isError, true);
+  assert.match(toPeer.content, /call hand_off/);
+  const toAnkur = await executeTool(runtime.toolContext(callerId, "reasoning"), {
+    type: "tool_use",
+    id: "sm-ankur",
+    name: SEND_MESSAGE,
+    input: { to_agent_id: null, content: "hello" },
+  });
+  assert.equal(toAnkur.isError, true);
+  assert.equal((await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId))).length, 0);
+  await runtime.waitUntilIdle();
+});
+
+test("an agent that retires itself still gets its handed-off report sent, and does nothing after", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, { name: "retiring-worker", systemPrompt: "report and retire" });
   let reasonTurn = 0;
+  let dispatched = false;
   const dwar = mockDwar({
     reason: async () => {
       reasonTurn += 1;
@@ -578,14 +617,20 @@ test("an agent that retires itself still sends the report in the same turn, and 
         provider: "anthropic",
         content: [
           { type: "tool_use", id: "rt-retire", name: MANAGE_AGENT, input: { agent_id: callerId, retired: true } },
-          { type: "tool_use", id: "rt-report", name: SEND_MESSAGE, input: { to_agent_id: null, content: "Browser 13 is not running." } },
+          { type: "tool_use", id: "rt-report", name: HAND_OFF, input: { to: "ankur", kind: "note", content: "Browser 13 is not running." } },
           { type: "tool_use", id: "rt-yield", name: "yield", input: {} },
         ],
         stop_reason: "tool_use",
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
       };
     },
-    converse: async () => yieldTurn("rt-c-yield"),
+    converse: async (request) => {
+      if (!dispatched && JSON.stringify(request.messages).includes("[Hand-offs waiting]")) {
+        dispatched = true;
+        return toolUse(DISPATCH_MESSAGE, { handoff_id: waitingHandoffId(request) }, "rt-dispatch");
+      }
+      return yieldTurn("rt-c-yield");
+    },
   });
   const runtime = createRuntime({
     db: handle.db,
@@ -601,7 +646,7 @@ test("an agent that retires itself still sends the report in the same turn, and 
   await runtime.waitUntilIdle();
 
   assert.equal(reasonTurn, 1, "a retired agent's reasoning does not run again");
-  assert.equal(dwar.conversationCalls.length, 0);
+  assert.ok(dispatched, "the retired agent's conversation lane still ran to send the hand-off");
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
   assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[null, "Browser 13 is not running."]]);
 });
@@ -623,6 +668,7 @@ test("conversation tools are dispatch_message, steer_reasoning, list_agents, yie
   });
   const names = ctx.tools.map((tool) => tool.name);
   assert.ok(names.includes(DISPATCH_MESSAGE));
+  assert.ok(names.includes(DECLINE_HANDOFF));
   assert.ok(names.includes("steer_reasoning"));
   assert.ok(names.includes(LIST_AGENTS));
   assert.ok(names.includes("yield"));
@@ -668,6 +714,7 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
   assert.deepEqual(
     childCtx.tools.map((tool) => tool.name),
     [
+      HAND_OFF,
       SEND_MESSAGE,
       "read_attachment",
       "create_attachment",
@@ -1466,6 +1513,7 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     transcript: new TranscriptStore(),
   });
   assert.deepEqual(reasoning.tools.map((tool) => tool.name), [
+    HAND_OFF,
     SEND_MESSAGE,
     "read_attachment",
     "create_attachment",

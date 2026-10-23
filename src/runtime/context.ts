@@ -8,8 +8,10 @@ import { HathError } from "../errors.js";
 import type { DwarChatRequest, DwarMessage, DwarTool, Lane } from "../types/domain.js";
 import {
   CREATE_ATTACHMENT,
+  DECLINE_HANDOFF,
   DISPATCH_MESSAGE,
   FORWARD_ATTACHMENT,
+  HAND_OFF,
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
@@ -38,6 +40,7 @@ import {
   yieldTool,
 } from "./tools.js";
 import { directoryBlock, ownDescriptionLine } from "./directory.js";
+import { declineHandoffTool, handOffTool } from "./handoffs.js";
 import { openJobsNote } from "./jobs.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
 import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
@@ -354,6 +357,7 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
   if (lane === "conversation") {
     return [
       dispatchMessageTool,
+      declineHandoffTool,
       forwardAttachmentTool,
       readAttachmentTool,
       steerReasoningTool,
@@ -379,6 +383,7 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
   }));
   return [
     ...granted,
+    handOffTool,
     sendMessageTool,
     readAttachmentTool,
     createAttachmentTool,
@@ -396,6 +401,7 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
 }
 
 export const embeddedReasoningTools = [
+  HAND_OFF,
   SEND_MESSAGE,
   READ_ATTACHMENT,
   CREATE_ATTACHMENT,
@@ -412,6 +418,7 @@ export const embeddedReasoningTools = [
 ];
 export const embeddedConversationTools = [
   DISPATCH_MESSAGE,
+  DECLINE_HANDOFF,
   FORWARD_ATTACHMENT,
   READ_ATTACHMENT,
   STEER_REASONING,

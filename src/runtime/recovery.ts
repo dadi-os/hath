@@ -20,6 +20,7 @@
 import { formatISO } from "date-fns";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
+import { agentsWithPendingHandoffs } from "../db/handoffs.js";
 import { currentRequester } from "../db/messages.js";
 import { agentLogs } from "../db/schema.js";
 import type { DwarResponseBlock } from "../types/domain.js";
@@ -144,6 +145,10 @@ async function lastReasoningStep(db: Db, agentId: string): Promise<string> {
 export async function recoverInterruptedWakes(
   deps: DeliverDeps & { log: RuntimeLog; recoveryWindowMinutes: number },
 ): Promise<void> {
+  for (const agentId of await agentsWithPendingHandoffs(deps.db)) {
+    deps.log.info({ code: "handoffs_resumed", agent_id: agentId }, "restart left hand-offs unsent; waking the agent's conversation lane");
+    deps.enqueueConversation(agentId);
+  }
   const cutoff = Date.now() - deps.recoveryWindowMinutes * 60_000;
   for (const wake of await findInterruptedWakes(deps.db)) {
     const midFlight = wake.reasoning_cut || wake.conversation_cut || wake.steer_lost || wake.hand_off_lost;

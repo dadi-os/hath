@@ -324,7 +324,7 @@ test("a send to someone the other lane messaged after this one was written is re
       }
       return turn("gemini", [call("yield", `y${n}`)]);
     }, requests),
-    db: {} as Db,
+    ...conversationGateDeps(),
     transcript,
   });
   assert.equal(requests.length, 2);
@@ -408,9 +408,17 @@ test("a queued conversation run makes no model call until something it can see j
   assert.equal(requests.length, 2);
 });
 
-/** What the conversation send gates read: a db no test send reaches, and an empty transcript. */
+/** A query chain that finds no rows however it is built, awaited like a drizzle select. */
+const noRows: unknown = {
+  from: () => noRows,
+  where: () => noRows,
+  orderBy: () => noRows,
+  then: (resolve: (rows: unknown[]) => void) => resolve([]),
+};
+
+/** What the conversation lane reads: a db with no hand-offs and nothing else a test send reaches, and an empty transcript. */
 function conversationGateDeps() {
-  return { db: {} as Db, transcript: new TranscriptStore() };
+  return { db: { select: () => noRows } as unknown as Db, transcript: new TranscriptStore() };
 }
 
 /** Both lanes' transcripts frozen as one user message of `content`. */

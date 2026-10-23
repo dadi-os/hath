@@ -210,19 +210,29 @@ export async function openJobsNote(db: Db, agentId: string, lane: "conversation"
   }
   const lines = owed.map((job) => {
     const who = job.requesterId ?? "Ankur";
+    const waiting = `your question to ${who} waits for a reply, so do not ask again`;
+    if (lane === "reasoning") {
+      const next =
+        job.state === "needs_input"
+          ? waiting
+          : job.progressSeq !== null
+            ? "your one progress update is spent, so the next is a result, a blocker or a question"
+            : "progress is free for one update";
+      return `- ${who} gave you a job that is still open: report on it with hand_off (kind result, blocker, question or progress), and ${next}.`;
+    }
     const next =
       job.state === "needs_input"
-        ? `your question to ${who} waits for a reply, so do not ask again`
+        ? waiting
         : job.progressSeq !== null
           ? "your one progress update is spent, so the next is done, blocked or needs_input"
           : "running is free for one progress update";
-    return `- ${who} gave you a job that is still open: every message to ${who} carries a status, and ${next}.`;
+    return `- ${who} gave you a job that is still open: every message of your own to ${who} carries a status, and ${next}. A hand-off from your reasoning lane gets its status from its kind.`;
   });
   if (given.length > 0) {
     const names = given.map((job) => job.agentId).join(", ");
     lines.push(
       lane === "reasoning"
-        ? `- You gave work that is still open to ${names}: their reports come to you, and you send them every next step yourself.`
+        ? `- You gave work that is still open to ${names}: their reports come to you, and you send them every next step yourself with send_message.`
         : `- You gave work that is still open to ${names}: your reasoning lane directs it and messages them itself, so never message them; to change that work, steer reasoning.`,
     );
   }

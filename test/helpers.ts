@@ -117,6 +117,15 @@ export function yieldTurn(id = "yield-1"): DwarChatResponse {
   return toolUse("yield", {}, id);
 }
 
+/** The id of the newest hand-off to `to` that a conversation request shows in a [Hand-offs waiting] turn. */
+export function waitingHandoffId(request: DwarChatRequest, to = "Ankur"): number {
+  const found = [...JSON.stringify(request.messages).matchAll(new RegExp(`#(\\d+) · to ${to} ·`, "g"))].at(-1);
+  if (found === undefined) {
+    throw new Error(`no hand-off to ${to} is waiting in the request`);
+  }
+  return Number(found[1]);
+}
+
 export function mockDwar(opts: {
   reason?: (
     request: DwarChatRequest,

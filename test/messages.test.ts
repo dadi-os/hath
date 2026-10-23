@@ -518,7 +518,7 @@ test("assembleContext injects agent id and parent routing for children", async (
   assert.match(parentCtx.system, /You are a root agent/);
 });
 
-test("child may still send_message and dispatch_message to the user", async () => {
+test("child may still hand off and dispatch_message to the user", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, {
     id: "msg-parent",
@@ -544,8 +544,8 @@ test("child may still send_message and dispatch_message to the user", async () =
   const send = await executeTool(runtime.toolContext(childId, "reasoning"), {
     type: "tool_use",
     id: "child-send-user",
-    name: "send_message",
-    input: { to_agent_id: null, content: "status for Ankur" },
+    name: "hand_off",
+    input: { to: "ankur", kind: "note", content: "status for Ankur" },
   });
   assert.equal(send.isError, false);
 
@@ -568,8 +568,8 @@ test("child may still send_message and dispatch_message to the user", async () =
   const rootSend = await executeTool(runtime.toolContext(parentId, "reasoning"), {
     type: "tool_use",
     id: "root-send-user",
-    name: "send_message",
-    input: { to_agent_id: null, content: "report to Ankur" },
+    name: "hand_off",
+    input: { to: "ankur", kind: "note", content: "report to Ankur" },
   });
   assert.equal(rootSend.isError, false);
   await runtime.waitUntilIdle();

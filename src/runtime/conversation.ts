@@ -1,7 +1,10 @@
 import type { Db } from "../db/client.js";
+import { getHandoff, pendingHandoffs } from "../db/handoffs.js";
+import { HathError } from "../errors.js";
 import { fail, type ToolExecResult } from "../tools/shared.js";
 import type { DwarResponseBlock, DwarToolUseBlock } from "../types/domain.js";
 import { DISPATCH_MESSAGE, FORWARD_ATTACHMENT } from "../types/domain.js";
+import { handoffsTurn, unresolvedHandoffsTurn } from "./handoffs.js";
 import { opensLine } from "./jobs.js";
 import { alreadySentRefusal, callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import type { TranscriptStore } from "./transcript.js";
@@ -14,9 +17,13 @@ export type ConversationLoopDeps = StepDeps & {
 
 /**
  * Conversation-lane loop over the agent's shared wake. It sees exactly what
- * reasoning sees — including reasoning's thinking, tool calls and results, and the
- * messages reasoning sent itself — so status it reports comes from what actually
- * happened. A turn with no tool call continues; the only clean exit is the embedded
+ * reasoning sees — including reasoning's thinking, tool calls and results — so what it
+ * says comes from what actually happened, and it is the only lane that sends to Ankur
+ * and to every agent but the ones its reasoning lane brought in. Reasoning's hand-offs
+ * reach it as a [Hand-offs waiting] turn; it sends each (dispatch_message handoff_id)
+ * or declines it (decline_handoff), and a yield with one still waiting is answered, up to
+ * HANDOFF_RETRIES times, before the lane fails loudly and the rest are recorded as failed.
+ * A turn with no tool call continues; the only clean exit is the embedded
  * yield tool.
  * Skips the provider call when the visible history is empty or ends on an
  * assistant turn — providers reject those requests, and nothing is waiting —
@@ -32,9 +39,11 @@ export type ConversationLoopDeps = StepDeps & {
 export async function runConversationLoop(deps: ConversationLoopDeps): Promise<void> {
   let textReminded = false;
   let refusedRetries = 0;
+  let handoffRetries = 0;
   for (;;) {
     const assembled = await deps.assemble();
     syncWake(deps, assembled);
+    await showHandoffs(deps);
     const composedThrough = deps.wake.throughSeq;
 
     const request = laneRequest(deps, assembled);
@@ -52,7 +61,7 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
       if (call.name !== DISPATCH_MESSAGE && call.name !== FORWARD_ATTACHMENT) {
         return deps.executeTool(call);
       }
-      const to = (call.input as { to_agent_id?: string | null }).to_agent_id;
+      const to = await recipientOf(deps.db, call);
       if (to === undefined) {
         return deps.executeTool(call);
       }
@@ -71,6 +80,22 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
         deps.wake.push({ message: { role: "user", content: REFUSED_SEND_TURN }, only: "conversation" });
         continue;
       }
+      if (await showHandoffs(deps)) {
+        continue;
+      }
+      const waiting = await pendingHandoffs(deps.db, deps.agentId);
+      if (waiting.length > 0) {
+        if (handoffRetries >= HANDOFF_RETRIES) {
+          throw new HathError(
+            500,
+            "handoff_unresolved",
+            `the conversation lane ended with hand-offs still waiting: ${waiting.map((handoff) => `#${handoff.id}`).join(", ")}`,
+          );
+        }
+        handoffRetries += 1;
+        deps.wake.push({ message: { role: "user", content: unresolvedHandoffsTurn(waiting) }, only: "conversation" });
+        continue;
+      }
       if (sent === 0 && textChars(response.content) >= UNSENT_TEXT_CHARS && !textReminded) {
         textReminded = true;
         deps.wake.push({ message: { role: "user", content: UNSENT_TEXT_TURN }, only: "conversation" });
@@ -79,6 +104,38 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
       return;
     }
   }
+}
+
+/** How many times a run answers a yield while hand-offs wait before the lane fails. */
+const HANDOFF_RETRIES = 3;
+
+/**
+ * showHandoffs puts the hand-offs the lane has not yet been shown into its view as one
+ * turn, so a hand-off made mid-wake reaches it, and a run that starts on one has news.
+ * True when it showed any.
+ */
+async function showHandoffs(deps: ConversationLoopDeps): Promise<boolean> {
+  const unseen = (await pendingHandoffs(deps.db, deps.agentId)).filter((handoff) => !deps.wake.handoffsShown.has(handoff.id));
+  if (unseen.length === 0) {
+    return false;
+  }
+  for (const handoff of unseen) {
+    deps.wake.handoffsShown.add(handoff.id);
+  }
+  deps.wake.push({ message: { role: "user", content: handoffsTurn(unseen) }, only: "conversation" });
+  return true;
+}
+
+/**
+ * recipientOf is who a send call is for: the hand-off's recipient when it sends one, else
+ * the call's own to_agent_id; undefined when the call names no recipient the gates can judge.
+ */
+async function recipientOf(db: Db, call: DwarToolUseBlock): Promise<string | null | undefined> {
+  const input = call.input as { to_agent_id?: string | null; handoff_id?: unknown };
+  if (call.name === DISPATCH_MESSAGE && typeof input.handoff_id === "number") {
+    return (await getHandoff(db, input.handoff_id))?.toAgentId;
+  }
+  return input.to_agent_id;
 }
 
 /**

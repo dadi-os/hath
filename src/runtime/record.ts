@@ -9,7 +9,9 @@
 import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock } from "../types/domain.js";
 import {
   CREATE_ATTACHMENT,
+  DECLINE_HANDOFF,
   FORWARD_ATTACHMENT,
+  HAND_OFF,
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
@@ -64,6 +66,8 @@ export const ACTION_TOOLS = new Set<string>([
   INGEST_MEMORY,
   CREATE_ATTACHMENT,
   FORWARD_ATTACHMENT,
+  HAND_OFF,
+  DECLINE_HANDOFF,
 ]);
 
 /** How much of a step's own text a record keeps: what the lane said it was doing. */

@@ -17,7 +17,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { JobState, MessageStatus, MessageKind } from "../types/domain.js";
+import type { HandoffKind, HandoffState, JobState, MessageStatus, MessageKind } from "../types/domain.js";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -272,6 +272,44 @@ export const scheduledMessages = pgTable(
   ],
 );
 
+/**
+ * What an agent's reasoning lane wants said to someone other than the agents it brought in.
+ * The conversation lane sends it, with its job status set from `kind`, or declines it with
+ * a reason the reasoning lane reads; one that cannot be resolved because the lane failed is
+ * `failed`. `expects_reply` holds from the send of a question or request until the
+ * recipient's next message, which wakes the reasoning lane directly.
+ */
+export const handoffs = pgTable(
+  "handoffs",
+  {
+    id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    /** Null is Ankur. */
+    toAgentId: text("to_agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<HandoffKind>().notNull(),
+    content: text("content").notNull(),
+    attachmentIds: uuid("attachment_ids").array().notNull().default(sql`'{}'::uuid[]`),
+    state: text("state").$type<HandoffState>().notNull().default("pending"),
+    /** The message a sent hand-off became. */
+    messageId: uuid("message_id").references(() => messages.id, { onDelete: "set null" }),
+    /** Why a hand-off was declined or failed. */
+    reason: text("reason"),
+    expectsReply: boolean("expects_reply").notNull().default(false),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    resolvedAt: timestamptz("resolved_at"),
+  },
+  (table) => [
+    uniqueIndex("handoffs_pending_recipient_idx")
+      .on(table.agentId, sql`coalesce(${table.toAgentId}, '')`)
+      .where(sql`${table.state} = 'pending'`),
+    index("handoffs_agent_state_idx").on(table.agentId, table.state),
+    check("handoffs_kind_check", sql`${table.kind} IN ('result', 'blocker', 'question', 'progress', 'note', 'request')`),
+    check("handoffs_state_check", sql`${table.state} IN ('pending', 'sent', 'declined', 'failed')`),
+  ],
+);
+
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentLogRow = typeof agentLogs.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
@@ -280,3 +318,4 @@ export type ToolRow = typeof tools.$inferSelect;
 export type AgentToolRow = typeof agentTools.$inferSelect;
 export type ScheduledMessageRow = typeof scheduledMessages.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
+export type HandoffRow = typeof handoffs.$inferSelect;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { LIST_AGENTS, SEND_MESSAGE } from "../src/types/domain.js";
+import { HAND_OFF, LIST_AGENTS, SEND_MESSAGE } from "../src/types/domain.js";
 import { assembleContext } from "../src/runtime/context.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
@@ -319,6 +319,7 @@ test("worker granted execute_shell and read_file sees those plus send_message an
     [
       "terminal_execute_shell",
       "terminal_read_file",
+      HAND_OFF,
       SEND_MESSAGE,
       "read_attachment",
       "create_attachment",

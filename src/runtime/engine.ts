@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import type { Db } from "../db/client.js";
 import { HathError } from "../errors.js";
+import { failPendingHandoffs, pendingHandoffs } from "../db/handoffs.js";
 import { writeAgentLog } from "../db/logs.js";
 import { currentRequester } from "../db/messages.js";
 import { agents } from "../db/schema.js";
@@ -32,6 +33,7 @@ import { deliverAgentMessage } from "./deliver.js";
 import { runConversationLoop } from "./conversation.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
+import { failedHandoffSteer } from "./handoffs.js";
 import { LaneLocks } from "./locks.js";
 import { runReasoningLoop } from "./reasoning.js";
 import { SteerQueue } from "./steer.js";
@@ -225,7 +227,9 @@ export function createRuntime(opts: {
    * The run that holds the wake last settles the jobs the wake left open
    * before releasing it (see settleJobs); a failure is logged, since the wake must still
    * release.
-   * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
+   * Runs wait for the lane lock without a deadline, so no queued wake is dropped. A retired
+   * agent's conversation lane still runs while a hand-off waits, so a worker that retired
+   * itself in the turn that handed off its result still gets that report sent.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
@@ -241,7 +245,8 @@ export function createRuntime(opts: {
       try {
         const rows = await opts.db.select().from(agents).where(eq(agents.id, agentId));
         const agent = rows[0];
-        if (!agent || !agent.active) {
+        const sendsLastReport = lane === "conversation" && (await pendingHandoffs(opts.db, agentId)).length > 0;
+        if (!agent || (!agent.active && !sendsLastReport)) {
           return;
         }
         if (lane === "reasoning") {
@@ -269,6 +274,11 @@ export function createRuntime(opts: {
         message,
         at: new Date().toISOString(),
       });
+      if (lane === "conversation") {
+        await failHandoffs(agentId, message).catch((handoffErr: unknown) => {
+          opts.log.error({ err: handoffErr, agentId, code: "handoff_fail_failed" }, "recording failed hand-offs failed");
+        });
+      }
       const failure = message.replace(/req_[A-Za-z0-9]+/g, "req");
       if (reportedFailures.get(agentId) === failure) {
         opts.log.warn({ code: "lane_failure_repeat", agentId, lane }, `${lane} lane failed again with the error already reported`);
@@ -289,6 +299,19 @@ export function createRuntime(opts: {
         });
       }
       releaseWake();
+    }
+  }
+
+  /**
+   * failHandoffs records the hand-offs a failed conversation lane left unsent as failed,
+   * and queues a steer telling the reasoning lane each was not sent. It does not wake that
+   * lane: a conversation lane that keeps failing would otherwise be handed the same work again
+   * and again, so the steer waits for the agent's next wake, and the failure is reported
+   * to its requester like any other lane failure.
+   */
+  async function failHandoffs(agentId: string, message: string): Promise<void> {
+    for (const handoff of await failPendingHandoffs(opts.db, agentId, message)) {
+      steer.append(agentId, failedHandoffSteer(handoff, message));
     }
   }
 
@@ -462,7 +485,6 @@ export function createRuntime(opts: {
       ...stepDeps(agentId, "reasoning"),
       call: (request: DwarChatRequest) => opts.dwar.reason(request, `hath/${agentId}`),
       steer,
-      transcript,
     };
   }
 

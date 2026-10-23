@@ -1,5 +1,6 @@
 import { toAttachmentSummary, type NewAttachment } from "../db/attachments.js";
 import type { Db } from "../db/client.js";
+import { awaitingReply, clearAwaitedReply } from "../db/handoffs.js";
 import { insertMessage, NO_ATTACHMENTS, type MessageAttachments } from "../db/messages.js";
 import { writeAgentLog } from "../db/logs.js";
 import type { MessageStatus } from "../types/domain.js";
@@ -103,8 +104,9 @@ export async function deliverUserMessage(
  * Persist an agent → agent|user message. Shared by dispatch_message,
  * forward_attachment and the scheduled-message ticker. Caller checks agent
  * existence/active before calling. A message from an agent the recipient opened
- * the line to (its worker or helper, reporting back) wakes the recipient's reasoning
- * lane, which directs that work; any other message wakes its conversation lane.
+ * the line to (its worker or helper, reporting back), or from one whose reply its
+ * reasoning lane is waiting on (it handed off a question or request to it), wakes the
+ * recipient's reasoning lane; any other message wakes its conversation lane.
  */
 export async function deliverAgentMessage(
   deps: DeliverDeps,
@@ -164,9 +166,14 @@ export async function deliverAgentMessage(
   if (row.toAgentId !== null) {
     let wakeId: string | null = null;
     if (args.wake !== false) {
-      wakeId = (await opensLine(deps.db, row.toAgentId, args.fromAgentId))
-        ? deps.enqueueReasoning(row.toAgentId)
-        : deps.enqueueConversation(row.toAgentId);
+      const awaited = await awaitingReply(deps.db, row.toAgentId, args.fromAgentId);
+      wakeId =
+        awaited || (await opensLine(deps.db, row.toAgentId, args.fromAgentId))
+          ? deps.enqueueReasoning(row.toAgentId)
+          : deps.enqueueConversation(row.toAgentId);
+      if (awaited) {
+        await clearAwaitedReply(deps.db, row.toAgentId, args.fromAgentId);
+      }
     }
     await writeAgentLog(deps.db, {
       agentId: row.toAgentId,
