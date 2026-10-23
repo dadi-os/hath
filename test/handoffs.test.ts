@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { createHandoff } from "../src/db/handoffs.js";
@@ -72,8 +73,8 @@ function quietDeps(runtime: Runtime) {
     db: handle.db,
     transcript: runtime.transcript,
     events: runtime.events,
-    enqueueConversation: () => "",
-    enqueueReasoning: () => "",
+    enqueueConversation: () => randomUUID(),
+    enqueueReasoning: () => randomUUID(),
   };
 }
 
