@@ -10,7 +10,7 @@ import type {
 import type { Db } from "../src/db/client.js";
 import { runConversationLoop, UNSENT_TEXT_TURN } from "../src/runtime/conversation.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { runReasoningLoop, UNSENT_REPORT_TURN } from "../src/runtime/reasoning.js";
+import { LONG_SILENCE_TURN, runReasoningLoop, TURNS_BEFORE_NUDGE, UNSENT_REPORT_TURN } from "../src/runtime/reasoning.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { CAPPED_TURN, CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
@@ -361,6 +361,21 @@ test("a reasoning yield after a report written as text and never sent gets one r
   });
   assert.equal(requests.length, 2);
   assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_REPORT_TURN));
+});
+
+test("a reasoning lane that reports nothing for TURNS_BEFORE_NUDGE turns is asked what it has once, then keeps working", async () => {
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runReasoningLoop({
+    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return turn("anthropic", [call(n <= TURNS_BEFORE_NUDGE ? "terminal_grep" : "yield", `t${n}`)]);
+    }, requests),
+    steer: new SteerQueue(),
+  });
+  assert.equal(requests.length, TURNS_BEFORE_NUDGE + 1);
+  assert.ok(!JSON.stringify(requests[TURNS_BEFORE_NUDGE - 1]!.messages).includes(LONG_SILENCE_TURN));
+  assert.ok(JSON.stringify(requests[TURNS_BEFORE_NUDGE]!.messages).includes(LONG_SILENCE_TURN));
 });
 
 test("a wake lives while any run holds it and is dropped when the last releases", () => {

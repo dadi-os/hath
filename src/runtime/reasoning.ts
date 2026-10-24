@@ -34,6 +34,7 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
   };
 
   let reminded = false;
+  let turnsSinceReport = 0;
   for (;;) {
     if (stop()) {
       exit();
@@ -56,6 +57,7 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
     }
 
     const response = await callLane(deps, laneRequest(deps, assembled));
+    turnsSinceReport = reports(response.content) ? 0 : turnsSinceReport + 1;
 
     if (await runStep(deps, response, stop)) {
       if (!stop() && !reminded && unsentReport(response.content)) {
@@ -66,7 +68,27 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
       exit();
       return;
     }
+    if (turnsSinceReport >= TURNS_BEFORE_NUDGE) {
+      turnsSinceReport = 0;
+      deps.wake.push({ message: { role: "user", content: LONG_SILENCE_TURN }, only: "reasoning" });
+    }
   }
+}
+
+/** How many model turns in a row may pass without a hand_off or send_message before the lane is asked what it has. */
+export const TURNS_BEFORE_NUDGE = 60;
+
+/**
+ * The reminder after TURNS_BEFORE_NUDGE turns that reported nothing. It stops no work: hath never
+ * decides from outside that an agent stalled. On 2026-10-24 networking-specialist spent two hours
+ * grepping a 3,000-line tracker for one answer and never reported what it had.
+ */
+export const LONG_SILENCE_TURN =
+  "[continue] Many turns have passed since you last handed off or sent anything. If you are reading a large file or log to answer one question, search it for just that and stop paging through it; if you already have an answer worth giving, hand it off now; if you are partway through ordinary steps, carry on.";
+
+/** reports is true when a turn called hand_off or send_message. */
+function reports(content: DwarResponseBlock[]): boolean {
+  return content.some((block) => block.type === "tool_use" && (block.name === HAND_OFF || block.name === SEND_MESSAGE));
 }
 
 /** A reasoning turn whose text is at least this long, sent nowhere, reads as a report left unsent. */
@@ -81,8 +103,5 @@ export const UNSENT_REPORT_TURN =
  * hand_off nor send_message, so whatever it reported went nowhere.
  */
 function unsentReport(content: DwarResponseBlock[]): boolean {
-  return (
-    textChars(content) >= UNSENT_REPORT_CHARS &&
-    !content.some((block) => block.type === "tool_use" && (block.name === HAND_OFF || block.name === SEND_MESSAGE))
-  );
+  return textChars(content) >= UNSENT_REPORT_CHARS && !reports(content);
 }
