@@ -162,7 +162,7 @@ async function sendRefusal(
     return `Not sent: ${who} wrote to you after you composed this. Read the new message first, then send what still holds.`;
   }
   if (to !== null && (await opensLine(deps.db, deps.agentId, to))) {
-    return `Not sent: ${to} is an agent you brought in, and your reasoning lane directs it and sends it everything itself. To change ${to}'s work, steer reasoning.`;
+    return `Not sent: ${to} is an agent you brought in (one you spawned, or one you messaged before it ever messaged you), and your reasoning lane directs it and sends it everything itself. To change ${to}'s work, steer reasoning.`;
   }
   return null;
 }

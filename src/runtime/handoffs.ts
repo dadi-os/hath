@@ -125,7 +125,7 @@ export async function runHandOff(ctx: ToolContext, raw: unknown): Promise<ToolEx
   if (to !== null) {
     await requireActiveAgent(ctx.db, to);
     if (await isControlChannel(ctx.db, caller, to)) {
-      return fail(`Not handed off: ${to} is an agent you brought in. Message it yourself with send_message.`);
+      return fail(`Not handed off: ${to} is an agent you brought in (one you spawned, or one you messaged before it ever messaged you), so you message it yourself with send_message, not hand_off.`);
     }
   }
   const refusal = await reportRefusal(ctx.db, caller, to, HANDOFF_STATUS[input.kind]);
