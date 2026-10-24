@@ -100,6 +100,8 @@ test("Ankur's message opens a job whose reports carry a status, one progress upd
   assert.equal(job?.state, "open");
   assert.equal(job?.questionSeq, null);
 
+  assert.equal((await dispatch(runtime, agentId, null, "checking the registrar now", "running")).isError, false);
+
   assert.equal((await dispatch(runtime, agentId, null, "Wed 1:00 PM", "done")).isError, false);
   [job] = await jobsOf(agentId);
   assert.equal(job?.state, "done");

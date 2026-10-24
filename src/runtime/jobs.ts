@@ -140,8 +140,9 @@ export async function settleWakeJobs(db: Db, lines: TranscriptEntry[], agentId: 
 /**
  * reportRefusal is why `agent`'s message to `to` carrying `status` must not go out, or
  * null when it may. While `to`'s job is open, every message to `to` carries a status
- * (gate 1), the one progress update is spent once (gate 2), and a question waits for
- * `to`'s reply before another goes (gate 3). A message on no open job passes, unless it carries a status while someone else's job is open (see misaddressedReport).
+ * (gate 1), the one progress update is spent once unless `to` has written since (gate 2:
+ * a new message from `to` is owed an answer, which on 2026-10-24 Ankur's "why 2 hours?" was
+ * refused), and a question waits for `to`'s reply before another goes (gate 3). A message on no open job passes, unless it carries a status while someone else's job is open (see misaddressedReport).
  */
 export async function reportRefusal(
   db: Db,
@@ -157,13 +158,30 @@ export async function reportRefusal(
   if (status === undefined) {
     return `Not sent: ${who} gave you a job that is still open, so every message to ${who} carries status: running (your one progress update), needs_input (a question only ${who} can answer), blocked (you cannot finish), or done (the result). Send it again with its status.`;
   }
-  if (status === "running" && job.progressSeq !== null) {
+  if (status === "running" && job.progressSeq !== null && !(await wroteSince(db, to, agent, job.progressSeq))) {
     return `Not sent: you already sent ${who} your one progress update on this job. Your next message to ${who} is done, blocked, or needs_input; put this in it.`;
   }
   if (status === "needs_input" && job.state === "needs_input") {
     return `Not sent: your question to ${who} is still open and ${who} has not replied since. Do not ask again; wait for the reply.`;
   }
   return null;
+}
+
+/** wroteSince is true when `from` (null for Ankur) has messaged `agent` after message `seq`. */
+async function wroteSince(db: Db, from: string | null, agent: string, seq: number): Promise<boolean> {
+  const [row] = await db
+    .select({ seq: messages.seq })
+    .from(messages)
+    .where(
+      and(
+        from === null ? isNull(messages.fromAgentId) : eq(messages.fromAgentId, from),
+        eq(messages.toAgentId, agent),
+        eq(messages.kind, "message"),
+        sql`${messages.seq} > ${seq}`,
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 /**
@@ -208,14 +226,15 @@ export async function openJobsNote(db: Db, agentId: string, lane: "conversation"
   if (owed.length === 0 && given.length === 0) {
     return null;
   }
-  const lines = owed.map((job) => {
+  const lines = await Promise.all(owed.map(async (job) => {
     const who = job.requesterId ?? "Ankur";
+    const spent = job.progressSeq !== null && !(await wroteSince(db, job.requesterId, agentId, job.progressSeq));
     const waiting = `your question to ${who} waits for a reply, so do not ask again`;
     if (lane === "reasoning") {
       const next =
         job.state === "needs_input"
           ? waiting
-          : job.progressSeq !== null
+          : spent
             ? "your one progress update is spent, so the next is a result, a blocker or a question"
             : "progress is free for one update";
       return `- ${who} gave you a job that is still open: report on it with hand_off (kind result, blocker, question or progress), and ${next}.`;
@@ -223,11 +242,11 @@ export async function openJobsNote(db: Db, agentId: string, lane: "conversation"
     const next =
       job.state === "needs_input"
         ? waiting
-        : job.progressSeq !== null
+        : spent
           ? "your one progress update is spent, so the next is done, blocked or needs_input"
           : "running is free for one progress update";
     return `- ${who} gave you a job that is still open: every message to ${who} carries a status, and ${next}. A hand-off from your reasoning lane gets its status from its kind.`;
-  });
+  }));
   if (given.length > 0) {
     const names = given.map((job) => job.agentId).join(", ");
     lines.push(
