@@ -59,38 +59,6 @@ const nodeHistoryRecordSchema = z
   })
   .passthrough();
 
-const plannerBlockSchema = z
-  .object({
-    id: z.string().uuid(),
-    start_at: z.string(),
-    end_at: z.string(),
-    title: z.string(),
-    note: z.string().nullable(),
-    kind: z.string(),
-    icon: z.string(),
-    fixed: z.boolean(),
-    overlap_ok: z.boolean(),
-    done_at: z.string().nullable(),
-    source: z.string(),
-  })
-  .passthrough();
-
-const plannerBlocksSchema = z.object({ blocks: z.array(plannerBlockSchema) }).passthrough();
-
-export type PlannerBlock = z.infer<typeof plannerBlockSchema>;
-
-/** The fields of a planner block a write names; `start_at` / `end_at` are ISO 8601 with offset. */
-export type PlannerBlockFields = {
-  start_at: string;
-  end_at: string;
-  title: string;
-  note?: string | null | undefined;
-  kind: string;
-  icon: string;
-  fixed?: boolean | undefined;
-  overlap_ok?: boolean | undefined;
-};
-
 export type RecallResponse = z.infer<typeof recallResponseSchema>;
 export type IngestResponse = z.infer<typeof ingestResponseSchema>;
 export type NodeHistoryRecord = z.infer<typeof nodeHistoryRecordSchema>;
@@ -126,16 +94,6 @@ export type YaadClient = {
     query: string;
     limit?: number;
   }) => Promise<{ results: NodeHistoryRecord[] }>;
-  plannerQuery: (body: { from: string; to: string }) => Promise<{ blocks: PlannerBlock[] }>;
-  plannerReplace: (body: {
-    source: string;
-    from: string;
-    to: string;
-    blocks: PlannerBlockFields[];
-  }) => Promise<{ blocks: PlannerBlock[] }>;
-  plannerCreate: (body: PlannerBlockFields & { source: string }) => Promise<PlannerBlock>;
-  plannerUpdate: (id: string, body: { [K in keyof PlannerBlockFields]?: PlannerBlockFields[K] | undefined }) => Promise<PlannerBlock>;
-  plannerDelete: (id: string) => Promise<{ id: string }>;
 };
 
 /** Build a retrying axios client pointed at `YAAD_BASE_URL`. */
@@ -148,18 +106,6 @@ export function createYaadClient(config: Config): YaadClient {
 
   async function post<T>(path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
     const data = await withRetry(config, () => http.post(path, body).then((res) => res.data));
-    return parseResponse(schema, data);
-  }
-
-  async function patch<T>(path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
-    const data = await withRetry(config, () => http.patch(path, body).then((res) => res.data));
-    return parseResponse(schema, data);
-  }
-
-  async function del<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-    const data = await withRetry(config, () =>
-      http.delete(path, { headers: { "content-type": false } }).then((res) => res.data),
-    );
     return parseResponse(schema, data);
   }
 
@@ -182,11 +128,6 @@ export function createYaadClient(config: Config): YaadClient {
         body,
         z.object({ results: z.array(nodeHistoryRecordSchema) }).passthrough(),
       ),
-    plannerQuery: (body) => post("/planner/query", body, plannerBlocksSchema),
-    plannerReplace: (body) => post("/planner/replace", body, plannerBlocksSchema),
-    plannerCreate: (body) => post("/planner/blocks", body, plannerBlockSchema),
-    plannerUpdate: (id, body) => patch(`/planner/blocks/${id}`, body, plannerBlockSchema),
-    plannerDelete: (id) => del(`/planner/blocks/${id}`, z.object({ id: z.string().uuid() }).passthrough()),
   };
 }
 

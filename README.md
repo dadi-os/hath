@@ -122,7 +122,7 @@ Every reasoning lane holds the two memory tools without a grant, so each agent r
 | embedded tool | Yaad route | when to use |
 | --- | --- | --- |
 | `recall_memory` | `POST /recall` | anchor on a `query` (by meaning), `from` node ids, or exact filters (`kind`, `name`, date window, `status`), then walk `hops` links out; `{ from: [id], hops: 1 }` is a node with its neighbors |
-| `ingest_memory` | `POST /ingest` | store a fact, event, or scheduled meeting about Ankur's world |
+| `ingest_memory` | `POST /ingest` | store a fact, event, or scheduled meeting about Ankur's world, and every calendar write: scheduling time, moving or cancelling one session, its outcome, and its notes |
 
 `ingest_memory` sends `source: "agent"`, `agent_id` = the calling agent, and `occurred_at` stamped from the clock, so Yaad records which agent wrote every node. Workers are not offered it: a worker reports to the agent that owns the domain, which stores what matters. Lessons about how sites, accounts, and repos behave stay in agents' transcripts, not memory.
 
@@ -130,13 +130,8 @@ Every reasoning lane holds the two memory tools without a grant, so each agent r
 | --- | --- | --- |
 | `yaad_get_node_history` | `GET /nodes/:id/history` | correction log for one node |
 | `yaad_search_history` | `POST /history/search` | semantic search over corrections |
-| `planner_list_range` | `POST /planner/query` | blocks on Ankur's planner in a time range |
-| `planner_replace_range` | `POST /planner/replace` | write the caller's whole plan for a day or week in one call; only the caller's own blocks in the range are replaced |
-| `planner_add_block` | `POST /planner/blocks` | add one block |
-| `planner_update_block` | `PATCH /planner/blocks/:id` | change one block's fields |
-| `planner_delete_block` | `DELETE /planner/blocks/:id` | delete one block |
 
-The planner tools write timed blocks (kind, icon, note) that the Timeline's Day and Week views draw. Blocks may not overlap unless `overlap_ok`; Yaad refuses an overlap and names the pair, and the tool returns it as an error. A block's `source` is the calling agent.
+There are no planner tools: Ankur's timeline is Yaad's plans, so agents schedule, reschedule, record outcomes and add session notes through `ingest_memory`, and read the schedule with `recall_memory` date filters.
 
 ### Chaavi (vault)
 
