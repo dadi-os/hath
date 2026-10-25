@@ -124,7 +124,7 @@ Every reasoning lane holds the two memory tools without a grant, so each agent r
 | `recall_memory` | `POST /recall` | anchor on a `query` (by meaning), `from` node ids, or exact filters (`kind`, `name`, date window, `status`), then walk `hops` links out; `{ from: [id], hops: 1 }` is a node with its neighbors |
 | `ingest_memory` | `POST /ingest` | store a fact, event, or scheduled meeting about Ankur's world |
 
-`ingest_memory` sends `source: "agent"`, `agent_id` = the calling agent, and `occurred_at` stamped from the clock, so Yaad records which agent wrote every node. Agents store their lessons about Ankur's sites, accounts, and repos there too, so every agent can recall them.
+`ingest_memory` sends `source: "agent"`, `agent_id` = the calling agent, and `occurred_at` stamped from the clock, so Yaad records which agent wrote every node. Workers are not offered it: a worker reports to the agent that owns the domain, which stores what matters. Lessons about how sites, accounts, and repos behave stay in agents' transcripts, not memory.
 
 | grantable tool | Yaad route | when to use |
 | --- | --- | --- |

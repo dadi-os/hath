@@ -87,6 +87,26 @@ test("a reasoning lane with no grants still holds recall_memory and ingest_memor
   }
 });
 
+test("a worker recalls memory but is not offered ingest_memory", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const workerId = await insertWorker(handle.db, {
+    id: "browser-worker-cse-431-quiz-3",
+    systemPrompt: "read the quiz page and report it",
+    tools: [],
+  });
+  const ctx = await assembleContext({
+    windows: wideWindows,
+    db: handle.db,
+    serviceRoot: config.serviceRoot,
+    agentId: workerId,
+    lane: "reasoning",
+    transcript: new TranscriptStore(),
+  });
+  const names = new Set(ctx.tools.map((tool) => tool.name));
+  assert.ok(names.has(RECALL_MEMORY));
+  assert.ok(!names.has(INGEST_MEMORY));
+});
+
 test("recall_memory passes anchors, hops, and filters through and shapes the response", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {

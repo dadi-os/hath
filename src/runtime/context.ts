@@ -350,6 +350,11 @@ function entryBody(row: TranscriptEntry): string {
     .join("\n\n");
 }
 
+/**
+ * toolsForLane is what a lane may call: the conversation lane's routing tools, or the
+ * reasoning lane's grants plus the embedded tools. A worker gets no `ingest_memory`: it
+ * reports what it found to the agent that owns the domain, which stores what matters.
+ */
 async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTool[]> {
   if (lane === "router") {
     throw new HathError(500, "internal_error", `agent ${agentId} has no router lane`);
@@ -391,7 +396,7 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
     waitTool,
     readResultTool,
     recallMemoryTool,
-    ingestMemoryTool,
+    ...(WORKER_ID.test(agentId) ? [] : [ingestMemoryTool]),
     manageAgentTool,
     modifyAgentPromptTool,
     ...embeddedAgentTools().map(asDwarTool),
