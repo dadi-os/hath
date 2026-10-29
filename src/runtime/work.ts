@@ -2,32 +2,32 @@ import type { DwarResponseBlock } from "../types/domain.js";
 import { HAND_OFF, SEND_MESSAGE } from "../types/domain.js";
 import type { SteerQueue } from "./steer.js";
 import { formatSteerTurn } from "./steer.js";
-import { textChars } from "./conversation.js";
+import { textChars } from "./process.js";
 import { callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 
-/** Step deps plus the steer queue the conversation lane writes to. */
-export type ReasoningLoopDeps = StepDeps & {
+/** Step deps plus the steer queue the process lane writes to. */
+export type WorkLoopDeps = StepDeps & {
   steer: SteerQueue;
 };
 
 /**
- * Reasoning-lane loop over the agent's shared wake. Each call sees the whole
+ * Work-lane loop over the agent's shared wake. Each call sees the whole
  * wake — the model's own thinking, text and tool calls, their full results,
- * conversation's steps, and mid-wake arrivals — and the model is free to think
+ * the process lane's steps, and mid-wake arrivals — and the model is free to think
  * and write before or instead of calling a tool. A turn with no tool call
  * continues; the only clean exit is the embedded yield tool.
  *
- * A run that finds nothing new since reasoning last yielded in this wake ends
+ * A run that finds nothing new since the work lane last yielded in this wake ends
  * without a model call, as when a worker's report queues a run behind one that
- * already read it. Steers join the wake as reasoning-only turns where they happened. When
- * conversation sets terminate, this wake stops in its tracks: no further tool
+ * already read it. Steers join the wake as the work lane-only turns where they happened. When
+ * the process lane sets terminate, this wake stops in its tracks: no further tool
  * calls run (in-flight model output is logged, then its calls are refused).
  * A yield in a turn that wrote a message's worth of text and handed off nothing is answered
  * once with UNSENT_REPORT_TURN, since that text is a report nobody would otherwise get.
  * This lane messages only the agents it brought in (send_message); everything it has to
- * say to anyone else goes to the conversation lane as a hand_off.
+ * say to anyone else goes to the process lane as a hand_off.
  */
-export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
+export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
   const stop = () => deps.steer.isTerminate(deps.agentId);
   const exit = () => {
     deps.steer.takeTerminate(deps.agentId);
@@ -48,7 +48,7 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
     if (steers.length > 0) {
       deps.wake.push({
         message: { role: "user", content: formatSteerTurn(steers) },
-        only: "reasoning",
+        only: "work",
       });
     }
     if (stop() || deps.wake.unchangedSinceYield(deps.lane)) {
@@ -62,7 +62,7 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
     if (await runStep(deps, response, stop)) {
       if (!stop() && !reminded && unsentReport(response.content)) {
         reminded = true;
-        deps.wake.push({ message: { role: "user", content: UNSENT_REPORT_TURN }, only: "reasoning" });
+        deps.wake.push({ message: { role: "user", content: UNSENT_REPORT_TURN }, only: "work" });
         continue;
       }
       exit();
@@ -70,7 +70,7 @@ export async function runReasoningLoop(deps: ReasoningLoopDeps): Promise<void> {
     }
     if (turnsSinceReport >= TURNS_BEFORE_NUDGE) {
       turnsSinceReport = 0;
-      deps.wake.push({ message: { role: "user", content: LONG_SILENCE_TURN }, only: "reasoning" });
+      deps.wake.push({ message: { role: "user", content: LONG_SILENCE_TURN }, only: "work" });
     }
   }
 }
@@ -91,7 +91,7 @@ function reports(content: DwarResponseBlock[]): boolean {
   return content.some((block) => block.type === "tool_use" && (block.name === HAND_OFF || block.name === SEND_MESSAGE));
 }
 
-/** A reasoning turn whose text is at least this long, sent nowhere, reads as a report left unsent. */
+/** A work-lane turn whose text is at least this long, sent nowhere, reads as a report left unsent. */
 const UNSENT_REPORT_CHARS = 400;
 
 /** The reminder a yield gets after a turn wrote a report as text and handed off nothing. */

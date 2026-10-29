@@ -32,13 +32,13 @@ export function advanceRunAt(runAt: Date, intervalMinutes: number): Date {
 
 type FiredRow = ScheduledMessageRow & { firedAt: Date };
 
-/** Polls scheduled messages every `tickSeconds`, delivers the due ones into transcripts, and wakes each recipient's conversation lane. */
+/** Polls scheduled messages every `tickSeconds`, delivers the due ones into transcripts, and wakes each recipient's process lane. */
 export function createScheduler(opts: {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  enqueueConversation: (agentId: string) => string;
-  enqueueReasoning: (agentId: string) => string;
+  enqueueProcess: (agentId: string) => string;
+  enqueueWork: (agentId: string) => string;
   log: SchedulerLog;
   tickSeconds: number;
 }): Scheduler {
@@ -127,8 +127,8 @@ export function createScheduler(opts: {
         db: opts.db,
         transcript: opts.transcript,
         events: opts.events,
-        enqueueConversation: opts.enqueueConversation,
-        enqueueReasoning: opts.enqueueReasoning,
+        enqueueProcess: opts.enqueueProcess,
+        enqueueWork: opts.enqueueWork,
       },
       {
         fromAgentId: row.fromAgentId,

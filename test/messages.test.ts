@@ -48,8 +48,8 @@ function deliverDeps(transcript: TranscriptStore) {
     db: handle.db,
     transcript,
     events: new EventBus(silentLog),
-    enqueueConversation: () => {},
-    enqueueReasoning: () => {},
+    enqueueProcess: () => {},
+    enqueueWork: () => {},
   };
 }
 
@@ -111,29 +111,29 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
   for (let i = 0; i < 6; i++) {
     await deliverUserMessage(deps, agentId, `m-${i} ${"x".repeat(100)}`);
   }
-  const assemble = (conversation: TranscriptWindow) =>
+  const assemble = (processWindow: TranscriptWindow) =>
     assembleContext({
       db: handle.db,
       serviceRoot: config.serviceRoot,
       agentId,
-      lane: "conversation",
+      lane: "process",
       transcript,
-      windows: { conversation, reasoning: wideWindows.reasoning },
+      windows: { process: processWindow, work: wideWindows.work },
     });
 
-  const whole = await assemble(wideWindows.conversation);
-  const thread = whole.transcripts.reasoning!.slice(0, -1);
+  const whole = await assemble(wideWindows.process);
+  const thread = whole.transcripts.work!.slice(0, -1);
   assert.equal(thread.length, 6);
-  assert.match(String(whole.transcripts.reasoning!.at(-1)?.content), /^\[Open jobs\] /, "reasoning, which sends too, gets the note");
-  assert.match(String(whole.transcripts.conversation!.at(-1)?.content), /^\[Open jobs\] /, "Ankur's open job follows the thread");
+  assert.match(String(whole.transcripts.work!.at(-1)?.content), /^\[Open jobs\] /, "the work lane, which sends too, gets the note");
+  assert.match(String(whole.transcripts.process!.at(-1)?.content), /^\[Open jobs\] /, "Ankur's open job follows the thread");
 
   const narrow = await assemble({ chars: 500, stepChars: 200, budgetTokens: 10_000_000 });
   const sizes = thread.map((m) => String(m.content).length);
   const start = windowStart(sizes, { chars: 500, stepChars: 200 });
   assert.ok(start > 0);
-  assert.deepEqual(narrow.transcripts.conversation!.slice(0, -1), thread.slice(start));
-  assert.match(String(narrow.transcripts.conversation!.at(-2)?.content), /\nm-5 /);
-  assert.deepEqual(narrow.transcripts.reasoning!.slice(0, -1), thread);
+  assert.deepEqual(narrow.transcripts.process!.slice(0, -1), thread.slice(start));
+  assert.match(String(narrow.transcripts.process!.at(-2)?.content), /\nm-5 /);
+  assert.deepEqual(narrow.transcripts.work!.slice(0, -1), thread);
   assert.equal(narrow.throughSeq, whole.throughSeq);
 });
 
@@ -154,21 +154,21 @@ test("assembleContext shortens a lane's window to the room its token budget leav
       db: handle.db,
       serviceRoot: config.serviceRoot,
       agentId,
-      lane: "conversation",
+      lane: "process",
       transcript,
-      windows: { conversation: { ...wideWindows.conversation, budgetTokens }, reasoning: wideWindows.reasoning },
+      windows: { process: { ...wideWindows.process, budgetTokens }, work: wideWindows.work },
     });
 
-  const whole = await assemble(wideWindows.conversation.budgetTokens);
-  const thread = whole.transcripts.reasoning!.slice(0, -1);
+  const whole = await assemble(wideWindows.process.budgetTokens);
+  const thread = whole.transcripts.work!.slice(0, -1);
   assert.equal(thread.length, 6);
   const fixedTokens =
     Math.ceil(whole.system.length / PROSE_CHARS_PER_TOKEN) +
     Math.ceil(JSON.stringify(whole.tools).length / DATA_CHARS_PER_TOKEN);
 
   const full = await assemble(fixedTokens);
-  assert.deepEqual(full.transcripts.conversation!.slice(0, -1), thread.slice(-1));
-  assert.deepEqual(full.transcripts.reasoning!.slice(0, -1), thread);
+  assert.deepEqual(full.transcripts.process!.slice(0, -1), thread.slice(-1));
+  assert.deepEqual(full.transcripts.work!.slice(0, -1), thread);
 });
 
 test("messages arriving mid-wake join the wake after it and never rewrite earlier turns", async () => {
@@ -182,14 +182,14 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
   const deps = deliverDeps(transcript);
   await deliverUserMessage(deps, agentId, "find Oliver Chen");
 
-  const { runReasoningLoop } = await import("../src/runtime/reasoning.js");
+  const { runWorkLoop } = await import("../src/runtime/work.js");
   const { SteerQueue } = await import("../src/runtime/steer.js");
   const { Wake } = await import("../src/runtime/wake.js");
   const requests: { messages: unknown[] }[] = [];
   let turn = 0;
-  await runReasoningLoop({
+  await runWorkLoop({
     agentId,
-    lane: "reasoning",
+    lane: "work",
     wake: new Wake(roomyWakeLimits),
     assemble: () =>
       assembleContext({
@@ -197,7 +197,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
         db: handle.db,
         serviceRoot: config.serviceRoot,
         agentId,
-        lane: "reasoning",
+        lane: "work",
         transcript,
       }),
     arrivalsSince: (afterSeq) => arrivalsSince(transcript, agentId, afterSeq),
@@ -303,8 +303,8 @@ test("GET /threads and GET /agents/:id/messages return human-thread history", as
       db: handle.db,
       transcript: runtime.transcript,
       events: runtime.events,
-      enqueueConversation: runtime.enqueueConversation,
-      enqueueReasoning: runtime.enqueueReasoning,
+      enqueueProcess: runtime.enqueueProcess,
+      enqueueWork: runtime.enqueueWork,
     },
     { fromAgentId: agentId, toAgentId: null, content: "pong" },
   );
@@ -412,7 +412,7 @@ test("backfill migration smoke: agent_logs message events land in messages after
   });
   await writeAgentLog(handle.db, {
     agentId,
-    lane: "conversation",
+    lane: "process",
     event: "message",
     payload: {
       direction: "receive",
@@ -500,7 +500,7 @@ test("assembleContext injects agent id and parent routing for children", async (
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
-    lane: "reasoning",
+    lane: "work",
     transcript: new TranscriptStore(),
   });
   assert.match(childCtx.system, /Your agent id is routing-child/);
@@ -511,7 +511,7 @@ test("assembleContext injects agent id and parent routing for children", async (
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: parentId,
-    lane: "conversation",
+    lane: "process",
     transcript: new TranscriptStore(),
   });
   assert.match(parentCtx.system, /Your agent id is routing-parent/);
@@ -541,7 +541,7 @@ test("child may still hand off and dispatch_message to the user", async () => {
     log: silentLog,
   });
 
-  const send = await executeTool(runtime.toolContext(childId, "reasoning"), {
+  const send = await executeTool(runtime.toolContext(childId, "work"), {
     type: "tool_use",
     id: "child-send-user",
     name: "hand_off",
@@ -549,7 +549,7 @@ test("child may still hand off and dispatch_message to the user", async () => {
   });
   assert.equal(send.isError, false);
 
-  const dispatch = await executeTool(runtime.toolContext(childId, "conversation"), {
+  const dispatch = await executeTool(runtime.toolContext(childId, "process"), {
     type: "tool_use",
     id: "child-dispatch-user",
     name: "dispatch_message",
@@ -557,7 +557,7 @@ test("child may still hand off and dispatch_message to the user", async () => {
   });
   assert.equal(dispatch.isError, false);
 
-  const toParent = await executeTool(runtime.toolContext(childId, "conversation"), {
+  const toParent = await executeTool(runtime.toolContext(childId, "process"), {
     type: "tool_use",
     id: "child-dispatch-parent",
     name: "dispatch_message",
@@ -565,7 +565,7 @@ test("child may still hand off and dispatch_message to the user", async () => {
   });
   assert.equal(toParent.isError, false);
 
-  const rootSend = await executeTool(runtime.toolContext(parentId, "reasoning"), {
+  const rootSend = await executeTool(runtime.toolContext(parentId, "work"), {
     type: "tool_use",
     id: "root-send-user",
     name: "hand_off",
@@ -591,7 +591,7 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   });
   const dump = "grep hit\n".repeat(AGENT_MESSAGE_MAX_CHARS / 9 + 1);
 
-  const toPeer = await executeTool(runtime.toolContext(senderId, "conversation"), {
+  const toPeer = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "cap-dispatch-peer",
     name: "dispatch_message",
@@ -606,7 +606,7 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   assert.equal(files.length, 1);
   assert.equal(files[0]!.textContent, dump, "the whole message travels as the attachment");
 
-  const toAnkur = await executeTool(runtime.toolContext(senderId, "conversation"), {
+  const toAnkur = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "cap-dispatch-ankur",
     name: "dispatch_message",
@@ -650,7 +650,7 @@ test("messaging a retired agent is a retired error on every path and stores noth
   assert.equal(posted.statusCode, 409);
   assert.equal((posted.json() as { error: { type: string } }).error.type, "retired");
 
-  const send = await executeTool(runtime.toolContext(senderId, "reasoning"), {
+  const send = await executeTool(runtime.toolContext(senderId, "work"), {
     type: "tool_use",
     id: "send-retired",
     name: "send_message",
@@ -659,7 +659,7 @@ test("messaging a retired agent is a retired error on every path and stores noth
   assert.equal(send.isError, true);
   assert.equal(send.content, `retired: agent ${retiredId} is retired`);
 
-  const dispatch = await executeTool(runtime.toolContext(senderId, "conversation"), {
+  const dispatch = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "dispatch-retired",
     name: "dispatch_message",
@@ -702,8 +702,8 @@ test("POST /agents/:id/read marks a thread read across devices and /threads coun
     db: handle.db,
     transcript: runtime.transcript,
     events: runtime.events,
-    enqueueConversation: runtime.enqueueConversation,
-    enqueueReasoning: runtime.enqueueReasoning,
+    enqueueProcess: runtime.enqueueProcess,
+    enqueueWork: runtime.enqueueWork,
   };
   await deliverUserMessage(deps, agentId, "ping");
   const first = await deliverAgentMessage(deps, { fromAgentId: agentId, toAgentId: null, content: "one" });

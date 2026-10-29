@@ -72,7 +72,7 @@ export async function registerTools(app: FastifyInstance): Promise<void> {
         await requireToolGrant(app.db, callerId, name);
       }
     }
-    const result = await executeTool(app.runtime.toolContext(callerId, "reasoning", callerKind), {
+    const result = await executeTool(app.runtime.toolContext(callerId, "work", callerKind), {
       type: "tool_use",
       id: "cli",
       name,

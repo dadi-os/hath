@@ -42,7 +42,7 @@ test("deleting an agent deletes its subtree and every row naming it", async () =
   await handle.db.insert(agentLogs).values({
     id: randomUUID(),
     agentId: grandchild,
-    lane: "reasoning",
+    lane: "work",
     event: "message",
     payload: {},
   });

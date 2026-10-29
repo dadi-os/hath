@@ -101,8 +101,8 @@ function withLive(row: AgentRow, runtime: FastifyInstance["runtime"]): AgentReco
   return {
     ...toAgentRecord(row),
     running: {
-      reasoning: runtime.locks.isHeld(row.id, "reasoning"),
-      conversation: runtime.locks.isHeld(row.id, "conversation"),
+      work: runtime.locks.isHeld(row.id, "work"),
+      process: runtime.locks.isHeld(row.id, "process"),
     },
     sessions: runtime.sessions.forAgent(row.id),
   };

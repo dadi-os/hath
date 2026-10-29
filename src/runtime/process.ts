@@ -10,16 +10,16 @@ import { alreadySentRefusal, callLane, laneRequest, runStep, syncWake, type Step
 import type { TranscriptStore } from "./transcript.js";
 
 /** Step deps plus what the send gates read. */
-export type ConversationLoopDeps = StepDeps & {
+export type ProcessLoopDeps = StepDeps & {
   db: Db;
   transcript: TranscriptStore;
 };
 
 /**
- * Conversation-lane loop over the agent's shared wake. It sees exactly what
- * reasoning sees — including reasoning's thinking, tool calls and results — so what it
+ * Process-lane loop over the agent's shared wake. It sees exactly what
+ * the work lane sees — including the work lane's thinking, tool calls and results — so what it
  * says comes from what actually happened, and it is the only lane that sends to Ankur
- * and to every agent but the ones its reasoning lane brought in. Reasoning's hand-offs
+ * and to every agent but the ones its work lane brought in. The work lane's hand-offs
  * reach it as a [Hand-offs waiting] turn; it sends each (dispatch_message handoff_id)
  * or declines it (decline_handoff), and a yield with one still waiting is answered, up to
  * HANDOFF_RETRIES times, before the lane fails loudly and the rest are recorded as failed.
@@ -31,12 +31,12 @@ export type ConversationLoopDeps = StepDeps & {
  * when several wake-ups queue behind one run that already handled them.
  * A yield in a turn that wrote a message's worth of text and sent nothing is answered
  * once, since text reaches no one. Every send passes the gates in sendRefusal and
- * alreadySentRefusal first, the second against what reasoning sent meanwhile. A
+ * alreadySentRefusal first, the second against what the work lane sent meanwhile. A
  * turn whose send was refused (here or by the tool's own report gates) does not end on
  * its yield: the lane gets a turn saying so and sends again, up to REFUSED_SEND_RETRIES
  * times a run, since a refused message that ends the run is a message nobody sent.
  */
-export async function runConversationLoop(deps: ConversationLoopDeps): Promise<void> {
+export async function runProcessLoop(deps: ProcessLoopDeps): Promise<void> {
   let textReminded = false;
   let refusedRetries = 0;
   let handoffRetries = 0;
@@ -77,7 +77,7 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
     if (await runStep({ ...deps, executeTool: gated }, response, () => false)) {
       if (refused && refusedRetries < REFUSED_SEND_RETRIES) {
         refusedRetries += 1;
-        deps.wake.push({ message: { role: "user", content: REFUSED_SEND_TURN }, only: "conversation" });
+        deps.wake.push({ message: { role: "user", content: REFUSED_SEND_TURN }, only: "process" });
         continue;
       }
       if (await showHandoffs(deps)) {
@@ -89,16 +89,16 @@ export async function runConversationLoop(deps: ConversationLoopDeps): Promise<v
           throw new HathError(
             500,
             "handoff_unresolved",
-            `the conversation lane ended with hand-offs still waiting: ${waiting.map((handoff) => `#${handoff.id}`).join(", ")}`,
+            `the process lane ended with hand-offs still waiting: ${waiting.map((handoff) => `#${handoff.id}`).join(", ")}`,
           );
         }
         handoffRetries += 1;
-        deps.wake.push({ message: { role: "user", content: unresolvedHandoffsTurn(waiting) }, only: "conversation" });
+        deps.wake.push({ message: { role: "user", content: unresolvedHandoffsTurn(waiting) }, only: "process" });
         continue;
       }
       if (sent === 0 && textChars(response.content) >= UNSENT_TEXT_CHARS && !textReminded) {
         textReminded = true;
-        deps.wake.push({ message: { role: "user", content: UNSENT_TEXT_TURN }, only: "conversation" });
+        deps.wake.push({ message: { role: "user", content: UNSENT_TEXT_TURN }, only: "process" });
         continue;
       }
       return;
@@ -114,7 +114,7 @@ const HANDOFF_RETRIES = 3;
  * turn, so a hand-off made mid-wake reaches it, and a run that starts on one has news.
  * True when it showed any.
  */
-async function showHandoffs(deps: ConversationLoopDeps): Promise<boolean> {
+async function showHandoffs(deps: ProcessLoopDeps): Promise<boolean> {
   const unseen = (await pendingHandoffs(deps.db, deps.agentId)).filter((handoff) => !deps.wake.handoffsShown.has(handoff.id));
   if (unseen.length === 0) {
     return false;
@@ -122,7 +122,7 @@ async function showHandoffs(deps: ConversationLoopDeps): Promise<boolean> {
   for (const handoff of unseen) {
     deps.wake.handoffsShown.add(handoff.id);
   }
-  deps.wake.push({ message: { role: "user", content: handoffsTurn(unseen) }, only: "conversation" });
+  deps.wake.push({ message: { role: "user", content: handoffsTurn(unseen) }, only: "process" });
   return true;
 }
 
@@ -144,10 +144,10 @@ async function recipientOf(db: Db, call: DwarToolUseBlock): Promise<string | nul
  * included, goes in one message. No send over a message the lane has not read (gate 5):
  * when `to` wrote after the lane's last sync, the send waits for the next step, which
  * shows it. One voice per downstream line (gate 10): an agent this agent brought in (it
- * opened that line) is directed by the reasoning lane, which sends it everything itself.
+ * opened that line) is directed by the work lane, which sends it everything itself.
  */
 async function sendRefusal(
-  deps: ConversationLoopDeps,
+  deps: ProcessLoopDeps,
   to: string | null,
   sentTo: Set<string | null>,
 ): Promise<string | null> {
@@ -162,7 +162,7 @@ async function sendRefusal(
     return `Not sent: ${who} wrote to you after you composed this. Read the new message first, then send what still holds.`;
   }
   if (to !== null && (await opensLine(deps.db, deps.agentId, to))) {
-    return `Not sent: ${to} is an agent you brought in (one you spawned, or one you messaged before it ever messaged you), and your reasoning lane directs it and sends it everything itself. To change ${to}'s work, steer reasoning.`;
+    return `Not sent: ${to} is an agent you brought in (one you spawned, or one you messaged before it ever messaged you), and your work lane directs it and sends it everything itself. To change ${to}'s work, steer the work lane.`;
   }
   return null;
 }
@@ -174,7 +174,7 @@ const REFUSED_SEND_RETRIES = 3;
 export const REFUSED_SEND_TURN =
   "[continue] A message in your last turn was not sent: its result says why. Send it again the way that result says, or yield if it no longer applies.";
 
-/** A conversation turn whose text is at least this long, sent nowhere, reads as a message left unsent. */
+/** A process-lane turn whose text is at least this long, sent nowhere, reads as a message left unsent. */
 const UNSENT_TEXT_CHARS = 400;
 
 /** The reminder a yield gets after a turn wrote a message's worth of text and sent nothing. */
@@ -186,7 +186,7 @@ export function textChars(content: DwarResponseBlock[]): number {
   return content.reduce((sum, block) => sum + (block.type === "text" ? block.text.length : 0), 0);
 }
 
-/** sends counts the messages a conversation turn delivers. */
+/** sends counts the messages a process-lane turn delivers. */
 function sends(content: DwarResponseBlock[]): number {
   return content.filter(
     (block) => block.type === "tool_use" && (block.name === DISPATCH_MESSAGE || block.name === FORWARD_ATTACHMENT),

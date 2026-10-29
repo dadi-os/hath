@@ -1,6 +1,6 @@
 /**
  * Built-in lane tools (send/dispatch/steer/yield/list_agents) and the executeTool dispatcher.
- * Registry tools are resolved for the reasoning lane; conversation uses the switch below.
+ * Registry tools are resolved for the work lane; the process lane uses the switch below.
  */
 
 import { and, asc, eq } from "drizzle-orm";
@@ -27,7 +27,7 @@ import {
   READ_RESULT,
   RECALL_MEMORY,
   SEND_MESSAGE,
-  STEER_REASONING,
+  STEER_WORK,
   WAIT,
   YIELD,
 } from "../types/domain.js";
@@ -87,7 +87,7 @@ export const dispatchMessageInputSchema: Record<string, unknown> = {
     handoff_id: {
       type: "integer",
       description:
-        "Send a waiting hand-off from your reasoning lane. Its recipient, attachments and job status are set from it. Leave content out to send it as written; content rewords a hand-off to Ankur only. Leave to_agent_id and status out.",
+        "Send a waiting hand-off from your work lane. Its recipient, attachments and job status are set from it. Leave content out to send it as written; content rewords a hand-off to Ankur only. Leave to_agent_id and status out.",
     },
     to_agent_id: {
       type: ["string", "null"],
@@ -102,18 +102,18 @@ export const dispatchMessageInputSchema: Record<string, unknown> = {
   },
 };
 
-export const steerReasoningInputSchema: Record<string, unknown> = {
+export const steerWorkInputSchema: Record<string, unknown> = {
   type: "object",
   properties: {
     instruction: {
       type: "string",
       description:
-        "What reasoning should do next. Omit when terminate is true and you only need to halt.",
+        "What the work lane should do next. Omit when terminate is true and you only need to halt.",
     },
     terminate: {
       type: "boolean",
       description:
-        "When true, stop the reasoning lane in its tracks: the next tool call does not run. Use for stop/kill. Can combine with instruction.",
+        "When true, stop the work lane in its tracks: the next tool call does not run. Use for stop/kill. Can combine with instruction.",
     },
   },
   additionalProperties: false,
@@ -129,7 +129,7 @@ export const yieldInputSchema: Record<string, unknown> = {
  * Upper bound on a wait. A wait is for something to settle; a reply is waited for by
  * yielding, since it wakes the agent. Reply waits held the wake open (282 waits against
  * 332 yields on 2026-10-14 to 2026-10-16, two thirds of them 60s or longer), and every
- * unrelated arrival that cut one short cost a full reasoning call.
+ * unrelated arrival that cut one short cost a full work-lane call.
  */
 export const WAIT_MAX_SECONDS = 30;
 
@@ -142,7 +142,7 @@ export const waitInputSchema: Record<string, unknown> = {
       type: "integer",
       minimum: 1,
       maximum: WAIT_MAX_SECONDS,
-      description: `How long to pause before reasoning resumes, 1–${WAIT_MAX_SECONDS}s`,
+      description: `How long to pause before the work lane resumes, 1–${WAIT_MAX_SECONDS}s`,
     },
     reason: {
       type: "string",
@@ -168,11 +168,11 @@ export const listAgentsInputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/** Persist and deliver the reasoning lane's message to an agent it brought in. */
+/** Persist and deliver the work lane's message to an agent it brought in. */
 export const sendMessageTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    "Send a message to an agent you brought in, a worker or helper you gave work to. It is delivered as you write it, when the call returns, and wakes its recipient. To send files, list their ids in attachment_ids (create_attachment turns a host file into one) instead of pasting their contents. Ankur, whoever gave you your job, and every other agent are reached with hand_off: your conversation lane sends it. Does not end the turn: to wait for a reply, yield, and the reply wakes you.",
+    "Send a message to an agent you brought in, a worker or helper you gave work to. It is delivered as you write it, when the call returns, and wakes its recipient. To send files, list their ids in attachment_ids (create_attachment turns a host file into one) instead of pasting their contents. Ankur, whoever gave you your job, and every other agent are reached with hand_off: your process lane sends it. Does not end the turn: to wait for a reply, yield, and the reply wakes you.",
   input_schema: sendMessageInputSchema,
 };
 
@@ -180,16 +180,16 @@ export const sendMessageTool: DwarTool = {
 export const dispatchMessageTool: DwarTool = {
   name: DISPATCH_MESSAGE,
   description:
-    "Write a message to another agent or to the user (to_agent_id null), or send a hand-off waiting from your reasoning lane (handoff_id). This is the only way a message addressed to someone but the agents you brought in is persisted. Does not end the turn — call yield when done, and not while a hand-off is waiting: send it or decline it. Hath refuses a send that breaks one of these, so follow them the first time: one message per recipient per turn, text and files together (forward_attachment carries both); a message of your own to whoever gave you a job that is still open carries a status (see the [Open jobs] note; a hand-off's status is set from its kind); an agent you gave work to hears only from your reasoning lane, which sends it everything itself, so steer reasoning to change that work; and a send to someone who wrote after you composed it waits until you have read them. See the routing block for who to address. Domain work runs on the reasoning lane — use steer_reasoning for that; do not claim grants are missing because conversation cannot see them.",
+    "Write a message to another agent or to the user (to_agent_id null), or send a hand-off waiting from your work lane (handoff_id). This is the only way a message addressed to someone but the agents you brought in is persisted. Does not end the turn — call yield when done, and not while a hand-off is waiting: send it or decline it. Hath refuses a send that breaks one of these, so follow them the first time: one message per recipient per turn, text and files together (forward_attachment carries both); a message of your own to whoever gave you a job that is still open carries a status (see the [Open jobs] note; a hand-off's status is set from its kind); an agent you gave work to hears only from your work lane, which sends it everything itself, so steer the work lane to change that work; and a send to someone who wrote after you composed it waits until you have read them. See the routing block for who to address. Domain work runs on the work lane — use steer_work for that; do not claim grants are missing because the process lane cannot see them.",
   input_schema: dispatchMessageInputSchema,
 };
 
-/** Queue an instruction for the caller's reasoning lane. */
-export const steerReasoningTool: DwarTool = {
-  name: STEER_REASONING,
+/** Queue an instruction for the caller's work lane. */
+export const steerWorkTool: DwarTool = {
+  name: STEER_WORK,
   description:
-    "Direct your reasoning lane. You manage reasoning from conversation: pass instruction for what it should do next (domain tools run there), and/or terminate true to halt it immediately so the next tool call does not run. Starts a reasoning wake if that lane is idle. Use terminate for stop/kill.",
-  input_schema: steerReasoningInputSchema,
+    "Direct your work lane. You manage it from the process lane: pass instruction for what it should do next (domain tools run there), and/or terminate true to halt it immediately so the next tool call does not run. Starts a work-lane wake if that lane is idle. Use terminate for stop/kill.",
+  input_schema: steerWorkInputSchema,
 };
 
 /** End the current lane turn. */
@@ -200,11 +200,11 @@ export const yieldTool: DwarTool = {
   input_schema: yieldInputSchema,
 };
 
-/** Pause the reasoning lane in place for a set duration, then resume. */
+/** Pause the work lane in place for a set duration, then resume. */
 export const waitTool: DwarTool = {
   name: WAIT,
   description:
-    "Pause your reasoning lane for a few seconds while something you started settles (a command finishing, a file landing), then resume where you left off. Never wait for a person or an agent: yield instead, and their reply wakes you. For a page to load or change, use browser_wait_for. A steer, a terminate, or a new message to you cuts the wait short. Max " +
+    "Pause your work lane for a few seconds while something you started settles (a command finishing, a file landing), then resume where you left off. Never wait for a person or an agent: yield instead, and their reply wakes you. For a page to load or change, use browser_wait_for. A steer, a terminate, or a new message to you cuts the wait short. Max " +
     `${WAIT_MAX_SECONDS}s; for a later time, use scheduling.`,
   input_schema: waitInputSchema,
 };
@@ -325,7 +325,7 @@ async function dispatchTool(
     if (ctx.lane === "router") {
       return await runRouterTool(ctx, call);
     }
-    if (ctx.lane === "reasoning") {
+    if (ctx.lane === "work") {
       if (call.name === SEND_MESSAGE) {
         return await runSendMessage(ctx, call.input);
       }
@@ -359,7 +359,7 @@ async function dispatchTool(
       }
       const definition = findTool(call.name);
       if (!definition) {
-        return fail(`unknown reasoning tool: ${call.name}`);
+        return fail(`unknown work-lane tool: ${call.name}`);
       }
       if (ctx.callerId !== null) {
         await requireActiveAgent(ctx.db, ctx.callerId);
@@ -375,11 +375,11 @@ async function dispatchTool(
         return await runForwardAttachment(ctx, call.input);
       case DECLINE_HANDOFF:
         return await runDeclineHandoff(ctx, call.input);
-      case STEER_REASONING:
-        return await runSteerReasoning(ctx, call.input);
+      case STEER_WORK:
+        return await runSteerWork(ctx, call.input);
       default:
         return fail(
-          `${call.name} is not a conversation tool. Yours are ${DISPATCH_MESSAGE}, ${DECLINE_HANDOFF}, ${FORWARD_ATTACHMENT}, ${READ_ATTACHMENT}, ${STEER_REASONING}, ${LIST_AGENTS} and ${YIELD}. Every other tool this agent holds, ${call.name} included if it is granted, runs in the reasoning lane: call ${STEER_REASONING} with what you need done.`,
+          `${call.name} is not a process-lane tool. Yours are ${DISPATCH_MESSAGE}, ${DECLINE_HANDOFF}, ${FORWARD_ATTACHMENT}, ${READ_ATTACHMENT}, ${STEER_WORK}, ${LIST_AGENTS} and ${YIELD}. Every other tool this agent holds, ${call.name} included if it is granted, runs in the work lane: call ${STEER_WORK} with what you need done.`,
         );
     }
   } catch (err) {
@@ -391,7 +391,7 @@ async function dispatchTool(
 }
 
 /**
- * Pause the reasoning lane in place for a short settle, polling so a steer, a terminate,
+ * Pause the work lane in place for a short settle, polling so a steer, a terminate,
  * or a new message to the agent cuts it short. No model calls run while waiting; the
  * loop resumes on return and the next step folds in what arrived.
  */
@@ -418,9 +418,9 @@ async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> 
 }
 
 /**
- * runSendMessage delivers the reasoning lane's message, as written, to an agent it brought
+ * runSendMessage delivers the work lane's message, as written, to an agent it brought
  * in: its own subordinates are directed by the lane that does their work. Everyone else
- * is reached by hand_off and the conversation lane (see handoffs.ts).
+ * is reached by hand_off and the process lane (see handoffs.ts).
  */
 async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
@@ -430,7 +430,7 @@ async function runSendMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   await requireActiveAgent(ctx.db, input.to_agent_id);
   if (!(await isControlChannel(ctx.db, ctx.callerId, input.to_agent_id))) {
     return fail(
-      `Not sent: ${input.to_agent_id} is not an agent you brought in. send_message is for your own workers and helpers; to reach anyone else, Ankur included, call hand_off and your conversation lane sends it.`,
+      `Not sent: ${input.to_agent_id} is not an agent you brought in. send_message is for your own workers and helpers; to reach anyone else, Ankur included, call hand_off and your process lane sends it.`,
     );
   }
   const attachmentIds = input.attachment_ids ?? [];
@@ -484,7 +484,7 @@ async function runDispatchMessage(ctx: ToolContext, raw: unknown): Promise<ToolE
 }
 
 /**
- * runSendHandoff sends a waiting hand-off from the agent's reasoning lane. Its recipient,
+ * runSendHandoff sends a waiting hand-off from the agent's work lane. Its recipient,
  * files and job status come from the hand-off, so this lane cannot misaddress it or pick
  * the wrong status; a hand-off to an agent goes as written, and one to Ankur may be
  * reworded. A refused send leaves it waiting, so the lane can send it again or decline it.
@@ -539,8 +539,8 @@ async function deliverFromAgent(
       db: ctx.db,
       transcript: ctx.transcript,
       events: ctx.events,
-      enqueueConversation: ctx.enqueueConversation,
-      enqueueReasoning: ctx.enqueueReasoning,
+      enqueueProcess: ctx.enqueueProcess,
+      enqueueWork: ctx.enqueueWork,
       wakeOf: ctx.wakeOf,
     },
     {
@@ -550,7 +550,7 @@ async function deliverFromAgent(
       attachmentIds: message.attachmentIds,
       uploads: oversized ? [messageAsAttachment(message.content)] : [],
       ...(message.status !== undefined ? { status: message.status } : {}),
-      lane: ctx.lane === "reasoning" ? "reasoning" : "conversation",
+      lane: ctx.lane === "work" ? "work" : "process",
     },
   );
   const attached = row.attachments.length > 0 ? { attachments: row.attachments.map(toAttachmentSummary) } : {};
@@ -569,7 +569,7 @@ async function deliverFromAgent(
   return { row, result: ok({ to_agent_id: row.toAgentId, content: row.content, seq: row.seq, ...attached }) };
 }
 
-async function runSteerReasoning(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
+async function runSteerWork(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
   }
@@ -580,8 +580,8 @@ async function runSteerReasoning(ctx: ToolContext, raw: unknown): Promise<ToolEx
   if (input.terminate === true) {
     ctx.steer.requestTerminate(ctx.callerId);
   }
-  if (!ctx.locks.isBusy(ctx.callerId, "reasoning")) {
-    ctx.enqueueReasoning(ctx.callerId);
+  if (!ctx.locks.isBusy(ctx.callerId, "work")) {
+    ctx.enqueueWork(ctx.callerId);
   }
   return ok({
     queued: true,

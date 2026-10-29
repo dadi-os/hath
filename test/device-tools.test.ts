@@ -75,7 +75,7 @@ test("nas_list_clients returns Nas mesh clients", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "lc1",
     name: "nas_list_clients",
@@ -132,7 +132,7 @@ test("device_get_battery surveys every enrolled device and only asks running app
   });
 
   try {
-    const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+    const result = await executeTool(runtime.toolContext(workerId, "work"), {
       type: "tool_use",
       id: "bat1",
       name: "device_get_battery",
@@ -192,7 +192,7 @@ test("a running app's failure stays on its own device line", async () => {
   });
 
   try {
-    const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+    const result = await executeTool(runtime.toolContext(workerId, "work"), {
       type: "tool_use",
       id: "loc1",
       name: "device_get_location",

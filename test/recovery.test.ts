@@ -50,44 +50,44 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
   const staleId = await insertAgent(handle.db, { id: "recovery-stale", systemPrompt: "stale", parentAgentId: parentId });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retiredId));
 
-  await seedLog(cutId, "conversation", "message", { direction: "receive", content: "click it" }, 60);
-  await seedLog(cutId, "conversation", "response", { content: [] }, 59);
-  await seedLog(cutId, "conversation", "tool_result", { name: "steer_reasoning", is_error: false, content: '{"queued":true,"terminate":false}' }, 58);
-  await seedLog(cutId, "conversation", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 57);
+  await seedLog(cutId, "process", "message", { direction: "receive", content: "click it" }, 60);
+  await seedLog(cutId, "process", "response", { content: [] }, 59);
+  await seedLog(cutId, "process", "tool_result", { name: "steer_work", is_error: false, content: '{"queued":true,"terminate":false}' }, 58);
+  await seedLog(cutId, "process", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 57);
   await seedLog(
     cutId,
-    "reasoning",
+    "work",
     "response",
     { content: [{ type: "tool_use", id: "c1", name: "browser_click", input: { ref: "e1" } }] },
     56,
   );
 
-  await seedLog(staleId, "conversation", "message", { direction: "receive", content: "read it" }, 3_600);
+  await seedLog(staleId, "process", "message", { direction: "receive", content: "read it" }, 3_600);
   await seedLog(
     staleId,
-    "reasoning",
+    "work",
     "response",
     { content: [{ type: "tool_use", id: "s1", name: "browser_navigate", input: { url: "https://example.com" } }] },
     3_590,
   );
 
-  await seedLog(waitingId, "conversation", "message", { direction: "receive", content: "hello?" }, 30);
+  await seedLog(waitingId, "process", "message", { direction: "receive", content: "hello?" }, 30);
 
-  await seedLog(doneId, "conversation", "message", { direction: "receive", content: "hi" }, 20);
-  await seedLog(doneId, "conversation", "response", { content: [] }, 19);
-  await seedLog(doneId, "conversation", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 18);
+  await seedLog(doneId, "process", "message", { direction: "receive", content: "hi" }, 20);
+  await seedLog(doneId, "process", "response", { content: [] }, 19);
+  await seedLog(doneId, "process", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 18);
 
-  await seedLog(retiredId, "conversation", "message", { direction: "receive", content: "too late" }, 10);
+  await seedLog(retiredId, "process", "message", { direction: "receive", content: "too late" }, 10);
 
   const woken: string[] = [];
   const deps = {
     db: handle.db,
     transcript: new TranscriptStore(),
     events: new EventBus(silentLog),
-    enqueueConversation: (agentId: string) => {
+    enqueueProcess: (agentId: string) => {
       woken.push(agentId);
     },
-    enqueueReasoning: () => {},
+    enqueueWork: () => {},
     log: silentLog,
     recoveryWindowMinutes: 10,
   };

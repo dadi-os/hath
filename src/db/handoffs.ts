@@ -1,4 +1,4 @@
-/** Hand-offs from an agent's reasoning lane to the conversation lane that sends them. */
+/** Hand-offs from an agent's work lane to the process lane that sends them. */
 
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "./client.js";
@@ -10,7 +10,7 @@ function toIs(recipient: string | null) {
   return recipient === null ? isNull(handoffs.toAgentId) : eq(handoffs.toAgentId, recipient);
 }
 
-/** createHandoff records what `agentId`'s reasoning lane wants said to `to`, pending. */
+/** createHandoff records what `agentId`'s work lane wants said to `to`, pending. */
 export async function createHandoff(
   db: Db,
   args: { agentId: string; to: string | null; kind: HandoffKind; content: string; attachmentIds: string[] },
@@ -37,7 +37,7 @@ export async function getHandoff(db: Db, id: number): Promise<HandoffRow | undef
   return row;
 }
 
-/** pendingHandoffs are `agentId`'s hand-offs still waiting for its conversation lane, oldest first. */
+/** pendingHandoffs are `agentId`'s hand-offs still waiting for its process lane, oldest first. */
 export async function pendingHandoffs(db: Db, agentId: string): Promise<HandoffRow[]> {
   return db
     .select()
@@ -57,7 +57,7 @@ export async function pendingHandoffTo(db: Db, agentId: string, to: string | nul
 
 /**
  * markSent closes a pending hand-off as sent: the message it became, and whether the
- * recipient's next message is the reply its reasoning lane is waiting for.
+ * recipient's next message is the reply its work lane is waiting for.
  */
 export async function markSent(db: Db, id: number, messageId: string, expectsReply: boolean): Promise<void> {
   await db
@@ -66,7 +66,7 @@ export async function markSent(db: Db, id: number, messageId: string, expectsRep
     .where(and(eq(handoffs.id, id), eq(handoffs.state, "pending")));
 }
 
-/** markDeclined closes a pending hand-off as declined, with the reason its reasoning lane reads. */
+/** markDeclined closes a pending hand-off as declined, with the reason its work lane reads. */
 export async function markDeclined(db: Db, id: number, reason: string): Promise<void> {
   await db
     .update(handoffs)
@@ -83,7 +83,7 @@ export async function failPendingHandoffs(db: Db, agentId: string, reason: strin
     .returning();
 }
 
-/** awaitingReply is true when `agentId`'s reasoning lane is waiting on `from`'s next message. */
+/** awaitingReply is true when `agentId`'s work lane is waiting on `from`'s next message. */
 export async function awaitingReply(db: Db, agentId: string, from: string): Promise<boolean> {
   const [row] = await db
     .select({ id: handoffs.id })
@@ -101,7 +101,7 @@ export async function clearAwaitedReply(db: Db, agentId: string, from: string): 
     .where(and(eq(handoffs.agentId, agentId), eq(handoffs.toAgentId, from), eq(handoffs.expectsReply, true)));
 }
 
-/** agentsWithPendingHandoffs are the agents whose conversation lane owes a hand-off a decision, for boot recovery. */
+/** agentsWithPendingHandoffs are the agents whose process lane owes a hand-off a decision, for boot recovery. */
 export async function agentsWithPendingHandoffs(db: Db): Promise<string[]> {
   const rows = await db.execute<{ agent_id: string }>(sql`select distinct agent_id from ${handoffs} where state = 'pending'`);
   return rows.map((row) => row.agent_id);

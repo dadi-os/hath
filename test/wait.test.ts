@@ -19,14 +19,14 @@ function ctxFor(steer: SteerQueue, transcript = new TranscriptStore()): ToolCont
     db: noMessages as never,
     callerId: agentId,
     callerKind: "agent",
-    lane: "reasoning",
+    lane: "work",
     steer,
     locks: new LaneLocks(),
     transcript,
     sessions: new HostSessions(),
     toolDebounce: new ToolDebounce({ base_ms: 1, max_ms: 1 }),
-    enqueueConversation: () => {},
-    enqueueReasoning: () => {},
+    enqueueProcess: () => {},
+    enqueueWork: () => {},
   } as unknown as ToolContext;
 }
 

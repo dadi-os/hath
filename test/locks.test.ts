@@ -12,7 +12,7 @@ test("two acquires on the same lane run one at a time", async () => {
   let active = 0;
   let overlap = false;
   const run = async () => {
-    const release = await locks.acquire(agentId, "conversation", 1000);
+    const release = await locks.acquire(agentId, "process", 1000);
     active += 1;
     if (active > 1) {
       overlap = true;
@@ -25,25 +25,25 @@ test("two acquires on the same lane run one at a time", async () => {
   assert.equal(overlap, false);
 });
 
-test("reasoning and conversation locks do not block each other", async () => {
+test("the work lane and the process lane locks do not block each other", async () => {
   const locks = new LaneLocks();
   const agentId = "00000000-0000-4000-8000-0000000000bb";
   let both = false;
-  const reasoning = locks.acquire(agentId, "reasoning", 1000).then(async (release) => {
-    const conversation = locks.acquire(agentId, "conversation", 1000);
-    const convRelease = await conversation;
-    both = locks.isBusy(agentId, "reasoning") && locks.isBusy(agentId, "conversation");
+  const workLock = locks.acquire(agentId, "work", 1000).then(async (release) => {
+    const processLock = locks.acquire(agentId, "process", 1000);
+    const convRelease = await processLock;
+    both = locks.isBusy(agentId, "work") && locks.isBusy(agentId, "process");
     convRelease();
     release();
   });
-  await reasoning;
+  await workLock;
   assert.equal(both, true);
 });
 
 test("a waiter times out instead of hanging", async () => {
   const locks = new LaneLocks();
   const agentId = "00000000-0000-4000-8000-0000000000cc";
-  const release = await locks.acquire(agentId, "reasoning", 1000);
-  await assert.rejects(() => locks.acquire(agentId, "reasoning", 20), /timed out/);
+  const release = await locks.acquire(agentId, "work", 1000);
+  await assert.rejects(() => locks.acquire(agentId, "work", 20), /timed out/);
   release();
 });

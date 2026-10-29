@@ -7,13 +7,13 @@ lane_queue_timeout_ms = 30000
 # Haiku 5.5, measured), and never more than the prompt ceiling less trim
 # tokens leaves after the agent's own system and that lane's tools, so a long
 # charter means a shorter window and the wake keeps its trim headroom.
-# Conversation's chars (about 76k tokens) is reached only by a light charter;
-# reasoning holds about 42k so its wake keeps about 40k. Older messages fall out and are reached only through
+# The process lane's chars (about 76k tokens) is reached only by a light charter;
+# the work lane holds about 42k so its wake keeps about 40k. Older messages fall out and are reached only through
 # get_logs and memory. A window's start moves in jumps of step chars instead
 # of sliding with every message, so the provider cache survives everything
 # but the jump.
-conversation_transcript_window_chars = 180000
-reasoning_transcript_window_chars = 100000
+process_transcript_window_chars = 180000
+work_transcript_window_chars = 100000
 transcript_window_step_chars = 30000
 # Backoff after a failed tool call before the agent's next call; doubles per
 # consecutive failure and resets on the first success.
@@ -50,7 +50,7 @@ retry_attempts = 3
 backoff_ms = [500, 1000, 2000]
 
 [yaad]
-# ingest triggers a reasoning call inside Yaad, which has its own 330s Dwar timeout.
+# ingest triggers a work-lane call inside Yaad, which has its own 330s Dwar timeout.
 # This must exceed that or a slow-but-successful extraction gets killed by the caller.
 timeout_ms = 360000
 retry_attempts = 3

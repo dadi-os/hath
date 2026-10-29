@@ -65,8 +65,8 @@ export function testConfig(): Config {
 
 /** Transcript windows wide enough that tests see the whole thread on both lanes. */
 export const wideWindows = {
-  conversation: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
-  reasoning: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
+  process: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
+  work: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
 };
 
 /** Wake limits no test wake reaches, for tests that are not about clearing tool results. */
@@ -115,7 +115,7 @@ export function yieldTurn(id = "yield-1"): DwarChatResponse {
   return toolUse("yield", {}, id);
 }
 
-/** The id of the newest hand-off to `to` that a conversation request shows in a [Hand-offs waiting] turn. */
+/** The id of the newest hand-off to `to` that a process-lane request shows in a [Hand-offs waiting] turn. */
 export function waitingHandoffId(request: DwarChatRequest, to = "Ankur"): number {
   const found = [...JSON.stringify(request.messages).matchAll(new RegExp(`#(\\d+) · to ${to} ·`, "g"))].at(-1);
   if (found === undefined) {
@@ -125,10 +125,10 @@ export function waitingHandoffId(request: DwarChatRequest, to = "Ankur"): number
 }
 
 export function mockDwar(opts: {
-  reason?: (
+  work?: (
     request: DwarChatRequest,
   ) => DwarChatResponse | Promise<DwarChatResponse>;
-  converse?: (
+  process?: (
     request: DwarChatRequest,
   ) => DwarChatResponse | Promise<DwarChatResponse>;
   complete?: (
@@ -144,39 +144,39 @@ export function mockDwar(opts: {
         usage: { input_tokens: number; output_tokens: number };
       }>;
 }): DwarClient & {
-  reasoningCalls: DwarChatRequest[];
-  conversationCalls: DwarChatRequest[];
+  workCalls: DwarChatRequest[];
+  processCalls: DwarChatRequest[];
   completeCalls: DwarChatRequest[];
   describeCalls: Array<{
     image: { media_type: string; data: string };
     prompt?: string;
   }>;
 } {
-  const reasoningCalls: DwarChatRequest[] = [];
-  const conversationCalls: DwarChatRequest[] = [];
+  const workCalls: DwarChatRequest[] = [];
+  const processCalls: DwarChatRequest[] = [];
   const completeCalls: DwarChatRequest[] = [];
   const describeCalls: Array<{
     image: { media_type: string; data: string };
     prompt?: string;
   }> = [];
   return {
-    reasoningCalls,
-    conversationCalls,
+    workCalls,
+    processCalls,
     completeCalls,
     describeCalls,
-    async reason(request) {
-      reasoningCalls.push(request);
-      if (opts.reason) {
-        return opts.reason(request);
+    async work(request) {
+      workCalls.push(request);
+      if (opts.work) {
+        return opts.work(request);
       }
-      return yieldTurn("reason-yield");
+      return yieldTurn("work-yield");
     },
-    async converse(request) {
-      conversationCalls.push(request);
-      if (opts.converse) {
-        return opts.converse(request);
+    async process(request) {
+      processCalls.push(request);
+      if (opts.process) {
+        return opts.process(request);
       }
-      return yieldTurn("converse-yield");
+      return yieldTurn("process-yield");
     },
     async complete(request) {
       completeCalls.push(request);

@@ -11,7 +11,7 @@ import type {
 import { HathError } from "./errors.js";
 
 function parseLane(value: string): Lane {
-  if (value === "reasoning" || value === "conversation" || value === "router") {
+  if (value === "work" || value === "process" || value === "router") {
     return value;
   }
   throw new HathError(500, "internal_error", `invalid lane in database: ${value}`);

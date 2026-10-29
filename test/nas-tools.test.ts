@@ -87,14 +87,14 @@ test("terminal_spawn forwards terminal_id and leaves a fresh spawn empty", async
     config,
     log: silentLog,
   });
-  const fresh = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const fresh = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ts1",
     name: "terminal_spawn",
     input: {},
   });
   assert.equal(fresh.isError, false, fresh.content);
-  const named = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const named = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ts2",
     name: "terminal_spawn",
@@ -129,7 +129,7 @@ test("execute_shell passes through exit code, output, and timed_out", async () =
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ex1",
     name: "terminal_execute_shell",
@@ -163,7 +163,7 @@ test("terminal_read keys its screen by terminal, so a newer read replaces it in 
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "rd1",
     name: "terminal_read",
@@ -195,7 +195,7 @@ test("Nas 404 becomes not_found tool error without killing the lane", async () =
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ex2",
     name: "terminal_execute_shell",
@@ -228,7 +228,7 @@ test("Nas 409 on execute_shell becomes busy tool error", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ex3",
     name: "terminal_execute_shell",
@@ -260,7 +260,7 @@ test("edit_file 409 surfaces the match count", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ed1",
     name: "terminal_edit_file",
@@ -293,7 +293,7 @@ test("worker granted execute_shell and read_file sees those plus send_message an
     systemPrompt: "use terminal t1",
     parentAgentId: managerId,
   });
-  const granted = await executeTool(runtime.toolContext(managerId, "reasoning"), {
+  const granted = await executeTool(runtime.toolContext(managerId, "work"), {
     type: "tool_use",
     id: "g-terminal",
     name: "grant_tool",
@@ -311,7 +311,7 @@ test("worker granted execute_shell and read_file sees those plus send_message an
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
-    lane: "reasoning",
+    lane: "work",
     transcript: new TranscriptStore(),
   });
   assert.deepEqual(

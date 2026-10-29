@@ -164,11 +164,11 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
     windows: wideWindows,
     db: handle.db,
     agentId,
-    lane: "conversation",
+    lane: "process",
     transcript: runtime.transcript,
     serviceRoot: config.serviceRoot,
   });
-  const seen = JSON.stringify(context.transcripts.conversation);
+  const seen = JSON.stringify(context.transcripts.process);
   assert.ok(seen.includes(sent.attachments[0]!.id));
   assert.ok(!seen.includes(report));
   assert.ok(seen.includes("mock image description"));
@@ -206,7 +206,7 @@ test("forward_attachment copies a carried file to the recipient and read_attachm
   });
   const originalId = (posted.json() as { attachments: Array<{ id: string }> }).attachments[0]!.id;
 
-  const forwarded = await executeTool(runtime.toolContext(senderId, "conversation"), {
+  const forwarded = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "f1",
     name: FORWARD_ATTACHMENT,
@@ -222,7 +222,7 @@ test("forward_attachment copies a carried file to the recipient and read_attachm
   assert.equal(received?.content, "from Ankur");
   assert.equal(received?.attachments[0]?.id, copyId);
 
-  const page = await executeTool(runtime.toolContext(recipientId, "reasoning"), {
+  const page = await executeTool(runtime.toolContext(recipientId, "work"), {
     type: "tool_use",
     id: "r1",
     name: READ_ATTACHMENT,
@@ -257,7 +257,7 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
     await app.close();
   });
 
-  const denied = await executeTool(runtime.toolContext(plainId, "reasoning"), {
+  const denied = await executeTool(runtime.toolContext(plainId, "work"), {
     type: "tool_use",
     id: "c0",
     name: CREATE_ATTACHMENT,
@@ -266,7 +266,7 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
   assert.equal(denied.isError, true);
   assert.match(denied.content, /^forbidden/);
 
-  const created = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const created = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "c1",
     name: CREATE_ATTACHMENT,
@@ -280,7 +280,7 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
   assert.equal(row?.textContent, "# Title\nbody\n");
   assert.equal(row?.messageId, null);
 
-  const unknown = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const unknown = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "s0",
     name: HAND_OFF,
@@ -289,7 +289,7 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
   assert.equal(unknown.isError, true);
   assert.match(unknown.content, /^not_found/);
 
-  const sent = await executeTool(runtime.toolContext(workerId, "conversation"), {
+  const sent = await executeTool(runtime.toolContext(workerId, "process"), {
     type: "tool_use",
     id: "f1",
     name: FORWARD_ATTACHMENT,
@@ -329,7 +329,7 @@ test("create_attachment stores a Word document and an unlisted binary as bytes w
     { path: "/var/home/dadi/scratch/model.onnx", mediaType: "application/octet-stream" },
   ];
   for (const [index, { path, mediaType }] of cases.entries()) {
-    const created = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+    const created = await executeTool(runtime.toolContext(workerId, "work"), {
       type: "tool_use",
       id: `c${index}`,
       name: CREATE_ATTACHMENT,
@@ -361,7 +361,7 @@ test("create_attachment reads a host PDF whole as bytes and stores it as applica
     await app.close();
   });
 
-  const created = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const created = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "c1",
     name: CREATE_ATTACHMENT,

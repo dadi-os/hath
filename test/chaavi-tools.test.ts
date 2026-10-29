@@ -74,7 +74,7 @@ async function runTool(opts: {
     config,
     log: silentLog,
   });
-  const base = runtime.toolContext(workerId, "reasoning");
+  const base = runtime.toolContext(workerId, "work");
   const ctx = opts.browsers ? { ...base, browsers: opts.browsers as unknown as BrowserDriver } : base;
   return executeTool(ctx, { type: "tool_use", id: `t-${opts.tool}`, name: opts.tool, input: opts.input });
 }

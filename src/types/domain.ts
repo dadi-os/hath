@@ -1,4 +1,4 @@
-export type Lane = "reasoning" | "conversation" | "router";
+export type Lane = "work" | "process" | "router";
 
 /**
  * response: one model call's full output, blocks in provider order (thinking,
@@ -22,7 +22,7 @@ export type AgentRecord = {
   parent_agent_id: string | null;
   active: boolean;
   /** In-memory lane lock ownership. Always false right after a process restart. */
-  running: { reasoning: boolean; conversation: boolean };
+  running: { work: boolean; process: boolean };
   /** In-memory host attachments. Always empty right after a process restart. */
   sessions: AgentSessions;
   created_at: string;
@@ -175,7 +175,7 @@ export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop";
 export type MessageKind = "message" | "notice";
 
 /**
- * What a hand-off from the reasoning lane is: the result of the work, a wall, a question
+ * What a hand-off from the work lane is: the result of the work, a wall, a question
  * only the recipient can answer, the one progress update, something to tell, or something
  * to ask for. Hath sets the message's job status from it (see HANDOFF_STATUS).
  */
@@ -192,7 +192,7 @@ export const HANDOFF_STATUS: Record<HandoffKind, MessageStatus | undefined> = {
   request: undefined,
 };
 
-/** Where a hand-off stands: waiting for the conversation lane, sent, declined by it, or lost with its lane. */
+/** Where a hand-off stands: waiting for the process lane, sent, declined by it, or lost with its lane. */
 export type HandoffState = "pending" | "sent" | "declined" | "failed";
 
 export const SEND_MESSAGE = "send_message";
@@ -202,7 +202,7 @@ export const DECLINE_HANDOFF = "decline_handoff";
 export const READ_ATTACHMENT = "read_attachment";
 export const FORWARD_ATTACHMENT = "forward_attachment";
 export const CREATE_ATTACHMENT = "create_attachment";
-export const STEER_REASONING = "steer_reasoning";
+export const STEER_WORK = "steer_work";
 export const YIELD = "yield";
 export const WAIT = "wait";
 export const READ_RESULT = "read_result";

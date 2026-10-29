@@ -33,15 +33,15 @@ import type { RuntimeLog } from "./engine.js";
 /** One active agent whose audit log shows a wake that never finished. */
 type InterruptedWake = {
   agent_id: string;
-  /** Reasoning's last step was not a yield or a terminate. */
-  reasoning_cut: boolean;
-  /** Conversation's last step was not a yield. */
-  conversation_cut: boolean;
-  /** A steer was queued after reasoning's last step. */
+  /** The work lane's last step was not a yield or a terminate. */
+  work_cut: boolean;
+  /** The process lane's last step was not a yield. */
+  process_cut: boolean;
+  /** A steer was queued after the work lane's last step. */
   steer_lost: boolean;
-  /** A send_message hand-off (from before reasoning sent its own messages) was queued after conversation's last turn. */
+  /** A send_message hand-off (from before the work lane sent its own messages) was queued after the process lane's last turn. */
   hand_off_lost: boolean;
-  /** A message arrived after conversation's last turn. */
+  /** A message arrived after the process lane's last turn. */
   unhandled: boolean;
   /** The newest audit row since the agent's last notice. */
   last_at: Date;
@@ -73,20 +73,20 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
         max(created_at) filter (
           where event = 'message' and payload->>'direction' = 'receive' and payload->>'kind' is distinct from 'notice'
         ) as received_at,
-        max(created_at) filter (where lane = 'conversation' and event = 'response') as conversed_at,
-        max(created_at) filter (where lane = 'conversation' and event in ('response', 'tool_result')) as conversation_at,
-        max(created_at) filter (where lane = 'conversation' and event = 'tool_result' and payload->>'name' = 'yield') as conversation_yield_at,
-        max(created_at) filter (where lane = 'reasoning') as reasoning_at,
+        max(created_at) filter (where lane = 'process' and event = 'response') as conversed_at,
+        max(created_at) filter (where lane = 'process' and event in ('response', 'tool_result')) as process_at,
+        max(created_at) filter (where lane = 'process' and event = 'tool_result' and payload->>'name' = 'yield') as process_yield_at,
+        max(created_at) filter (where lane = 'work') as work_at,
         max(created_at) filter (
-          where lane = 'reasoning' and event = 'tool_result'
+          where lane = 'work' and event = 'tool_result'
             and (payload->>'name' = 'yield' or payload->>'terminated' = 'true')
-        ) as reasoning_end_at,
+        ) as work_end_at,
         max(created_at) filter (
-          where lane = 'conversation' and event = 'tool_result' and payload->>'name' = 'steer_reasoning'
+          where lane = 'process' and event = 'tool_result' and payload->>'name' = 'steer_work'
             and payload->>'is_error' = 'false' and payload->>'content' not like '%"terminate":true%'
         ) as steered_at,
         max(created_at) filter (
-          where lane = 'reasoning' and event = 'tool_result' and payload->>'name' = 'send_message'
+          where lane = 'work' and event = 'tool_result' and payload->>'name' = 'send_message'
             and payload->>'is_error' = 'false' and payload->>'content' like '%"handed_off":true%'
         ) as handed_off_at
       from recent
@@ -96,33 +96,33 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
       select
         agent_id,
         last_at,
-        coalesce(reasoning_at > coalesce(reasoning_end_at, '-infinity'), false) as reasoning_cut,
-        coalesce(conversation_at > coalesce(conversation_yield_at, '-infinity'), false) as conversation_cut,
-        coalesce(steered_at > coalesce(reasoning_at, '-infinity'), false) as steer_lost,
+        coalesce(work_at > coalesce(work_end_at, '-infinity'), false) as work_cut,
+        coalesce(process_at > coalesce(process_yield_at, '-infinity'), false) as process_cut,
+        coalesce(steered_at > coalesce(work_at, '-infinity'), false) as steer_lost,
         coalesce(handed_off_at > coalesce(conversed_at, '-infinity'), false) as hand_off_lost,
         coalesce(received_at > coalesce(conversed_at, '-infinity'), false) as unhandled
       from summary
     )
     select * from flags
-    where reasoning_cut or conversation_cut or steer_lost or hand_off_lost or unhandled
+    where work_cut or process_cut or steer_lost or hand_off_lost or unhandled
     order by agent_id
   `);
   return [...rows];
 }
 
 /**
- * lastReasoningStep describes where reasoning stopped: a tool it had started
+ * lastWorkStep describes where the work lane stopped: a tool it had started
  * whose result was never recorded, or the last tool that did finish.
  */
-async function lastReasoningStep(db: Db, agentId: string): Promise<string> {
+async function lastWorkStep(db: Db, agentId: string): Promise<string> {
   const [last] = await db
     .select({ event: agentLogs.event, payload: agentLogs.payload, createdAt: agentLogs.createdAt })
     .from(agentLogs)
-    .where(and(eq(agentLogs.agentId, agentId), eq(agentLogs.lane, "reasoning")))
+    .where(and(eq(agentLogs.agentId, agentId), eq(agentLogs.lane, "work")))
     .orderBy(desc(agentLogs.createdAt))
     .limit(1);
   if (!last) {
-    throw new Error(`agent ${agentId} has no reasoning rows to describe`);
+    throw new Error(`agent ${agentId} has no work-lane rows to describe`);
   }
   const at = formatISO(last.createdAt);
   if (last.event === "tool_result") {
@@ -146,15 +146,15 @@ export async function recoverInterruptedWakes(
   deps: DeliverDeps & { log: RuntimeLog; recoveryWindowMinutes: number },
 ): Promise<void> {
   for (const agentId of await agentsWithPendingHandoffs(deps.db)) {
-    deps.log.info({ code: "handoffs_resumed", agent_id: agentId }, "restart left hand-offs unsent; waking the agent's conversation lane");
-    deps.enqueueConversation(agentId);
+    deps.log.info({ code: "handoffs_resumed", agent_id: agentId }, "restart left hand-offs unsent; waking the agent's process lane");
+    deps.enqueueProcess(agentId);
   }
   const cutoff = Date.now() - deps.recoveryWindowMinutes * 60_000;
   for (const wake of await findInterruptedWakes(deps.db)) {
-    const midFlight = wake.reasoning_cut || wake.conversation_cut || wake.steer_lost || wake.hand_off_lost;
+    const midFlight = wake.work_cut || wake.process_cut || wake.steer_lost || wake.hand_off_lost;
     if (!midFlight) {
       deps.log.info({ code: "wake_resumed", agent_id: wake.agent_id }, "restart left a message unhandled; waking the agent");
-      deps.enqueueConversation(wake.agent_id);
+      deps.enqueueProcess(wake.agent_id);
       continue;
     }
     if (new Date(wake.last_at).getTime() < cutoff) {
@@ -165,10 +165,10 @@ export async function recoverInterruptedWakes(
       continue;
     }
     const details: string[] = [];
-    if (wake.reasoning_cut) {
-      details.push(await lastReasoningStep(deps.db, wake.agent_id));
+    if (wake.work_cut) {
+      details.push(await lastWorkStep(deps.db, wake.agent_id));
     }
-    if (wake.conversation_cut) {
+    if (wake.process_cut) {
       details.push("It was mid-reply.");
     }
     if (wake.steer_lost) {

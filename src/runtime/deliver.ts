@@ -27,15 +27,15 @@ export type DeliverDeps = {
   transcript: TranscriptStore;
   events: EventBus;
   /** Queue a lane run; returns the id of the wake it joins (see engine.ts). */
-  enqueueConversation: (agentId: string) => string;
-  enqueueReasoning: (agentId: string) => string;
+  enqueueProcess: (agentId: string) => string;
+  enqueueWork: (agentId: string) => string;
   /** The id of an agent's current wake, stamped on the log of a message it sends; null outside a wake. */
   wakeOf?: (agentId: string) => string | null;
 };
 
 /**
  * Persist a human → agent message (from_agent_id null) and wake the recipient's
- * conversation lane once, however many files it carries. Shared by POST /messages
+ * process lane once, however many files it carries. Shared by POST /messages
  * and the router's send_message and forward_attachment. The null side is logged
  * too, so the router's get_logs sees what Ankur (or it, as him) sent.
  */
@@ -71,10 +71,10 @@ export async function deliverUserMessage(
       seq: row.seq,
     },
   });
-  const wakeId = deps.enqueueConversation(toAgentId);
+  const wakeId = deps.enqueueProcess(toAgentId);
   await writeAgentLog(deps.db, {
     agentId: toAgentId,
-    lane: "conversation",
+    lane: "process",
     wakeId,
     event: "message",
     payload: {
@@ -105,8 +105,8 @@ export async function deliverUserMessage(
  * forward_attachment and the scheduled-message ticker. Caller checks agent
  * existence/active before calling. A message from an agent the recipient opened
  * the line to (its worker or helper, reporting back), or from one whose reply its
- * reasoning lane is waiting on (it handed off a question or request to it), wakes the
- * recipient's reasoning lane; any other message wakes its conversation lane.
+ * work lane is waiting on (it handed off a question or request to it), wakes the
+ * recipient's work lane; any other message wakes its process lane.
  */
 export async function deliverAgentMessage(
   deps: DeliverDeps,
@@ -127,8 +127,8 @@ export async function deliverAgentMessage(
     scheduled?: boolean;
     /** Set for hath's notice that this agent's work stopped, instead of a message it wrote. */
     notice?: NoticeKind;
-    /** The sender's lane that sent it, for its log row; conversation when left out. */
-    lane?: "conversation" | "reasoning";
+    /** The sender's lane that sent it, for its log row; the process lane when left out. */
+    lane?: "process" | "work";
   },
 ): Promise<TranscriptEntry> {
   const extra = { ...(args.extraPayload ?? {}), ...(args.notice !== undefined ? { kind: "notice", [NOTICE]: args.notice } : {}) };
@@ -148,7 +148,7 @@ export async function deliverAgentMessage(
   }
   await writeAgentLog(deps.db, {
     agentId: args.fromAgentId,
-    lane: args.lane ?? "conversation",
+    lane: args.lane ?? "process",
     wakeId: deps.wakeOf?.(args.fromAgentId) ?? null,
     event: "message",
     payload: {
@@ -169,15 +169,15 @@ export async function deliverAgentMessage(
       const awaited = await awaitingReply(deps.db, row.toAgentId, args.fromAgentId);
       wakeId =
         awaited || (await opensLine(deps.db, row.toAgentId, args.fromAgentId))
-          ? deps.enqueueReasoning(row.toAgentId)
-          : deps.enqueueConversation(row.toAgentId);
+          ? deps.enqueueWork(row.toAgentId)
+          : deps.enqueueProcess(row.toAgentId);
       if (awaited) {
         await clearAwaitedReply(deps.db, row.toAgentId, args.fromAgentId);
       }
     }
     await writeAgentLog(deps.db, {
       agentId: row.toAgentId,
-      lane: "conversation",
+      lane: "process",
       wakeId,
       event: "message",
       payload: {

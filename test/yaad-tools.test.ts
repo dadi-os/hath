@@ -66,7 +66,7 @@ test("only the Yaad history tools stay grantable and syncTools does not auto-gra
   assert.equal(grants.length, 0);
 });
 
-test("a reasoning lane with no grants still holds recall_memory and ingest_memory", async () => {
+test("a work lane with no grants still holds recall_memory and ingest_memory", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertWorker(handle.db, {
     name: "thread",
@@ -78,7 +78,7 @@ test("a reasoning lane with no grants still holds recall_memory and ingest_memor
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: workerId,
-    lane: "reasoning",
+    lane: "work",
     transcript: new TranscriptStore(),
   });
   const names = new Set(ctx.tools.map((tool) => tool.name));
@@ -99,7 +99,7 @@ test("a worker recalls memory but is not offered ingest_memory", async () => {
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: workerId,
-    lane: "reasoning",
+    lane: "work",
     transcript: new TranscriptStore(),
   });
   const names = new Set(ctx.tools.map((tool) => tool.name));
@@ -146,7 +146,7 @@ test("recall_memory passes anchors, hops, and filters through and shapes the res
       hops_taken: 1,
     }),
   });
-  const result = await executeTool(runtimeWith(yaad).toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtimeWith(yaad).toolContext(workerId, "work"), {
     type: "tool_use",
     id: "r1",
     name: RECALL_MEMORY,
@@ -165,7 +165,7 @@ test("recall_memory passes anchors, hops, and filters through and shapes the res
     { src_id: nodeId, dst_id: neighborId, type: "WORKS_AT", properties: { role: "recruiter" } },
   ]);
 
-  const filtered = await executeTool(runtimeWith(yaad).toolContext(workerId, "reasoning"), {
+  const filtered = await executeTool(runtimeWith(yaad).toolContext(workerId, "work"), {
     type: "tool_use",
     id: "r2",
     name: RECALL_MEMORY,
@@ -187,7 +187,7 @@ test("recall_memory rejects fields Yaad does not take", async () => {
     tools: [],
   });
   const yaad = mockYaad();
-  const result = await executeTool(runtimeWith(yaad).toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtimeWith(yaad).toolContext(workerId, "work"), {
     type: "tool_use",
     id: "r3",
     name: RECALL_MEMORY,
@@ -213,7 +213,7 @@ test("ingest_memory stamps the calling agent, source, and occurred_at", async ()
     }),
   });
   const runtime = runtimeWith(yaad);
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "i1",
     name: INGEST_MEMORY,
@@ -233,7 +233,7 @@ test("ingest_memory stamps the calling agent, source, and occurred_at", async ()
   assert.ok(body.operations);
   assert.equal(body.temp_ids, undefined);
 
-  const rejected = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const rejected = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "i2",
     name: INGEST_MEMORY,
@@ -246,7 +246,7 @@ test("ingest_memory stamps the calling agent, source, and occurred_at", async ()
 test("ingest_memory without an agent identity is an error and writes nothing", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const yaad = mockYaad();
-  const result = await executeTool(runtimeWith(yaad).toolContext(null, "reasoning"), {
+  const result = await executeTool(runtimeWith(yaad).toolContext(null, "work"), {
     type: "tool_use",
     id: "i3",
     name: INGEST_MEMORY,
@@ -268,7 +268,7 @@ test("Yaad 4xx maps to isError without throwing", async () => {
       throw new HathError(422, "yaad", "from cannot be combined with filters");
     },
   });
-  const result = await executeTool(runtimeWith(yaad).toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtimeWith(yaad).toolContext(workerId, "work"), {
     type: "tool_use",
     id: "q2",
     name: RECALL_MEMORY,
@@ -287,7 +287,7 @@ test("Yaad unreachable maps to isError and the lane continues", async () => {
   });
   let reasonCalls = 0;
   const dwar = mockDwar({
-    reason: async () => {
+    work: async () => {
       reasonCalls += 1;
       if (reasonCalls === 1) {
         return toolUse(RECALL_MEMORY, { query: "anything" }, "fail-call");
@@ -297,7 +297,7 @@ test("Yaad unreachable maps to isError and the lane continues", async () => {
       }
       return yieldTurn("recovered");
     },
-    converse: async () => yieldTurn(),
+    process: async () => yieldTurn(),
   });
   const yaad = mockYaad({
     recall: () => {
@@ -305,7 +305,7 @@ test("Yaad unreachable maps to isError and the lane continues", async () => {
     },
   });
   const runtime = runtimeWith(yaad, dwar);
-  runtime.enqueueReasoning(workerId);
+  runtime.enqueueWork(workerId);
   await runtime.waitUntilIdle();
   assert.equal(reasonCalls, 3, "lane continues after a failed tool call and after a text-only turn");
   assert.equal(yaad.recallCalls.length, 1);

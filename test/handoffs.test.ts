@@ -37,11 +37,11 @@ after(async () => {
   await handle.close();
 });
 
-type Converse = Parameters<typeof mockDwar>[0]["converse"];
-type Reason = Parameters<typeof mockDwar>[0]["reason"];
+type Converse = Parameters<typeof mockDwar>[0]["process"];
+type Reason = Parameters<typeof mockDwar>[0]["work"];
 
 function runtimeWith(converse?: Converse, reason?: Reason) {
-  const dwar = mockDwar({ ...(converse ? { converse } : {}), ...(reason ? { reason } : {}) });
+  const dwar = mockDwar({ ...(converse ? { process: converse } : {}), ...(reason ? { work: reason } : {}) });
   const runtime = createRuntime({
     db: handle.db,
     dwar,
@@ -55,7 +55,7 @@ function runtimeWith(converse?: Converse, reason?: Reason) {
   return { dwar, runtime };
 }
 
-/** A conversation mock that sends the first hand-off it is shown to Ankur, as written, then yields. */
+/** A process-lane mock that sends the first hand-off it is shown to Ankur, as written, then yields. */
 function sendsHandoffToAnkur(extra: Record<string, unknown> = {}): Converse {
   let sent = false;
   return async (request) => {
@@ -73,13 +73,13 @@ function quietDeps(runtime: Runtime) {
     db: handle.db,
     transcript: runtime.transcript,
     events: runtime.events,
-    enqueueConversation: () => randomUUID(),
-    enqueueReasoning: () => randomUUID(),
+    enqueueProcess: () => randomUUID(),
+    enqueueWork: () => randomUUID(),
   };
 }
 
 function handOff(runtime: Runtime, agentId: string, input: Record<string, unknown>) {
-  return executeTool(runtime.toolContext(agentId, "reasoning"), {
+  return executeTool(runtime.toolContext(agentId, "work"), {
     type: "tool_use",
     id: `h-${String(input.content)}`,
     name: HAND_OFF,
@@ -87,7 +87,7 @@ function handOff(runtime: Runtime, agentId: string, input: Record<string, unknow
   });
 }
 
-test("a hand-off to Ankur waits, reaches the conversation lane, and is sent as written", async () => {
+test("a hand-off to Ankur waits, reaches the process lane, and is sent as written", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "ho-agent", systemPrompt: "agent" });
   const { dwar, runtime } = runtimeWith(sendsHandoffToAnkur());
@@ -96,7 +96,7 @@ test("a hand-off to Ankur waits, reaches the conversation lane, and is sent as w
   assert.equal(made.isError, false, made.content);
   await runtime.waitUntilIdle();
 
-  assert.ok(dwar.conversationCalls.length >= 1);
+  assert.ok(dwar.processCalls.length >= 1);
   const [row] = await handle.db.select().from(handoffs).where(eq(handoffs.agentId, agentId));
   assert.equal(row?.state, "sent");
   assert.equal(row?.expectsReply, false);
@@ -105,7 +105,7 @@ test("a hand-off to Ankur waits, reaches the conversation lane, and is sent as w
   assert.equal(row?.messageId, sent[0]?.id);
 });
 
-test("the conversation lane may reword a hand-off to Ankur but sends one to an agent as written", async () => {
+test("the process lane may reword a hand-off to Ankur but sends one to an agent as written", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "ho-reword", systemPrompt: "agent" });
   const peerId = await insertAgent(handle.db, { id: "ho-peer", systemPrompt: "peer" });
@@ -113,7 +113,7 @@ test("the conversation lane may reword a hand-off to Ankur but sends one to an a
 
   const toAnkur = await createHandoff(handle.db, { agentId, to: null, kind: "note", content: "raw text", attachmentIds: [] });
   const toPeer = await createHandoff(handle.db, { agentId, to: peerId, kind: "note", content: "peer text", attachmentIds: [] });
-  const voice = runtime.toolContext(agentId, "conversation");
+  const voice = runtime.toolContext(agentId, "process");
   const dispatch = (input: Record<string, unknown>) =>
     executeTool(voice, { type: "tool_use", id: `d-${JSON.stringify(input)}`, name: DISPATCH_MESSAGE, input });
 
@@ -188,7 +188,7 @@ test("hand-offs that break a job rule are refused where they are made, with the 
   await runtime.waitUntilIdle();
 });
 
-test("a conversation lane that yields with a hand-off waiting is asked again, then fails loudly and the hand-off is recorded as failed", async () => {
+test("a process lane that yields with a hand-off waiting is asked again, then fails loudly and the hand-off is recorded as failed", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "ho-stuck", systemPrompt: "agent" });
   const { dwar, runtime } = runtimeWith(async () => yieldTurn("c-yield"));
@@ -197,16 +197,16 @@ test("a conversation lane that yields with a hand-off waiting is asked again, th
   assert.equal(made.isError, false, made.content);
   await runtime.waitUntilIdle();
 
-  assert.equal(dwar.conversationCalls.length, 4, "one call and three reminders");
-  assert.match(JSON.stringify(dwar.conversationCalls[1]!.messages), /Hand-offs are still waiting/);
+  assert.equal(dwar.processCalls.length, 4, "one call and three reminders");
+  assert.match(JSON.stringify(dwar.processCalls[1]!.messages), /Hand-offs are still waiting/);
   const [row] = await handle.db.select().from(handoffs).where(eq(handoffs.agentId, agentId));
   assert.equal(row?.state, "failed");
   assert.match(row?.reason ?? "", /still waiting/);
-  assert.equal(runtime.steer.hasItems(agentId), true, "the reasoning lane is told it was not sent");
+  assert.equal(runtime.steer.hasItems(agentId), true, "the work lane is told it was not sent");
   assert.equal((await handle.db.select().from(messages).where(eq(messages.fromAgentId, agentId))).length, 0);
 });
 
-test("a declined hand-off returns to the reasoning lane with the reason", async () => {
+test("a declined hand-off returns to the work lane with the reason", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "ho-decline", systemPrompt: "agent" });
   let declined = false;
@@ -225,11 +225,11 @@ test("a declined hand-off returns to the reasoning lane with the reason", async 
   const [row] = await handle.db.select().from(handoffs).where(eq(handoffs.agentId, agentId));
   assert.equal(row?.state, "declined");
   assert.equal(row?.reason, "already covered by the earlier message");
-  assert.match(JSON.stringify(dwar.reasoningCalls.map((request) => request.messages)), /was not sent: already covered by the earlier message/);
+  assert.match(JSON.stringify(dwar.workCalls.map((request) => request.messages)), /was not sent: already covered by the earlier message/);
   assert.equal((await handle.db.select().from(messages).where(eq(messages.fromAgentId, agentId))).length, 0);
 });
 
-test("the reply to a handed-off question wakes the reasoning lane, not the conversation lane", async () => {
+test("the reply to a handed-off question wakes the work lane, not the process lane", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "ho-asker", systemPrompt: "agent" });
   const requesterId = await insertAgent(handle.db, { id: "ho-asked", systemPrompt: "requester" });
@@ -249,20 +249,20 @@ test("the reply to a handed-off question wakes the reasoning lane, not the conve
   const [row] = await handle.db.select().from(handoffs).where(eq(handoffs.agentId, agentId));
   assert.equal(row?.state, "sent");
   assert.equal(row?.expectsReply, true);
-  const reasoningBefore = dwar.reasoningCalls.length;
+  const workBefore = dwar.workCalls.length;
 
   await deliverAgentMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: runtime.enqueueConversation, enqueueReasoning: runtime.enqueueReasoning },
+    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: runtime.enqueueProcess, enqueueWork: runtime.enqueueWork },
     { fromAgentId: requesterId, toAgentId: agentId, content: "fall 2026" },
   );
   await runtime.waitUntilIdle();
 
-  assert.ok(dwar.reasoningCalls.length > reasoningBefore, "the reply woke reasoning");
+  assert.ok(dwar.workCalls.length > workBefore, "the reply woke the work lane");
   const [after] = await handle.db.select().from(handoffs).where(eq(handoffs.agentId, agentId));
   assert.equal(after?.expectsReply, false, "the wait ends with the first reply");
 });
 
-test("boot recovery wakes the conversation lane of an agent with a hand-off still waiting", async () => {
+test("boot recovery wakes the process lane of an agent with a hand-off still waiting", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "ho-boot", systemPrompt: "agent" });
   const { runtime } = runtimeWith();
@@ -271,7 +271,7 @@ test("boot recovery wakes the conversation lane of an agent with a hand-off stil
   const woken: string[] = [];
   await recoverInterruptedWakes({
     ...quietDeps(runtime),
-    enqueueConversation: (id: string) => {
+    enqueueProcess: (id: string) => {
       woken.push(id);
       return "";
     },

@@ -112,7 +112,7 @@ export async function recordDelivery(db: Db, row: TranscriptEntry, scheduled: bo
 /**
  * settleWakeJobs closes, when an agent's wake ends, each job opened during that wake (by a
  * message among `lines`, the agent's transcript rows since its previous wake) that the wake
- * did nothing on: no reasoning step and no message back, so it was a message that needed
+ * did nothing on: no work-lane step and no message back, so it was a message that needed
  * no work (noop). Every other job stays open until the agent reports on it: hath
  * never decides from outside that a job stalled, since an agent that yielded may be
  * waiting on a reply that wakes it (health-specialist's Dr. Zubair job was closed as
@@ -209,10 +209,10 @@ async function misaddressedReport(db: Db, agent: string, who: string): Promise<s
  * to, so it sends right the first time instead of learning each gate from a refusal:
  * everyone whose open job it owes a status on every message, with whether its one
  * progress update is spent or its question still waits (see reportRefusal), and the
- * agents it gave work that is still open, which the reasoning lane directs and messages
- * itself (see conversation.ts sendRefusal). Null when it has no open job either way.
+ * agents it gave work that is still open, which the work lane directs and messages
+ * itself (see process.ts sendRefusal). Null when it has no open job either way.
  */
-export async function openJobsNote(db: Db, agentId: string, lane: "conversation" | "reasoning"): Promise<string | null> {
+export async function openJobsNote(db: Db, agentId: string, lane: "process" | "work"): Promise<string | null> {
   const owed = await db
     .select()
     .from(jobs)
@@ -230,7 +230,7 @@ export async function openJobsNote(db: Db, agentId: string, lane: "conversation"
     const who = job.requesterId ?? "Ankur";
     const spent = job.progressSeq !== null && !(await wroteSince(db, job.requesterId, agentId, job.progressSeq));
     const waiting = `your question to ${who} waits for a reply, so do not ask again`;
-    if (lane === "reasoning") {
+    if (lane === "work") {
       const next =
         job.state === "needs_input"
           ? waiting
@@ -245,14 +245,14 @@ export async function openJobsNote(db: Db, agentId: string, lane: "conversation"
         : spent
           ? "your one progress update is spent, so the next is done, blocked or needs_input"
           : "running is free for one progress update";
-    return `- ${who} gave you a job that is still open: every message to ${who} carries a status, and ${next}. A hand-off from your reasoning lane gets its status from its kind.`;
+    return `- ${who} gave you a job that is still open: every message to ${who} carries a status, and ${next}. A hand-off from your work lane gets its status from its kind.`;
   }));
   if (given.length > 0) {
     const names = given.map((job) => job.agentId).join(", ");
     lines.push(
-      lane === "reasoning"
+      lane === "work"
         ? `- You gave work that is still open to ${names}: their reports come to you, and you send them every next step yourself with send_message.`
-        : `- You gave work that is still open to ${names}: your reasoning lane directs it and messages them itself, so never message them; to change that work, steer reasoning.`,
+        : `- You gave work that is still open to ${names}: your work lane directs it and messages them itself, so never message them; to change that work, steer the work lane.`,
     );
   }
   return [OPEN_JOBS_HEADER, ...lines].join("\n");

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
-import { runReasoningLoop } from "../src/runtime/reasoning.js";
+import { runWorkLoop } from "../src/runtime/work.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { LaneLocks } from "../src/runtime/locks.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { HostSessions } from "../src/runtime/sessions.js";
 import { ToolDebounce } from "../src/runtime/tool-debounce.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { STEER_REASONING } from "../src/types/domain.js";
+import { STEER_WORK } from "../src/types/domain.js";
 import { Wake } from "../src/runtime/wake.js";
 import { roomyWakeLimits } from "./helpers.js";
 
@@ -29,11 +29,11 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
   const calls: DwarChatRequest[] = [];
   let turn = 0;
 
-  await runReasoningLoop({
+  await runWorkLoop({
     agentId,
-    lane: "reasoning",
+    lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(request);
@@ -67,11 +67,11 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
   const calls: DwarChatRequest[] = [];
   let turn = 0;
 
-  await runReasoningLoop({
+  await runWorkLoop({
     agentId,
-    lane: "reasoning",
+    lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(structuredClone(request));
@@ -100,7 +100,7 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
   }
 });
 
-test("steer_reasoning starts a run when reasoning is idle", async () => {
+test("steer_work starts a run when the work lane is idle", async () => {
   const locks = new LaneLocks();
   const steer = new SteerQueue();
   const started: string[] = [];
@@ -110,21 +110,21 @@ test("steer_reasoning starts a run when reasoning is idle", async () => {
       db: {} as never,
       callerId: agentId,
       callerKind: "agent",
-      lane: "conversation",
+      lane: "process",
       steer,
       locks,
       transcript: new TranscriptStore(),
       sessions: new HostSessions(),
       toolDebounce: noDebounce,
-      enqueueConversation: () => {},
-      enqueueReasoning: (id) => {
+      enqueueProcess: () => {},
+      enqueueWork: (id) => {
         started.push(id);
       },
     },
     {
       type: "tool_use",
       id: "s1",
-      name: STEER_REASONING,
+      name: STEER_WORK,
       input: { instruction: "look into it" },
     },
   );
@@ -133,32 +133,32 @@ test("steer_reasoning starts a run when reasoning is idle", async () => {
   assert.equal(steer.hasItems(agentId), true);
 });
 
-test("steer_reasoning does not start a second run while reasoning is busy", async () => {
+test("steer_work does not start a second run while the work lane is busy", async () => {
   const locks = new LaneLocks();
   const steer = new SteerQueue();
   const agentId = "00000000-0000-4000-8000-0000000000ee";
-  const release = await locks.acquire(agentId, "reasoning", 1000);
+  const release = await locks.acquire(agentId, "work", 1000);
   const started: string[] = [];
   await executeTool(
     {
       db: {} as never,
       callerId: agentId,
       callerKind: "agent",
-      lane: "conversation",
+      lane: "process",
       steer,
       locks,
       transcript: new TranscriptStore(),
       sessions: new HostSessions(),
       toolDebounce: noDebounce,
-      enqueueConversation: () => {},
-      enqueueReasoning: (id) => {
+      enqueueProcess: () => {},
+      enqueueWork: (id) => {
         started.push(id);
       },
     },
     {
       type: "tool_use",
       id: "s2",
-      name: STEER_REASONING,
+      name: STEER_WORK,
       input: { instruction: "wait your turn" },
     },
   );
@@ -167,17 +167,17 @@ test("steer_reasoning does not start a second run while reasoning is busy", asyn
   assert.equal(steer.hasItems(agentId), true);
 });
 
-test("steer_reasoning with terminate stops the next tool call from running", async () => {
+test("steer_work with terminate stops the next tool call from running", async () => {
   const steer = new SteerQueue();
   const agentId = "agent-terminate";
   const executed: string[] = [];
   let turn = 0;
 
-  await runReasoningLoop({
+  await runWorkLoop({
     agentId,
-    lane: "reasoning",
+    lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async () => {
       turn += 1;
@@ -203,16 +203,16 @@ test("steer_reasoning with terminate stops the next tool call from running", asy
   assert.equal(steer.isTerminate(agentId), false);
 });
 
-test("steer_reasoning terminate mid-batch blocks remaining domain tools", async () => {
+test("steer_work terminate mid-batch blocks remaining domain tools", async () => {
   const steer = new SteerQueue();
   const agentId = "agent-terminate-batch";
   const executed: string[] = [];
 
-  await runReasoningLoop({
+  await runWorkLoop({
     agentId,
-    lane: "reasoning",
+    lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { reasoning: [], conversation: [] }, tools: [], throughSeq: 0 }),
+    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
     arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async () => ({
       provider: "anthropic",
@@ -239,7 +239,7 @@ test("steer_reasoning terminate mid-batch blocks remaining domain tools", async 
   assert.equal(steer.isTerminate(agentId), false);
 });
 
-test("steer_reasoning accepts terminate without instruction", async () => {
+test("steer_work accepts terminate without instruction", async () => {
   const locks = new LaneLocks();
   const steer = new SteerQueue();
   const agentId = "00000000-0000-4000-8000-0000000000ff";
@@ -248,19 +248,19 @@ test("steer_reasoning accepts terminate without instruction", async () => {
       db: {} as never,
       callerId: agentId,
       callerKind: "agent",
-      lane: "conversation",
+      lane: "process",
       steer,
       locks,
       transcript: new TranscriptStore(),
       sessions: new HostSessions(),
       toolDebounce: noDebounce,
-      enqueueConversation: () => {},
-      enqueueReasoning: () => {},
+      enqueueProcess: () => {},
+      enqueueWork: () => {},
     },
     {
       type: "tool_use",
       id: "t1",
-      name: STEER_REASONING,
+      name: STEER_WORK,
       input: { terminate: true },
     },
   );

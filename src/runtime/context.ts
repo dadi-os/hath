@@ -20,7 +20,7 @@ import {
   READ_RESULT,
   RECALL_MEMORY,
   SEND_MESSAGE,
-  STEER_REASONING,
+  STEER_WORK,
   WAIT,
   YIELD,
 } from "../types/domain.js";
@@ -35,7 +35,7 @@ import {
   dispatchMessageTool,
   listAgentsTool,
   sendMessageTool,
-  steerReasoningTool,
+  steerWorkTool,
   waitTool,
   yieldTool,
 } from "./tools.js";
@@ -199,10 +199,10 @@ export function windowStart(sizes: number[], window: Omit<TranscriptWindow, "bud
  * An agent lane's request: its system, then each lane's rolling window of its
  * history (see historyFor, windowStart), no wider than the room the window's budget leaves
  * after the system and that lane's tools. Messages that left a window are reached
- * through get_logs and memory. When conversation's history ends on something for it
+ * through get_logs and memory. When the process lane's history ends on something for it
  * to answer, hath's note on the agent's open jobs follows it (see openJobsNote); a
  * history that ends on the agent's own turn gets none, so a run with nothing to
- * answer still makes no call. Reasoning, which also sends, always gets its note when it
+ * answer still makes no call. The work lane, which also sends, always gets its note when it
  * has open jobs; its runs start from a steer or a report, never from the transcript's
  * end. Dwar appends lane doctrine as a cached block.
  */
@@ -219,8 +219,8 @@ export async function assembleContext(opts: {
   const messages = historyFor(thread, opts.agentId);
   const sizes = messages.map((message) => message.content.length);
   const laneTools = {
-    conversation: await toolsForLane(opts.db, opts.agentId, "conversation"),
-    reasoning: await toolsForLane(opts.db, opts.agentId, "reasoning"),
+    process: await toolsForLane(opts.db, opts.agentId, "process"),
+    work: await toolsForLane(opts.db, opts.agentId, "work"),
   };
   const windowed = (lane: keyof TranscriptWindows) => {
     const window = opts.windows[lane];
@@ -234,18 +234,18 @@ export async function assembleContext(opts: {
     return messages.slice(windowStart(sizes, { ...window, chars }));
   };
 
-  const conversation = windowed("conversation");
-  const reasoning = windowed("reasoning");
-  const conversationNote = await openJobsNote(opts.db, opts.agentId, "conversation");
-  const reasoningNote = await openJobsNote(opts.db, opts.agentId, "reasoning");
+  const processTranscript = windowed("process");
+  const workTranscript = windowed("work");
+  const processNote = await openJobsNote(opts.db, opts.agentId, "process");
+  const workNote = await openJobsNote(opts.db, opts.agentId, "work");
   return {
     system,
     transcripts: {
-      conversation:
-        conversationNote !== null && conversation.at(-1)?.role === "user"
-          ? [...conversation, { role: "user", content: conversationNote }]
-          : conversation,
-      reasoning: reasoningNote !== null ? [...reasoning, { role: "user", content: reasoningNote }] : reasoning,
+      process:
+        processNote !== null && processTranscript.at(-1)?.role === "user"
+          ? [...processTranscript, { role: "user", content: processNote }]
+          : processTranscript,
+      work: workNote !== null ? [...workTranscript, { role: "user", content: workNote }] : workTranscript,
     },
     tools: laneTools[opts.lane],
     throughSeq: thread.at(-1)?.seq ?? 0,
@@ -351,21 +351,21 @@ function entryBody(row: TranscriptEntry): string {
 }
 
 /**
- * toolsForLane is what a lane may call: the conversation lane's routing tools, or the
- * reasoning lane's grants plus the embedded tools. A worker gets no `ingest_memory`: it
+ * toolsForLane is what a lane may call: the process lane's routing tools, or the
+ * work lane's grants plus the embedded tools. A worker gets no `ingest_memory`: it
  * reports what it found to the agent that owns the domain, which stores what matters.
  */
 async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTool[]> {
   if (lane === "router") {
     throw new HathError(500, "internal_error", `agent ${agentId} has no router lane`);
   }
-  if (lane === "conversation") {
+  if (lane === "process") {
     return [
       dispatchMessageTool,
       declineHandoffTool,
       forwardAttachmentTool,
       readAttachmentTool,
-      steerReasoningTool,
+      steerWorkTool,
       listAgentsTool,
       yieldTool,
     ];
@@ -405,7 +405,7 @@ async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTo
   ];
 }
 
-export const embeddedReasoningTools = [
+export const embeddedWorkTools = [
   HAND_OFF,
   SEND_MESSAGE,
   READ_ATTACHMENT,
@@ -421,12 +421,12 @@ export const embeddedReasoningTools = [
   ...embeddedSchedulingTools().map((tool) => tool.name),
   YIELD,
 ];
-export const embeddedConversationTools = [
+export const embeddedProcessTools = [
   DISPATCH_MESSAGE,
   DECLINE_HANDOFF,
   FORWARD_ATTACHMENT,
   READ_ATTACHMENT,
-  STEER_REASONING,
+  STEER_WORK,
   LIST_AGENTS,
   YIELD,
 ] as const;

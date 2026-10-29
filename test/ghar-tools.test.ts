@@ -86,7 +86,7 @@ test("list_devices passes filters through to the Ghar client", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ld1",
     name: "ghar_list_devices",
@@ -132,7 +132,7 @@ test("control_device attributes cause to the calling agent, not the parent", asy
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(childId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(childId, "work"), {
     type: "tool_use",
     id: "cd1",
     name: "ghar_control_device",
@@ -169,7 +169,7 @@ test("control_device cause_ref distinguishes router and user when callerId is nu
     config,
     log: silentLog,
   });
-  const asDadi = await executeTool(runtime.toolContext(null, "reasoning", "router"), {
+  const asDadi = await executeTool(runtime.toolContext(null, "work", "router"), {
     type: "tool_use",
     id: "cd-dadi",
     name: "ghar_control_device",
@@ -182,7 +182,7 @@ test("control_device cause_ref distinguishes router and user when callerId is nu
   assert.equal(asDadi.isError, false);
   assert.equal(ghar.commandCalls[0]!.body.cause_ref, "router");
 
-  const asUser = await executeTool(runtime.toolContext(null, "reasoning", "user"), {
+  const asUser = await executeTool(runtime.toolContext(null, "work", "user"), {
     type: "tool_use",
     id: "cd-user",
     name: "ghar_control_device",
@@ -218,7 +218,7 @@ test("Ghar unreachable fails with ghar code, not an empty success", async () => 
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ld2",
     name: "ghar_list_devices",
@@ -268,7 +268,7 @@ test("capability_unsupported and device_unreachable stay distinguishable", async
     config,
     log: silentLog,
   });
-  const unsupported = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const unsupported = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "cd2",
     name: "ghar_control_device",
@@ -278,7 +278,7 @@ test("capability_unsupported and device_unreachable stay distinguishable", async
   assert.match(unsupported.content, /^capability_unsupported:/);
 
   mode = "unreachable";
-  const unreachable = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const unreachable = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "cd3",
     name: "ghar_control_device",
@@ -323,7 +323,7 @@ test("get_device_events passes filters through and bounds the default limit", as
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ev1",
     name: "ghar_get_device_events",
@@ -378,7 +378,7 @@ test("get_state returns only requested devices with changed_at", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "gs1",
     name: "ghar_get_state",

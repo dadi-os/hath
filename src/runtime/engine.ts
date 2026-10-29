@@ -1,8 +1,8 @@
 /**
  * Agent runtime: lane locks, the steer queue, transcript, and lane runners.
- * Conversation enqueue always schedules a run — the lane lock serializes concurrent
- * wakes so a second user message is not dropped while conversation is busy.
- * Reasoning does not wake conversation on exit: it sends its own messages. A blanket
+ * Process-lane enqueue always schedules a run — the lane lock serializes concurrent
+ * wakes so a second user message is not dropped while the process lane is busy.
+ * The work lane does not wake the process lane on exit: it sends its own messages. A blanket
  * wake races a follow-up run whose transcript ends on an assistant turn, which chat
  * providers reject.
  */
@@ -30,12 +30,12 @@ import type {
 } from "../types/domain.js";
 import { arrivalsSince, assembleContext, assembleRouterContext, type TranscriptWindows } from "./context.js";
 import { deliverAgentMessage } from "./deliver.js";
-import { runConversationLoop } from "./conversation.js";
+import { runProcessLoop } from "./process.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
 import { failedHandoffSteer } from "./handoffs.js";
 import { LaneLocks } from "./locks.js";
-import { runReasoningLoop } from "./reasoning.js";
+import { runWorkLoop } from "./work.js";
 import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
 import { ToolDebounce } from "./tool-debounce.js";
@@ -65,8 +65,8 @@ export type Runtime = {
   sessions: HostSessions;
   scheduler: Scheduler;
   /** Queue a lane run; returns the id of the wake it joins. */
-  enqueueConversation: (agentId: string) => string;
-  enqueueReasoning: (agentId: string) => string;
+  enqueueProcess: (agentId: string) => string;
+  enqueueWork: (agentId: string) => string;
   /** The id of the agent's current wake, or null when it has none. */
   wakeOf: (agentId: string) => string | null;
   waitUntilIdle: () => Promise<void>;
@@ -143,17 +143,17 @@ export function createRuntime(opts: {
   }
 
   /**
-   * Always schedule a conversation run. The lane lock serializes concurrent wakes;
+   * Always schedule a process-lane run. The lane lock serializes concurrent wakes;
    * dropping here would lose a second user message that arrives while busy. Returns
    * the id of the wake the run joins: the agent's current one, or a new one.
    */
-  function enqueueConversation(agentId: string): string {
-    track(runLane(agentId, "conversation", wakes.hold(agentId)));
+  function enqueueProcess(agentId: string): string {
+    track(runLane(agentId, "process", wakes.hold(agentId)));
     return wakes.get(agentId).id;
   }
 
-  function enqueueReasoning(agentId: string): string {
-    track(runLane(agentId, "reasoning", wakes.hold(agentId)));
+  function enqueueWork(agentId: string): string {
+    track(runLane(agentId, "work", wakes.hold(agentId)));
     return wakes.get(agentId).id;
   }
 
@@ -165,8 +165,8 @@ export function createRuntime(opts: {
     db: opts.db,
     transcript,
     events,
-    enqueueConversation,
-    enqueueReasoning,
+    enqueueProcess,
+    enqueueWork,
     log: opts.log,
     tickSeconds: opts.config.schedule.tick_seconds,
   });
@@ -180,8 +180,8 @@ export function createRuntime(opts: {
     browsers,
     sessions,
     scheduler,
-    enqueueConversation,
-    enqueueReasoning,
+    enqueueProcess,
+    enqueueWork,
     wakeOf,
     waitUntilIdle,
     route,
@@ -211,24 +211,24 @@ export function createRuntime(opts: {
       events,
       sessions,
       toolDebounce,
-      enqueueConversation,
-      enqueueReasoning,
+      enqueueProcess,
+      enqueueWork,
       wakeOf,
     };
   }
 
   /**
-   * Acquire the lane lock and run reasoning or conversation. `releaseWake` is
+   * Acquire the lane lock and run the work lane or the process lane. `releaseWake` is
    * this run's hold on the agent's shared wake, taken when the run was queued
    * and released last, after any follow-up run has taken its own hold. Only a
-   * reasoning run that finished its loop queues a follow-up for steers that
+   * work-lane run that finished its loop queues a follow-up for steers that
    * arrived after its last drain; a run that failed, or found the agent missing
    * or retired, leaves them for the next wake instead of re-queuing itself forever.
    * The run that holds the wake last settles the jobs the wake left open
    * before releasing it (see settleJobs); a failure is logged, since the wake must still
    * release.
    * Runs wait for the lane lock without a deadline, so no queued wake is dropped. A retired
-   * agent's conversation lane still runs while a hand-off waits, so a worker that retired
+   * agent's process lane still runs while a hand-off waits, so a worker that retired
    * itself in the turn that handed off its result still gets that report sent.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
@@ -245,15 +245,15 @@ export function createRuntime(opts: {
       try {
         const rows = await opts.db.select().from(agents).where(eq(agents.id, agentId));
         const agent = rows[0];
-        const sendsLastReport = lane === "conversation" && (await pendingHandoffs(opts.db, agentId)).length > 0;
+        const sendsLastReport = lane === "process" && (await pendingHandoffs(opts.db, agentId)).length > 0;
         if (!agent || (!agent.active && !sendsLastReport)) {
           return;
         }
-        if (lane === "reasoning") {
-          await runReasoningLoop(reasoningDeps(agentId));
+        if (lane === "work") {
+          await runWorkLoop(workDeps(agentId));
           reasoned = true;
         } else {
-          await runConversationLoop(conversationDeps(agentId));
+          await runProcessLoop(processDeps(agentId));
         }
         reportedFailures.delete(agentId);
       } finally {
@@ -274,7 +274,7 @@ export function createRuntime(opts: {
         message,
         at: new Date().toISOString(),
       });
-      if (lane === "conversation") {
+      if (lane === "process") {
         await failHandoffs(agentId, message).catch((handoffErr: unknown) => {
           opts.log.error({ err: handoffErr, agentId, code: "handoff_fail_failed" }, "recording failed hand-offs failed");
         });
@@ -291,7 +291,7 @@ export function createRuntime(opts: {
     } finally {
       release?.();
       if (reasoned && steer.hasItems(agentId)) {
-        enqueueReasoning(agentId);
+        enqueueWork(agentId);
       }
       if (wakes.lastHold(agentId)) {
         await settleJobs(agentId).catch((settleErr: unknown) => {
@@ -303,9 +303,9 @@ export function createRuntime(opts: {
   }
 
   /**
-   * failHandoffs records the hand-offs a failed conversation lane left unsent as failed,
-   * and queues a steer telling the reasoning lane each was not sent. It does not wake that
-   * lane: a conversation lane that keeps failing would otherwise be handed the same work again
+   * failHandoffs records the hand-offs a failed process lane left unsent as failed,
+   * and queues a steer telling the work lane each was not sent. It does not wake that
+   * lane: a process lane that keeps failing would otherwise be handed the same work again
    * and again, so the steer waits for the agent's next wake, and the failure is reported
    * to its requester like any other lane failure.
    */
@@ -341,7 +341,7 @@ export function createRuntime(opts: {
       return;
     }
     const row = await deliverAgentMessage(
-      { db: opts.db, transcript, events, enqueueConversation, enqueueReasoning, wakeOf },
+      { db: opts.db, transcript, events, enqueueProcess, enqueueWork, wakeOf },
       {
         fromAgentId: agentId,
         toAgentId: requester,
@@ -400,13 +400,13 @@ export function createRuntime(opts: {
           transcript,
           serviceRoot: opts.config.serviceRoot,
           windows: {
-            conversation: {
-              chars: opts.config.runtime.conversation_transcript_window_chars,
+            process: {
+              chars: opts.config.runtime.process_transcript_window_chars,
               stepChars: opts.config.runtime.transcript_window_step_chars,
               budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
             },
-            reasoning: {
-              chars: opts.config.runtime.reasoning_transcript_window_chars,
+            work: {
+              chars: opts.config.runtime.work_transcript_window_chars,
               stepChars: opts.config.runtime.transcript_window_step_chars,
               budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
             },
@@ -480,18 +480,18 @@ export function createRuntime(opts: {
     }
   }
 
-  function reasoningDeps(agentId: string) {
+  function workDeps(agentId: string) {
     return {
-      ...stepDeps(agentId, "reasoning"),
-      call: (request: DwarChatRequest) => opts.dwar.reason(request, `hath/${agentId}`),
+      ...stepDeps(agentId, "work"),
+      call: (request: DwarChatRequest) => opts.dwar.work(request, `hath/${agentId}`),
       steer,
     };
   }
 
-  function conversationDeps(agentId: string) {
+  function processDeps(agentId: string) {
     return {
-      ...stepDeps(agentId, "conversation"),
-      call: (request: DwarChatRequest) => opts.dwar.converse(request, `hath/${agentId}`),
+      ...stepDeps(agentId, "process"),
+      call: (request: DwarChatRequest) => opts.dwar.process(request, `hath/${agentId}`),
       db: opts.db,
       transcript,
     };

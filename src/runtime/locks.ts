@@ -24,7 +24,7 @@ export class LaneLocks {
     return `${agentId}:${lane}`;
   }
 
-  /** Held or queued. A steer must not start a second reasoning run in this case. */
+  /** Held or queued. A steer must not start a second work-lane run in this case. */
   isBusy(agentId: string, lane: Lane): boolean {
     const state = this.states.get(this.key(agentId, lane));
     return Boolean(state && (state.held || state.waiters.length > 0));

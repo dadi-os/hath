@@ -1,6 +1,6 @@
 /**
- * Hand-offs: how the reasoning lane gets something said to anyone but the agents it brought
- * in. The reasoning lane does the work and calls hand_off; the conversation lane, which knows
+ * Hand-offs: how the work lane gets something said to anyone but the agents it brought
+ * in. The work lane does the work and calls hand_off; the process lane, which knows
  * how to address people and what each job is owed, sends it with dispatch_message or declines
  * it with decline_handoff. Every hand-off ends in a recorded state, so none is lost silently.
  */
@@ -48,11 +48,11 @@ const declineInput = z
   })
   .strict();
 
-/** The reasoning lane's way to get a message to Ankur, a requester, a parent or a peer. */
+/** The work lane's way to get a message to Ankur, a requester, a parent or a peer. */
 export const handOffTool: DwarTool = {
   name: HAND_OFF,
   description:
-    "Hand your conversation lane something to say to Ankur or to any agent you did not bring in (to: \"ankur\", \"requester\" for whoever gave you this job, or an agent id). Your conversation lane sends it and sets the job status from kind, so you never address a message or write a status. kind: result (the finished work, closes the job), blocker (you cannot finish), question (only the recipient can answer), progress (your one update on the job), note (something to tell), request (something to ask of an agent). The call returns at once and you keep working; if it is not sent you hear why. Hath refuses a hand-off that breaks a job rule (a second progress update, a question still open, a result with no job behind it) and says how to fix it. One hand-off per recipient waits at a time. Agents you brought in are not handed off to: message them with send_message. After handing off a question or request, yield: the recipient's reply wakes you.",
+    "Hand your process lane something to say to Ankur or to any agent you did not bring in (to: \"ankur\", \"requester\" for whoever gave you this job, or an agent id). Your process lane sends it and sets the job status from kind, so you never address a message or write a status. kind: result (the finished work, closes the job), blocker (you cannot finish), question (only the recipient can answer), progress (your one update on the job), note (something to tell), request (something to ask of an agent). The call returns at once and you keep working; if it is not sent you hear why. Hath refuses a hand-off that breaks a job rule (a second progress update, a question still open, a result with no job behind it) and says how to fix it. One hand-off per recipient waits at a time. Agents you brought in are not handed off to: message them with send_message. After handing off a question or request, yield: the recipient's reply wakes you.",
   input_schema: {
     type: "object",
     properties: {
@@ -70,11 +70,11 @@ export const handOffTool: DwarTool = {
   },
 };
 
-/** The conversation lane's way to return a hand-off it will not send. */
+/** The process lane's way to return a hand-off it will not send. */
 export const declineHandoffTool: DwarTool = {
   name: DECLINE_HANDOFF,
   description:
-    "Decline a waiting hand-off from your reasoning lane instead of sending it. Give the reason: it is steered to reasoning as \"your hand-off was not sent\". Use it when the hand-off is wrong, stale, or covered by something already sent; send it with dispatch_message handoff_id otherwise.",
+    "Decline a waiting hand-off from your work lane instead of sending it. Give the reason: it is steered to the work lane as \"your hand-off was not sent\". Use it when the hand-off is wrong, stale, or covered by something already sent; send it with dispatch_message handoff_id otherwise.",
   input_schema: {
     type: "object",
     properties: {
@@ -102,7 +102,7 @@ async function recipientOf(ctx: ToolContext, caller: string, to: string): Promis
 }
 
 /**
- * runHandOff records the reasoning lane's hand-off and wakes the conversation lane to send
+ * runHandOff records the work lane's hand-off and wakes the process lane to send
  * it. Everything the sender could get wrong is checked here, in the lane that can fix it:
  * the recipient is active and not an agent it brought in, nothing is waiting for that
  * recipient already, and the job rules that would refuse the message hold (see
@@ -139,11 +139,11 @@ export async function runHandOff(ctx: ToolContext, raw: unknown): Promise<ToolEx
   const attachmentIds = input.attachment_ids ?? [];
   await requireAttachments(ctx.db, attachmentIds);
   const row = await createHandoff(ctx.db, { agentId: caller, to, kind: input.kind, content: input.content, attachmentIds });
-  ctx.enqueueConversation(caller);
+  ctx.enqueueProcess(caller);
   return ok({ handoff_id: row.id, to_agent_id: to, kind: row.kind, queued: true });
 }
 
-/** runDeclineHandoff returns a waiting hand-off to the reasoning lane with the reason it was not sent. */
+/** runDeclineHandoff returns a waiting hand-off to the work lane with the reason it was not sent. */
 export async function runDeclineHandoff(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
@@ -156,18 +156,18 @@ export async function runDeclineHandoff(ctx: ToolContext, raw: unknown): Promise
   }
   await markDeclined(ctx.db, handoff.id, input.reason);
   ctx.steer.append(caller, `Your hand-off #${handoff.id} to ${handoff.toAgentId ?? "Ankur"} was not sent: ${input.reason}`);
-  if (!ctx.locks.isBusy(caller, "reasoning")) {
-    ctx.enqueueReasoning(caller);
+  if (!ctx.locks.isBusy(caller, "work")) {
+    ctx.enqueueWork(caller);
   }
   return ok({ declined: handoff.id });
 }
 
-/** failedHandoffSteer is what the reasoning lane reads when its conversation lane failed before sending a hand-off. */
+/** failedHandoffSteer is what the work lane reads when its process lane failed before sending a hand-off. */
 export function failedHandoffSteer(handoff: HandoffRow, reason: string): string {
-  return `Your hand-off #${handoff.id} to ${handoff.toAgentId ?? "Ankur"} was not sent: your conversation lane failed (${reason}). Hand it off again if it still holds.`;
+  return `Your hand-off #${handoff.id} to ${handoff.toAgentId ?? "Ankur"} was not sent: your process lane failed (${reason}). Hand it off again if it still holds.`;
 }
 
-/** handoffsTurn is the user turn that shows the conversation lane the hand-offs waiting for it. */
+/** handoffsTurn is the user turn that shows the process lane the hand-offs waiting for it. */
 export function handoffsTurn(waiting: HandoffRow[]): string {
   const blocks = waiting.map((handoff) => {
     const files = handoff.attachmentIds.length > 0 ? `\n[attachments: ${handoff.attachmentIds.join(", ")}]` : "";
@@ -175,7 +175,7 @@ export function handoffsTurn(waiting: HandoffRow[]): string {
     const edit = handoff.toAgentId === null ? "you may reword it" : "goes as written";
     return `#${handoff.id} · to ${handoff.toAgentId ?? "Ankur"} · ${handoff.kind}${status !== undefined ? ` (status ${status})` : ""} · ${edit}\n${handoff.content}${files}`;
   });
-  return `[Hand-offs waiting] From your reasoning lane, for you to send or decline:\n\n${blocks.join("\n\n")}\n\nSend each with dispatch_message handoff_id (the recipient and status are set from the hand-off; content only to reword one to Ankur), or decline it with decline_handoff and the reason.`;
+  return `[Hand-offs waiting] From your work lane, for you to send or decline:\n\n${blocks.join("\n\n")}\n\nSend each with dispatch_message handoff_id (the recipient and status are set from the hand-off; content only to reword one to Ankur), or decline it with decline_handoff and the reason.`;
 }
 
 /** The turn a yield gets while hand-offs are still waiting. */

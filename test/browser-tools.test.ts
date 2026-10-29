@@ -98,7 +98,7 @@ test("spawn_browser and list_browsers call Nas", async () => {
     config,
     log: silentLog,
   });
-  const spawned = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const spawned = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "sb1",
     name: "browser_spawn",
@@ -106,7 +106,7 @@ test("spawn_browser and list_browsers call Nas", async () => {
   });
   assert.equal(spawned.isError, false, spawned.content);
   assert.equal(nas.createBrowserCalls, 1);
-  const respawned = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const respawned = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "sb2",
     name: "browser_spawn",
@@ -119,7 +119,7 @@ test("spawn_browser and list_browsers call Nas", async () => {
   assert.equal(body.browser_id, 10);
   assert.match(body.cdp_url, /browsers\/10/);
 
-  const listed = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const listed = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "lb1",
     name: "browser_list",
@@ -159,7 +159,7 @@ test("close_browser calls Nas and drops the local connection entry", async () =>
       sessionChanges += 1;
     }
   });
-  const closed = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const closed = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "cb1",
     name: "browser_close",
@@ -168,7 +168,7 @@ test("close_browser calls Nas and drops the local connection entry", async () =>
   assert.equal(closed.isError, false, closed.content);
   assert.deepEqual(nas.closeBrowserCalls, [10]);
   assert.equal(sessionChanges, 1);
-  await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "cb2",
     name: "browser_close",
@@ -195,7 +195,7 @@ test("upload_file fails not_found for a missing host file before touching the br
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "up1",
     name: "browser_upload_file",
@@ -235,7 +235,7 @@ test("upload_file rejects relative paths", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const result = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "up2",
     name: "browser_upload_file",
@@ -261,7 +261,7 @@ async function browserWorker(tools: string[], driver: Record<string, unknown>) {
     log: silentLog,
   });
   Object.assign(runtime.browsers, driver);
-  return runtime.toolContext(workerId, "reasoning");
+  return runtime.toolContext(workerId, "work");
 }
 
 test("browser_click with read settles and returns the page tree; without it, only clicks", async () => {

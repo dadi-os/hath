@@ -1,5 +1,5 @@
 /**
- * Action records: hath's own account of what a reasoning lane did inside one wake, built
+ * Action records: hath's own account of what a work lane did inside one wake, built
  * from its tool calls and their results. A lane's view trims its oldest steps at the
  * prompt ceiling, and the `[trimmed]` note that stands in for them lists the actions those
  * steps took (see wake.ts), so a trimmed lane never redoes a click or a send it can no
@@ -143,7 +143,7 @@ export function stepActions(
 }
 
 /**
- * formatActions lists, oldest first, every step of the reasoning lane in `turns` that
+ * formatActions lists, oldest first, every step of the work lane in `turns` that
  * called an action tool, with its actions only (see stepActions). Past RECORD_MAX_CHARS it keeps the newest
  * steps and says how many earlier ones get_logs holds. Null when no step acted.
  */
@@ -161,7 +161,7 @@ export function formatActions(turns: DwarMessage[]): string | null {
 
   const steps: string[] = [];
   for (const turn of turns) {
-    if (turn.role !== "assistant" || turn.lane !== "reasoning" || typeof turn.content === "string") {
+    if (turn.role !== "assistant" || turn.lane !== "work" || typeof turn.content === "string") {
       continue;
     }
     const step = stepActions(turn.content, results, true);

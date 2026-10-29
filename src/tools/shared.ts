@@ -55,8 +55,8 @@ export type ToolContext = {
   events: EventBus;
   sessions: HostSessions;
   toolDebounce: ToolDebounce;
-  enqueueConversation: (agentId: string) => string;
-  enqueueReasoning: (agentId: string) => string;
+  enqueueProcess: (agentId: string) => string;
+  enqueueWork: (agentId: string) => string;
   /** The id of an agent's current wake, or null when it has none. */
   wakeOf: (agentId: string) => string | null;
 };

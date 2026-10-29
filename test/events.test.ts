@@ -84,7 +84,7 @@ test("a throwing listener is logged and does not block others or the emitter", (
     bus.emit({
       type: "lane_started",
       agent_id: randomUUID(),
-      lane: "conversation",
+      lane: "process",
       at: new Date().toISOString(),
     });
   });
@@ -189,7 +189,7 @@ test("dispatch_message emits message with agent_id set to the recipient", async 
       seen.push(event);
     }
   });
-  const result = await executeTool(runtime.toolContext(callerId, "conversation"), {
+  const result = await executeTool(runtime.toolContext(callerId, "process"), {
     type: "tool_use",
     id: "d-evt",
     name: DISPATCH_MESSAGE,
@@ -232,10 +232,10 @@ test("deliverAgentMessage merges extraPayload into both message log rows", async
       db: handle.db,
       transcript,
       events,
-      enqueueConversation: (agentId) => {
+      enqueueProcess: (agentId) => {
         enqueued.push(agentId);
       },
-      enqueueReasoning: () => {},
+      enqueueWork: () => {},
     },
     {
       fromAgentId: fromId,
@@ -252,7 +252,7 @@ test("deliverAgentMessage merges extraPayload into both message log rows", async
   const logs = await handle.db
     .select()
     .from(agentLogs)
-    .where(and(eq(agentLogs.event, "message"), eq(agentLogs.lane, "conversation")));
+    .where(and(eq(agentLogs.event, "message"), eq(agentLogs.lane, "process")));
   const messageLogs = logs.filter(
     (row) =>
       row.payload.schedule_id === "x" &&
@@ -271,7 +271,7 @@ test("lane_finished is emitted even when the lane run throws", async () => {
     tools: [],
   });
   const dwar = mockDwar({
-    converse: async () => {
+    process: async () => {
       throw new Error("dwar exploded");
     },
   });
@@ -285,17 +285,17 @@ test("lane_finished is emitted even when the lane run throws", async () => {
   });
   const finished: RuntimeEvent[] = [];
   runtime.events.subscribe((event) => {
-    if (event.type === "lane_finished" && event.lane === "conversation") {
+    if (event.type === "lane_finished" && event.lane === "process") {
       finished.push(event);
     }
   });
-  runtime.enqueueConversation(workerId);
+  runtime.enqueueProcess(workerId);
   await runtime.waitUntilIdle();
   assert.equal(finished.length, 1);
   assert.equal(finished[0]?.type, "lane_finished");
   if (finished[0]?.type === "lane_finished") {
     assert.equal(finished[0].agent_id, workerId);
-    assert.equal(finished[0].lane, "conversation");
+    assert.equal(finished[0].lane, "process");
   }
 });
 
@@ -326,21 +326,21 @@ test("GET /agents includes running and it flips true while a lane holds the lock
   const idle = await app.inject({ method: "GET", url: "/agents" });
   assert.equal(idle.statusCode, 200);
   const idleBody = idle.json() as {
-    agents: Array<{ id: string; running: { reasoning: boolean; conversation: boolean } }>;
+    agents: Array<{ id: string; running: { work: boolean; process: boolean } }>;
   };
   const idleAgent = idleBody.agents.find((agent) => agent.id === workerId);
   assert.ok(idleAgent);
-  assert.deepEqual(idleAgent.running, { reasoning: false, conversation: false });
+  assert.deepEqual(idleAgent.running, { work: false, process: false });
 
-  const release = await runtime.locks.acquire(workerId, "conversation", 1000);
+  const release = await runtime.locks.acquire(workerId, "process", 1000);
   const held = await app.inject({ method: "GET", url: "/agents" });
   assert.equal(held.statusCode, 200);
   const heldBody = held.json() as {
-    agents: Array<{ id: string; running: { reasoning: boolean; conversation: boolean } }>;
+    agents: Array<{ id: string; running: { work: boolean; process: boolean } }>;
   };
   const heldAgent = heldBody.agents.find((agent) => agent.id === workerId);
   assert.ok(heldAgent);
-  assert.deepEqual(heldAgent.running, { reasoning: false, conversation: true });
+  assert.deepEqual(heldAgent.running, { work: false, process: true });
   release();
 
   await app.close();
@@ -387,7 +387,7 @@ test("GET /agents surfaces sessions after worker host tools", async () => {
   assert.ok(idleWorker);
   assert.deepEqual(idleWorker.sessions, { browsers: [], terminals: [] });
 
-  const shot = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const shot = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "shot1",
     name: "browser_screenshot",
@@ -395,7 +395,7 @@ test("GET /agents surfaces sessions after worker host tools", async () => {
   });
   assert.equal(shot.isError, false, shot.content);
 
-  const exec = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const exec = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ex1",
     name: "terminal_execute_shell",
@@ -416,7 +416,7 @@ test("GET /agents surfaces sessions after worker host tools", async () => {
   assert.deepEqual(liveWorker.sessions.browsers, [10]);
   assert.deepEqual(liveWorker.sessions.terminals, [{ id: "t1", last_command: "git status" }]);
 
-  const closed = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const closed = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "cb1",
     name: "browser_close",
@@ -473,20 +473,20 @@ test("GET /agents drops sessions when close tools error", async () => {
     runtime,
   });
 
-  await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "shot1",
     name: "browser_screenshot",
     input: { browser_id: 10, scope: "display" },
   });
-  await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ex1",
     name: "terminal_execute_shell",
     input: { terminal_id: "t1", command: "pwd" },
   });
 
-  const closedBrowser = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const closedBrowser = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "cb1",
     name: "browser_close",
@@ -494,7 +494,7 @@ test("GET /agents drops sessions when close tools error", async () => {
   });
   assert.equal(closedBrowser.isError, true);
 
-  const closedTerminal = await executeTool(runtime.toolContext(workerId, "reasoning"), {
+  const closedTerminal = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "ct1",
     name: "terminal_close",
@@ -588,7 +588,7 @@ test("GET /agents/:id includes granted tools with usage and excludes embedded to
   assert.equal(res.statusCode, 200);
   const body = res.json() as {
     tools: Array<{ name: string; description: string; usage: string }>;
-    running: { reasoning: boolean; conversation: boolean };
+    running: { work: boolean; process: boolean };
   };
   assert.ok(body.running);
   assert.ok(body.tools.length > 0);
@@ -602,7 +602,7 @@ test("GET /agents/:id includes granted tools with usage and excludes embedded to
   assert.ok(names.includes("terminal_execute_shell"));
   assert.equal(names.includes(SEND_MESSAGE), false);
   assert.equal(names.includes(DISPATCH_MESSAGE), false);
-  assert.equal(names.includes("steer_reasoning"), false);
+  assert.equal(names.includes("steer_work"), false);
   assert.equal(names.includes(YIELD), false);
   assert.equal(names.includes(LIST_AGENTS), false);
   await app.close();
@@ -621,19 +621,19 @@ test("GET /logs returns across agents; event filters; limit above cap is 422", a
   });
   await writeAgentLog(handle.db, {
     agentId: workerId,
-    lane: "conversation",
+    lane: "process",
     event: "message",
     payload: { note: "from-worker" },
   });
   await writeAgentLog(handle.db, {
     agentId: otherId,
-    lane: "reasoning",
+    lane: "work",
     event: "response",
     payload: { note: "from-other" },
   });
   await writeAgentLog(handle.db, {
     agentId: otherId,
-    lane: "conversation",
+    lane: "process",
     event: "message",
     payload: { note: "other-message" },
   });

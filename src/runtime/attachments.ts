@@ -306,8 +306,8 @@ export async function runForwardAttachment(
       db: ctx.db,
       transcript: ctx.transcript,
       events: ctx.events,
-      enqueueConversation: ctx.enqueueConversation,
-      enqueueReasoning: ctx.enqueueReasoning,
+      enqueueProcess: ctx.enqueueProcess,
+      enqueueWork: ctx.enqueueWork,
       wakeOf: ctx.wakeOf,
     },
     {

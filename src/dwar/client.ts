@@ -1,4 +1,4 @@
-/** HTTP client for Dwar chat (reasoning / conversation / complete) and image describe. */
+/** HTTP client for Dwar chat (the work lane / the process lane / complete) and image describe. */
 
 import axios, { type AxiosInstance } from "axios";
 import { z } from "zod";
@@ -63,8 +63,8 @@ export type DwarDescribeImageResponse = {
  * inference log attributes each call's tokens to whoever spent them.
  */
 export type DwarClient = {
-  reason: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
-  converse: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
+  work: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
+  process: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
   complete: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
   describeImage: (
     request: DwarDescribeImageRequest,
@@ -168,8 +168,8 @@ export function createDwarClient(config: Config): DwarClient {
   return {
     webSearch: (request, caller) => postWeb("/web/search", request, caller, webSearchResponseSchema),
     webFetch: (request, caller) => postWeb("/web/fetch", request, caller, webFetchResponseSchema),
-    reason: (request, caller) => postChat("/chat/reasoning", request, caller),
-    converse: (request, caller) => postChat("/chat/conversation", request, caller),
+    work: (request, caller) => postChat("/chat/work", request, caller),
+    process: (request, caller) => postChat("/chat/process", request, caller),
     complete: (request, caller) => postChat("/chat/complete", request, caller),
     describeImage,
   };

@@ -22,8 +22,8 @@ const tomlPath = join(serviceRoot, "config.toml");
 const fileSchema = z.object({
   runtime: z.object({
     lane_queue_timeout_ms: z.number().int().positive(),
-    conversation_transcript_window_chars: z.number().int().positive(),
-    reasoning_transcript_window_chars: z.number().int().positive(),
+    process_transcript_window_chars: z.number().int().positive(),
+    work_transcript_window_chars: z.number().int().positive(),
     transcript_window_step_chars: z.number().int().positive(),
     tool_debounce_base_ms: z.number().int().positive(),
     tool_debounce_max_ms: z.number().int().positive(),
@@ -38,7 +38,7 @@ const fileSchema = z.object({
   }).refine(
     (runtime) =>
       runtime.transcript_window_step_chars <
-      Math.min(runtime.conversation_transcript_window_chars, runtime.reasoning_transcript_window_chars),
+      Math.min(runtime.process_transcript_window_chars, runtime.work_transcript_window_chars),
     { message: "transcript_window_step_chars must be below both lanes' transcript_window_chars" },
   ).refine((runtime) => runtime.prompt_trim_tokens < runtime.prompt_ceiling_tokens, {
     message: "prompt_trim_tokens must be below prompt_ceiling_tokens",

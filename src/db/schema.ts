@@ -74,7 +74,7 @@ export const agentLogs = pgTable(
     index("agent_logs_tool_use_id_idx")
       .on(sql`(${table.payload}->>'tool_use_id')`)
       .where(sql`${table.event} = 'tool_result'`),
-    check("agent_logs_lane_check", sql`${table.lane} IN ('reasoning', 'conversation', 'router')`),
+    check("agent_logs_lane_check", sql`${table.lane} IN ('work', 'process', 'router')`),
     check(
       "agent_logs_event_check",
       sql`${table.event} IN ('response', 'tool_result', 'message')`,
@@ -273,11 +273,11 @@ export const scheduledMessages = pgTable(
 );
 
 /**
- * What an agent's reasoning lane wants said to someone other than the agents it brought in.
- * The conversation lane sends it, with its job status set from `kind`, or declines it with
- * a reason the reasoning lane reads; one that cannot be resolved because the lane failed is
+ * What an agent's work lane wants said to someone other than the agents it brought in.
+ * The process lane sends it, with its job status set from `kind`, or declines it with
+ * a reason the work lane reads; one that cannot be resolved because the lane failed is
  * `failed`. `expects_reply` holds from the send of a question or request until the
- * recipient's next message, which wakes the reasoning lane directly.
+ * recipient's next message, which wakes the work lane directly.
  */
 export const handoffs = pgTable(
   "handoffs",

@@ -8,7 +8,7 @@ import { createRuntime, type Runtime } from "../src/runtime/engine.js";
 import { openJobsNote } from "../src/runtime/jobs.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { DISPATCH_MESSAGE, LIST_AGENTS, STEER_REASONING, WAIT, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
+import { DISPATCH_MESSAGE, LIST_AGENTS, STEER_WORK, WAIT, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
 import {
   insertAgent,
   toolUse,
@@ -49,9 +49,9 @@ function idleRuntime(): Runtime {
   });
 }
 
-/** dispatch sends `content` from `from` to `to` on the conversation lane, with `status` when given. */
+/** dispatch sends `content` from `from` to `to` on the process lane, with `status` when given. */
 function dispatch(runtime: Runtime, from: string, to: string | null, content: string, status?: MessageStatus) {
-  return executeTool(runtime.toolContext(from, "conversation"), {
+  return executeTool(runtime.toolContext(from, "process"), {
     type: "tool_use",
     id: `d-${content}`,
     name: DISPATCH_MESSAGE,
@@ -61,7 +61,7 @@ function dispatch(runtime: Runtime, from: string, to: string | null, content: st
 
 /** deps delivers without waking anyone, so no lane runs. */
 function deps(runtime: Runtime) {
-  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueConversation: () => {}, enqueueReasoning: () => {} };
+  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => {}, enqueueWork: () => {} };
 }
 
 async function jobsOf(agentId: string) {
@@ -165,22 +165,22 @@ test("the open-jobs note tells each lane whom it owes a status, what it has spen
   const managerId = await insertAgent(handle.db, { id: "note-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "note-worker", systemPrompt: "worker", parentAgentId: managerId });
   const runtime = idleRuntime();
-  assert.equal(await openJobsNote(handle.db, managerId, "conversation"), null);
+  assert.equal(await openJobsNote(handle.db, managerId, "process"), null);
 
   await deliverUserMessage(deps(runtime), managerId, "find my exam times");
   await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "read the exam page" });
-  let note = await openJobsNote(handle.db, managerId, "conversation");
+  let note = await openJobsNote(handle.db, managerId, "process");
   assert.match(note!, /Ankur gave you a job that is still open: every message to Ankur carries a status, and running is free/);
-  assert.match(note!, /You gave work that is still open to note-worker: your reasoning lane directs it and messages them itself/);
-  assert.match((await openJobsNote(handle.db, managerId, "reasoning"))!, /note-worker: their reports come to you/);
+  assert.match(note!, /You gave work that is still open to note-worker: your work lane directs it and messages them itself/);
+  assert.match((await openJobsNote(handle.db, managerId, "work"))!, /note-worker: their reports come to you/);
 
   assert.equal((await dispatch(runtime, managerId, null, "on it", "running")).isError, false);
-  note = await openJobsNote(handle.db, managerId, "conversation");
+  note = await openJobsNote(handle.db, managerId, "process");
   assert.match(note!, /your one progress update is spent/);
   assert.equal((await dispatch(runtime, managerId, null, "which semester?", "needs_input")).isError, false);
-  assert.match((await openJobsNote(handle.db, managerId, "conversation"))!, /your question to Ankur waits for a reply/);
+  assert.match((await openJobsNote(handle.db, managerId, "process"))!, /your question to Ankur waits for a reply/);
 
-  assert.match((await openJobsNote(handle.db, workerId, "reasoning"))!, /note-manager gave you a job/);
+  assert.match((await openJobsNote(handle.db, workerId, "work"))!, /note-manager gave you a job/);
   await runtime.waitUntilIdle();
 });
 
@@ -192,15 +192,15 @@ test("a wake that works a job and stops without reporting leaves it open and tel
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({
-      converse: (request) => {
+      process: (request) => {
         const job = JSON.stringify(request.messages).includes("read the page");
         if (request.system.includes("STALLER") && job && !steered.has("worker")) {
           steered.add("worker");
-          return toolUse(STEER_REASONING, { instruction: "read it" }, "steer-1");
+          return toolUse(STEER_WORK, { instruction: "read it" }, "steer-1");
         }
         return yieldTurn();
       },
-      reason: (request) =>
+      work: (request) =>
         JSON.stringify(request.messages).includes("list-1") ? yieldTurn() : toolUse(LIST_AGENTS, {}, "list-1"),
     }),
     yaad: mockYaad(),
@@ -223,7 +223,7 @@ test("a wake that works a job and stops without reporting leaves it open and tel
   assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 0);
 });
 
-test("a report from an agent the recipient brought in wakes its reasoning lane; everything else wakes conversation", async () => {
+test("a report from an agent the recipient brought in wakes its work lane; everything else wakes the process lane", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "route-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "route-worker", systemPrompt: "worker", parentAgentId: managerId });
@@ -233,18 +233,18 @@ test("a report from an agent the recipient brought in wakes its reasoning lane; 
     db: handle.db,
     transcript: runtime.transcript,
     events: runtime.events,
-    enqueueConversation: (agentId: string) => {
-      woke.push(`${agentId}:conversation`);
+    enqueueProcess: (agentId: string) => {
+      woke.push(`${agentId}:process`);
     },
-    enqueueReasoning: (agentId: string) => {
-      woke.push(`${agentId}:reasoning`);
+    enqueueWork: (agentId: string) => {
+      woke.push(`${agentId}:work`);
     },
   };
 
   await deliverUserMessage(spy, managerId, "book the room");
   await deliverAgentMessage(spy, { fromAgentId: managerId, toAgentId: workerId, content: "open the booking page" });
   await deliverAgentMessage(spy, { fromAgentId: workerId, toAgentId: managerId, content: "page open", status: "running" });
-  assert.deepEqual(woke, ["route-manager:conversation", "route-worker:conversation", "route-manager:reasoning"]);
+  assert.deepEqual(woke, ["route-manager:process", "route-worker:process", "route-manager:work"]);
 });
 
 /** A model turn of `calls`, each [name, input], ending in yield. */
@@ -260,13 +260,13 @@ function turnOf(...calls: Array<[string, Record<string, unknown>]>): DwarChatRes
   };
 }
 
-/** A runtime whose conversation lane answers each call with the next of `turns`, then yields. */
+/** A runtime whose process lane answers each call with the next of `turns`, then yields. */
 function scriptedRuntime(turns: Array<() => DwarChatResponse | Promise<DwarChatResponse>>): Runtime {
   let n = 0;
   return createRuntime({
     db: handle.db,
     dwar: mockDwar({
-      converse: async () => {
+      process: async () => {
         const next = turns[n];
         n += 1;
         return next === undefined ? yieldTurn() : next();
@@ -296,7 +296,7 @@ test("a turn sends one message per recipient", async () => {
         [DISPATCH_MESSAGE, { to_agent_id: null, content: "and the file", status: "done" }],
       ),
   ]);
-  await deliverUserMessage({ ...deps(runtime), enqueueConversation: runtime.enqueueConversation }, agentId, "exam times?");
+  await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, agentId, "exam times?");
   await runtime.waitUntilIdle();
   assert.deepEqual(await sentBy(agentId), ["the times"]);
 });
@@ -312,12 +312,12 @@ test("a send over a message the lane has not read waits for the next step", asyn
     },
     () => turnOf([DISPATCH_MESSAGE, { to_agent_id: null, content: "Thursday is set", status: "done" }]),
   ]);
-  await deliverUserMessage({ ...deps(runtime), enqueueConversation: runtime.enqueueConversation }, agentId, "book Wednesday");
+  await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, agentId, "book Wednesday");
   await runtime.waitUntilIdle();
   assert.deepEqual(await sentBy(agentId), ["Thursday is set"]);
 });
 
-test("conversation never messages an agent this agent brought in, since reasoning directs it", async () => {
+test("the process lane never messages an agent this agent brought in, since the work lane directs it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "voice-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "voice-worker", systemPrompt: "worker", parentAgentId: managerId });
@@ -325,7 +325,7 @@ test("conversation never messages an agent this agent brought in, since reasonin
     () => turnOf([DISPATCH_MESSAGE, { to_agent_id: workerId, content: "stop now" }]),
   ]);
   await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "open the page" });
-  await deliverUserMessage({ ...deps(runtime), enqueueConversation: runtime.enqueueConversation }, managerId, "stop the worker");
+  await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, managerId, "stop the worker");
   await runtime.waitUntilIdle();
   assert.deepEqual(await sentBy(managerId), ["open the page"]);
 });

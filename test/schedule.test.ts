@@ -134,7 +134,7 @@ test("due one-shot delivers once and deletes the row", async () => {
   const logs = await handle.db
     .select()
     .from(agentLogs)
-    .where(and(eq(agentLogs.event, "message"), eq(agentLogs.lane, "conversation")));
+    .where(and(eq(agentLogs.event, "message"), eq(agentLogs.lane, "process")));
   const withSchedule = logs.filter((row) => row.payload.schedule_id === scheduleId);
   assert.equal(withSchedule.length, 2);
 
@@ -539,7 +539,7 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
       scheduleChanges += 1;
     }
   });
-  const ctx = runtime.toolContext(fromId, "reasoning");
+  const ctx = runtime.toolContext(fromId, "work");
   const future = new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, "+00:00");
 
   const self = await executeTool(ctx, {
@@ -673,7 +673,7 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
     }
   });
 
-  const listed = await executeTool(runtime.toolContext(creatorId, "reasoning"), {
+  const listed = await executeTool(runtime.toolContext(creatorId, "work"), {
     type: "tool_use",
     id: "list",
     name: "list_schedules",
@@ -688,7 +688,7 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
     [mine],
   );
 
-  const denied = await executeTool(runtime.toolContext(otherId, "reasoning"), {
+  const denied = await executeTool(runtime.toolContext(otherId, "work"), {
     type: "tool_use",
     id: "cancel-deny",
     name: "cancel_schedule",
@@ -697,7 +697,7 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
   assert.equal(denied.isError, true);
   assert.match(denied.content, /only the creator/);
 
-  const unknown = await executeTool(runtime.toolContext(creatorId, "reasoning"), {
+  const unknown = await executeTool(runtime.toolContext(creatorId, "work"), {
     type: "tool_use",
     id: "cancel-unknown",
     name: "cancel_schedule",
@@ -707,7 +707,7 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
   assert.match(unknown.content, /not found/);
   assert.equal(scheduleChanges, 0);
 
-  const cancelled = await executeTool(runtime.toolContext(creatorId, "reasoning"), {
+  const cancelled = await executeTool(runtime.toolContext(creatorId, "work"), {
     type: "tool_use",
     id: "cancel-ok",
     name: "cancel_schedule",

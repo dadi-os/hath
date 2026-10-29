@@ -15,7 +15,7 @@ import type { ToolExecResult } from "./tools.js";
 import type { TranscriptStore } from "./transcript.js";
 import { CAPPED_TURN, CAPPED_TURNS_MAX, CONTINUE_TURN, type Wake } from "./wake.js";
 
-const TERMINATED = "terminated by conversation lane";
+const TERMINATED = "terminated by process lane";
 
 /** What one lane needs to take steps against its agent's shared wake. */
 export type StepDeps = {
@@ -55,7 +55,7 @@ export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
 /**
  * The request a lane sends: the wake's frozen system, its tools, and its view
  * of the shared wake, trimmed to its token ceiling. Both agent lanes get tool_choice auto so they can think before acting
- * (a forced call skips thinking on Anthropic models); a conversation turn of
+ * (a forced call skips thinking on Anthropic models); a process-lane turn of
  * plain text reaches no one and is followed by a continue turn (see runStep).
  * The router, on a context-free endpoint, is forced to call a tool.
  */
@@ -104,7 +104,7 @@ const EMPTY_TURN_RETRIES = 1;
 /**
  * callLane makes a lane's model call and logs the response, asking once more when the
  * model returned an empty turn (no thinking, text or call), which Gemini does now and
- * then on the conversation lane: three wakes failed that way between 2026-10-14 and
+ * then on the process lane: three wakes failed that way between 2026-10-14 and
  * 2026-10-16, each sending its requester a lane-failure report.
  */
 export async function callLane(deps: StepDeps, request: DwarChatRequest): Promise<DwarChatResponse> {
@@ -119,11 +119,11 @@ export async function callLane(deps: StepDeps, request: DwarChatRequest): Promis
 
 /**
  * runStep records one model turn and its tool results on the wake, with what the
- * call measured (see Wake.measure) and what the turn cost to write; a reasoning
+ * call measured (see Wake.measure) and what the turn cost to write; a work-lane
  * A turn with
  * no tool call is kept and followed by a neutral continue turn, so the lane
  * keeps going; only yield (or a stop) ends it. An empty turn (see callLane) fails a
- * reasoning lane, but ends a conversation run as a yield would: conversation with
+ * work lane, but ends a process-lane run as a yield would: the process lane with
  * nothing to say has nothing to send. Returns true when the lane should exit. Agent turns are tagged with their provider and lane so Dwar can
  * translate the other lane's turns in a shared wake; the router's wake has one
  * lane on a context-free endpoint, so its turns go untagged.
@@ -156,7 +156,7 @@ export async function runStep(
       throw new HathError(502, "dwar", `${deps.lane} model stopped with an error and no tool call`);
     }
     if (response.content.length === 0) {
-      if (deps.lane === "conversation") {
+      if (deps.lane === "process") {
         deps.wake.markYield(deps.lane);
         return true;
       }

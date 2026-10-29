@@ -8,9 +8,9 @@ import type {
   Lane,
 } from "../src/types/domain.js";
 import type { Db } from "../src/db/client.js";
-import { runConversationLoop, UNSENT_TEXT_TURN } from "../src/runtime/conversation.js";
+import { runProcessLoop, UNSENT_TEXT_TURN } from "../src/runtime/process.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { LONG_SILENCE_TURN, runReasoningLoop, TURNS_BEFORE_NUDGE, UNSENT_REPORT_TURN } from "../src/runtime/reasoning.js";
+import { LONG_SILENCE_TURN, runWorkLoop, TURNS_BEFORE_NUDGE, UNSENT_REPORT_TURN } from "../src/runtime/work.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { CAPPED_TURN, CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
@@ -45,7 +45,7 @@ function stepDeps(
     wake,
     assemble: async () => ({
       system: "sys",
-      transcripts: { reasoning: [ASK], conversation: [ASK] },
+      transcripts: { work: [ASK], process: [ASK] },
       tools: [],
       throughSeq: 1,
     }),
@@ -76,11 +76,11 @@ function toolResults(messages: DwarMessage[]): string[] {
   return out;
 }
 
-test("under its budget, reasoning keeps every full tool result and its own thinking for the whole wake", async () => {
+test("under its budget, the work lane keeps every full tool result and its own thinking for the whole wake", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       if (n <= 12) {
         return turn("anthropic", [
@@ -104,7 +104,7 @@ test("under its budget, reasoning keeps every full tool result and its own think
   assert.deepEqual(assistants[0], {
     role: "assistant",
     provider: "anthropic",
-    lane: "reasoning",
+    lane: "work",
     content: [
       { type: "thinking", thinking: "step 1: the page did not change", signature: "sig-1" },
       { type: "text", text: "Taking a screenshot (1)." },
@@ -116,9 +116,9 @@ test("under its budget, reasoning keeps every full tool result and its own think
 test("past its budget the wake clears older tool results in jumps, keeping every turn and the newest results", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
+  await runWorkLoop({
     ...stepDeps(
-      "reasoning",
+      "work",
       new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000, supersedeWindowTurns: 8 }),
       () => {
         n += 1;
@@ -151,8 +151,8 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
   const requests: DwarChatRequest[] = [];
   let systems = 0;
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("anthropic", [call(n < 3 ? "modify_agent_prompt" : "yield", `m${n}`)]);
     }, requests),
@@ -160,7 +160,7 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
       systems += 1;
       return {
         system: `sys v${systems}`,
-        transcripts: { reasoning: [ASK], conversation: [ASK] },
+        transcripts: { work: [ASK], process: [ASK] },
         tools: [],
         throughSeq: 1,
       };
@@ -175,8 +175,8 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
 test("only the transcript's last turn carries the cache breakpoint", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("anthropic", [call(n < 3 ? "browser_navigate" : "yield", `b${n}`)]);
     }, requests),
@@ -192,8 +192,8 @@ test("only the transcript's last turn carries the cache breakpoint", async () =>
 test("a turn without a tool call continues the lane; only yield ends it", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       if (n === 1) {
         return turn("anthropic", [
@@ -218,8 +218,8 @@ test("an empty turn or a provider error with no tool call fails the lane instead
     { ...turn("anthropic", [{ type: "text", text: "refused" }]), stop_reason: "error" as const },
   ]) {
     await assert.rejects(
-      runReasoningLoop({
-        ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => response, []),
+      runWorkLoop({
+        ...stepDeps("work", new Wake(roomyWakeLimits), () => response, []),
         steer: new SteerQueue(),
       }),
     );
@@ -230,8 +230,8 @@ test("a turn that runs out of room while thinking is told to write its plan down
   const capped = { ...turn("anthropic", [{ type: "thinking", thinking: "laying out the week", signature: "sig" }]), stop_reason: "max_tokens" as const };
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       return n === 1 ? capped : turn("anthropic", [call("yield", "y")]);
     }, requests),
@@ -240,7 +240,7 @@ test("a turn that runs out of room while thinking is told to write its plan down
   assert.ok(JSON.stringify(requests[1]!.messages).includes(CAPPED_TURN));
 
   await assert.rejects(
-    runReasoningLoop({ ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => capped, []), steer: new SteerQueue() }),
+    runWorkLoop({ ...stepDeps("work", new Wake(roomyWakeLimits), () => capped, []), steer: new SteerQueue() }),
     /ran out of output room while thinking 3 turns in a row/,
   );
 });
@@ -248,8 +248,8 @@ test("a turn that runs out of room while thinking is told to write its plan down
 test("an empty turn is asked again once, and the retry's answer is the step", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       return n === 1 ? turn("anthropic", []) : turn("anthropic", [call("yield", "y")]);
     }, requests),
@@ -258,11 +258,11 @@ test("an empty turn is asked again once, and the retry's answer is the step", as
   assert.equal(requests.length, 2);
 });
 
-test("a conversation turn still empty after its retry ends the run instead of failing the wake", async () => {
+test("a process-lane turn still empty after its retry ends the run instead of failing the wake", async () => {
   const requests: DwarChatRequest[] = [];
-  await runConversationLoop({
-    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => turn("anthropic", []), requests),
-    ...conversationGateDeps(),
+  await runProcessLoop({
+    ...stepDeps("process", new Wake(roomyWakeLimits), () => turn("anthropic", []), requests),
+    ...processGateDeps(),
   });
   assert.equal(requests.length, 2);
 });
@@ -270,13 +270,13 @@ test("a conversation turn still empty after its retry ends the run instead of fa
 test("both lanes share one wake: each sees the other's steps; steers stay private", async () => {
   const wake = new Wake(roomyWakeLimits);
   const steer = new SteerQueue();
-  const reasoningRequests: DwarChatRequest[] = [];
-  const conversationRequests: DwarChatRequest[] = [];
+  const workRequests: DwarChatRequest[] = [];
+  const processRequests: DwarChatRequest[] = [];
 
   steer.append("agent-1", "open Gmail and search newer_than:1d");
   let r = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", wake, () => {
+  await runWorkLoop({
+    ...stepDeps("work", wake, () => {
       r += 1;
       if (r === 1) {
         return turn("anthropic", [
@@ -285,26 +285,26 @@ test("both lanes share one wake: each sees the other's steps; steers stay privat
         ]);
       }
       return turn("anthropic", [call("yield", "r-y")]);
-    }, reasoningRequests),
+    }, workRequests),
     steer,
   });
 
-  await runConversationLoop({
-    ...stepDeps("conversation", wake, () => turn("gemini", [call("yield", "c-y")]), conversationRequests),
-    ...conversationGateDeps(),
+  await runProcessLoop({
+    ...stepDeps("process", wake, () => turn("gemini", [call("yield", "c-y")]), processRequests),
+    ...processGateDeps(),
   });
 
-  const seen = JSON.stringify(conversationRequests[0]!.messages);
+  const seen = JSON.stringify(processRequests[0]!.messages);
   assert.ok(seen.includes("navigate first"));
   assert.ok(seen.includes("browser_navigate"));
   assert.ok(seen.includes("full result of nav-1"));
   assert.ok(!seen.includes(STEER_TURN_PREFIX));
 
-  const reasoningView = wake.view("reasoning");
-  const reasoningBlob = JSON.stringify(reasoningView);
-  assert.ok(reasoningBlob.includes(STEER_TURN_PREFIX));
-  const conversationTurn = reasoningView.find((m) => m.lane === "conversation");
-  assert.equal(conversationTurn?.provider, "gemini");
+  const workView = wake.view("work");
+  const workBlob = JSON.stringify(workView);
+  assert.ok(workBlob.includes(STEER_TURN_PREFIX));
+  const processTurn = workView.find((m) => m.lane === "process");
+  assert.equal(processTurn?.provider, "gemini");
 });
 
 test("a send to someone the other lane messaged after this one was written is refused with what went out", async () => {
@@ -312,8 +312,8 @@ test("a send to someone the other lane messaged after this one was written is re
   transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "is HW3 in?" });
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runConversationLoop({
-    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => {
+  await runProcessLoop({
+    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
       n += 1;
       if (n === 1) {
         transcript.append({ fromAgentId: "agent-1", toAgentId: null, content: "HW3 is submitted." });
@@ -324,7 +324,7 @@ test("a send to someone the other lane messaged after this one was written is re
       }
       return turn("gemini", [call("yield", `y${n}`)]);
     }, requests),
-    ...conversationGateDeps(),
+    ...processGateDeps(),
     transcript,
   });
   assert.equal(requests.length, 2);
@@ -336,24 +336,24 @@ test("a yield after a message written as text and never sent gets one reminder, 
   let n = 0;
   const list = "Here is your week, ranked: ".padEnd(600, "x");
 
-  await runConversationLoop({
-    ...stepDeps("conversation", new Wake(roomyWakeLimits), () => {
+  await runProcessLoop({
+    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("anthropic", [{ type: "text", text: list }, call("yield", `c${n}`)]);
     }, requests),
-    ...conversationGateDeps(),
+    ...processGateDeps(),
   });
 
   assert.equal(requests.length, 2);
   assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_TEXT_TURN));
 });
 
-test("a reasoning yield after a report written as text and never sent gets one reminder, and the second yield stands", async () => {
+test("a work-lane yield after a report written as text and never sent gets one reminder, and the second yield stands", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
   const report = "HW3 is submitted and graded: ".padEnd(600, "x");
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("anthropic", [{ type: "text", text: report }, call("yield", `y${n}`)]);
     }, requests),
@@ -363,11 +363,11 @@ test("a reasoning yield after a report written as text and never sent gets one r
   assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_REPORT_TURN));
 });
 
-test("a reasoning lane that reports nothing for TURNS_BEFORE_NUDGE turns is asked what it has once, then keeps working", async () => {
+test("a work lane that reports nothing for TURNS_BEFORE_NUDGE turns is asked what it has once, then keeps working", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake(roomyWakeLimits), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("anthropic", [call(n <= TURNS_BEFORE_NUDGE ? "terminal_grep" : "yield", `t${n}`)]);
     }, requests),
@@ -396,30 +396,30 @@ test("a wake lives while any run holds it and is dropped when the last releases"
   assert.equal(next.started, false);
 });
 
-test("a queued conversation run makes no model call until something it can see joins the wake", async () => {
+test("a queued process-lane run makes no model call until something it can see joins the wake", async () => {
   const wake = new Wake(roomyWakeLimits);
   const requests: DwarChatRequest[] = [];
   let arrival: DwarMessage | null = null;
   const deps = {
-    ...stepDeps("conversation", wake, () => turn("gemini", [call("yield", `y${requests.length}`)]), requests),
+    ...stepDeps("process", wake, () => turn("gemini", [call("yield", `y${requests.length}`)]), requests),
     arrivalsSince: (afterSeq: number) => {
       const next = arrival;
       arrival = null;
       return next === null ? { turn: null, throughSeq: afterSeq } : { turn: next, throughSeq: afterSeq + 1 };
     },
-    ...conversationGateDeps(),
+    ...processGateDeps(),
   };
 
-  await runConversationLoop(deps);
+  await runProcessLoop(deps);
   assert.equal(requests.length, 1);
 
-  await runConversationLoop(deps);
-  wake.push({ message: { role: "user", content: "steer: look again" }, only: "reasoning" });
-  await runConversationLoop(deps);
+  await runProcessLoop(deps);
+  wake.push({ message: { role: "user", content: "steer: look again" }, only: "work" });
+  await runProcessLoop(deps);
   assert.equal(requests.length, 1);
 
   arrival = { role: "user", content: "[Arrived during this wake]\n\n[From: Ankur]\nany update?" };
-  await runConversationLoop(deps);
+  await runProcessLoop(deps);
   assert.equal(requests.length, 2);
 });
 
@@ -431,14 +431,14 @@ const noRows: unknown = {
   then: (resolve: (rows: unknown[]) => void) => resolve([]),
 };
 
-/** What the conversation lane reads: a db with no hand-offs and nothing else a test send reaches, and an empty transcript. */
-function conversationGateDeps() {
+/** What the process lane reads: a db with no hand-offs and nothing else a test send reaches, and an empty transcript. */
+function processGateDeps() {
   return { db: { select: () => noRows } as unknown as Db, transcript: new TranscriptStore() };
 }
 
 /** Both lanes' transcripts frozen as one user message of `content`. */
-function frozen(content: string): Record<"reasoning" | "conversation", DwarMessage[]> {
-  return { reasoning: [{ role: "user", content }], conversation: [{ role: "user", content }] };
+function frozen(content: string): Record<"work" | "process", DwarMessage[]> {
+  return { work: [{ role: "user", content }], process: [{ role: "user", content }] };
 }
 
 /** Push one step onto `wake`: a call to `id`, then its result of `chars` characters under `state`. */
@@ -465,10 +465,10 @@ test("a newer read of the same state replaces the older one within the window at
   pushRead(wake, "s1");
   pushRead(wake, "s2");
   pushRead(wake, "x3", "browser:1:text:https://a.example/");
-  assert.ok(toolResults(wake.view("conversation")).every((result) => result !== SUPERSEDED_RESULT), "no replacement before a cut");
+  assert.ok(toolResults(wake.view("process")).every((result) => result !== SUPERSEDED_RESULT), "no replacement before a cut");
 
-  wake.fit("reasoning", []);
-  const results = toolResults(wake.view("conversation"));
+  wake.fit("work", []);
+  const results = toolResults(wake.view("process"));
   assert.equal(results[0], SUPERSEDED_RESULT);
   assert.ok(results[1]!.startsWith("x1 "), "a.example's text is too far back to replace");
   assert.ok(results[2]!.startsWith("t2 "));
@@ -482,7 +482,7 @@ test("at the clearing budget the queued older reads are replaced first, and clea
   for (let i = 1; i <= 5; i += 1) {
     pushRead(wake, `r${i}`, "terminal:t1");
   }
-  const results = toolResults(wake.view("reasoning"));
+  const results = toolResults(wake.view("work"));
   assert.deepEqual(results.slice(0, 3), Array(3).fill(SUPERSEDED_RESULT), "r4 passed the budget: the reads queued by then were the cut");
   assert.ok(results[3]!.startsWith("r4 "), "r4 was queued after that cut and waits for the next");
   assert.ok(results[4]!.startsWith("r5 "));
@@ -492,8 +492,8 @@ test("at the clearing budget the queued older reads are replaced first, and clea
 test("a tool result's state reaches the wake through the step loop", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runReasoningLoop({
-    ...stepDeps("reasoning", new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 800, toolResultsKeptChars: 400 }), () => {
+  await runWorkLoop({
+    ...stepDeps("work", new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 800, toolResultsKeptChars: 400 }), () => {
       n += 1;
       return n <= 3
         ? turn("anthropic", [call("browser_accessibility_tree", `t${n}`)])
@@ -514,10 +514,10 @@ test("a tool result's state reaches the wake through the step loop", async () =>
   ]);
 });
 
-/** Push one reasoning step onto `wake` that cost `outputTokens` to write, with a short result. */
+/** Push one work-lane step onto `wake` that cost `outputTokens` to write, with a short result. */
 function pushStep(wake: Wake, id: string, outputTokens: number): void {
   wake.push(
-    { message: { role: "assistant", content: [call("terminal_read", id)], provider: "anthropic", lane: "reasoning" }, outputTokens },
+    { message: { role: "assistant", content: [call("terminal_read", id)], provider: "anthropic", lane: "work" }, outputTokens },
     { message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: `${id} `.padEnd(30, "x"), is_error: false }] } },
   );
 }
@@ -540,24 +540,24 @@ test("past its ceiling a lane drops its oldest steps in one jump behind a trimme
   for (let i = 1; i <= 6; i += 1) {
     pushStep(wake, `s${i}`, 140);
   }
-  wake.fit("reasoning", []);
-  assert.deepEqual(callIds(wake.view("reasoning")), ["s1", "s2", "s3", "s4", "s5", "s6"]);
+  wake.fit("work", []);
+  assert.deepEqual(callIds(wake.view("work")), ["s1", "s2", "s3", "s4", "s5", "s6"]);
 
   pushStep(wake, "s7", 140);
-  wake.fit("reasoning", []);
-  const trimmed = wake.view("reasoning");
+  wake.fit("work", []);
+  const trimmed = wake.view("work");
   assert.deepEqual(callIds(trimmed), ["s5", "s6", "s7"]);
   assert.equal(trimmed[1]!.content, TRIMMED_TURN);
   assert.equal(trimmed[2]!.role, "assistant");
-  assert.deepEqual(callIds(wake.view("conversation")), ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
+  assert.deepEqual(callIds(wake.view("process")), ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
 
   pushStep(wake, "s8", 140);
-  wake.fit("reasoning", []);
-  const next = wake.view("reasoning");
+  wake.fit("work", []);
+  const next = wake.view("work");
   assert.deepEqual(next.slice(0, trimmed.length), trimmed, "the trimmed prefix holds until the next trim");
 });
 
-/** Push one reasoning step onto `wake` whose model turn thought `thought` characters and cost `outputTokens`. */
+/** Push one work-lane step onto `wake` whose model turn thought `thought` characters and cost `outputTokens`. */
 function pushThoughtStep(wake: Wake, id: string, thought: number, outputTokens: number): void {
   wake.push(
     {
@@ -565,7 +565,7 @@ function pushThoughtStep(wake: Wake, id: string, thought: number, outputTokens: 
         role: "assistant",
         content: [{ type: "thinking", thinking: "t".repeat(thought), signature: "sig" }, call("terminal_read", id)],
         provider: "anthropic",
-        lane: "reasoning",
+        lane: "work",
       },
       outputTokens,
     },
@@ -586,20 +586,20 @@ test("past its ceiling a lane drops older thinking before any step, keeping the 
   for (let i = 1; i <= 4; i += 1) {
     pushThoughtStep(wake, `s${i}`, 460, 200);
   }
-  wake.fit("reasoning", []);
-  assert.equal(thoughtTurns(wake.view("reasoning")), 4);
+  wake.fit("work", []);
+  assert.equal(thoughtTurns(wake.view("work")), 4);
 
   pushThoughtStep(wake, "s5", 460, 200);
-  wake.fit("reasoning", []);
-  const view = wake.view("reasoning");
+  wake.fit("work", []);
+  const view = wake.view("work");
   assert.deepEqual(callIds(view), ["s1", "s2", "s3", "s4", "s5"]);
   assert.equal(thoughtTurns(view), 1);
   assert.equal((view.at(-2)!.content as DwarResponseBlock[])[0]!.type, "thinking");
-  assert.equal(thoughtTurns(wake.view("conversation")), 5);
+  assert.equal(thoughtTurns(wake.view("process")), 5);
 
   pushThoughtStep(wake, "s6", 460, 200);
-  wake.fit("reasoning", []);
-  const next = wake.view("reasoning");
+  wake.fit("work", []);
+  const next = wake.view("work");
   assert.deepEqual(next.slice(0, view.length - 2), view.slice(0, -2), "the thought-free prefix holds until the next cut");
   assert.equal(thoughtTurns(next), 2);
 });
@@ -608,23 +608,23 @@ test("a turn that thought weighs what its provider billed, not its shorter visib
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nplan the week"), 1);
   pushThoughtStep(wake, "s1", 460, 2_000);
-  assert.throws(() => wake.fit("reasoning", []), /over the 1000-token ceiling/, "billed thinking past the ceiling never goes out under it");
+  assert.throws(() => wake.fit("work", []), /over the 1000-token ceiling/, "billed thinking past the ceiling never goes out under it");
 });
 
 test("a lane's measured prompt, not its estimate, decides when it trims", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   pushStep(wake, "s1", 100);
-  wake.fit("reasoning", []);
-  wake.measure("reasoning", { ...usage, input_tokens: 4, cache_read_input_tokens: 800 });
+  wake.fit("work", []);
+  wake.measure("work", { ...usage, input_tokens: 4, cache_read_input_tokens: 800 });
 
   pushStep(wake, "s2", 100);
-  wake.fit("reasoning", []);
-  assert.deepEqual(callIds(wake.view("reasoning")), ["s1", "s2"]);
+  wake.fit("work", []);
+  assert.deepEqual(callIds(wake.view("work")), ["s1", "s2"]);
 
   pushStep(wake, "s3", 150);
-  wake.fit("reasoning", []);
-  assert.deepEqual(callIds(wake.view("reasoning")), ["s3"]);
+  wake.fit("work", []);
+  assert.deepEqual(callIds(wake.view("work")), ["s3"]);
 });
 
 test("a newest step that alone passes the ceiling fails the lane instead of going out", () => {
@@ -632,7 +632,7 @@ test("a newest step that alone passes the ceiling fails the lane instead of goin
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   pushStep(wake, "s1", 100);
   pushStep(wake, "s2", 2_000);
-  assert.throws(() => wake.fit("reasoning", []), /over the 1000-token ceiling/);
+  assert.throws(() => wake.fit("work", []), /over the 1000-token ceiling/);
 });
 
 test("a newest step whose results alone pass the ceiling drops its largest results, only as many as it must, instead of failing", () => {
@@ -640,7 +640,7 @@ test("a newest step whose results alone pass the ceiling drops its largest resul
   wake.begin("sys", frozen("[From: Ankur]\nsearch my logs"), 1);
   wake.push(
     {
-      message: { role: "assistant", content: [call("get_logs", "g1"), call("get_logs", "g2"), call("recall_memory", "r1")], provider: "anthropic", lane: "reasoning" },
+      message: { role: "assistant", content: [call("get_logs", "g1"), call("get_logs", "g2"), call("recall_memory", "r1")], provider: "anthropic", lane: "work" },
       outputTokens: 50,
     },
     {
@@ -654,16 +654,16 @@ test("a newest step whose results alone pass the ceiling drops its largest resul
       },
     },
   );
-  wake.fit("reasoning", []);
-  const results = toolResults(wake.view("reasoning"));
+  wake.fit("work", []);
+  const results = toolResults(wake.view("work"));
   assert.ok(results[0]!.startsWith(OVERSIZED_PREFIX));
   assert.match(results[0]!, /get_logs \{\} · 1500 chars, too large for the prompt\. read_result g1 reopens it/);
   assert.equal(results[1], "b".repeat(1_200));
   assert.equal(results[2], "small recall");
-  assert.ok(toolResults(wake.view("conversation"))[0]!.startsWith(OVERSIZED_PREFIX));
+  assert.ok(toolResults(wake.view("process"))[0]!.startsWith(OVERSIZED_PREFIX));
 });
 
-/** Push one reasoning step onto `wake` that says `text` and calls `name` as `id`, with `result`. */
+/** Push one work-lane step onto `wake` that says `text` and calls `name` as `id`, with `result`. */
 function pushAction(wake: Wake, id: string, name: string, text: string, result: string, outputTokens = 1): void {
   wake.push(
     {
@@ -671,7 +671,7 @@ function pushAction(wake: Wake, id: string, name: string, text: string, result: 
         role: "assistant",
         content: [{ type: "text", text }, { type: "tool_use", id, name, input: { ref: id } }],
         provider: "anthropic",
-        lane: "reasoning",
+        lane: "work",
       },
       outputTokens,
     },
@@ -686,8 +686,8 @@ test("a trimmed note lists the actions of the steps it dropped, so the lane does
   for (let i = 2; i <= 7; i += 1) {
     pushStep(wake, `s${i}`, 140);
   }
-  wake.fit("reasoning", []);
-  const view = wake.view("reasoning");
+  wake.fit("work", []);
+  const view = wake.view("work");
   assert.ok(!callIds(view).includes("a1"), "the action's step left the view");
   const note = view[1]!.content;
   assert.ok(typeof note === "string" && note.startsWith(TRIMMED_TURN));

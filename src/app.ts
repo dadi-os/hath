@@ -74,8 +74,8 @@ export async function buildApp(
       db: deps.db,
       transcript: runtime.transcript,
       events: runtime.events,
-      enqueueConversation: runtime.enqueueConversation,
-      enqueueReasoning: runtime.enqueueReasoning,
+      enqueueProcess: runtime.enqueueProcess,
+      enqueueWork: runtime.enqueueWork,
       log: app.log,
       recoveryWindowMinutes: config.runtime.recovery_window_minutes,
     });

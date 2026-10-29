@@ -5,7 +5,7 @@
  * window, frozen together when the wake began, then every step either lane took — each model turn whole
  * (thinking, text, tool calls, in provider order) followed by its tool results —
  * plus messages that arrived mid-wake. Only a few kinds of turn are lane-private:
- * steers (reasoning's instructions), because conversation already sees the call that
+ * steers (the work lane's instructions), because the process lane already sees the call that
  * produced them, and each lane's own reminders.
  *
  * Old tool results are dropped first: once the results still shown in full
@@ -25,7 +25,7 @@
  * replacing it mid-wake would rewrite all of them.
  *
  * A wake lasts while any lane run for the agent is queued or running, so a
- * steer from conversation reaches a reasoning run that still sees the steer's
+ * steer from the process lane reaches a work-lane run that still sees the steer's
  * call. When the last run releases, the record is dropped and the next wake
  * starts from the transcript alone — prior steps cannot few-shot it. What earlier wakes
  * did is in the agent's tool log, which get_logs searches.
@@ -170,7 +170,7 @@ export class Wake {
   private readonly calls = new Map<string, CallInfo>();
   /** Turns before this index show their tool results as cleared receipts (see receipt). */
   private clearedThrough = 0;
-  /** The ids of the hand-offs already shown to the conversation lane in this wake. */
+  /** The ids of the hand-offs already shown to the process lane in this wake. */
   readonly handoffsShown = new Set<number>();
   /** How many turns each lane could see when it last yielded. */
   private readonly yieldedAt = new Map<Lane, number>();
@@ -263,9 +263,9 @@ export class Wake {
     }
   }
 
-  /** True once the reasoning lane has taken a step in this wake. */
+  /** True once the work lane has taken a step in this wake. */
   reasoned(): boolean {
-    return this.turns.some((turn) => turn.message.role === "assistant" && turn.message.lane === "reasoning");
+    return this.turns.some((turn) => turn.message.role === "assistant" && turn.message.lane === "work");
   }
 
   /** Per lane, how many turns in a row ran out of output room while thinking (see CAPPED_TURN). */
@@ -519,7 +519,7 @@ export class Wake {
    * a shorter text rendering. A turn that thought replays at about what it billed, not
    * what its visible summary suggests: on 2026-10-18 a schedule-specialist turn showed
    * 20k characters of thinking, billed 25,792 output tokens, and grew the next prompt by
-   * 27k; counting the summary instead (from 2026-10-16 to 2026-10-20) let 17 reasoning
+   * 27k; counting the summary instead (from 2026-10-16 to 2026-10-20) let 17 the work lane
    * prompts pass 100k tokens, where Haiku's price rises 5x.
    */
   private turnTokens(index: number, lane: Lane): number {
