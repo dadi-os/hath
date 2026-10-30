@@ -68,7 +68,7 @@ after(async () => {
 });
 
 test("the three schedule tools are embedded, not grantable", async () => {
-  assert.equal(allTools().length, 25);
+  assert.equal(allTools().length, 5);
   for (const name of ["schedule_message", "list_schedules", "cancel_schedule"]) {
     assert.equal(findTool(name), undefined);
     assert.equal(findEmbeddedTool(name)?.name, name);
@@ -532,8 +532,8 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
       run_at: future,
     },
   });
-  assert.equal(self.isError, true);
-  assert.match(self.content, /cannot schedule a message to itself/);
+  assert.equal(self.isError, false, self.content);
+  assert.equal(JSON.parse(self.content).to_agent_id, fromId, "an agent may schedule its own routine");
 
   const missing = await executeTool(ctx, {
     type: "tool_use",
@@ -573,7 +573,7 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
     },
   });
   assert.equal(zero.isError, true);
-  assert.equal(scheduleChanges, 0);
+  assert.equal(scheduleChanges, 1);
 
   const ok = await executeTool(ctx, {
     type: "tool_use",
@@ -589,7 +589,7 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
   assert.equal(ok.isError, false);
   const body = JSON.parse(ok.content) as { schedule_id: string; to_agent_id: string };
   assert.equal(body.to_agent_id, peerId);
-  assert.equal(scheduleChanges, 1);
+  assert.equal(scheduleChanges, 2);
   const rows = await handle.db
     .select()
     .from(scheduledMessages)

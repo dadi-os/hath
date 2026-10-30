@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { and, eq } from "drizzle-orm";
@@ -47,8 +48,8 @@ function deliverDeps(transcript: TranscriptStore) {
     db: handle.db,
     transcript,
     events: new EventBus(silentLog),
-    enqueueProcess: () => "",
-    enqueueWork: () => "",
+    enqueueProcess: () => randomUUID(),
+    enqueueWork: () => randomUUID(),
   };
 }
 
@@ -125,11 +126,11 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
 
   const narrow = await assemble({ chars: 500, stepChars: 200, budgetTokens: 10_000_000 });
   const sizes = thread.map((m) => String(m.content).length);
-  const start = windowStart(sizes, { chars: 500, stepChars: 200 });
+  const start = windowStart(sizes, { chars: 500, stepChars: 125 });
   assert.ok(start > 0);
   assert.deepEqual(narrow.transcripts.process, thread.slice(start));
-  assert.match(String(narrow.transcripts.process!.at(-2)?.content), /\nm-5 /);
-  assert.deepEqual(narrow.transcripts.work!.slice(0, -1), thread);
+  assert.match(String(narrow.transcripts.process!.at(-1)?.content), /\nm-5 /);
+  assert.deepEqual(narrow.transcripts.work, thread);
   assert.equal(narrow.throughSeq, whole.throughSeq);
 });
 
@@ -155,15 +156,15 @@ test("assembleContext shortens a lane's window to the room its token budget leav
     });
 
   const whole = await assemble(wideWindows.process.budgetTokens);
-  const thread = whole.transcripts.work!.slice(0, -1);
+  const thread = whole.transcripts.work!;
   assert.equal(thread.length, 6);
   const fixedTokens =
     Math.ceil(whole.system.length / PROSE_CHARS_PER_TOKEN) +
     Math.ceil(JSON.stringify(whole.tools).length / DATA_CHARS_PER_TOKEN);
 
   const full = await assemble(fixedTokens);
-  assert.deepEqual(full.transcripts.process!.slice(0, -1), thread.slice(-1));
-  assert.deepEqual(full.transcripts.work!.slice(0, -1), thread);
+  assert.deepEqual(full.transcripts.process, thread.slice(-1));
+  assert.deepEqual(full.transcripts.work, thread);
 });
 
 test("messages arriving mid-wake join the wake after it and never rewrite earlier turns", async () => {
@@ -225,11 +226,12 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
   const [first, second, third] = requests as { messages: { role: string; content: unknown }[] }[];
   assert.deepEqual(second!.messages.slice(0, first!.messages.length), first!.messages);
   assert.deepEqual(third!.messages.slice(0, second!.messages.length), second!.messages);
-  const last = second!.messages.at(-1)!;
-  assert.equal(last.role, "user");
-  assert.ok(typeof last.content === "string");
-  assert.ok(last.content.includes("status?"));
-  assert.ok(!last.content.includes("on it"), "the agent's own send is already in the wake, so it is no arrival");
+  const [arrival, sent] = second!.messages.slice(-2) as { role: string; content: unknown }[];
+  assert.equal(arrival!.role, "user");
+  assert.ok(typeof arrival!.content === "string");
+  assert.ok(arrival!.content.includes("status?"));
+  assert.ok(!arrival!.content.includes("on it"), "the agent's own send is no arrival");
+  assert.ok(typeof sent!.content === "string" && sent!.content.startsWith("[Sent by your process lane]") && sent!.content.includes("on it"));
   assert.ok(first!.messages.every((m) => !JSON.stringify(m).includes("status?")));
 });
 

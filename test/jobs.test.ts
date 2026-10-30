@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
@@ -58,7 +59,7 @@ function dispatch(runtime: Runtime, from: string, to: string | null, content: st
 
 /** deps delivers without waking anyone, so no lane runs. */
 function deps(runtime: Runtime) {
-  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => "", enqueueWork: () => "" };
+  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() };
 }
 
 async function jobsOf(agentId: string) {
@@ -193,11 +194,11 @@ test("every message wakes the recipient's process lane, a spawned agent's report
     events: runtime.events,
     enqueueProcess: (agentId: string) => {
       woke.push(`${agentId}:process`);
-   return "";
+   return randomUUID();
  },
     enqueueWork: (agentId: string) => {
       woke.push(`${agentId}:work`);
-   return "";
+   return randomUUID();
  },
   };
 

@@ -235,10 +235,6 @@ export const scheduledMessages = pgTable(
       "scheduled_messages_interval_minutes_check",
       sql`${table.intervalMinutes} IS NULL OR ${table.intervalMinutes} >= 1`,
     ),
-    check(
-      "scheduled_messages_from_to_check",
-      sql`${table.fromAgentId} <> ${table.toAgentId}`,
-    ),
   ],
 );
 

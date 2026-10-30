@@ -15,7 +15,7 @@ lane_queue_timeout_ms = 30000
 # Older messages fall out of a window and are reached only through get_logs and memory.
 # A window's start moves in jumps of step chars instead of sliding with every message,
 # so the provider cache survives everything but the jump.
-process_context_tokens = 15000
+process_context_tokens = 30000
 work_transcript_window_chars = 100000
 transcript_window_step_chars = 30000
 # Backoff after a failed tool call before the agent's next call; doubles per

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
@@ -220,7 +221,7 @@ test("a message from the agent waited on wakes the work lane and drops the watch
   );
   await runtime.waitUntilIdle();
 
-  assert.equal(dwar.workCalls.length, 1);
+  assert.equal(dwar.workCalls.length, 2, "the answer wakes the work lane, whose yield then gets the one reminder");
   assert.equal(dwar.processCalls.length, 0);
   assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /Woken by: message from other/);
   assert.equal((await handle.db.select().from(watches)).length, 0);
@@ -255,7 +256,7 @@ test("the yield reminder fires for an unanswered request with nothing pending, a
   const { runtime, nas } = harness();
   const deps = { db: handle.db, nas, transcript: runtime.transcript };
   await deliverUserMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => "w", enqueueWork: () => "w" },
+    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
     "asked",
     "when is my exam?",
   );
@@ -298,7 +299,7 @@ test("the work lane yields once more after the reminder, and a second yield stan
     },
   });
   await deliverUserMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => "w", enqueueWork: () => "w" },
+    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
     "asked",
     "when is my exam?",
   );

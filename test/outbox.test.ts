@@ -122,12 +122,21 @@ test("one send closes every message waiting for that recipient and carries their
   nas.files.set("/var/home/dadi/plan.md", Buffer.from("# plan\n"));
   const agentId = await insertAgent(handle.db, { id: "ob-merge", systemPrompt: "agent" });
   const peerId = await insertAgent(handle.db, { id: "ob-peer", systemPrompt: "peer" });
-  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas, config, log: silentLog });
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const dwar = mockDwar({
+    process: async () => {
+      await gate;
+      return yieldTurn("c-yield");
+    },
+  });
+  const runtime = createRuntime({ db: handle.db, dwar, yaad: mockYaad(), ghar: mockGhar(), nas, config, log: silentLog });
 
   await message(runtime, agentId, { to: "ankur", content: "first", attachments: ["/var/home/dadi/plan.md"] });
   await message(runtime, agentId, { to: "ankur", content: "second" });
   await message(runtime, agentId, { to: peerId, content: "for the peer" });
-  await runtime.waitUntilIdle();
   const merged = await send(runtime, agentId, { to: "ankur", content: "first and second" });
   assert.equal(merged.isError, false, merged.content);
 
@@ -135,6 +144,8 @@ test("one send closes every message waiting for that recipient and carries their
   assert.deepEqual(rows.map((row) => row.state).sort(), ["pending", "sent", "sent"]);
   const [carried] = await handle.db.select().from(attachments).where(eq(attachments.filename, "plan.md"));
   assert.notEqual(carried?.messageId, null, "the queued file went out with the send");
+  release();
+  await runtime.waitUntilIdle();
 });
 
 test("send snapshots a file path into the attachments store at send time", async () => {
@@ -263,7 +274,7 @@ test("boot recovery wakes the process lane of an agent with a work message still
     ...quietDeps(runtime),
     enqueueProcess: (id: string) => {
       woken.push(id);
-      return "";
+      return randomUUID();
     },
     log: silentLog,
     recoveryWindowMinutes: 60,

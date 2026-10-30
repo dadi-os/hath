@@ -229,9 +229,9 @@ test("deliverAgentMessage merges extraPayload into both message log rows", async
       events,
       enqueueProcess: (agentId) => {
         enqueued.push(agentId);
-     return "";
+     return randomUUID();
  },
-      enqueueWork: () => "",
+      enqueueWork: () => randomUUID(),
     },
     {
       fromAgentId: fromId,
@@ -324,17 +324,18 @@ test("GET /agents includes running and it flips true while a lane holds the lock
   };
   const idleAgent = idleBody.agents.find((agent) => agent.id === workerId);
   assert.ok(idleAgent);
-  assert.deepEqual(idleAgent.running, { work: false, process: false, waiting_on: null });
+  assert.deepEqual(idleAgent.running, { work: false, process: false, waiting_on: null, status: null });
 
   const release = await runtime.locks.acquire(workerId, "process", 1000);
   const held = await app.inject({ method: "GET", url: "/agents" });
   assert.equal(held.statusCode, 200);
   const heldBody = held.json() as {
-    agents: Array<{ id: string; running: { work: boolean; process: boolean } }>;
+    agents: Array<{ id: string; running: { work: boolean; process: boolean; status?: { work: { state: string } } | null } }>;
   };
   const heldAgent = heldBody.agents.find((agent) => agent.id === workerId);
   assert.ok(heldAgent);
-  assert.deepEqual(heldAgent.running, { work: false, process: true, waiting_on: null });
+  assert.deepEqual({ ...heldAgent.running, status: undefined }, { work: false, process: true, waiting_on: null, status: undefined });
+  assert.equal(heldAgent.running.status?.work.state, "idle", "a running lane carries the status block");
   release();
 
   await app.close();

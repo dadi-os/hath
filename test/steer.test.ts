@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
@@ -114,10 +115,10 @@ test("steer_work starts a run when the work lane is idle", async () => {
       transcript: new TranscriptStore(),
       sessions: new HostSessions(mockNas()),
       toolDebounce: noDebounce,
-      enqueueProcess: () => "",
+      enqueueProcess: () => randomUUID(),
       enqueueWork: (id: string) => {
         started.push(id);
-        return "";
+        return randomUUID();
       },
     } as never,
     {
@@ -149,10 +150,10 @@ test("steer_work does not start a second run while the work lane is busy", async
       transcript: new TranscriptStore(),
       sessions: new HostSessions(mockNas()),
       toolDebounce: noDebounce,
-      enqueueProcess: () => "",
+      enqueueProcess: () => randomUUID(),
       enqueueWork: (id: string) => {
         started.push(id);
-        return "";
+        return randomUUID();
       },
     } as never,
     {
@@ -252,8 +253,8 @@ test("steer_work accepts terminate without instruction", async () => {
       transcript: new TranscriptStore(),
       sessions: new HostSessions(mockNas()),
       toolDebounce: noDebounce,
-      enqueueProcess: () => "",
-      enqueueWork: () => "",
+      enqueueProcess: () => randomUUID(),
+      enqueueWork: () => randomUUID(),
     } as never,
     {
       type: "tool_use",

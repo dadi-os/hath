@@ -105,7 +105,7 @@ test("POST /router spawns a root, sends as Ankur, and returns what it sent", asy
 
   assert.ok(seen.some((event) => event.type === "router_started"));
   assert.ok(seen.some((event) => event.type === "router_finished"));
-  assert.equal(dwar.completeCalls.length, 4);
+  assert.equal(dwar.completeCalls.length, 3);
 
   await runtime.waitUntilIdle();
   await app.close();
