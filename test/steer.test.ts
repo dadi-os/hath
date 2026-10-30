@@ -10,7 +10,7 @@ import { ToolDebounce } from "../src/runtime/tool-debounce.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { STEER_WORK } from "../src/types/domain.js";
 import { Wake } from "../src/runtime/wake.js";
-import { roomyWakeLimits } from "./helpers.js";
+import { mockNas, roomyWakeLimits, workLoopHooks } from "./helpers.js";
 
 const noDebounce = new ToolDebounce({ base_ms: 1, max_ms: 1 });
 
@@ -30,26 +30,25 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
   let turn = 0;
 
   await runWorkLoop({
+    ...workLoopHooks,
     agentId,
     lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
+    assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(request);
       turn += 1;
       if (turn === 1) {
         steer.append(agentId, "check the voice PR");
-        return toolUse("send_message", { to_agent_id: null, content: "status" });
+        return toolUse("message", { to: "ankur", content: "status" });
       }
       return toolUse("yield", {});
     },
     executeTool: async () => ({ content: "{}", isError: false, audit: {} }),
     steer,
-    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
-    recordActions: () => {},
   });
 
   assert.equal(calls.length, 2);
@@ -68,11 +67,12 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
   let turn = 0;
 
   await runWorkLoop({
+    ...workLoopHooks,
     agentId,
     lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
+    assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(structuredClone(request));
       turn += 1;
@@ -80,15 +80,13 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
         steer.append(agentId, "use the google pivot");
       }
       return turn < 4
-        ? { ...toolUse("wait", { seconds: 1 }), content: [{ type: "tool_use", id: `w${turn}`, name: "wait", input: { seconds: 1 } }] }
+        ? { ...toolUse("ghar_get_state", {}), content: [{ type: "tool_use", id: `w${turn}`, name: "ghar_get_state", input: {} }] }
         : toolUse("yield", {});
     },
     executeTool: async () => ({ content: "{}", isError: false, audit: {} }),
     steer,
-    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
-    recordActions: () => {},
   });
 
   assert.equal(calls.length, 4);
@@ -114,13 +112,14 @@ test("steer_work starts a run when the work lane is idle", async () => {
       steer,
       locks,
       transcript: new TranscriptStore(),
-      sessions: new HostSessions(),
+      sessions: new HostSessions(mockNas()),
       toolDebounce: noDebounce,
-      enqueueProcess: () => {},
-      enqueueWork: (id) => {
+      enqueueProcess: () => "",
+      enqueueWork: (id: string) => {
         started.push(id);
+        return "";
       },
-    },
+    } as never,
     {
       type: "tool_use",
       id: "s1",
@@ -148,13 +147,14 @@ test("steer_work does not start a second run while the work lane is busy", async
       steer,
       locks,
       transcript: new TranscriptStore(),
-      sessions: new HostSessions(),
+      sessions: new HostSessions(mockNas()),
       toolDebounce: noDebounce,
-      enqueueProcess: () => {},
-      enqueueWork: (id) => {
+      enqueueProcess: () => "",
+      enqueueWork: (id: string) => {
         started.push(id);
+        return "";
       },
-    },
+    } as never,
     {
       type: "tool_use",
       id: "s2",
@@ -174,16 +174,17 @@ test("steer_work with terminate stops the next tool call from running", async ()
   let turn = 0;
 
   await runWorkLoop({
+    ...workLoopHooks,
     agentId,
     lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
+    assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
     call: async () => {
       turn += 1;
       if (turn === 1) {
         steer.requestTerminate(agentId);
-        return toolUse("send_message", { to_agent_id: null, content: "should not run" });
+        return toolUse("message", { to: "ankur", content: "should not run" });
       }
       return toolUse("yield", {});
     },
@@ -192,10 +193,8 @@ test("steer_work with terminate stops the next tool call from running", async ()
       return { content: "{}", isError: false, audit: {} };
     },
     steer,
-    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
-    recordActions: () => {},
   });
 
   assert.equal(turn, 1);
@@ -209,16 +208,17 @@ test("steer_work terminate mid-batch blocks remaining domain tools", async () =>
   const executed: string[] = [];
 
   await runWorkLoop({
+    ...workLoopHooks,
     agentId,
     lane: "work",
     wake: new Wake(roomyWakeLimits),
-    assemble: async () => ({ system: "sys", transcripts: { work: [], process: [] }, tools: [], throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
+    assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
     call: async () => ({
       provider: "anthropic",
       content: [
-        { type: "tool_use", id: "a", name: "send_message", input: { to_agent_id: null, content: "one" } },
-        { type: "tool_use", id: "b", name: "send_message", input: { to_agent_id: null, content: "two" } },
+        { type: "tool_use", id: "a", name: "message", input: { to: "ankur", content: "one" } },
+        { type: "tool_use", id: "b", name: "message", input: { to: "ankur", content: "two" } },
       ],
       stop_reason: "tool_use",
       usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
@@ -229,13 +229,11 @@ test("steer_work terminate mid-batch blocks remaining domain tools", async () =>
       return { content: "{}", isError: false, audit: {} };
     },
     steer,
-    transcript: new TranscriptStore(),
     logResponse: async () => {},
     logToolResult: async () => {},
-    recordActions: () => {},
   });
 
-  assert.deepEqual(executed, ["send_message"]);
+  assert.deepEqual(executed, ["message"]);
   assert.equal(steer.isTerminate(agentId), false);
 });
 
@@ -252,11 +250,11 @@ test("steer_work accepts terminate without instruction", async () => {
       steer,
       locks,
       transcript: new TranscriptStore(),
-      sessions: new HostSessions(),
+      sessions: new HostSessions(mockNas()),
       toolDebounce: noDebounce,
-      enqueueProcess: () => {},
-      enqueueWork: () => {},
-    },
+      enqueueProcess: () => "",
+      enqueueWork: () => "",
+    } as never,
     {
       type: "tool_use",
       id: "t1",

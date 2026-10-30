@@ -31,7 +31,7 @@ export const getDeviceEvents = defineTool({
     properties: {
       device_id: {
         oneOf: [
-          { type: "string", description: "Single device id" },
+          { type: "string", description: "Read the house's device event log: what changed, on which device, when, and the cause (an agent's command, someone at a physical switch, or another command made for a person). Filter by device, room, tag, attribute, time range and cause. Returns at most 50 events; pass since as the last event id you saw to page forward. ghar_get_state answers what is true now in one call." },
           { type: "array", items: { type: "string" }, minItems: 1 },
         ],
         description: "Device id or ids; omit for all devices",

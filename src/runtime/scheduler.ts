@@ -6,7 +6,9 @@ import type { Db } from "../db/client.js";
 import { agents, scheduledMessages, type ScheduledMessageRow } from "../db/schema.js";
 import { deliverAgentMessage } from "./deliver.js";
 import type { EventBus } from "./events.js";
+import { SWEEP_INTERVAL_MS } from "./retention.js";
 import type { TranscriptStore } from "./transcript.js";
+import { checkDueWatches, type WatchDeps } from "./watches.js";
 
 type SchedulerLog = {
   error: (obj: unknown, msg?: string) => void;
@@ -32,18 +34,23 @@ export function advanceRunAt(runAt: Date, intervalMinutes: number): Date {
 
 type FiredRow = ScheduledMessageRow & { firedAt: Date };
 
-/** Polls scheduled messages every `tickSeconds`, delivers the due ones into transcripts, and wakes each recipient's process lane. */
+/** Polls every `tickSeconds`: sweeps the file caches once a day, wakes the work lane of each agent whose wait is due, and delivers due scheduled messages into transcripts, waking each recipient's process lane. */
 export function createScheduler(opts: {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  enqueueProcess: (agentId: string) => string;
-  enqueueWork: (agentId: string) => string;
+  enqueueProcess: (agentId: string, reason?: string) => string;
+  enqueueWork: (agentId: string, reason?: string) => string;
   log: SchedulerLog;
   tickSeconds: number;
+  /** What a due wait needs (see watches.ts). */
+  watches: WatchDeps;
+  /** The cache retention sweep (see retention.ts), run on the first tick and then daily. */
+  sweep: (now: Date) => Promise<void>;
 }): Scheduler {
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking = false;
+  let lastSweep: Date | undefined;
 
   async function advanceDue(now: Date): Promise<FiredRow[]> {
     return opts.db.transaction(async (tx) => {
@@ -146,6 +153,7 @@ export function createScheduler(opts: {
     }
     ticking = true;
     try {
+      await checkDueWatches(opts.watches, now);
       const fired = await advanceDue(now);
       if (fired.length > 0) {
         opts.events.emit({ type: "schedules_changed", at: new Date().toISOString() });
@@ -155,6 +163,14 @@ export function createScheduler(opts: {
       }
     } catch (err) {
       opts.log.error({ code: "schedule_tick_failed", err }, "schedule tick failed");
+    }
+    try {
+      if (lastSweep === undefined || now.getTime() - lastSweep.getTime() >= SWEEP_INTERVAL_MS) {
+        lastSweep = now;
+        await opts.sweep(now);
+      }
+    } catch (err) {
+      opts.log.error({ code: "cache_sweep_failed", err }, "cache sweep failed");
     } finally {
       ticking = false;
     }

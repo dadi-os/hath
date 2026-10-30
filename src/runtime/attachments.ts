@@ -1,52 +1,33 @@
 /**
- * Attachments: validating uploads into durable rows, the stub a transcript shows
- * for each, and the embedded tools that read, forward and create them. Files
- * travel by id, so no lane ever retypes their contents to pass them on.
+ * Attachments: files that travel with messages. Each is a file on the box (see files.ts)
+ * with a row of metadata, so a message names it by path and read_file opens it, and no lane
+ * ever retypes a file to pass it on: `send` and `message` take attachment ids or file paths
+ * (see resolveAttachments).
  */
 
 import { isUtf8 } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { basename, extname } from "node:path";
-import { z } from "zod";
-import { agentIdOrUserSchema } from "../agent-id.js";
+import { eq, isNull } from "drizzle-orm";
 import {
-  INLINE_TEXT_CHARS,
-  readAttachmentText,
+  requireAttachments,
   stageAttachments,
-  toAttachmentSummary,
   type AttachmentMeta,
   type NewAttachment,
 } from "../db/attachments.js";
+import type { Db } from "../db/client.js";
+import { attachments } from "../db/schema.js";
 import type { DwarClient } from "../dwar/client.js";
 import { HathError } from "../errors.js";
-import {
-  failWithoutAgentIdentity,
-  fail,
-  failOversizedAgentMessage,
-  ok,
-  requireActiveAgent,
-  requireToolGrant,
-  type ToolContext,
-  type ToolExecResult,
-} from "../tools/shared.js";
-import type { DwarTool } from "../types/domain.js";
-import { CREATE_ATTACHMENT, FORWARD_ATTACHMENT, MESSAGE_STATUSES, READ_ATTACHMENT } from "../types/domain.js";
-import { deliverAgentMessage } from "./deliver.js";
-import { reportRefusal, STATUS_DESCRIPTION } from "./jobs.js";
-
-/** Mirrors Dwar `image.describe.allowed_media_types`. */
-export const DESCRIBABLE_IMAGE_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
-]);
+import type { ToolContext } from "../tools/shared.js";
+import { attachmentPath, DESCRIBABLE_IMAGE_TYPES, writeBytes, type FileStore } from "./files.js";
 
 /** Largest file one attachment holds; mirrors Dwar `image.describe.max_bytes`. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 export const MAX_ATTACHMENTS = 8;
 
-/** Non-`text/*` media types stored and read as text. */
+/** Non-`text/*` media types whose bytes are text. */
 const TEXT_MEDIA_TYPES = new Set([
   "application/json",
   "application/xml",
@@ -57,7 +38,7 @@ const TEXT_MEDIA_TYPES = new Set([
   "application/x-sh",
 ]);
 
-/** Media types create_attachment gives host files by extension; any other text file is text/plain. */
+/** Media types attachHostFile gives host files by extension; any other text file is text/plain. */
 const TEXT_EXTENSION_TYPES: Record<string, string> = {
   ".md": "text/markdown",
   ".csv": "text/csv",
@@ -69,7 +50,7 @@ const TEXT_EXTENSION_TYPES: Record<string, string> = {
   ".toml": "application/toml",
 };
 
-/** Binary media types create_attachment gives host files by extension; images among them get a Dwar description. */
+/** Binary media types attachHostFile gives host files by extension; images among them get a Dwar description. */
 const BINARY_EXTENSION_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -86,14 +67,6 @@ const BINARY_EXTENSION_TYPES: Record<string, string> = {
   ".gif": "image/gif",
 };
 
-/** How much of a long text attachment its transcript stub previews. */
-const PREVIEW_CHARS = 500;
-
-/** read_attachment's page size when the caller gives no limit, and the most it returns at once. */
-const READ_DEFAULT_CHARS = 20_000;
-const READ_MAX_CHARS = 50_000;
-
-
 export type MessageAttachment = {
   media_type: string;
   /** Raw base64 (no data-URL prefix). */
@@ -101,13 +74,20 @@ export type MessageAttachment = {
   filename?: string | undefined;
 };
 
+/** What writes and describes an incoming file: the box's file store and Dwar. */
+export type UploadDeps = {
+  files: FileStore;
+  dwar: DwarClient;
+};
+
 /**
- * Validate uploaded files into rows: text files keep their UTF-8 text, images
- * are described by Dwar `/image/describe` and keep their bytes, anything else
- * keeps its bytes. Bad input is a 422 naming the attachment.
+ * prepareUploads checks uploaded files and writes each to the box, returning rows ready to
+ * insert: a text file must be valid UTF-8, an image is described by Dwar
+ * `/image/describe`, anything else is kept as it is. Bad input is a 422 naming the
+ * attachment.
  */
 export async function prepareUploads(
-  dwar: DwarClient,
+  deps: UploadDeps,
   files: MessageAttachment[],
 ): Promise<NewAttachment[]> {
   if (files.length > MAX_ATTACHMENTS) {
@@ -127,264 +107,160 @@ export async function prepareUploads(
         `attachments[${index}] exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes`,
       );
     }
-    const filename = att.filename?.trim() || `attachment-${index + 1}`;
-    const base = { filename, mediaType, sizeBytes: raw.length };
-    if (isTextMediaType(mediaType)) {
-      prepared.push({ ...base, textContent: decodeUtf8(raw, index), data: null, description: null });
-      continue;
+    if (isTextMediaType(mediaType) && !isUtf8(raw)) {
+      throw new HathError(422, "invalid_request", `attachments[${index}] is not valid UTF-8 text`);
     }
-    if (DESCRIBABLE_IMAGE_TYPES.has(mediaType)) {
-      const { description } = await dwar.describeImage(
-        { image: { media_type: mediaType, data: raw.toString("base64") } },
-        "hath/attachments",
-      );
-      prepared.push({ ...base, textContent: null, data: raw, description: description.trim() });
-      continue;
-    }
-    prepared.push({ ...base, textContent: null, data: raw, description: null });
+    const description = DESCRIBABLE_IMAGE_TYPES.has(mediaType)
+      ? (
+          await deps.dwar.describeImage(
+            { image: { media_type: mediaType, data: raw.toString("base64") } },
+            "hath/attachments",
+          )
+        ).description.trim()
+      : null;
+    prepared.push(
+      await storeFile(deps.files, att.filename?.trim() || `attachment-${index + 1}`, mediaType, raw, description),
+    );
   }
   return prepared;
 }
 
+/** storeFile writes `bytes` to a new attachment's place on the box and returns its row. */
+async function storeFile(
+  files: FileStore,
+  filename: string,
+  mediaType: string,
+  bytes: Buffer,
+  description: string | null,
+): Promise<NewAttachment> {
+  const id = randomUUID();
+  const path = attachmentPath(files.dir, id, filename);
+  await writeBytes(files, path, bytes);
+  return { id, filename, mediaType, sizeBytes: bytes.length, path, description };
+}
+
+/** textAttachment stores `content` as a text file named `filename` and returns its row. */
+export function textAttachment(
+  files: FileStore,
+  filename: string,
+  mediaType: string,
+  content: string,
+): Promise<NewAttachment> {
+  return storeFile(files, filename, mediaType, Buffer.from(content, "utf8"), null);
+}
+
 /**
- * The block a transcript shows for one attachment: a header with its id, then
- * the whole text when it is short, a preview when it is long, the description
- * for an image, and nothing more for other binaries.
+ * The block a transcript shows for one attachment: a header with its id, the path of its
+ * file, the description for an image, and how to open or pass it on.
  */
 export function attachmentStub(meta: AttachmentMeta): string {
-  const header = `[Attachment ${meta.id} · ${meta.filename} · ${meta.mediaType}`;
-  if (meta.textLength === null || meta.textHead === null) {
-    const size = `${formatBytes(meta.sizeBytes)}]`;
-    if (meta.description !== null) {
-      return `${header} · ${size}\n${meta.description}`;
-    }
-    return `${header} · ${size}\nNot text: forward it with forward_attachment; it cannot be read here.`;
+  const lines = [
+    `[Attachment ${meta.id} · ${meta.filename} · ${meta.mediaType} · ${formatBytes(meta.sizeBytes)}]`,
+    `Path: ${meta.path}`,
+  ];
+  if (meta.description !== null) {
+    lines.push(meta.description);
   }
-  const length = `${meta.textLength.toLocaleString("en-US")} chars, ${formatTokens(meta.textLength)}]`;
-  if (meta.textLength <= INLINE_TEXT_CHARS) {
-    return `${header} · ${length}\n${meta.textHead}`;
-  }
-  return `${header} · ${length}\n${meta.textHead.slice(0, PREVIEW_CHARS)}…\n[Preview only. Read it with read_attachment; pass it on with forward_attachment, never by retyping it.]`;
+  lines.push("[Open it with read_file; pass it on by naming its id or path in send's attachments, never by retyping it.]");
+  return lines.join("\n");
 }
 
-const readAttachmentInput = z
-  .object({
-    attachment_id: z.string().uuid(),
-    offset: z.number().int().min(0).optional(),
-    limit: z.number().int().min(1).max(READ_MAX_CHARS).optional(),
-  })
-  .strict();
-
-const forwardAttachmentInput = z
-  .object({
-    to_agent_id: agentIdOrUserSchema,
-    attachment_ids: z
-      .array(z.string().uuid())
-      .min(1)
-      .max(MAX_ATTACHMENTS)
-      .refine((ids) => new Set(ids).size === ids.length, "attachment_ids must not repeat"),
-    note: z.string().min(1),
-    status: z.enum(MESSAGE_STATUSES).optional(),
-  })
-  .strict();
-
-const createAttachmentInput = z
-  .object({
-    path: z.string().refine((path) => path.startsWith("/"), "path must be absolute"),
-    filename: z.string().min(1).optional(),
-  })
-  .strict();
-
-/** Page through a text attachment. */
-export const readAttachmentTool: DwarTool = {
-  name: READ_ATTACHMENT,
-  description: `Read a text attachment by its id (from an [Attachment …] block). Returns up to limit characters from offset (default ${READ_DEFAULT_CHARS}, max ${READ_MAX_CHARS}), the total length, and next_offset (null at the end). Read only what you need; to pass a file on, forward it instead of reading and retyping it. Images and other binaries cannot be read: an image's description is already in its block.`,
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["attachment_id"],
-    properties: {
-      attachment_id: { type: "string", description: "Attachment id" },
-      offset: { type: "integer", minimum: 0, description: "0-based character to start at (default 0)" },
-      limit: {
-        type: "integer",
-        minimum: 1,
-        maximum: READ_MAX_CHARS,
-        description: `Characters to return (default ${READ_DEFAULT_CHARS})`,
-      },
-    },
-  },
-};
-
-/** Send existing attachments on to someone by id. */
-export const forwardAttachmentTool: DwarTool = {
-  name: FORWARD_ATTACHMENT,
-  description:
-    "Send attachments you can see (by id) to another agent or to the user (to_agent_id null), with a note saying what they are and what to do with them. The recipient gets the same files without anyone retyping them, so always forward a file rather than pasting its contents into dispatch_message. Does not end the turn — call yield when done.",
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["to_agent_id", "attachment_ids", "note"],
-    properties: {
-      to_agent_id: {
-        type: ["string", "null"],
-        description: 'Recipient kebab-case agent id, or null for Ankur (the user); never the string "Ankur"',
-      },
-      attachment_ids: {
-        type: "array",
-        items: { type: "string" },
-        description: `Attachment ids to send, in order (at most ${MAX_ATTACHMENTS})`,
-      },
-      note: { type: "string", description: "The message the files arrive with" },
-      status: { type: "string", enum: [...MESSAGE_STATUSES], description: STATUS_DESCRIPTION },
-    },
-  },
-};
-
-/** Turn a host file into an attachment. */
-export const createAttachmentTool: DwarTool = {
-  name: CREATE_ATTACHMENT,
-  description: `Turn a file on the host into an attachment and get its id, so it can be sent with send_message's attachment_ids — for example a report a worker wrote or a built resume PDF for the user. Needs the terminal_read_file grant. Any file up to ${MAX_ATTACHMENT_BYTES} bytes: text, PDFs, images, Word, Excel and PowerPoint documents, zips and other binaries.`,
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["path"],
-    properties: {
-      path: { type: "string", description: "Absolute host path" },
-      filename: { type: "string", description: "Name it travels under (default: the file's name)" },
-    },
-  },
-};
-
-/** runReadAttachment returns one page of a text attachment. */
-export async function runReadAttachment(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
-  const input = readAttachmentInput.parse(raw);
-  const offset = input.offset ?? 0;
-  const { meta, text } = await readAttachmentText(
-    ctx.db,
-    input.attachment_id,
-    offset,
-    input.limit ?? READ_DEFAULT_CHARS,
-  );
-  if (meta.textLength === null) {
-    throw new Error(`attachment ${meta.id} read as text without a length`);
-  }
-  const end = offset + [...text].length;
-  return ok({
-    attachment_id: meta.id,
-    filename: meta.filename,
-    media_type: meta.mediaType,
-    offset,
-    total_chars: meta.textLength,
-    next_offset: end < meta.textLength ? end : null,
-    content: text,
-  });
-}
-
-/** runForwardAttachment delivers a note carrying the given attachments from the calling agent. */
-export async function runForwardAttachment(
-  ctx: ToolContext,
-  raw: unknown,
-): Promise<ToolExecResult> {
-  if (ctx.callerId === null) {
-    return failWithoutAgentIdentity();
-  }
-  const input = forwardAttachmentInput.parse(raw);
-  const oversized = failOversizedAgentMessage(input.to_agent_id, input.note);
-  if (oversized !== null) {
-    return oversized;
-  }
-  if (input.to_agent_id !== null) {
-    await requireActiveAgent(ctx.db, input.to_agent_id);
-  }
-  const refusal = await reportRefusal(ctx.db, ctx.callerId, input.to_agent_id, input.status);
-  if (refusal !== null) {
-    return fail(refusal);
-  }
-  const row = await deliverAgentMessage(
-    {
-      db: ctx.db,
-      transcript: ctx.transcript,
-      events: ctx.events,
-      enqueueProcess: ctx.enqueueProcess,
-      enqueueWork: ctx.enqueueWork,
-      wakeOf: ctx.wakeOf,
-    },
-    {
-      fromAgentId: ctx.callerId,
-      toAgentId: input.to_agent_id,
-      content: input.note,
-      attachmentIds: input.attachment_ids,
-      ...(input.status !== undefined ? { status: input.status } : {}),
-    },
-  );
-  return ok({
-    to_agent_id: row.toAgentId,
-    seq: row.seq,
-    attachments: row.attachments.map(toAttachmentSummary),
-  });
-}
+/** What copying a host file into an attachment needs. */
+export type HostFileDeps = Pick<ToolContext, "db" | "nas" | "dwar" | "files">;
 
 /**
- * runCreateAttachment reads any host file whole as bytes through Nas and
- * stores it as an unbound attachment owned by the caller, prepared like an
- * upload so an image gets its Dwar description. Its media type comes from the
- * extension; an unlisted extension is text/plain when the bytes are UTF-8 and
- * application/octet-stream otherwise. A Nas failure throws and reaches the
- * model as a tool error.
+ * attachHostFile reads any host file whole as bytes through Nas, writes the copy to an
+ * attachment's place on the box and stores an unbound row owned by `agentId`; an image gets
+ * its Dwar description. Its media type comes from the extension; an unlisted extension is
+ * text/plain when the bytes are UTF-8 and application/octet-stream otherwise. A Nas
+ * failure throws.
  */
-export async function runCreateAttachment(
-  ctx: ToolContext,
-  raw: unknown,
-): Promise<ToolExecResult> {
-  if (ctx.callerId === null) {
-    return failWithoutAgentIdentity();
-  }
-  const input = createAttachmentInput.parse(raw);
-  await requireToolGrant(ctx.db, ctx.callerId, "terminal_read_file");
-  const filename = input.filename ?? basename(input.path);
-  const file = await ctx.nas.readFileBytes({ path: input.path, max_bytes: MAX_ATTACHMENT_BYTES });
-  const extension = extname(input.path).toLowerCase();
+export async function attachHostFile(
+  deps: HostFileDeps,
+  agentId: string,
+  path: string,
+  name?: string,
+): Promise<AttachmentMeta> {
+  const filename = name ?? basename(path);
+  const file = await deps.nas.readFileBytes({ path, max_bytes: MAX_ATTACHMENT_BYTES });
+  const bytes = Buffer.from(file.data, "base64");
+  const extension = extname(path).toLowerCase();
   const mediaType =
     BINARY_EXTENSION_TYPES[extension] ??
     TEXT_EXTENSION_TYPES[extension] ??
-    (isUtf8(Buffer.from(file.data, "base64")) ? "text/plain" : "application/octet-stream");
-  const prepared = await prepareUploads(ctx.dwar, [{ filename, media_type: mediaType, data: file.data }]);
-  return stageHostFile(ctx, ctx.callerId, prepared, input.path);
-}
-
-/** stageHostFile stores create_attachment's one prepared file as an unbound row owned by callerId. */
-async function stageHostFile(
-  ctx: ToolContext,
-  callerId: string,
-  files: NewAttachment[],
-  path: string,
-): Promise<ToolExecResult> {
-  const [meta] = await stageAttachments(ctx.db, callerId, files);
+    (isUtf8(bytes) ? "text/plain" : "application/octet-stream");
+  const description = DESCRIBABLE_IMAGE_TYPES.has(mediaType)
+    ? (
+        await deps.dwar.describeImage(
+          { image: { media_type: mediaType, data: file.data } },
+          "hath/attachments",
+        )
+      ).description.trim()
+    : null;
+  const stored = await storeFile(deps.files, filename, mediaType, bytes, description);
+  const [meta] = await stageAttachments(deps.db, agentId, [stored]);
   if (!meta) {
-    throw new Error("create_attachment staged no row");
+    throw new Error("attachment staged no row");
   }
-  return ok(toAttachmentSummary(meta), { path });
+  return meta;
 }
 
-/** True for media types whose bytes are stored and read as UTF-8 text. */
+/** A UUID: an attachment id rather than a path. */
+const ATTACHMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * resolveAttachments turns what `send` or `message` was given into attachment ids: an
+ * entry that is an id must name an attachment that exists, and an absolute path is
+ * copied as the file is now (see attachHostFile), so later changes to it do not reach
+ * the message. A relative path, a repeat, or more than MAX_ATTACHMENTS entries is refused.
+ */
+export async function resolveAttachments(
+  ctx: HostFileDeps,
+  agentId: string,
+  entries: string[],
+): Promise<string[]> {
+  if (entries.length > MAX_ATTACHMENTS) {
+    throw new HathError(422, "invalid_request", `attachments exceeds max of ${MAX_ATTACHMENTS}`);
+  }
+  if (new Set(entries).size !== entries.length) {
+    throw new HathError(422, "invalid_request", "attachments must not repeat");
+  }
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (ATTACHMENT_ID.test(entry)) {
+      ids.push(entry);
+    } else if (entry.startsWith("/")) {
+      ids.push((await attachHostFile(ctx, agentId, entry)).id);
+    } else {
+      throw new HathError(422, "invalid_request", `attachment ${entry} is neither an attachment id nor an absolute file path`);
+    }
+  }
+  await requireAttachments(ctx.db, ids);
+  return ids;
+}
+
+/**
+ * moveLegacyAttachments moves the bytes older rows kept in the database to files on the
+ * box and clears them, so the file is the attachment's only contents. It does nothing once
+ * every row has a path, and the columns it empties can then be dropped.
+ */
+export async function moveLegacyAttachments(db: Db, files: FileStore): Promise<number> {
+  const legacy = await db.select().from(attachments).where(isNull(attachments.path));
+  for (const row of legacy) {
+    const bytes = row.data ?? (row.textContent === null ? null : Buffer.from(row.textContent, "utf8"));
+    if (bytes === null) {
+      throw new Error(`attachment ${row.id} has neither a file nor stored bytes`);
+    }
+    const path = attachmentPath(files.dir, row.id, row.filename);
+    await writeBytes(files, path, bytes);
+    await db.update(attachments).set({ path, textContent: null, data: null }).where(eq(attachments.id, row.id));
+  }
+  return legacy.length;
+}
+
+/** True for media types whose bytes are text. */
 function isTextMediaType(mediaType: string): boolean {
   return mediaType.startsWith("text/") || TEXT_MEDIA_TYPES.has(mediaType);
-}
-
-/** Decode UTF-8 strictly; a text upload that is not valid UTF-8 is a 422. */
-function decodeUtf8(raw: Buffer, index: number): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(raw);
-  } catch {
-    throw new HathError(422, "invalid_request", `attachments[${index}] is not valid UTF-8 text`);
-  }
-}
-
-/** Approximate tokens at four characters each, e.g. `~12.3k tokens`. */
-function formatTokens(chars: number): string {
-  const tokens = Math.round(chars / 4);
-  return tokens < 1000 ? `~${tokens} tokens` : `~${(tokens / 1000).toFixed(1)}k tokens`;
 }
 
 /** Human-readable size, e.g. `34 KB`. */
@@ -401,26 +277,14 @@ function formatBytes(bytes: number): string {
 function decodeBase64(data: string, index: number): Buffer {
   const cleaned = data.replace(/\s+/g, "");
   if (!cleaned) {
-    throw new HathError(
-      422,
-      "invalid_request",
-      `attachments[${index}].data must not be empty`,
-    );
+    throw new HathError(422, "invalid_request", `attachments[${index}].data must not be empty`);
   }
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(cleaned) || cleaned.length % 4 !== 0) {
-    throw new HathError(
-      422,
-      "invalid_request",
-      `attachments[${index}].data is not valid base64`,
-    );
+    throw new HathError(422, "invalid_request", `attachments[${index}].data is not valid base64`);
   }
   const buf = Buffer.from(cleaned, "base64");
   if (buf.length === 0) {
-    throw new HathError(
-      422,
-      "invalid_request",
-      `attachments[${index}].data must not be empty`,
-    );
+    throw new HathError(422, "invalid_request", `attachments[${index}].data must not be empty`);
   }
   return buf;
 }

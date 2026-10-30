@@ -2,21 +2,18 @@
  * Agent runtime: lane locks, the steer queue, transcript, and lane runners.
  * Process-lane enqueue always schedules a run — the lane lock serializes concurrent
  * wakes so a second user message is not dropped while the process lane is busy.
- * The work lane does not wake the process lane on exit: it sends its own messages. A blanket
- * wake races a follow-up run whose transcript ends on an assistant turn, which chat
- * providers reject.
+ * The work lane wakes the process lane when it queues a message (`message`), not on exit.
+ * A blanket wake races a follow-up run whose transcript ends on an assistant turn, which
+ * chat providers reject.
  */
 
 import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import type { Db } from "../db/client.js";
-import { HathError } from "../errors.js";
-import { failPendingHandoffs, pendingHandoffs } from "../db/handoffs.js";
+import { failPendingOutbox, pendingOutbox } from "../db/outbox.js";
 import { writeAgentLog } from "../db/logs.js";
 import { currentRequester } from "../db/messages.js";
 import { agents } from "../db/schema.js";
-import { BrowserDriver } from "../browser/driver.js";
-import type { ChaaviClient } from "../chaavi/client.js";
 import type { DwarClient } from "../dwar/client.js";
 import type { GharClient } from "../ghar/client.js";
 import type { NasClient } from "../nas/client.js";
@@ -33,11 +30,16 @@ import { deliverAgentMessage } from "./deliver.js";
 import { runProcessLoop } from "./process.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
-import { failedHandoffSteer } from "./handoffs.js";
+import { failedMessageSteer } from "./outbox.js";
+import { gatherStatus, renderStatus } from "./status.js";
 import { LaneLocks } from "./locks.js";
 import { runWorkLoop } from "./work.js";
 import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
+import { HelperReports } from "./helper-reports.js";
+import type { FileStore } from "./files.js";
+import { clearWatch } from "./watches.js";
+import { yieldReminder } from "./yield-reminder.js";
 import { ToolDebounce } from "./tool-debounce.js";
 import { blockOpenJob, settleWakeJobs } from "./jobs.js";
 import { executeTool, type ToolContext, type ToolExecResult } from "./tools.js";
@@ -46,7 +48,8 @@ import { TranscriptStore } from "./transcript.js";
 import { Wake, WakeStore, type WakeLimits } from "./wake.js";
 import { ROUTER_KEY } from "./router.js";
 import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
-import { FORWARD_ATTACHMENT, SEND_MESSAGE } from "../types/domain.js";
+import { FORWARD_ATTACHMENT, SEND_MESSAGE, type AgentStatus } from "../types/domain.js";
+import { sweepCaches } from "./retention.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
 
 export type RuntimeLog = {
@@ -61,14 +64,18 @@ export type Runtime = {
   transcript: TranscriptStore;
   events: EventBus;
   devices: DeviceGateway;
-  browsers: BrowserDriver;
   sessions: HostSessions;
+  files: FileStore;
+  /** Follows Nas's event stream and delivers helper reports to their agents. */
+  helperReports: HelperReports;
   scheduler: Scheduler;
-  /** Queue a lane run; returns the id of the wake it joins. */
-  enqueueProcess: (agentId: string) => string;
-  enqueueWork: (agentId: string) => string;
+  /** Queue a lane run; returns the id of the wake it joins. `reason` is why, for the wake's first line. */
+  enqueueProcess: (agentId: string, reason?: string) => string;
+  enqueueWork: (agentId: string, reason?: string) => string;
   /** The id of the agent's current wake, or null when it has none. */
   wakeOf: (agentId: string) => string | null;
+  /** The agent's status block data (see status.ts), for `GET /agents`. */
+  statusOf: (agentId: string) => Promise<AgentStatus>;
   waitUntilIdle: () => Promise<void>;
   /** Run the router on one utterance from Ankur; resolves with every message it sent as him. */
   route: (content: string) => Promise<RoutedMessage[]>;
@@ -85,7 +92,6 @@ export function createRuntime(opts: {
   dwar: DwarClient;
   yaad: YaadClient;
   ghar: GharClient;
-  chaavi: ChaaviClient;
   nas: NasClient;
   config: Config;
   log: RuntimeLog;
@@ -101,8 +107,8 @@ export function createRuntime(opts: {
   const transcript = new TranscriptStore();
   const events = new EventBus(opts.log);
   const devices = new DeviceGateway(events, opts.config.devices.timeout_ms);
-  const browsers = new BrowserDriver(opts.nas, opts.config, opts.log);
-  const sessions = new HostSessions();
+  const sessions = new HostSessions(opts.nas);
+  const files: FileStore = { nas: opts.nas, dir: opts.config.files.dir };
   const toolDebounce = new ToolDebounce({
     base_ms: opts.config.runtime.tool_debounce_base_ms,
     max_ms: opts.config.runtime.tool_debounce_max_ms,
@@ -113,6 +119,7 @@ export function createRuntime(opts: {
     supersedeWindowTurns: opts.config.runtime.wake_supersede_window_turns,
     promptCeilingTokens: opts.config.runtime.prompt_ceiling_tokens,
     promptTrimTokens: opts.config.runtime.prompt_trim_tokens,
+    filesDir: opts.config.files.dir,
   };
   const wakes = new WakeStore(wakeLimits);
   /** Per agent, the newest transcript seq its last finished wake covered (see settleJobs). */
@@ -147,20 +154,38 @@ export function createRuntime(opts: {
    * dropping here would lose a second user message that arrives while busy. Returns
    * the id of the wake the run joins: the agent's current one, or a new one.
    */
-  function enqueueProcess(agentId: string): string {
-    track(runLane(agentId, "process", wakes.hold(agentId)));
+  function enqueueProcess(agentId: string, reason?: string): string {
+    const release = wakes.hold(agentId);
+    wakes.get(agentId).noteReason(reason);
+    track(runLane(agentId, "process", release));
     return wakes.get(agentId).id;
   }
 
-  function enqueueWork(agentId: string): string {
-    track(runLane(agentId, "work", wakes.hold(agentId)));
+  function enqueueWork(agentId: string, reason?: string): string {
+    const release = wakes.hold(agentId);
+    wakes.get(agentId).noteReason(reason);
+    track(runLane(agentId, "work", release));
     return wakes.get(agentId).id;
+  }
+
+  /** background keeps `work` in the idle count and logs a failure, since nothing awaits it. */
+  function background(work: Promise<void>): void {
+    track(
+      work.catch((err: unknown) => {
+        opts.log.error({ err, code: "background_failed" }, "background work failed");
+      }),
+    );
   }
 
   function wakeOf(agentId: string): string | null {
     return wakes.idOf(agentId);
   }
 
+  function statusOf(agentId: string): Promise<AgentStatus> {
+    return gatherStatus({ db: opts.db, nas: opts.nas, locks, transcript, wake: wakes.peek(agentId) }, agentId);
+  }
+
+  const deliverDeps = { db: opts.db, transcript, events, enqueueProcess, enqueueWork, wakeOf };
   const scheduler = createScheduler({
     db: opts.db,
     transcript,
@@ -169,6 +194,18 @@ export function createRuntime(opts: {
     enqueueWork,
     log: opts.log,
     tickSeconds: opts.config.schedule.tick_seconds,
+    watches: { deliver: deliverDeps, nas: opts.nas },
+    sweep: async (now) => {
+      const swept = await sweepCaches(files, opts.config.files.cache_retention_days, now);
+      opts.log.info({ code: "cache_swept", files: swept }, "cache sweep done");
+    },
+  });
+
+  const helperReports = new HelperReports({
+    nas: opts.nas,
+    deliver: deliverDeps,
+    files: { dwar: opts.dwar, files },
+    log: opts.log,
   });
 
   const runtime: Runtime = {
@@ -177,12 +214,14 @@ export function createRuntime(opts: {
     transcript,
     events,
     devices,
-    browsers,
     sessions,
+    files,
+    helperReports,
     scheduler,
     enqueueProcess,
     enqueueWork,
     wakeOf,
+    statusOf,
     waitUntilIdle,
     route,
     toolContext,
@@ -200,16 +239,17 @@ export function createRuntime(opts: {
       lane,
       yaad: opts.yaad,
       ghar: opts.ghar,
-      chaavi: opts.chaavi,
       nas: opts.nas,
       dwar: opts.dwar,
-      browsers,
       devices,
       steer,
       locks,
       transcript,
       events,
       sessions,
+      files,
+      callId: null,
+      background,
       toolDebounce,
       enqueueProcess,
       enqueueWork,
@@ -228,8 +268,8 @@ export function createRuntime(opts: {
    * before releasing it (see settleJobs); a failure is logged, since the wake must still
    * release.
    * Runs wait for the lane lock without a deadline, so no queued wake is dropped. A retired
-   * agent's process lane still runs while a hand-off waits, so a worker that retired
-   * itself in the turn that handed off its result still gets that report sent.
+   * agent's process lane still runs while a work-lane message waits, so a worker that retired
+   * itself in the turn that queued its result still gets that report sent.
    */
   async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
@@ -245,7 +285,7 @@ export function createRuntime(opts: {
       try {
         const rows = await opts.db.select().from(agents).where(eq(agents.id, agentId));
         const agent = rows[0];
-        const sendsLastReport = lane === "process" && (await pendingHandoffs(opts.db, agentId)).length > 0;
+        const sendsLastReport = lane === "process" && (await pendingOutbox(opts.db, agentId)).length > 0;
         if (!agent || (!agent.active && !sendsLastReport)) {
           return;
         }
@@ -275,8 +315,8 @@ export function createRuntime(opts: {
         at: new Date().toISOString(),
       });
       if (lane === "process") {
-        await failHandoffs(agentId, message).catch((handoffErr: unknown) => {
-          opts.log.error({ err: handoffErr, agentId, code: "handoff_fail_failed" }, "recording failed hand-offs failed");
+        await failOutbox(agentId, message).catch((outboxErr: unknown) => {
+          opts.log.error({ err: outboxErr, agentId, code: "outbox_fail_failed" }, "recording failed work-lane messages failed");
         });
       }
       const failure = message.replace(/req_[A-Za-z0-9]+/g, "req");
@@ -303,15 +343,15 @@ export function createRuntime(opts: {
   }
 
   /**
-   * failHandoffs records the hand-offs a failed process lane left unsent as failed,
+   * failOutbox records the work-lane messages a failed process lane left unsent as failed,
    * and queues a steer telling the work lane each was not sent. It does not wake that
    * lane: a process lane that keeps failing would otherwise be handed the same work again
    * and again, so the steer waits for the agent's next wake, and the failure is reported
    * to its requester like any other lane failure.
    */
-  async function failHandoffs(agentId: string, message: string): Promise<void> {
-    for (const handoff of await failPendingHandoffs(opts.db, agentId, message)) {
-      steer.append(agentId, failedHandoffSteer(handoff, message));
+  async function failOutbox(agentId: string, message: string): Promise<void> {
+    for (const row of await failPendingOutbox(opts.db, agentId, message)) {
+      steer.append(agentId, failedMessageSteer(row, message));
     }
   }
 
@@ -401,9 +441,9 @@ export function createRuntime(opts: {
           serviceRoot: opts.config.serviceRoot,
           windows: {
             process: {
-              chars: opts.config.runtime.process_transcript_window_chars,
+              chars: Number.MAX_SAFE_INTEGER,
               stepChars: opts.config.runtime.transcript_window_step_chars,
-              budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
+              budgetTokens: opts.config.runtime.process_context_tokens,
             },
             work: {
               chars: opts.config.runtime.work_transcript_window_chars,
@@ -453,7 +493,7 @@ export function createRuntime(opts: {
             serviceRoot: opts.config.serviceRoot,
             utterance: content,
           }),
-        arrivalsSince: (afterSeq: number) => ({ turn: null, throughSeq: afterSeq }),
+        arrivalsSince: (afterSeq: number) => ({ turn: null, sent: null, throughSeq: afterSeq }),
         call: (request: DwarChatRequest) => opts.dwar.complete(request, "hath/router"),
         executeTool: async (call: DwarToolUseBlock) => {
           const result = await helpers.exec(call);
@@ -485,6 +525,8 @@ export function createRuntime(opts: {
       ...stepDeps(agentId, "work"),
       call: (request: DwarChatRequest) => opts.dwar.work(request, `hath/${agentId}`),
       steer,
+      woke: () => clearWatch(opts.db, agentId),
+      yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas, transcript }, agentId),
     };
   }
 
@@ -494,6 +536,7 @@ export function createRuntime(opts: {
       call: (request: DwarChatRequest) => opts.dwar.process(request, `hath/${agentId}`),
       db: opts.db,
       transcript,
+      status: async () => renderStatus(await statusOf(agentId)),
     };
   }
 

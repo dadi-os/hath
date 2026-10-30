@@ -1,9 +1,9 @@
 /**
  * Boot recovery for wakes a Hath restart cut short. Lane state (wakes, locks,
- * steers, send_message hand-offs) lives in memory, so a deploy, reboot or crash
+ * steers, queued work-lane messages) lives in memory, so a deploy, reboot or crash
  * ends every running wake without a word. The audit log still shows it: since
  * the agent's last runtime report, a lane whose last step is not a yield, or a
- * message, steer or hand-off that no lane step followed, belongs to a wake that
+ * message or steer that no lane step followed, belongs to a wake that
  * never finished.
  *
  * An agent that had only received a message — no lane step had started — is
@@ -14,13 +14,14 @@
  * last step falls inside `[runtime].recovery_window_minutes` of boot: a wake
  * that died long before the restart is stale, and reporting it would restart
  * work nobody is waiting on. Notices never count as messages waiting to be
- * handled, so one boot's notices do not wake anyone on the next.
+ * handled, so one boot's notices do not wake anyone on the next, and an agent's notice
+ * from its own helper is not a runtime report: its wake may still be running.
  */
 
 import { formatISO } from "date-fns";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agentsWithPendingHandoffs } from "../db/handoffs.js";
+import { agentsWithPendingOutbox } from "../db/outbox.js";
 import { currentRequester } from "../db/messages.js";
 import { agentLogs } from "../db/schema.js";
 import type { DwarResponseBlock } from "../types/domain.js";
@@ -39,8 +40,6 @@ type InterruptedWake = {
   process_cut: boolean;
   /** A steer was queued after the work lane's last step. */
   steer_lost: boolean;
-  /** A send_message hand-off (from before the work lane sent its own messages) was queued after the process lane's last turn. */
-  hand_off_lost: boolean;
   /** A message arrived after the process lane's last turn. */
   unhandled: boolean;
   /** The newest audit row since the agent's last notice. */
@@ -57,6 +56,7 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
       select agent_id, max(created_at) as at
       from agent_logs
       where event = 'message' and payload->>'direction' = 'send' and payload->>'kind' = 'notice'
+        and coalesce(payload->>'notice', '') not in ('helper', 'tool', 'wait')
       group by agent_id
     ),
     recent as (
@@ -84,11 +84,7 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
         max(created_at) filter (
           where lane = 'process' and event = 'tool_result' and payload->>'name' = 'steer_work'
             and payload->>'is_error' = 'false' and payload->>'content' not like '%"terminate":true%'
-        ) as steered_at,
-        max(created_at) filter (
-          where lane = 'work' and event = 'tool_result' and payload->>'name' = 'send_message'
-            and payload->>'is_error' = 'false' and payload->>'content' like '%"handed_off":true%'
-        ) as handed_off_at
+        ) as steered_at
       from recent
       group by agent_id
     ),
@@ -99,12 +95,11 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
         coalesce(work_at > coalesce(work_end_at, '-infinity'), false) as work_cut,
         coalesce(process_at > coalesce(process_yield_at, '-infinity'), false) as process_cut,
         coalesce(steered_at > coalesce(work_at, '-infinity'), false) as steer_lost,
-        coalesce(handed_off_at > coalesce(conversed_at, '-infinity'), false) as hand_off_lost,
         coalesce(received_at > coalesce(conversed_at, '-infinity'), false) as unhandled
       from summary
     )
     select * from flags
-    where work_cut or process_cut or steer_lost or hand_off_lost or unhandled
+    where work_cut or process_cut or steer_lost or unhandled
     order by agent_id
   `);
   return [...rows];
@@ -145,13 +140,13 @@ async function lastWorkStep(db: Db, agentId: string): Promise<string> {
 export async function recoverInterruptedWakes(
   deps: DeliverDeps & { log: RuntimeLog; recoveryWindowMinutes: number },
 ): Promise<void> {
-  for (const agentId of await agentsWithPendingHandoffs(deps.db)) {
-    deps.log.info({ code: "handoffs_resumed", agent_id: agentId }, "restart left hand-offs unsent; waking the agent's process lane");
+  for (const agentId of await agentsWithPendingOutbox(deps.db)) {
+    deps.log.info({ code: "outbox_resumed", agent_id: agentId }, "restart left work-lane messages unsent; waking the agent's process lane");
     deps.enqueueProcess(agentId);
   }
   const cutoff = Date.now() - deps.recoveryWindowMinutes * 60_000;
   for (const wake of await findInterruptedWakes(deps.db)) {
-    const midFlight = wake.work_cut || wake.process_cut || wake.steer_lost || wake.hand_off_lost;
+    const midFlight = wake.work_cut || wake.process_cut || wake.steer_lost;
     if (!midFlight) {
       deps.log.info({ code: "wake_resumed", agent_id: wake.agent_id }, "restart left a message unhandled; waking the agent");
       deps.enqueueProcess(wake.agent_id);
@@ -173,9 +168,6 @@ export async function recoverInterruptedWakes(
     }
     if (wake.steer_lost) {
       details.push("An instruction it had queued for itself was never picked up.");
-    }
-    if (wake.hand_off_lost) {
-      details.push("A message it had written was never sent.");
     }
     if (wake.unhandled) {
       details.push("A message it received was never handled.");

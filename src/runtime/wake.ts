@@ -10,8 +10,8 @@
  *
  * Old tool results are dropped first: once the results still shown in full
  * pass a size budget, every result before the newest ones is replaced by a
- * receipt naming the call, its size and how it began, with the id read_result
- * reads it back by, so a lane reopens a result instead of running the tool again. When a lane's prompt would pass its token ceiling, the
+ * receipt naming the call, its size and how it began, with the path of the file the whole
+ * result was saved to, so a lane reopens it with read_file instead of running the tool again. When a lane's prompt would pass its token ceiling, the
  * thinking of every model turn before its newest leaves that lane's view first,
  * since the calls and text it led to stay; only if that is not enough do the
  * oldest steps leave behind one trimmed note that lists the actions they took (see
@@ -34,6 +34,7 @@
 import { randomUUID } from "node:crypto";
 import { HathError } from "../errors.js";
 import type { DwarMessage, DwarTool, DwarUsage, Lane } from "../types/domain.js";
+import { resultPath, savesResult } from "./files.js";
 import { formatActions } from "./record.js";
 
 /**
@@ -42,7 +43,7 @@ import { formatActions } from "./record.js";
  * `[To: …]` text believes it was sent, and then waits on a reply that never comes.
  */
 export const CONTINUE_TURN =
-  "[continue] The text you just wrote reached no one: only a message tool call (hand_off, send_message or dispatch_message) delivers anything.";
+  "[continue] The text you just wrote reached no one: only a message tool call delivers anything (message from the work lane, send from the process lane).";
 
 /**
  * User turn recorded after a turn that ran out of output room while thinking and did
@@ -63,7 +64,7 @@ export const CLEARED_PREFIX = "[cleared]";
 export const OVERSIZED_PREFIX = "[too large]";
 
 /** A result this short stays whole when results are cleared: its receipt would save nothing. */
-const KEEP_WHOLE_CHARS = 400;
+export const KEEP_WHOLE_CHARS = 400;
 
 /** How much of a call's input a receipt names. */
 const RECEIPT_INPUT_CHARS = 160;
@@ -76,18 +77,29 @@ type CallInfo = { name: string; input: unknown };
 
 /**
  * receipt is what a tool result reads as once it leaves full view: the call that made
- * it, its size, how it began, and the id read_result reads it back by from hath's log,
- * in pages or by a pattern. It is built only from the call and the result, so it is the
- * same bytes on every step and the provider's cached prefix holds.
+ * it, its size, how it began, and where its whole result is saved on the box (a file
+ * read_file opens, in pages or by a pattern), unless the call is one cheap to run again. It
+ * is built only from the call and the result, so it is the same bytes on every step and
+ * the provider's cached prefix holds.
  */
-export function receipt(prefix: string, toolUseId: string, call: CallInfo | undefined, content: string): string {
+export function receipt(
+  prefix: string,
+  toolUseId: string,
+  call: CallInfo | undefined,
+  content: string,
+  resultsDir: string,
+): string {
   const what =
     call === undefined
       ? "This result"
       : `${call.name} ${clipText(JSON.stringify(call.input) ?? "{}", RECEIPT_INPUT_CHARS)}`;
   const why = prefix === OVERSIZED_PREFIX ? "too large for the prompt" : "out of view";
   const head = clipText(content.replace(/\s+/g, " ").trim(), RECEIPT_HEAD_CHARS);
-  return `${prefix} ${what} · ${content.length} chars, ${why}. read_result ${toolUseId} reopens it (offset/limit, or pattern) instead of rerunning. Began: ${head}`;
+  const where =
+    call !== undefined && !savesResult(call.name)
+      ? "Run it again to see it."
+      : `Saved at ${resultPath(resultsDir, toolUseId)}: read_file it (offset/limit, or pattern) instead of rerunning.`;
+  return `${prefix} ${what} · ${content.length} chars, ${why}. ${where} Began: ${head}`;
 }
 
 /** clipText cuts `text` to `limit` characters, marking the cut. */
@@ -138,6 +150,8 @@ export type WakeLimits = {
    * this many of the newest turns, so the cache rewrite it causes stays short.
    */
   supersedeWindowTurns: number;
+  /** The folder hath keeps files in (config `files.dir`), where large tool results are saved. */
+  filesDir: string;
   /** A lane's prompt never passes this many tokens: past it, its oldest steps leave its view. */
   promptCeilingTokens: number;
   /** A trim brings the prompt this many tokens under the ceiling, so trims stay rare. */
@@ -170,8 +184,12 @@ export class Wake {
   private readonly calls = new Map<string, CallInfo>();
   /** Turns before this index show their tool results as cleared receipts (see receipt). */
   private clearedThrough = 0;
-  /** The ids of the hand-offs already shown to the process lane in this wake. */
-  readonly handoffsShown = new Set<number>();
+  /** Why the agent woke, in the order the reasons arrived (see noteReason). */
+  private readonly reasons: string[] = [];
+  /** The ids of the work lane's messages already shown to the process lane in this wake. */
+  readonly outboxShown = new Set<number>();
+  /** The status block the process lane's next call ends on (see setStatus). */
+  private statusBlock: string | null = null;
   /** How many turns each lane could see when it last yielded. */
   private readonly yieldedAt = new Map<Lane, number>();
   /** The newest result read under each state key: its turn index and tool_use_id. */
@@ -195,6 +213,21 @@ export class Wake {
   private readonly sentTurnTokens = new Map<Lane, number>();
 
   constructor(private readonly limits: WakeLimits) {}
+
+  /**
+   * noteReason records why a run was queued, for the wake's first line. A reason that comes
+   * after the wake's first call is not noted: what it brought arrives as a message.
+   */
+  noteReason(reason: string | undefined): void {
+    if (reason !== undefined && !this.started && !this.reasons.includes(reason)) {
+      this.reasons.push(reason);
+    }
+  }
+
+  /** The wake's first line, "Woken by: <reasons>", or null when no run said why. */
+  get wokenBy(): string | null {
+    return this.reasons.length === 0 ? null : `Woken by: ${this.reasons.join("; ")}`;
+  }
 
   /** False until the wake's first lane call freezes the system and transcript. */
   get started(): boolean {
@@ -244,6 +277,9 @@ export class Wake {
         }
       }
       this.turns.push(turn);
+      if (turn.message.role === "assistant" && turn.message.lane === "work") {
+        this.lastWorkAt = new Date();
+      }
       this.supersede(this.turns.length - 1, turn.states ?? {});
     }
     this.clearOldResults();
@@ -261,6 +297,37 @@ export class Wake {
       }
       this.latestState.set(key, { turn: index, toolUseId });
     }
+  }
+
+  /** When the work lane last took a step in this wake, or null if it has not. */
+  lastWorkAt: Date | null = null;
+
+  /**
+   * workCalls are the last `limit` tool calls the work lane made in this wake, oldest
+   * first: the call's name and input, and whether it failed (null while no result is in).
+   */
+  workCalls(limit: number): { name: string; input: unknown; failed: boolean | null }[] {
+    const results = new Map<string, boolean>();
+    for (const turn of this.turns) {
+      if (turn.message.role === "user" && typeof turn.message.content !== "string") {
+        for (const block of turn.message.content) {
+          if (block.type === "tool_result") {
+            results.set(block.tool_use_id, block.is_error === true);
+          }
+        }
+      }
+    }
+    const calls: { name: string; input: unknown; failed: boolean | null }[] = [];
+    for (const turn of this.turns) {
+      if (turn.message.role === "assistant" && turn.message.lane === "work" && typeof turn.message.content !== "string") {
+        for (const block of turn.message.content) {
+          if (block.type === "tool_use") {
+            calls.push({ name: block.name, input: block.input, failed: results.get(block.id) ?? null });
+          }
+        }
+      }
+    }
+    return calls.slice(-limit);
   }
 
   /** True once the work lane has taken a step in this wake. */
@@ -289,20 +356,32 @@ export class Wake {
   }
 
   /**
+   * setStatus sets the status block the process lane's view ends on: the last user turn
+   * of every call, rendered fresh by hath, so everything before it stays byte-stable and
+   * the provider's cached prefix holds.
+   */
+  setStatus(block: string): void {
+    this.statusBlock = block;
+  }
+
+  /**
    * What `lane` sends to its provider: its frozen transcript, the last turn
    * marked as a cache breakpoint (the next wake opens on the same transcript),
    * then every turn the lane may see past its trim, with cleared results
-   * swapped out.
+   * swapped out, and for the process lane the status block as the last turn
+   * (`withStatus` false leaves it off).
    */
-  view(lane: Lane): DwarMessage[] {
+  view(lane: Lane, withStatus = true): DwarMessage[] {
     const frozen = this.transcriptFor(lane);
     const transcript = frozen.map((message, index) =>
       index === frozen.length - 1 ? { ...message, cache_breakpoint: true } : message,
     );
     const through = this.trimmedThrough.get(lane) ?? 0;
-    const trimmed: DwarMessage[] = through > 0 ? [{ role: "user", content: this.trimmedNote(through) }] : [];
+    const trimmed: DwarMessage[] = through > 0 ? [{ role: "user", content: this.trimmedNote(lane, through) }] : [];
     const turns = this.inView(lane).map((index) => this.shown(index, lane));
-    return [...transcript, ...trimmed, ...turns];
+    const status: DwarMessage[] =
+      withStatus && lane === "process" && this.statusBlock !== null ? [{ role: "user", content: this.statusBlock }] : [];
+    return [...transcript, ...trimmed, ...turns, ...status];
   }
 
   /**
@@ -332,19 +411,19 @@ export class Wake {
     for (let i = visible.length - 1; i >= 0; i -= 1) {
       after[i] = this.turnTokens(visible[i]!, lane) + (after[i + 1] ?? 0);
     }
-    const total = base + this.noteTokens(this.trimmedThrough.get(lane) ?? 0) + (after[0] ?? 0);
+    const total = base + this.statusTokens(lane) + this.noteTokens(lane, this.trimmedThrough.get(lane) ?? 0) + (after[0] ?? 0);
     if (total > this.limits.promptCeilingTokens) {
       const target = this.limits.promptCeilingTokens - this.limits.promptTrimTokens;
       let cut = 0;
       for (let i = 0; i < visible.length; i += 1) {
         if (opensStep(this.turns[visible[i]!]!.message)) {
           cut = i;
-          if (base + this.noteTokens(visible[i]!) + after[i]! <= target) {
+          if (base + this.statusTokens(lane) + this.noteTokens(lane, visible[i]!) + after[i]! <= target) {
             break;
           }
         }
       }
-      let kept = base + this.noteTokens(visible[cut]!) + (after[cut] ?? 0);
+      let kept = base + this.statusTokens(lane) + this.noteTokens(lane, visible[cut]!) + (after[cut] ?? 0);
       if (kept > this.limits.promptCeilingTokens) {
         kept = this.dropOversized(visible.slice(cut), kept, lane);
       }
@@ -368,10 +447,16 @@ export class Wake {
     this.pendingSuperseded.clear();
   }
 
+  /** statusTokens is the weight of the status block `lane` ends its view on; only the process lane has one. */
+  private statusTokens(lane: Lane): number {
+    return lane === "process" && this.statusBlock !== null ? Math.ceil(this.statusBlock.length / PROSE_CHARS_PER_TOKEN) : 0;
+  }
+
   /** viewTokens is the weight of every wake turn in `lane`'s view, its trimmed note included. */
   private viewTokens(lane: Lane): number {
     return (
-      this.noteTokens(this.trimmedThrough.get(lane) ?? 0) +
+      this.statusTokens(lane) +
+      this.noteTokens(lane, this.trimmedThrough.get(lane) ?? 0) +
       this.inView(lane).reduce((sum, index) => sum + this.turnTokens(index, lane), 0)
     );
   }
@@ -381,14 +466,15 @@ export class Wake {
    * the actions those turns took. It changes only when a cut moves `through`, so the
    * cached prefix holds between cuts.
    */
-  private trimmedNote(through: number): string {
-    const actions = formatActions(this.turns.slice(0, through).map((turn) => turn.message));
+  private trimmedNote(lane: Lane, through: number): string {
+    const seen = this.turns.slice(0, through).filter((turn) => turn.only === undefined || turn.only === lane);
+    const actions = formatActions(seen.map((turn) => turn.message), this.limits.filesDir, lane);
     return actions === null ? TRIMMED_TURN : `${TRIMMED_TURN}\n\n${TRIMMED_ACTIONS}\n${actions}`;
   }
 
   /** noteTokens is the weight of the trimmed note for a view that starts at turn `through`; none at 0. */
-  private noteTokens(through: number): number {
-    return through > 0 ? Math.ceil(this.trimmedNote(through).length / PROSE_CHARS_PER_TOKEN) : 0;
+  private noteTokens(lane: Lane, through: number): number {
+    return through > 0 ? Math.ceil(this.trimmedNote(lane, through).length / PROSE_CHARS_PER_TOKEN) : 0;
   }
 
   /**
@@ -460,7 +546,7 @@ export class Wake {
         if (block.type !== "tool_result") {
           continue;
         }
-        const note = receipt(OVERSIZED_PREFIX, block.tool_use_id, this.calls.get(block.tool_use_id), block.content);
+        const note = receipt(OVERSIZED_PREFIX, block.tool_use_id, this.calls.get(block.tool_use_id), block.content, this.limits.filesDir);
         if (block.content.length > note.length) {
           results.push({ id: block.tool_use_id, chars: block.content.length, saved: block.content.length - note.length });
         }
@@ -496,13 +582,13 @@ export class Wake {
     if (this.superseded.has(toolUseId)) {
       return SUPERSEDED_RESULT;
     }
-    return content.length <= KEEP_WHOLE_CHARS ? null : receipt(CLEARED_PREFIX, toolUseId, this.calls.get(toolUseId), content);
+    return content.length <= KEEP_WHOLE_CHARS ? null : receipt(CLEARED_PREFIX, toolUseId, this.calls.get(toolUseId), content, this.limits.filesDir);
   }
 
   /** resultNote is what a live tool result reads as instead of its content, or null to show it whole. */
   private resultNote(toolUseId: string, content: string): string | null {
     if (this.oversized.has(toolUseId)) {
-      return receipt(OVERSIZED_PREFIX, toolUseId, this.calls.get(toolUseId), content);
+      return receipt(OVERSIZED_PREFIX, toolUseId, this.calls.get(toolUseId), content, this.limits.filesDir);
     }
     return this.superseded.has(toolUseId) ? SUPERSEDED_RESULT : null;
   }
@@ -686,6 +772,11 @@ export class WakeStore {
   /** The id of the agent's current wake, or null when it has none. */
   idOf(agentId: string): string | null {
     return this.wakes.get(agentId)?.id ?? null;
+  }
+
+  /** The agent's current wake, or undefined when it has none. */
+  peek(agentId: string): Wake | undefined {
+    return this.wakes.get(agentId);
   }
 
   /** The agent's current wake, created on first use. */

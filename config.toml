@@ -2,17 +2,20 @@
 # How long a POST /router request waits for the router lane before failing.
 # Agent lane runs never time out: a wake queued behind a busy lane waits its turn.
 lane_queue_timeout_ms = 30000
-# Each lane's transcript is a rolling window over the agent's thread: the
-# newest messages up to about that lane's chars (about 2.4 chars a token on
-# Haiku 5.5, measured), and never more than the prompt ceiling less trim
-# tokens leaves after the agent's own system and that lane's tools, so a long
-# charter means a shorter window and the wake keeps its trim headroom.
-# The process lane's chars (about 76k tokens) is reached only by a light charter;
-# the work lane holds about 42k so its wake keeps about 40k. Older messages fall out and are reached only through
-# get_logs and memory. A window's start moves in jumps of step chars instead
-# of sliding with every message, so the provider cache survives everything
-# but the jump.
-process_transcript_window_chars = 180000
+# The work lane's transcript is a rolling window over the agent's thread: the
+# newest messages up to about work_transcript_window_chars (about 2.4 chars a token
+# on Haiku 5.5, measured), and never more than the prompt ceiling less trim tokens
+# leaves after the agent's own system and the lane's tools, so a long charter means a
+# shorter window and the wake keeps its trim headroom. The work lane holds about 42k
+# tokens, so its wake keeps about 40k.
+# The process lane is the front desk and carries a slim context: its system, a
+# recent-thread window that fills what process_context_tokens leaves after the system
+# and its tools, its own turns, and the status block hath renders (see runtime/status.ts).
+# It never sees the work lane's thinking, tool calls or results.
+# Older messages fall out of a window and are reached only through get_logs and memory.
+# A window's start moves in jumps of step chars instead of sliding with every message,
+# so the provider cache survives everything but the jump.
+process_context_tokens = 15000
 work_transcript_window_chars = 100000
 transcript_window_step_chars = 30000
 # Backoff after a failed tool call before the agent's next call; doubles per
@@ -21,7 +24,7 @@ tool_debounce_base_ms = 1200
 tool_debounce_max_ms = 15000
 # Once a wake's tool results still shown in full pass max chars, older results
 # are cleared down to the newest kept chars. A cleared result leaves a receipt
-# (the call, its size, how it began, and the id read_result reopens it by), so
+# (the call, its size, how it began, and the file read_file reopens it from), so
 # clearing loses little; every character still shown is re-read on every call.
 # Clearing in one jump keeps the history byte-stable between clears, so the
 # provider cache survives every step but the clearing one; a wider gap clears
@@ -61,11 +64,6 @@ timeout_ms = 30000
 retry_attempts = 3
 backoff_ms = [500, 1000, 2000]
 
-[chaavi]
-timeout_ms = 30000
-retry_attempts = 3
-backoff_ms = [500, 1000, 2000]
-
 [nas]
 timeout_ms = 30000
 retry_attempts = 3
@@ -75,13 +73,15 @@ backoff_ms = [500, 1000, 2000]
 # How long a device_* tool waits for the target device to POST a command result.
 timeout_ms = 30000
 
-[browser]
-action_timeout_ms = 5000
-navigation_timeout_ms = 30000
-snapshot_max_bytes = 32768
-# How long browser_click with read waits for the click to start a navigation
-# (then waits for load) or, without one, for the page to redraw in place.
-click_settle_ms = 750
+[files]
+# The box folder agents' files live in, made by writing to it through Nas: incoming
+# attachments under attachments/, tool results too large for a prompt under results/,
+# and text taken from PDFs under pdf/. It is dadi's own folder, so agents' terminals and
+# read_file reach it like any other file.
+dir = "/var/home/dadi/.dadi"
+# How many days a cache file under results/ or pdf/ is kept before the daily sweep deletes it.
+# Attachments are never swept.
+cache_retention_days = 30
 
 [schedule]
 tick_seconds = 10

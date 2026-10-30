@@ -15,7 +15,7 @@ const input = z.object({
 /** Schedule a future (optionally recurring) agent-to-agent message. */
 export const scheduleMessage = defineTool({
   name: "schedule_message",
-  description: "Deliver a message to another agent at a future time, optionally repeating every interval_minutes. An interval in whole days (1440, 10080) keeps the same wall-clock time in the box's time zone across daylight-saving changes, so a daily 8:00 AM stays 8:00 AM. The message arrives from you, exactly like dispatch_message would at that moment. For patterns that do not fit one interval (Tuesdays and Saturdays), create one schedule per pattern. You cannot schedule messages to yourself.",
+  description: "Deliver a message from you to another agent at a future time (run_at, ISO 8601 with offset), once or repeating every interval_minutes. Whole-day intervals (1440, 10080) keep the same local time across daylight saving. It arrives exactly as a message you sent then would. For a pattern one interval cannot express (Tuesdays and Saturdays), make one schedule per day. Returns { schedule_id, to_agent_id, run_at, interval_minutes }. You cannot schedule a message to yourself.",
   input,
   inputSchema: {
     type: "object",

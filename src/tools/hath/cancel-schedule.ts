@@ -11,7 +11,7 @@ const input = z.object({
 /** Cancel a schedule the caller created. */
 export const cancelSchedule = defineTool({
   name: "cancel_schedule",
-  description: "Cancel a scheduled message you created. Fails if the id is unknown or not yours.",
+  description: "Cancel a scheduled message you created, by its id. Returns { cancelled, schedule_id }. Fails if the id is unknown or not yours.",
   input,
   inputSchema: {
     type: "object",

@@ -5,15 +5,12 @@ import { after, before, test } from "node:test";
 import { and, eq, isNull } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, agents, agentTools, messages } from "../src/db/schema.js";
+import { agentLogs, agents, messages } from "../src/db/schema.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
-import { toolId } from "../src/tools/sync.js";
 import type { DwarChatResponse } from "../src/types/domain.js";
 import {
   insertAgent,
-  insertWorker,
-  mockChaavi,
   mockDwar,
   mockGhar,
   mockNas,
@@ -45,7 +42,6 @@ async function appWith(dwar = mockDwar({})) {
     dwar,
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -56,7 +52,6 @@ async function appWith(dwar = mockDwar({})) {
     dwar,
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     runtime,
   });
@@ -75,18 +70,10 @@ type RoutedBody = {
   messages: Array<{ to_agent_id: string; content: string; seq: number; created_at: string }>;
 };
 
-test("POST /router spawns a root, grants it, sends as Ankur, and returns what it sent", async () => {
+test("POST /router spawns a root, sends as Ankur, and returns what it sent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const dwar = scripted([
     toolUse("hath_spawn_agent", { id: "escape-room-booking", system_prompt: "Own the escape room booking." }, "c1"),
-    toolUse(
-      "grant_tool",
-      {
-        agent_id: "escape-room-booking",
-        tools: [{ tool_name: "yaad_search_history", usage: "look up past plans" }],
-      },
-      "c2",
-    ),
     toolUse("send_message", { to_agent_id: "escape-room-booking", content: "Check I can afford the escape room tomorrow, then book it." }, "c3"),
   ]);
   const { app, runtime } = await appWith(dwar);
@@ -107,8 +94,6 @@ test("POST /router spawns a root, grants it, sends as Ankur, and returns what it
 
   const [agent] = await handle.db.select().from(agents).where(eq(agents.id, "escape-room-booking"));
   assert.equal(agent?.parentAgentId, null);
-  const grants = await handle.db.select().from(agentTools).where(eq(agentTools.agentId, "escape-room-booking"));
-  assert.deepEqual(grants.map((g) => g.toolId), [toolId("yaad_search_history")]);
 
   const delivered = runtime.transcript.transcriptFor("escape-room-booking");
   assert.equal(delivered.length, 1);
@@ -151,13 +136,10 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
     "forward_attachment",
     "get_agent",
     "get_logs",
-    "grant_tool",
     "hath_spawn_agent",
     "list_agents",
-    "list_tools",
-    "read_attachment",
+    "read_file",
     "recall_memory",
-    "revoke_tool",
     "send_message",
     "yield",
   ]);
@@ -191,16 +173,11 @@ test("POST /router sending to a retired agent is a retired error and revives not
   await app.close();
 });
 
-test("POST /router grants only to roots and cannot modify agents", async () => {
+test("POST /router cannot modify agents", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "coding-manager", systemPrompt: "Owns terminals." });
   await insertAgent(handle.db, { id: "coding-worker", systemPrompt: "One job.", parentAgentId: "coding-manager" });
   const dwar = scripted([
-    toolUse(
-      "grant_tool",
-      { agent_id: "coding-worker", tools: [{ tool_name: "yaad_search_history", usage: "x" }] },
-      "g1",
-    ),
     toolUse("manage_agent", { agent_id: "coding-manager", retired: true }, "m1"),
   ]);
   const { app, runtime } = await appWith(dwar);
@@ -209,14 +186,9 @@ test("POST /router grants only to roots and cannot modify agents", async () => {
   assert.equal(res.statusCode, 201, res.body);
   const logs = await handle.db.select().from(agentLogs).where(isNull(agentLogs.agentId));
   const results = logs.filter((row) => row.event === "tool_result").map((row) => row.payload);
-  const grant = results.find((payload) => payload.name === "grant_tool");
   const modify = results.find((payload) => payload.name === "manage_agent");
-  assert.equal(grant?.is_error, true);
-  assert.match(String(grant?.content), /direct children/);
   assert.equal(modify?.is_error, true);
   assert.match(String(modify?.content), /unknown router tool/);
-  const grants = await handle.db.select().from(agentTools).where(eq(agentTools.agentId, "coding-worker"));
-  assert.equal(grants.length, 0);
 
   await runtime.waitUntilIdle();
   await app.close();
@@ -313,236 +285,6 @@ test("POST /router get_logs must name an agent", async () => {
   assert.equal(own?.is_error, true);
   assert.match(String(own?.content), /ephemeral/);
   assert.equal(agent?.is_error, false);
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute rejects the retired dadi and user identities", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const { app, runtime } = await appWith();
-
-  for (const retired of ["dadi", "user"]) {
-    const res = await app.inject({
-      method: "POST",
-      url: "/tools/yaad_search_history/execute",
-      payload: { as_agent_id: retired, query: "anything" },
-    });
-    assert.equal(res.statusCode, 404);
-    const body = res.json() as { error: { type: string } };
-    assert.equal(body.error.type, "not_found");
-  }
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute with as_agent_id runs a worker tool", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
-    name: "thread",
-    systemPrompt: "do the job",
-    tools: ["yaad_search_history"],
-  });
-  const yaad = mockYaad({
-    recall: () => ({
-      nodes: [],
-      edges: [],
-      sufficient: false,
-      coverage: 0,
-    }),
-  });
-  const dwar = mockDwar({});
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar,
-    yaad,
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const app = await buildApp(config, {
-    db: handle.db,
-    sql: handle.sql,
-    dwar,
-    yaad,
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    runtime,
-  });
-
-  const res = await app.inject({
-    method: "POST",
-    url: "/tools/yaad_search_history/execute",
-    payload: { as_agent_id: workerId, query: "Vedant lunch" },
-  });
-  assert.equal(res.statusCode, 200);
-  const body = res.json() as { ok: boolean; is_error: boolean; content: string };
-  assert.equal(body.ok, true);
-  assert.equal(body.is_error, false);
-  assert.deepEqual(yaad.searchHistoryCalls, [{ query: "Vedant lunch" }]);
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute as router spawn_agent creates a root", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const { app, runtime } = await appWith();
-
-  const res = await app.inject({
-    method: "POST",
-    url: "/tools/hath_spawn_agent/execute",
-    payload: {
-      as_agent_id: "router",
-      id: "finance-specialist",
-      system_prompt: "own the money",
-    },
-  });
-  assert.equal(res.statusCode, 200);
-  const body = res.json() as { ok: boolean; is_error: boolean; content: string };
-  assert.equal(body.ok, true);
-  assert.equal(body.is_error, false);
-  const content = JSON.parse(body.content) as { agent_id: string };
-  assert.equal(content.agent_id, "finance-specialist");
-
-  const [agent] = await handle.db.select().from(agents).where(eq(agents.id, content.agent_id));
-  assert.ok(agent);
-  assert.equal(agent.parentAgentId, null);
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute as router rejects worker tools", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const { app, runtime } = await appWith();
-
-  const res = await app.inject({
-    method: "POST",
-    url: "/tools/yaad_search_history/execute",
-    payload: { as_agent_id: "router", query: "anything" },
-  });
-  assert.equal(res.statusCode, 422);
-  const body = res.json() as { error: { type: string; message: string } };
-  assert.equal(body.error.type, "invalid_request");
-  assert.match(body.error.message, /router authority/);
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute without as_agent_id runs as the user without a grant", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const yaad = mockYaad({
-    recall: () => ({
-      nodes: [],
-      edges: [],
-      sufficient: false,
-      coverage: 0,
-    }),
-  });
-  const dwar = mockDwar({});
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar,
-    yaad,
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const app = await buildApp(config, {
-    db: handle.db,
-    sql: handle.sql,
-    dwar,
-    yaad,
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    runtime,
-  });
-
-  const res = await app.inject({
-    method: "POST",
-    url: "/tools/yaad_search_history/execute",
-    payload: { query: "Vedant lunch" },
-  });
-  assert.equal(res.statusCode, 200);
-  const body = res.json() as { ok: boolean; is_error: boolean; content: string };
-  assert.equal(body.ok, true);
-  assert.equal(body.is_error, false);
-  assert.deepEqual(yaad.searchHistoryCalls, [{ query: "Vedant lunch" }]);
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute with a missing agent id is 404", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const { app, runtime } = await appWith();
-  const missing = "missing-agent-that-does-not-exist";
-
-  const res = await app.inject({
-    method: "POST",
-    url: "/tools/yaad_search_history/execute",
-    payload: { as_agent_id: missing, query: "anything" },
-  });
-  assert.equal(res.statusCode, 404);
-  const body = res.json() as { error: { type: string; message: string } };
-  assert.equal(body.error.type, "not_found");
-  assert.match(body.error.message, /not found/);
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute without grant is 403", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
-    name: "ungranted",
-    systemPrompt: "no tools",
-    tools: [],
-  });
-  const { app, runtime } = await appWith();
-
-  const res = await app.inject({
-    method: "POST",
-    url: "/tools/yaad_search_history/execute",
-    payload: { as_agent_id: workerId, query: "anything" },
-  });
-  assert.equal(res.statusCode, 403);
-  const body = res.json() as { error: { type: string; message: string } };
-  assert.equal(body.error.type, "forbidden");
-  assert.match(body.error.message, /does not hold yaad_search_history/);
-
-  await runtime.waitUntilIdle();
-  await app.close();
-});
-
-test("POST /tools/:name/execute as a retired agent is 409 retired", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
-    name: "retired",
-    systemPrompt: "retired",
-    tools: ["yaad_search_history"],
-  });
-  await handle.db.update(agents).set({ active: false }).where(eq(agents.id, workerId));
-  const { app, runtime } = await appWith();
-
-  const res = await app.inject({
-    method: "POST",
-    url: "/tools/yaad_search_history/execute",
-    payload: { as_agent_id: workerId, query: "anything" },
-  });
-  assert.equal(res.statusCode, 409);
-  const body = res.json() as { error: { type: string; message: string } };
-  assert.equal(body.error.type, "retired");
-  assert.match(body.error.message, /retired/);
 
   await runtime.waitUntilIdle();
   await app.close();

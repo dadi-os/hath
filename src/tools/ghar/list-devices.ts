@@ -19,7 +19,7 @@ const input = z
 export const listDevices = defineTool({
   name: "ghar_list_devices",
   description:
-    "Find what devices exist in the house, what each one is (kind: light, plug, cover, thermostat, lock, robot_vacuum, washer, speaker, …) and what it can do. Call this before ghar_control_device when you do not already know the device id and its capabilities from this turn — the capabilities listed here are exactly the ones ghar_control_device accepts, and each capability's config lists what it offers (color modes, setpoint support, mode, area and input ids, sensor measurements and units). Prefer filtering by room, tag, capability or kind instead of listing everything and reasoning over the full set.",
+    "List the devices in the house: each one's id, name, room, tags, kind (light, plug, cover, thermostat, lock, robot_vacuum, washer, speaker, …) and capabilities, each capability with its config (color modes, setpoint support, modes, areas, inputs, sensor units). The capabilities listed are exactly what ghar_control_device accepts. Filter by room, tag, capability or kind rather than listing everything.",
   input,
   inputSchema: {
     type: "object",

@@ -1,7 +1,6 @@
 import Fastify, { LogController, type FastifyInstance } from "fastify";
 import type { Config } from "./config.js";
 import type { Db, Sql } from "./db/client.js";
-import type { ChaaviClient } from "./chaavi/client.js";
 import type { DwarClient } from "./dwar/client.js";
 import type { GharClient } from "./ghar/client.js";
 import type { NasClient } from "./nas/client.js";
@@ -10,6 +9,8 @@ import { HathError } from "./errors.js";
 import { registerRequestLogging } from "./logging.js";
 import { createRuntime, type Runtime } from "./runtime/engine.js";
 import { hydrateTranscript } from "./db/messages.js";
+import { moveLegacyAttachments } from "./runtime/attachments.js";
+import { reportLostAsync } from "./runtime/async.js";
 import { recoverInterruptedWakes } from "./runtime/recovery.js";
 import { registerV1 } from "./routers/index.js";
 
@@ -21,7 +22,6 @@ declare module "fastify" {
     dwar: DwarClient;
     yaad: YaadClient;
     ghar: GharClient;
-    chaavi: ChaaviClient;
     nas: NasClient;
     runtime: Runtime;
   }
@@ -36,7 +36,6 @@ export async function buildApp(
     dwar: DwarClient;
     yaad: YaadClient;
     ghar: GharClient;
-    chaavi: ChaaviClient;
     nas: NasClient;
     runtime?: Runtime;
   },
@@ -63,12 +62,12 @@ export async function buildApp(
       dwar: deps.dwar,
       yaad: deps.yaad,
       ghar: deps.ghar,
-      chaavi: deps.chaavi,
       nas: deps.nas,
       config,
       log: app.log,
     });
   if (!deps.runtime) {
+    await moveLegacyAttachments(deps.db, runtime.files);
     await hydrateTranscript(deps.db, runtime.transcript);
     await recoverInterruptedWakes({
       db: deps.db,
@@ -79,6 +78,14 @@ export async function buildApp(
       log: app.log,
       recoveryWindowMinutes: config.runtime.recovery_window_minutes,
     });
+    await reportLostAsync({
+      db: deps.db,
+      transcript: runtime.transcript,
+      events: runtime.events,
+      enqueueProcess: runtime.enqueueProcess,
+      enqueueWork: runtime.enqueueWork,
+      wakeOf: runtime.wakeOf,
+    });
   }
   app.decorate("config", config);
   app.decorate("db", deps.db);
@@ -86,12 +93,15 @@ export async function buildApp(
   app.decorate("dwar", deps.dwar);
   app.decorate("yaad", deps.yaad);
   app.decorate("ghar", deps.ghar);
-  app.decorate("chaavi", deps.chaavi);
   app.decorate("nas", deps.nas);
   app.decorate("runtime", runtime);
   runtime.scheduler.start();
+  if (!deps.runtime) {
+    runtime.helperReports.start();
+  }
   app.addHook("onClose", async () => {
     runtime.scheduler.stop();
+    runtime.helperReports.stop();
   });
 
   app.setErrorHandler((err, request, reply) => {

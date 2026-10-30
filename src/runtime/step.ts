@@ -9,7 +9,7 @@ import type {
   DwarToolUseBlock,
   Lane,
 } from "../types/domain.js";
-import { YIELD } from "../types/domain.js";
+import { WAIT, YIELD } from "../types/domain.js";
 import type { AssembledContext } from "./context.js";
 import type { ToolExecResult } from "./tools.js";
 import type { TranscriptStore } from "./transcript.js";
@@ -24,8 +24,11 @@ export type StepDeps = {
   wake: Wake;
   /** This lane's system prompt and tools, plus each lane's windowed transcript. */
   assemble: () => Promise<AssembledContext>;
-  /** Transcript entries newer than `afterSeq`, folded into one user turn. */
-  arrivalsSince: (afterSeq: number) => { turn: DwarMessage | null; throughSeq: number };
+  /**
+   * Transcript entries newer than `afterSeq`: what arrived, folded into one user turn for
+   * both lanes, and what the agent's process lane sent, folded into one for the work lane.
+   */
+  arrivalsSince: (afterSeq: number) => { turn: DwarMessage | null; sent: DwarMessage | null; throughSeq: number };
   /** This lane's Dwar chat endpoint. */
   call: (request: DwarChatRequest) => Promise<DwarChatResponse>;
   executeTool: (call: DwarToolUseBlock) => Promise<ToolExecResult>;
@@ -36,18 +39,25 @@ export type StepDeps = {
 };
 
 /**
- * syncWake freezes the system and both transcripts on the wake's first call; after
- * that, messages that landed since are appended once, where they arrived, for
- * both lanes.
+ * syncWake freezes the system and both transcripts on the wake's first call, followed by
+ * the line saying what woke the agent (see Wake.noteReason); after that, messages that
+ * landed since are appended once, where they arrived, for both lanes.
  */
 export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
   if (!deps.wake.started) {
     deps.wake.begin(assembled.system, assembled.transcripts, assembled.throughSeq);
+    const wokenBy = deps.wake.wokenBy;
+    if (wokenBy !== null) {
+      deps.wake.push({ message: { role: "user", content: wokenBy } });
+    }
     return;
   }
   const arrived = deps.arrivalsSince(deps.wake.throughSeq);
   if (arrived.turn !== null) {
     deps.wake.push({ message: arrived.turn });
+  }
+  if (arrived.sent !== null) {
+    deps.wake.push({ message: arrived.sent, only: "work" });
   }
   deps.wake.advance(arrived.throughSeq);
 }
@@ -75,10 +85,9 @@ const SENT_QUOTE_CHARS = 300;
 /**
  * alreadySentRefusal is why `agentId`'s message to `to`, composed when its wake had read
  * the transcript through `composedThrough`, must not go out: a message this agent sent
- * `to` after that point, which the composing lane never saw. Both lanes send, and each
- * runs while the other may be sending, so without this a lane answers what the other
- * lane already answered. The refusal quotes what went out, so the lane sends only what
- * it adds. Null when nothing was sent `to` since.
+ * `to` after that point, which the composing turn never saw: a second send to one recipient
+ * in the same turn, or one a concurrent run made. The refusal quotes what went out, so the
+ * lane sends only what it adds. Null when nothing was sent `to` since.
  */
 export function alreadySentRefusal(
   transcript: TranscriptStore,
@@ -139,6 +148,7 @@ export async function runStep(
     deps.lane === "router"
       ? { role: "assistant", content: response.content }
       : { role: "assistant", content: response.content, provider: response.provider, lane: deps.lane };
+  const privateTo = deps.lane === "router" ? {} : { only: deps.lane };
   const uses = response.content.filter(
     (block): block is DwarToolUseBlock => block.type === "tool_use",
   );
@@ -163,8 +173,8 @@ export async function runStep(
       throw new HathError(502, "dwar", `${deps.lane} model returned an empty turn`);
     }
     deps.wake.push(
-      { message: assistant, outputTokens },
-      { message: { role: "user", content: capped > 0 ? CAPPED_TURN : CONTINUE_TURN } },
+      { message: assistant, outputTokens, ...privateTo },
+      { message: { role: "user", content: capped > 0 ? CAPPED_TURN : CONTINUE_TURN }, ...privateTo },
     );
     return false;
   }
@@ -174,17 +184,17 @@ export async function runStep(
   let yielded = false;
   let stopped = false;
   for (const call of uses) {
-    if (isStopped() && call.name !== YIELD) {
+    if (isStopped() && call.name !== YIELD && call.name !== WAIT) {
       const result: ToolExecResult = { content: TERMINATED, isError: true, audit: { terminated: true } };
       await deps.logToolResult(call, result);
       results.push({ type: "tool_result", tool_use_id: call.id, content: result.content, is_error: true });
       stopped = true;
       continue;
     }
-    if (call.name === YIELD) {
+    const result = await deps.executeTool(call);
+    if (call.name === YIELD || (call.name === WAIT && !result.isError)) {
       yielded = true;
     }
-    const result = await deps.executeTool(call);
     await deps.logToolResult(call, result);
     results.push({
       type: "tool_result",
@@ -195,11 +205,11 @@ export async function runStep(
     if (result.state !== undefined) {
       states[call.id] = result.state;
     }
-    if (isStopped() && call.name !== YIELD) {
+    if (isStopped() && call.name !== YIELD && call.name !== WAIT) {
       stopped = true;
     }
   }
-  deps.wake.push({ message: assistant, outputTokens }, { message: { role: "user", content: results }, states });
+  deps.wake.push({ message: assistant, outputTokens, ...privateTo }, { message: { role: "user", content: results }, states, ...privateTo });
   if (yielded) {
     deps.wake.markYield(deps.lane);
   }

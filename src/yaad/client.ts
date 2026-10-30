@@ -1,4 +1,4 @@
-/** HTTP client for Yaad recall, ingest, and node history. */
+/** HTTP client for Yaad recall and ingest. */
 
 import axios, { type AxiosInstance } from "axios";
 import { z } from "zod";
@@ -47,21 +47,8 @@ const ingestResponseSchema = z
   })
   .passthrough();
 
-const nodeHistoryRecordSchema = z
-  .object({
-    id: z.string(),
-    node_id: z.string().uuid(),
-    field: z.enum(["title", "body", "occurred_at", "deleted"]),
-    old_value: z.string().nullable(),
-    new_value: z.string().nullable(),
-    changed_at: z.string(),
-    source: z.enum(["manual", "agent", "ingest"]),
-  })
-  .passthrough();
-
 export type RecallResponse = z.infer<typeof recallResponseSchema>;
 export type IngestResponse = z.infer<typeof ingestResponseSchema>;
-export type NodeHistoryRecord = z.infer<typeof nodeHistoryRecordSchema>;
 
 /** Yaad `POST /recall` body: anchors from `from`, else the filters, else `query`. */
 export type RecallRequest = {
@@ -89,11 +76,6 @@ export type IngestRequest = {
 export type YaadClient = {
   recall: (body: RecallRequest) => Promise<RecallResponse>;
   ingest: (body: IngestRequest) => Promise<IngestResponse>;
-  getNodeHistory: (id: string) => Promise<{ history: NodeHistoryRecord[] }>;
-  searchHistory: (body: {
-    query: string;
-    limit?: number;
-  }) => Promise<{ results: NodeHistoryRecord[] }>;
 };
 
 /** Build a retrying axios client pointed at `YAAD_BASE_URL`. */
@@ -109,25 +91,9 @@ export function createYaadClient(config: Config): YaadClient {
     return parseResponse(schema, data);
   }
 
-  async function get<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-    const data = await withRetry(config, () => http.get(path).then((res) => res.data));
-    return parseResponse(schema, data);
-  }
-
   return {
     recall: (body) => post("/recall", body, recallResponseSchema),
     ingest: (body) => post("/ingest", body, ingestResponseSchema),
-    getNodeHistory: (id) =>
-      get(
-        `/nodes/${id}/history`,
-        z.object({ history: z.array(nodeHistoryRecordSchema) }).passthrough(),
-      ),
-    searchHistory: (body) =>
-      post(
-        "/history/search",
-        body,
-        z.object({ results: z.array(nodeHistoryRecordSchema) }).passthrough(),
-      ),
   };
 }
 

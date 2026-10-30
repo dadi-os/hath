@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import { migrate } from "../src/db/migrate.js";
 import { scheduledMessages, type ScheduledMessageRow } from "../src/db/schema.js";
 import { toScheduledMessageRecord } from "../src/serialize.js";
-import { insertAgent, insertWorker, openTestDb, resetRuntime, testConfig } from "./helpers.js";
+import { insertAgent, openTestDb, resetRuntime, testConfig } from "./helpers.js";
 
 const config = testConfig();
 const handle = await openTestDb();
@@ -35,7 +35,7 @@ test("scheduled_messages exists with check constraints and run_at index", async 
     ORDER BY conname
   `;
   assert.deepEqual(
-    checks.map((row: { conname: string }) => row.conname),
+    checks.map((row) => row.conname as string),
     ["scheduled_messages_from_to_check", "scheduled_messages_interval_minutes_check"],
   );
 
@@ -50,10 +50,9 @@ test("scheduled_messages exists with check constraints and run_at index", async 
 
 test("from_agent_id = to_agent_id is rejected", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
 
   await assert.rejects(
@@ -75,10 +74,9 @@ test("from_agent_id = to_agent_id is rejected", async () => {
 
 test("interval_minutes 0 is rejected; 1 and null are accepted", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "scheduled-target",

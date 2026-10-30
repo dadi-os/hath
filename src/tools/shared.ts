@@ -1,24 +1,22 @@
 /** Shared tool result helpers and agent lookup used by handlers. */
 
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agentTools, agents } from "../db/schema.js";
+import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { Lane } from "../types/domain.js";
 import type { EventBus } from "../runtime/events.js";
 import type { LaneLocks } from "../runtime/locks.js";
 import type { SteerQueue } from "../runtime/steer.js";
 import type { TranscriptStore } from "../runtime/transcript.js";
-import type { BrowserDriver } from "../browser/driver.js";
 import type { DwarClient } from "../dwar/client.js";
-import type { ChaaviClient } from "../chaavi/client.js";
 import type { GharClient } from "../ghar/client.js";
 import type { NasClient } from "../nas/client.js";
 import type { YaadClient } from "../yaad/client.js";
 import type { DeviceGateway } from "../runtime/devices.js";
 import type { HostSessions } from "../runtime/sessions.js";
+import type { FileStore } from "../runtime/files.js";
 import type { ToolDebounce } from "../runtime/tool-debounce.js";
-import { toolId } from "./sync.js";
 
 export type ToolExecResult = {
   content: string;
@@ -32,31 +30,35 @@ export type ToolExecResult = {
   state?: string;
 };
 
-/** Who is invoking a tool: an agents-row kebab id, or a synthetic CLI identity. */
-export type ToolCallerKind = "agent" | "router" | "user";
+/** Who is invoking a tool: an agents-row kebab id, or the router. */
+export type ToolCallerKind = "agent" | "router";
 
 export type ToolContext = {
   db: Db;
-  /** Agent kebab-case id when `callerKind` is `agent`; null for `router` and `user`. */
+  /** Agent kebab-case id when `callerKind` is `agent`; null for `router`. */
   callerId: string | null;
-  /** Distinguishes synthetic CLI callers when `callerId` is null. */
+  /** Which kind of caller this is; `router` when `callerId` is null. */
   callerKind: ToolCallerKind;
   lane: Lane;
   yaad: YaadClient;
   ghar: GharClient;
-  chaavi: ChaaviClient;
   nas: NasClient;
   dwar: DwarClient;
-  browsers: BrowserDriver;
   devices: DeviceGateway;
   steer: SteerQueue;
   locks: LaneLocks;
   transcript: TranscriptStore;
   events: EventBus;
   sessions: HostSessions;
+  /** The box folder hath keeps files in, and the Nas that writes them (see runtime/files.ts). */
+  files: FileStore;
+  /** The id of the model's tool call being run, or null outside one. */
+  callId: string | null;
+  /** Keeps `work` running, and counted by waitUntilIdle, after the tool call that started it has returned. A failure is logged. */
+  background: (work: Promise<void>) => void;
   toolDebounce: ToolDebounce;
-  enqueueProcess: (agentId: string) => string;
-  enqueueWork: (agentId: string) => string;
+  enqueueProcess: (agentId: string, reason?: string) => string;
+  enqueueWork: (agentId: string, reason?: string) => string;
   /** The id of an agent's current wake, or null when it has none. */
   wakeOf: (agentId: string) => string | null;
 };
@@ -77,7 +79,7 @@ export function failOversizedAgentMessage(toAgentId: string | null, content: str
     return null;
   }
   return fail(
-    `This message to ${toAgentId} is ${content.length} characters; agent-to-agent messages stop at ${AGENT_MESSAGE_MAX_CHARS}. Send what you found in a few lines, and put raw output, logs, or long text in a file sent as an attachment (create_attachment, then forward_attachment).`,
+    `This message to ${toAgentId} is ${content.length} characters; agent-to-agent messages stop at ${AGENT_MESSAGE_MAX_CHARS}. Send what you found in a few lines, and put raw output, logs, or long text in a file and send its path in the attachments.`,
   );
 }
 
@@ -117,17 +119,6 @@ export async function requireActiveAgent(db: Db, id: string) {
     throw new HathError(409, "retired", `agent ${id} is retired`);
   }
   return row;
-}
-
-/** Ensure agentId holds a grant for toolName or throw `403 forbidden`. */
-export async function requireToolGrant(db: Db, agentId: string, toolName: string) {
-  const rows = await db
-    .select({ agentId: agentTools.agentId })
-    .from(agentTools)
-    .where(and(eq(agentTools.agentId, agentId), eq(agentTools.toolId, toolId(toolName))));
-  if (!rows[0]) {
-    throw new HathError(403, "forbidden", `agent does not hold ${toolName}`);
-  }
 }
 
 /** True when err (or a nested cause) is Postgres unique_violation `23505`. */

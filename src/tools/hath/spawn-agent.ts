@@ -15,7 +15,7 @@ const input = z.object({
 export const spawnAgent = defineTool({
   name: "hath_spawn_agent",
   description:
-    "Create a child agent with the caller as its parent. When called as the router, creates a root (parent_agent_id null). The child starts with no granted tools — use grant_tool afterward to give it capabilities. id is the immutable kebab-case address (e.g. browser-manager, browser-worker-cse-431); it cannot be renamed later.",
+    "Create a new agent as your child (as the router, a root agent). Give it an immutable kebab-case id named for what it owns, a charter (system_prompt: its purpose, who it works for and with), and for a standing agent its directory description, which every agent sees. It starts with the tools every agent holds (messaging, memory, scheduling, files, web search and fetch, browser and terminal tasks, and the house tools). Returns { agent_id }. Fails if the id is taken.",
   input,
   inputSchema: {
     type: "object",
@@ -23,16 +23,16 @@ export const spawnAgent = defineTool({
       id: {
         type: "string",
         description:
-          "Immutable kebab-case agent id (lowercase letters, digits, single hyphens), e.g. browser-manager or coding-worker-yaad. Name it for the area it owns, not the task at hand. This is how other agents address it.",
+          "Immutable kebab-case agent id (lowercase letters, digits, single hyphens), such as finance-specialist. Name it for the area it owns, not the task at hand. This is how other agents address it.",
       },
       system_prompt: {
         type: "string",
         description:
-          "Prompt for both of the child's lanes. Write one that fits the job you are spawning it for.",
+          "The child's charter, for both of its lanes: its purpose, what it owns, and who it works for and with.",
       },
       description: {
         type: "string",
-        description: `The child's agent directory entry, which every agent sees. Required for a standing agent (a specialist, manager or thread); leave it out for a worker. ${DESCRIPTION_TEMPLATE}`,
+        description: `The child's agent directory entry, which every agent sees. Give every standing agent one. ${DESCRIPTION_TEMPLATE}`,
       },
     },
     required: ["id", "system_prompt"],

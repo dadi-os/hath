@@ -6,11 +6,10 @@ import { migrate } from "../src/db/migrate.js";
 import {
   agentLogs,
   agents,
-  agentTools,
   messages,
   scheduledMessages,
 } from "../src/db/schema.js";
-import { insertAgent, insertManager, insertWorker, openTestDb, resetRuntime, testConfig } from "./helpers.js";
+import { insertAgent, openTestDb, resetRuntime, testConfig } from "./helpers.js";
 
 const config = testConfig();
 const handle = await openTestDb();
@@ -25,12 +24,11 @@ after(async () => {
 
 test("deleting an agent deletes its subtree and every row naming it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const manager = await insertManager(handle.db, { id: "doomed-manager", systemPrompt: "manage" });
-  const worker = await insertWorker(handle.db, {
+  const manager = await insertAgent(handle.db, { id: "doomed-manager", systemPrompt: "manage" });
+  const worker = await insertAgent(handle.db, {
     id: "doomed-worker",
     systemPrompt: "work",
     parentAgentId: manager,
-    tools: ["hath_spawn_agent"],
   });
   const grandchild = await insertAgent(handle.db, {
     id: "doomed-grandchild",
@@ -68,7 +66,6 @@ test("deleting an agent deletes its subtree and every row naming it", async () =
     [bystander],
   );
   assert.equal((await handle.db.select().from(agentLogs).where(inArray(agentLogs.agentId, subtree))).length, 0);
-  assert.equal((await handle.db.select().from(agentTools).where(inArray(agentTools.agentId, subtree))).length, 0);
   assert.equal(
     (
       await handle.db

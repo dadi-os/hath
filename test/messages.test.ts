@@ -17,8 +17,6 @@ import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "../src/runtime/wake
 import {
   endTurn,
   insertAgent,
-  insertWorker,
-  mockChaavi,
   mockDwar,
   mockGhar,
   mockNas,
@@ -29,6 +27,7 @@ import {
   silentLog,
   testConfig,
   wideWindows,
+  workLoopHooks,
 } from "./helpers.js";
 
 const config = testConfig();
@@ -48,17 +47,16 @@ function deliverDeps(transcript: TranscriptStore) {
     db: handle.db,
     transcript,
     events: new EventBus(silentLog),
-    enqueueProcess: () => {},
-    enqueueWork: () => {},
+    enqueueProcess: () => "",
+    enqueueWork: () => "",
   };
 }
 
 test("deliverUserMessage persists messages row and log message_id", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
+  const agentId = await insertAgent(handle.db, {
     name: "persist-worker",
     systemPrompt: "you persist",
-    tools: [],
   });
   const transcript = new TranscriptStore();
   const row = await deliverUserMessage(deliverDeps(transcript), agentId, "hello durable");
@@ -101,10 +99,9 @@ test("windowStart always shows the newest message, even when it alone overflows"
 
 test("assembleContext cuts each lane its own rolling window of the thread", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
+  const agentId = await insertAgent(handle.db, {
     name: "window-worker",
     systemPrompt: "system",
-    tools: [],
   });
   const transcript = new TranscriptStore();
   const deps = deliverDeps(transcript);
@@ -122,16 +119,15 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
     });
 
   const whole = await assemble(wideWindows.process);
-  const thread = whole.transcripts.work!.slice(0, -1);
+  const thread = whole.transcripts.work!;
   assert.equal(thread.length, 6);
-  assert.match(String(whole.transcripts.work!.at(-1)?.content), /^\[Open jobs\] /, "the work lane, which sends too, gets the note");
-  assert.match(String(whole.transcripts.process!.at(-1)?.content), /^\[Open jobs\] /, "Ankur's open job follows the thread");
+  assert.equal(whole.transcripts.process!.length, 6, "no job note follows the thread on either lane");
 
   const narrow = await assemble({ chars: 500, stepChars: 200, budgetTokens: 10_000_000 });
   const sizes = thread.map((m) => String(m.content).length);
   const start = windowStart(sizes, { chars: 500, stepChars: 200 });
   assert.ok(start > 0);
-  assert.deepEqual(narrow.transcripts.process!.slice(0, -1), thread.slice(start));
+  assert.deepEqual(narrow.transcripts.process, thread.slice(start));
   assert.match(String(narrow.transcripts.process!.at(-2)?.content), /\nm-5 /);
   assert.deepEqual(narrow.transcripts.work!.slice(0, -1), thread);
   assert.equal(narrow.throughSeq, whole.throughSeq);
@@ -139,10 +135,9 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
 
 test("assembleContext shortens a lane's window to the room its token budget leaves after the system and tools", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
+  const agentId = await insertAgent(handle.db, {
     name: "budget-worker",
     systemPrompt: "system",
-    tools: [],
   });
   const transcript = new TranscriptStore();
   const deps = deliverDeps(transcript);
@@ -173,10 +168,9 @@ test("assembleContext shortens a lane's window to the room its token budget leav
 
 test("messages arriving mid-wake join the wake after it and never rewrite earlier turns", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
+  const agentId = await insertAgent(handle.db, {
     name: "arrival-worker",
     systemPrompt: "system",
-    tools: [],
   });
   const transcript = new TranscriptStore();
   const deps = deliverDeps(transcript);
@@ -188,6 +182,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
   const requests: { messages: unknown[] }[] = [];
   let turn = 0;
   await runWorkLoop({
+    ...workLoopHooks,
     agentId,
     lane: "work",
     wake: new Wake(roomyWakeLimits),
@@ -212,7 +207,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
           content: "on it",
         });
       }
-      const name = turn < 3 ? "wait" : "yield";
+      const name = turn < 3 ? "ghar_get_state" : "yield";
       return {
         provider: "anthropic" as const,
         content: [{ type: "tool_use" as const, id: `c${turn}`, name, input: {} }],
@@ -224,7 +219,6 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
     steer: new SteerQueue(),
     logResponse: async () => {},
     logToolResult: async () => {},
-    recordActions: () => {},
   });
 
   assert.equal(requests.length, 3);
@@ -241,10 +235,9 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
 
 test("hydrateTranscript restores durable rows into TranscriptStore", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
+  const agentId = await insertAgent(handle.db, {
     name: "hydrate-worker",
     systemPrompt: "system",
-    tools: [],
   });
   const first = new TranscriptStore();
   await deliverUserMessage(deliverDeps(first), agentId, "before restart");
@@ -265,17 +258,15 @@ test("hydrateTranscript restores durable rows into TranscriptStore", async () =>
 
 test("GET /threads and GET /agents/:id/messages return human-thread history", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
+  const agentId = await insertAgent(handle.db, {
     name: "api-worker",
     systemPrompt: "system",
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -286,7 +277,6 @@ test("GET /threads and GET /agents/:id/messages return human-thread history", as
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     runtime,
   });
@@ -351,15 +341,13 @@ test("GET /threads and GET /agents/:id/messages return human-thread history", as
 
 test("listThreads helpers match HTTP shape; agent↔agent excluded from human thread", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const a = await insertWorker(handle.db, {
+  const a = await insertAgent(handle.db, {
     name: "alpha",
     systemPrompt: "a",
-    tools: [],
   });
-  const b = await insertWorker(handle.db, {
+  const b = await insertAgent(handle.db, {
     name: "beta",
     systemPrompt: "b",
-    tools: [],
   });
   const transcript = new TranscriptStore();
   const deps = deliverDeps(transcript);
@@ -385,10 +373,9 @@ test("listThreads helpers match HTTP shape; agent↔agent excluded from human th
 
 test("listHumanMessages without since_seq returns the newest rows oldest first", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const a = await insertWorker(handle.db, {
+  const a = await insertAgent(handle.db, {
     name: "alpha",
     systemPrompt: "a",
-    tools: [],
   });
   const deps = deliverDeps(new TranscriptStore());
   for (const n of [1, 2, 3, 4, 5]) {
@@ -405,10 +392,9 @@ test("listHumanMessages without since_seq returns the newest rows oldest first",
 
 test("backfill migration smoke: agent_logs message events land in messages after recreate", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, {
+  const agentId = await insertAgent(handle.db, {
     name: "backfill-worker",
     systemPrompt: "system",
-    tools: [],
   });
   await writeAgentLog(handle.db, {
     agentId,
@@ -518,24 +504,22 @@ test("assembleContext injects agent id and parent routing for children", async (
   assert.match(parentCtx.system, /You are a root agent/);
 });
 
-test("child may still hand off and dispatch_message to the user", async () => {
+test("child may still message and send to the user", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, {
     id: "msg-parent",
     systemPrompt: "parent",
   });
-  const childId = await insertWorker(handle.db, {
+  const childId = await insertAgent(handle.db, {
     id: "msg-child",
     systemPrompt: "child",
     parentAgentId: parentId,
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -544,32 +528,32 @@ test("child may still hand off and dispatch_message to the user", async () => {
   const send = await executeTool(runtime.toolContext(childId, "work"), {
     type: "tool_use",
     id: "child-send-user",
-    name: "hand_off",
-    input: { to: "ankur", kind: "note", content: "status for Ankur" },
+    name: "message",
+    input: { to: "ankur", content: "status for Ankur" },
   });
   assert.equal(send.isError, false);
 
   const dispatch = await executeTool(runtime.toolContext(childId, "process"), {
     type: "tool_use",
     id: "child-dispatch-user",
-    name: "dispatch_message",
-    input: { to_agent_id: null, content: "hello Ankur" },
+    name: "send",
+    input: { to: "ankur", content: "hello Ankur" },
   });
   assert.equal(dispatch.isError, false);
 
   const toParent = await executeTool(runtime.toolContext(childId, "process"), {
     type: "tool_use",
     id: "child-dispatch-parent",
-    name: "dispatch_message",
-    input: { to_agent_id: parentId, content: "blocked on login" },
+    name: "send",
+    input: { to: parentId, content: "blocked on login" },
   });
   assert.equal(toParent.isError, false);
 
   const rootSend = await executeTool(runtime.toolContext(parentId, "work"), {
     type: "tool_use",
     id: "root-send-user",
-    name: "hand_off",
-    input: { to: "ankur", kind: "note", content: "report to Ankur" },
+    name: "message",
+    input: { to: "ankur", content: "report to Ankur" },
   });
   assert.equal(rootSend.isError, false);
   await runtime.waitUntilIdle();
@@ -579,13 +563,13 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   await resetRuntime(handle.sql, handle.db, config);
   const senderId = await insertAgent(handle.db, { id: "cap-sender", systemPrompt: "sender" });
   const peerId = await insertAgent(handle.db, { id: "cap-peer", systemPrompt: "peer" });
+  const nas = mockNas();
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
+    nas,
     config,
     log: silentLog,
   });
@@ -594,8 +578,8 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   const toPeer = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "cap-dispatch-peer",
-    name: "dispatch_message",
-    input: { to_agent_id: peerId, content: dump },
+    name: "send",
+    input: { to: peerId, content: dump },
   });
   assert.equal(toPeer.isError, false);
   assert.match(toPeer.content, /message\.md/);
@@ -604,13 +588,13 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   assert.ok(stored[0]!.content.length < AGENT_MESSAGE_MAX_CHARS, "the recipient sees only the opening inline");
   const files = await handle.db.select().from(attachments).where(eq(attachments.messageId, stored[0]!.id));
   assert.equal(files.length, 1);
-  assert.equal(files[0]!.textContent, dump, "the whole message travels as the attachment");
+  assert.equal(nas.files.get(files[0]!.path!)?.toString(), dump, "the whole message travels as the attachment");
 
   const toAnkur = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "cap-dispatch-ankur",
-    name: "dispatch_message",
-    input: { to_agent_id: null, content: dump },
+    name: "send",
+    input: { to: "ankur", content: dump },
   });
   assert.equal(toAnkur.isError, false);
   await runtime.waitUntilIdle();
@@ -626,7 +610,6 @@ test("messaging a retired agent is a retired error on every path and stores noth
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -637,7 +620,6 @@ test("messaging a retired agent is a retired error on every path and stores noth
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     runtime,
   });
@@ -653,8 +635,8 @@ test("messaging a retired agent is a retired error on every path and stores noth
   const send = await executeTool(runtime.toolContext(senderId, "work"), {
     type: "tool_use",
     id: "send-retired",
-    name: "send_message",
-    input: { to_agent_id: retiredId, content: "ask it something" },
+    name: "message",
+    input: { to: retiredId, content: "ask it something" },
   });
   assert.equal(send.isError, true);
   assert.equal(send.content, `retired: agent ${retiredId} is retired`);
@@ -662,8 +644,8 @@ test("messaging a retired agent is a retired error on every path and stores noth
   const dispatch = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "dispatch-retired",
-    name: "dispatch_message",
-    input: { to_agent_id: retiredId, content: "hello?" },
+    name: "send",
+    input: { to: retiredId, content: "hello?" },
   });
   assert.equal(dispatch.isError, true);
   assert.equal(dispatch.content, `retired: agent ${retiredId} is retired`);
@@ -677,13 +659,12 @@ test("messaging a retired agent is a retired error on every path and stores noth
 
 test("POST /agents/:id/read marks a thread read across devices and /threads counts what is left", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, { name: "reader", systemPrompt: "system", tools: [] });
+  const agentId = await insertAgent(handle.db, { name: "reader", systemPrompt: "system" });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -694,7 +675,6 @@ test("POST /agents/:id/read marks a thread read across devices and /threads coun
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     runtime,
   });

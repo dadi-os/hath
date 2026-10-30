@@ -13,10 +13,8 @@ import { executeTool } from "../src/runtime/tools.js";
 import { allTools, findEmbeddedTool, findTool } from "../src/tools/registry.js";
 import {
   insertAgent,
-  insertWorker,
   mockDwar,
   mockGhar,
-  mockChaavi,
   mockNas,
   mockYaad,
   openTestDb,
@@ -70,7 +68,7 @@ after(async () => {
 });
 
 test("the three schedule tools are embedded, not grantable", async () => {
-  assert.equal(allTools().length, 56);
+  assert.equal(allTools().length, 25);
   for (const name of ["schedule_message", "list_schedules", "cancel_schedule"]) {
     assert.equal(findTool(name), undefined);
     assert.equal(findEmbeddedTool(name)?.name, name);
@@ -79,10 +77,9 @@ test("the three schedule tools are embedded, not grantable", async () => {
 
 test("due one-shot delivers once and deletes the row", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "one-shot-target",
@@ -105,7 +102,6 @@ test("due one-shot delivers once and deletes the row", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log,
@@ -147,10 +143,9 @@ test("due one-shot delivers once and deletes the row", async () => {
 
 test("not yet due leaves the row untouched", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "future-target",
@@ -172,7 +167,6 @@ test("not yet due leaves the row untouched", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: capturingLog().log,
@@ -191,10 +185,9 @@ test("not yet due leaves the row untouched", async () => {
 
 test("recurring sub-day advances run_at by exactly the interval", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "ten-min-target",
@@ -216,7 +209,6 @@ test("recurring sub-day advances run_at by exactly the interval", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: capturingLog().log,
@@ -235,10 +227,9 @@ test("recurring sub-day advances run_at by exactly the interval", async () => {
 
 test("recurring daily preserves wall time across DST transitions", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "dst-target",
@@ -261,7 +252,6 @@ test("recurring daily preserves wall time across DST transitions", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: capturingLog().log,
@@ -301,10 +291,9 @@ test("recurring daily preserves wall time across DST transitions", async () => {
 
 test("catch-up delivers once, advances past now, and warns schedule_late", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "catchup-target",
@@ -327,7 +316,6 @@ test("catch-up delivers once, advances past now, and warns schedule_late", async
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log,
@@ -353,10 +341,9 @@ test("catch-up delivers once, advances past now, and warns schedule_late", async
 
 test("retired target skips delivery and logs schedule_target_unavailable", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "retired-target",
@@ -380,7 +367,6 @@ test("retired target skips delivery and logs schedule_target_unavailable", async
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log,
@@ -410,10 +396,9 @@ test("retired target skips delivery and logs schedule_target_unavailable", async
 
 test("missing target skips delivery with reason missing", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "soon-missing",
@@ -442,7 +427,6 @@ test("missing target skips delivery with reason missing", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log,
@@ -459,10 +443,9 @@ test("missing target skips delivery with reason missing", async () => {
 
 test("tick error is isolated and a later tick still runs", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "throw-target",
@@ -484,7 +467,6 @@ test("tick error is isolated and a later tick still runs", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log,
@@ -514,10 +496,9 @@ test("tick error is isolated and a later tick still runs", async () => {
 
 test("schedule_message validates self, missing, past, and interval; allows non-child", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "scheduler",
     systemPrompt: "schedule work",
-    tools: [],
   });
   const peerId = await insertAgent(handle.db, {
     name: "peer-agent",
@@ -528,7 +509,6 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: capturingLog().log,
@@ -619,15 +599,13 @@ test("schedule_message validates self, missing, past, and interval; allows non-c
 
 test("cancel_schedule enforces creator; list_schedules is caller-scoped", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const creatorId = await insertWorker(handle.db, {
+  const creatorId = await insertAgent(handle.db, {
     name: "creator",
     systemPrompt: "creator",
-    tools: [],
   });
-  const otherId = await insertWorker(handle.db, {
+  const otherId = await insertAgent(handle.db, {
     name: "other",
     systemPrompt: "other",
-    tools: [],
   });
   const targetId = await insertAgent(handle.db, {
     name: "list-target",
@@ -660,7 +638,6 @@ test("cancel_schedule enforces creator; list_schedules is caller-scoped", async 
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: capturingLog().log,
@@ -756,7 +733,6 @@ test("schedule routes list an agent's schedules both ways, edit them, and cancel
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
   };
   const runtime = createRuntime({ ...deps, config, log: capturingLog().log });

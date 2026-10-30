@@ -1,4 +1,4 @@
-/** Drizzle table definitions for agents, logs, tools, grants, messages, and schedules. */
+/** Drizzle table definitions for agents, logs, messages, and schedules. */
 
 import {
   bigint,
@@ -9,7 +9,6 @@ import {
   integer,
   jsonb,
   pgTable,
-  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -17,7 +16,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { HandoffKind, HandoffState, JobState, MessageStatus, MessageKind } from "../types/domain.js";
+import type { HandoffState, JobState, MessageStatus, MessageKind } from "../types/domain.js";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -29,7 +28,7 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 export const agents = pgTable(
   "agents",
   {
-    /** Immutable kebab-case id; also the human-readable address (`browser-manager`). */
+    /** Immutable kebab-case id; also the human-readable address (`finance-specialist`). */
     id: text("id").primaryKey(),
     systemPrompt: text("system_prompt").notNull(),
     /** The agent's entry in the agent directory, in its template (see runtime/directory.ts); null until set. */
@@ -80,34 +79,6 @@ export const agentLogs = pgTable(
       sql`${table.event} IN ('response', 'tool_result', 'message')`,
     ),
   ],
-);
-
-export const tools = pgTable(
-  "tools",
-  {
-    id: uuid("id").primaryKey(),
-    name: text("name").notNull(),
-    description: text("description").notNull(),
-    inputSchema: jsonb("input_schema").$type<Record<string, unknown>>().notNull(),
-    createdAt: timestamptz("created_at").notNull().defaultNow(),
-  },
-  (table) => [uniqueIndex("tools_name_idx").on(table.name)],
-);
-
-/** Per-agent tool grant with a usage hint shown alongside the tool description. */
-export const agentTools = pgTable(
-  "agent_tools",
-  {
-    agentId: text("agent_id")
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
-    toolId: uuid("tool_id")
-      .notNull()
-      .references(() => tools.id),
-    usage: text("usage").notNull(),
-    createdAt: timestamptz("created_at").notNull().defaultNow(),
-  },
-  (table) => [primaryKey({ columns: [table.agentId, table.toolId] })],
 );
 
 /**
@@ -200,14 +171,16 @@ export const jobs = pgTable(
 
 /**
  * A file sent with a message. Unbound (`message_id` null) from upload or
- * create_attachment until a message carries it; a later forward copies the row,
- * so each message owns its attachments and deleting it deletes them.
+ * attachHostFile until a message carries it; a later forward copies the row,
+ * so each message owns its attachments and deleting it deletes them. The file is on the
+ * box at `path` (see runtime/files.ts), never rewritten, so a copied row shares it.
  *
- * - Text files keep their UTF-8 text in `text_content` (paged by read_attachment);
- *   everything else keeps its bytes in `data`. Exactly one is set.
  * - `description` is the image.describe text for images, null otherwise.
  * - `created_by_agent_id` is null for Ankur's uploads; an agent's unbound
  *   attachments go when the agent does.
+ * - `text_content` and `data` are the bytes older rows kept here. Boot moves them to files
+ *   and clears them (see runtime/attachments.ts moveLegacyAttachments); once none is
+ *   left a migration drops both columns and makes `path` required.
  */
 export const attachments = pgTable(
   "attachments",
@@ -221,6 +194,7 @@ export const attachments = pgTable(
     filename: text("filename").notNull(),
     mediaType: text("media_type").notNull(),
     sizeBytes: integer("size_bytes").notNull(),
+    path: text("path"),
     textContent: text("text_content"),
     data: bytea("data"),
     description: text("description"),
@@ -228,15 +202,11 @@ export const attachments = pgTable(
   },
   (table) => [
     index("attachments_message_id_position_idx").on(table.messageId, table.position),
-    check(
-      "attachments_payload_check",
-      sql`(${table.textContent} IS NULL) <> (${table.data} IS NULL)`,
-    ),
   ],
 );
 
 /**
- * Deferred dispatch_message that survives restart. Presence of the row is the
+ * Deferred send that survives restart. Presence of the row is the
  * state — no status/active/last_fired columns.
  *
  * - `run_at` is the next fire time (ticker cursor), never a "created for" time.
@@ -273,13 +243,14 @@ export const scheduledMessages = pgTable(
 );
 
 /**
- * What an agent's work lane wants said to someone other than the agents it brought in.
- * The process lane sends it, with its job status set from `kind`, or declines it with
- * a reason the work lane reads; one that cannot be resolved because the lane failed is
- * `failed`. `expects_reply` holds from the send of a question or request until the
- * recipient's next message, which wakes the work lane directly.
+ * What an agent's work lane has asked its process lane to say (the work lane's `message`
+ * tool). The process lane sends it, alone or merged with others to the same recipient;
+ * each row is `sent` once a message to its recipient went out, and `failed` when the lane
+ * failed first. `expects_reply` holds from the send until the recipient's next message,
+ * which wakes the work lane directly. The SQL table keeps its pre-overhaul name
+ * "handoffs", so its rows (kind and declined state included) stay as they were.
  */
-export const handoffs = pgTable(
+export const outbox = pgTable(
   "handoffs",
   {
     id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
@@ -288,34 +259,73 @@ export const handoffs = pgTable(
       .references(() => agents.id, { onDelete: "cascade" }),
     /** Null is Ankur. */
     toAgentId: text("to_agent_id").references(() => agents.id, { onDelete: "cascade" }),
-    kind: text("kind").$type<HandoffKind>().notNull(),
+    /** Set only on rows from before the lane overhaul: result, blocker, question, progress, note or request. */
+    kind: text("kind"),
     content: text("content").notNull(),
     attachmentIds: uuid("attachment_ids").array().notNull().default(sql`'{}'::uuid[]`),
     state: text("state").$type<HandoffState>().notNull().default("pending"),
-    /** The message a sent hand-off became. */
+    /** The message a sent row became. */
     messageId: uuid("message_id").references(() => messages.id, { onDelete: "set null" }),
-    /** Why a hand-off was declined or failed. */
+    /** Why a row was declined (before the overhaul) or failed. */
     reason: text("reason"),
     expectsReply: boolean("expects_reply").notNull().default(false),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     resolvedAt: timestamptz("resolved_at"),
   },
   (table) => [
-    uniqueIndex("handoffs_pending_recipient_idx")
-      .on(table.agentId, sql`coalesce(${table.toAgentId}, '')`)
-      .where(sql`${table.state} = 'pending'`),
     index("handoffs_agent_state_idx").on(table.agentId, table.state),
     check("handoffs_kind_check", sql`${table.kind} IN ('result', 'blocker', 'question', 'progress', 'note', 'request')`),
     check("handoffs_state_check", sql`${table.state} IN ('pending', 'sent', 'declined', 'failed')`),
   ],
 );
 
+/**
+ * The newest report of each helper task already delivered to its agent, by the report's
+ * own time (`at`). Nas numbers reports from 1 on every start, so the number cannot say
+ * whether a report was delivered; its time can, and every task's reports are in time order.
+ */
+export const deliveredReports = pgTable("delivered_reports", {
+  /** The task's address, such as `task/browser/3`. */
+  task: text("task").primaryKey(),
+  deliveredAt: timestamptz("delivered_at").notNull(),
+});
+
+/**
+ * An async tool call still running. Its result arrives as a message when it ends; a row
+ * left behind by a restart is reported lost at boot.
+ */
+export const pendingAsync = pgTable(
+  "pending_async",
+  {
+    /** The call's id, which the agent was given as `pending`. */
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    toolName: text("tool_name").notNull(),
+    startedAt: timestamptz("started_at").notNull().defaultNow(),
+  },
+  (table) => [index("pending_async_agent_id_idx").on(table.agentId)],
+);
+
+/**
+ * What an agent's work lane is waiting on: task addresses and agent ids. One row per agent.
+ * It is dropped when the lane next runs, and a due one wakes the lane with facts.
+ */
+export const watches = pgTable("watches", {
+  agentId: text("agent_id")
+    .primaryKey()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  targets: text("targets").array().notNull(),
+  since: timestamptz("since").notNull().defaultNow(),
+  dueAt: timestamptz("due_at").notNull(),
+});
+
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentLogRow = typeof agentLogs.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type AttachmentRow = typeof attachments.$inferSelect;
-export type ToolRow = typeof tools.$inferSelect;
-export type AgentToolRow = typeof agentTools.$inferSelect;
 export type ScheduledMessageRow = typeof scheduledMessages.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
-export type HandoffRow = typeof handoffs.$inferSelect;
+export type WatchRow = typeof watches.$inferSelect;
+export type OutboxRow = typeof outbox.$inferSelect;
