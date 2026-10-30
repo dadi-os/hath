@@ -13,6 +13,8 @@ export type ToolDefinition<T = unknown> = {
   /** JSON Schema shown to the model. Hand-written for now; see note below. */
   inputSchema: Record<string, unknown>;
   handler: (ctx: ToolContext, input: T) => Promise<ToolExecResult>;
+  /** True runs the tool in the background: the call returns { pending } and the result arrives as a message (see runtime/async.ts). */
+  async?: true;
 };
 
 /** Identity helper that types a tool definition by its zod input. */

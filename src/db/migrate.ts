@@ -1,17 +1,15 @@
-/** Apply migrations and sync the tool catalog. */
+/** Apply migrations. */
 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { migrate as runMigrate } from "drizzle-orm/postgres-js/migrator";
 import { loadConfig, type Config } from "../config.js";
-import { syncTools } from "../tools/sync.js";
 import { createDb } from "./client.js";
 
 export async function migrate(config: Config): Promise<void> {
   const { client, db } = createDb(config.env.databaseUrl);
   try {
     await runMigrate(db, { migrationsFolder: join(config.serviceRoot, "drizzle") });
-    await syncTools(db);
   } finally {
     await client.end();
   }

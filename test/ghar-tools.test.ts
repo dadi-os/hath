@@ -4,16 +4,12 @@ import { randomUUID } from "node:crypto";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { migrate } from "../src/db/migrate.js";
-import { allTools, findTool } from "../src/tools/registry.js";
-import { syncTools, toolId } from "../src/tools/sync.js";
-import { agentTools } from "../src/db/schema.js";
+import { findTool } from "../src/tools/registry.js";
 import { HathError } from "../src/errors.js";
 import {
   insertAgent,
-  insertWorker,
   mockDwar,
   mockGhar,
-  mockChaavi,
   mockNas,
   mockYaad,
   openTestDb,
@@ -41,16 +37,13 @@ test("Ghar tools are registered", async () => {
   for (const name of GHAR_TOOLS) {
     assert.equal(findTool(name)?.name, name);
   }
-  assert.equal(allTools().length, 56);
-  await assert.doesNotReject(() => syncTools(handle.db));
 });
 
 test("list_devices passes filters through to the Ghar client", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: ["ghar_list_devices"],
   });
   const deviceId = randomUUID();
   const ghar = mockGhar({
@@ -81,7 +74,6 @@ test("list_devices passes filters through to the Ghar client", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar,
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -105,20 +97,14 @@ test("list_devices passes filters through to the Ghar client", async () => {
 
 test("control_device attributes cause to the calling agent, not the parent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "parent",
     systemPrompt: "parent",
-    tools: [],
   });
   const childId = await insertAgent(handle.db, {
     name: "house-thread",
     systemPrompt: "control lights",
     parentAgentId: parentId,
-  });
-  await handle.db.insert(agentTools).values({
-    agentId: childId,
-    toolId: toolId("ghar_control_device"),
-    usage: "control lights for this thread",
   });
   const deviceId = randomUUID();
   const ghar = mockGhar({});
@@ -127,7 +113,6 @@ test("control_device attributes cause to the calling agent, not the parent", asy
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar,
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -155,7 +140,7 @@ test("control_device attributes cause to the calling agent, not the parent", asy
   assert.notEqual(call.body.cause_ref, parentId);
 });
 
-test("control_device cause_ref distinguishes router and user when callerId is null", async () => {
+test("control_device cause_ref is the router when callerId is null", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const deviceId = randomUUID();
   const ghar = mockGhar({});
@@ -164,7 +149,6 @@ test("control_device cause_ref distinguishes router and user when callerId is nu
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar,
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -181,27 +165,13 @@ test("control_device cause_ref distinguishes router and user when callerId is nu
   });
   assert.equal(asDadi.isError, false);
   assert.equal(ghar.commandCalls[0]!.body.cause_ref, "router");
-
-  const asUser = await executeTool(runtime.toolContext(null, "work", "user"), {
-    type: "tool_use",
-    id: "cd-user",
-    name: "ghar_control_device",
-    input: {
-      device_id: deviceId,
-      capability: "on_off",
-      command: "off",
-    },
-  });
-  assert.equal(asUser.isError, false);
-  assert.equal(ghar.commandCalls[1]!.body.cause_ref, "user");
 });
 
 test("Ghar unreachable fails with ghar code, not an empty success", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: ["ghar_list_devices"],
   });
   const ghar = mockGhar({
     listDevices: () => {
@@ -213,7 +183,6 @@ test("Ghar unreachable fails with ghar code, not an empty success", async () => 
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar,
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -239,10 +208,9 @@ test("Ghar unreachable fails with ghar code, not an empty success", async () => 
 
 test("capability_unsupported and device_unreachable stay distinguishable", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: ["ghar_control_device"],
   });
   const deviceId = randomUUID();
   let mode: "capability" | "unreachable" = "capability";
@@ -263,7 +231,6 @@ test("capability_unsupported and device_unreachable stay distinguishable", async
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar,
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -291,10 +258,9 @@ test("capability_unsupported and device_unreachable stay distinguishable", async
 
 test("get_device_events passes filters through and bounds the default limit", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: ["ghar_get_device_events"],
   });
   const deviceId = randomUUID();
   const ghar = mockGhar({
@@ -318,7 +284,6 @@ test("get_device_events passes filters through and bounds the default limit", as
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar,
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -353,10 +318,9 @@ test("get_device_events passes filters through and bounds the default limit", as
 
 test("get_state returns only requested devices with changed_at", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: ["ghar_get_state"],
   });
   const a = randomUUID();
   const b = randomUUID();
@@ -373,7 +337,6 @@ test("get_state returns only requested devices with changed_at", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar,
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,

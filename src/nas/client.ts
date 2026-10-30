@@ -1,4 +1,4 @@
-/** HTTP client for Nas terminals and host filesystem. */
+/** HTTP client for Nas: helper tasks, the host filesystem, terminals, and the control plane. */
 
 import axios, { type AxiosInstance, type AxiosRequestConfig } from "axios";
 import { z } from "zod";
@@ -6,21 +6,37 @@ import type { Config } from "../config.js";
 import { NAS } from "../constants.js";
 import { HathError } from "../errors.js";
 
-const createTerminalResponseSchema = z
+const reportSchema = z
   .object({
+    seq: z.number().int(),
+    task: z.string().min(1),
+    kind: z.enum(["browser", "terminal"]),
     id: z.string().min(1),
-    cwd: z.string().min(1),
+    agent_id: z.string().min(1),
+    state: z.enum(["done", "needs_input", "failed"]),
+    text: z.string(),
+    files: z.array(z.string()),
+    at: z.string().min(1),
   })
   .passthrough();
 
-const terminalInfoSchema = z
+const taskSchema = z
   .object({
+    task: z.string().min(1),
+    kind: z.enum(["browser", "terminal"]),
     id: z.string().min(1),
-    cwd: z.string(),
+    owner: z.string(),
+    steered_by: z.string(),
+    purpose: z.string(),
+    status: z.enum(["working", "idle", "asking", "asleep"]),
+    state: z.string(),
     created_at: z.string(),
-    busy: z.boolean(),
+    last_activity: z.string(),
+    last_report: reportSchema.nullish(),
   })
   .passthrough();
+
+const terminalSchema = z.object({ id: z.string().min(1), cwd: z.string() }).passthrough();
 
 const execResponseSchema = z
   .object({
@@ -28,18 +44,6 @@ const execResponseSchema = z
     output: z.string(),
     truncated: z.boolean(),
     timed_out: z.boolean(),
-  })
-  .passthrough();
-
-const captureResponseSchema = z
-  .object({
-    output: z.string(),
-  })
-  .passthrough();
-
-const keysResponseSchema = z
-  .object({
-    sent: z.literal(true),
   })
   .passthrough();
 
@@ -93,38 +97,20 @@ const grepResponseSchema = z
   })
   .passthrough();
 
-const createBrowserResponseSchema = z
-  .object({
-    id: z.number().int(),
-    display: z.string(),
-    cdp_url: z.string().min(1),
-    downloads_dir: z.string().min(1),
-  })
-  .passthrough();
-
-const browserInfoSchema = z
-  .object({
-    id: z.number().int(),
-    display: z.string(),
-    cdp_url: z.string(),
-    healthy: z.boolean(),
-    downloads_dir: z.string().min(1),
-  })
-  .passthrough();
-
-export type CreateTerminalRequest = { id?: string; cwd?: string };
-export type CreateBrowserRequest = { id?: number };
-export type CreateTerminalResponse = z.infer<typeof createTerminalResponseSchema>;
-export type TerminalInfo = z.infer<typeof terminalInfoSchema>;
+/** One thing a helper handed back to an agent: its result, a question, or the error that stopped it. */
+export type HelperReport = z.infer<typeof reportSchema>;
+/** What Nas's event stream carries that hath follows: a helper's report, or a change to the task list. */
+export type NasEvent = { type: "helper_report"; report: HelperReport } | { type: "changed" };
+/** A helper task as Nas lists it. */
+export type HelperTask = z.infer<typeof taskSchema>;
+/** What starts a helper task, or steers a running one. */
+export type TaskRequest = { agent_id: string; message: string; cwd?: string };
 export type ExecRequest = {
   command: string;
   timeout_seconds?: number;
   max_bytes?: number;
 };
 export type ExecResponse = z.infer<typeof execResponseSchema>;
-export type CaptureRequest = { lines?: number };
-export type CaptureResponse = z.infer<typeof captureResponseSchema>;
-export type KeysRequest = { keys: string[] };
 export type ReadFileRequest = {
   path: string;
   offset?: number;
@@ -132,7 +118,8 @@ export type ReadFileRequest = {
   max_bytes?: number;
 };
 export type ReadFileBytesRequest = { path: string; max_bytes: number };
-export type WriteFileRequest = { path: string; content: string };
+/** A text file (`content`) or any bytes (`data`, base64), not both. */
+export type WriteFileRequest = { path: string } & ({ content: string } | { data: string });
 export type EditFileRequest = { path: string; old_string: string; new_string: string };
 export type GlobRequest = { pattern: string; cwd?: string; limit?: number };
 export type GrepRequest = {
@@ -142,84 +129,22 @@ export type GrepRequest = {
   limit?: number;
   max_bytes?: number;
 };
-export type CreateBrowserResponse = z.infer<typeof createBrowserResponseSchema>;
-export type BrowserInfo = z.infer<typeof browserInfoSchema>;
-
-const provisionResponseSchema = z.object({ bundle: z.string() }).passthrough();
-
-const statusOkSchema = z.object({ status: z.string() }).passthrough();
-
-const meshClientSchema = z
-  .object({
-    node_name: z.string().min(1),
-    online: z.boolean(),
-    last_seen: z.string().nullable(),
-    ip_addresses: z.array(z.string()),
-  })
-  .passthrough();
-
-const listClientsResponseSchema = z
-  .object({
-    clients: z.array(meshClientSchema),
-  })
-  .passthrough();
-
-const updateRunSchema = z
-  .object({
-    state: z.enum(["idle", "running", "succeeded", "rebooting", "failed"]),
-    scope: z.enum(["modules", "os", "all"]).optional(),
-    started_at: z.string().optional(),
-    finished_at: z.string().optional(),
-    reboot_required: z.boolean(),
-    error: z.string().optional(),
-  })
-  .passthrough();
-
-const nasStatusSchema = z
-  .object({
-    uptime_seconds: z.number(),
-    services: z.array(
-      z.object({ name: z.string(), healthy: z.boolean() }).passthrough(),
-    ),
-    disk: z
-      .object({ free_bytes: z.number(), total_bytes: z.number() })
-      .passthrough(),
-  })
-  .passthrough();
-
-const nasLogEntrySchema = z
-  .object({
-    time: z.string(),
-    service: z.string(),
-    level: z.string(),
-    msg: z.string(),
-    code: z.string().optional(),
-    raw: z.string().optional(),
-  })
-  .passthrough();
-
-export type NasStatus = z.infer<typeof nasStatusSchema>;
-export type NasLogEntry = z.infer<typeof nasLogEntrySchema>;
-export type PullUpdatesScope = "modules" | "os" | "all";
-export type UpdateRun = z.infer<typeof updateRunSchema>;
-
-export type NasLogsParams = {
-  services?: string;
-  level?: string;
-  q?: string;
-  from?: string;
-  to?: string;
-  limit?: number;
-};
 
 /** Nas surface used by agent tools. */
 export type NasClient = {
-  createTerminal: (body?: CreateTerminalRequest) => Promise<CreateTerminalResponse>;
-  listTerminals: () => Promise<TerminalInfo[]>;
+  startTask: (kind: TaskKind, body: TaskRequest) => Promise<HelperTask>;
+  steerTask: (kind: TaskKind, id: string, body: TaskRequest) => Promise<HelperTask>;
+  listTasks: () => Promise<HelperTask[]>;
+  getTask: (kind: TaskKind, id: string) => Promise<HelperTask>;
+  /**
+   * Open Nas's event stream and resolve once it is connected, with every helper report
+   * and task-list change that follows. The stream has no replay and ends, by throwing,
+   * when the connection drops.
+   */
+  openReports: (signal: AbortSignal) => Promise<AsyncIterable<NasEvent>>;
+  createTerminal: (cwd?: string) => Promise<{ id: string; cwd: string }>;
   closeTerminal: (id: string) => Promise<void>;
   exec: (id: string, body: ExecRequest) => Promise<ExecResponse>;
-  capture: (id: string, query?: CaptureRequest) => Promise<CaptureResponse>;
-  sendKeys: (id: string, body: KeysRequest) => Promise<{ sent: true }>;
   readFile: (body: ReadFileRequest) => Promise<z.infer<typeof readResponseSchema>>;
   readFileBytes: (
     body: ReadFileBytesRequest,
@@ -228,27 +153,10 @@ export type NasClient = {
   editFile: (body: EditFileRequest) => Promise<z.infer<typeof editResponseSchema>>;
   glob: (body: GlobRequest) => Promise<z.infer<typeof globResponseSchema>>;
   grep: (body: GrepRequest) => Promise<z.infer<typeof grepResponseSchema>>;
-  createBrowser: (body?: CreateBrowserRequest) => Promise<CreateBrowserResponse>;
-  listBrowsers: () => Promise<BrowserInfo[]>;
-  closeBrowser: (id: number) => Promise<void>;
-  browserScreenshot: (id: number) => Promise<Buffer>;
-  getStatus: () => Promise<NasStatus>;
-  getLogs: (params?: NasLogsParams) => Promise<{ entries: NasLogEntry[] }>;
-  restartModule: (name: string) => Promise<{ status: string }>;
-  pullUpdates: (scope: PullUpdatesScope) => Promise<UpdateRun>;
-  getUpdateStatus: () => Promise<UpdateRun>;
-  stackUp: () => Promise<{ status: string }>;
-  stackDown: () => Promise<{ status: string }>;
-  provision: (nodeName: string) => Promise<{ bundle: string }>;
-  listClients: () => Promise<{ clients: MeshClient[] }>;
 };
 
-export type MeshClient = {
-  node_name: string;
-  online: boolean;
-  last_seen: string | null;
-  ip_addresses: string[];
-};
+/** The two kinds of helper task. */
+export type TaskKind = "browser" | "terminal";
 
 /** Build a retrying axios client pointed at `NAS`. */
 export function createNasClient(config: Config): NasClient {
@@ -257,6 +165,9 @@ export function createNasClient(config: Config): NasClient {
     timeout: config.nas.timeout_ms,
     headers: { "content-type": "application/json" },
   });
+
+  /** Starting or steering a task may wake a browser first, which takes longer than other calls. */
+  const TASK_TIMEOUT_MS = Math.max(config.nas.timeout_ms, 60_000);
 
   async function get<T>(
     path: string,
@@ -286,9 +197,14 @@ export function createNasClient(config: Config): NasClient {
   }
 
   return {
-    createTerminal: (body = {}) =>
-      post("/terminals", omitUndefined(body), createTerminalResponseSchema),
-    listTerminals: () => get("/terminals", z.array(terminalInfoSchema)),
+    startTask: (kind, body) =>
+      post(`/tasks/${kind}`, omitUndefined(body), taskSchema, { timeout: TASK_TIMEOUT_MS }),
+    steerTask: (kind, id, body) =>
+      post(`/tasks/${kind}/${encodeURIComponent(id)}/steer`, body, taskSchema, { timeout: TASK_TIMEOUT_MS }),
+    listTasks: () => get("/tasks", z.array(taskSchema)),
+    getTask: (kind, id) => get(`/tasks/${kind}/${encodeURIComponent(id)}`, taskSchema),
+    openReports: (signal) => openReportStream(signal),
+    createTerminal: (cwd) => post("/terminals", omitUndefined({ cwd }), terminalSchema),
     closeTerminal: (id) => del(`/terminals/${encodeURIComponent(id)}`),
     exec: (id, body) => {
       const timeoutSeconds = body.timeout_seconds ?? 120;
@@ -299,52 +215,64 @@ export function createNasClient(config: Config): NasClient {
         { timeout: (timeoutSeconds + 10) * 1000 },
       );
     },
-    capture: (id, query = {}) =>
-      get(
-        `/terminals/${encodeURIComponent(id)}/capture`,
-        captureResponseSchema,
-        { params: omitUndefined(query) },
-      ),
-    sendKeys: (id, body) =>
-      post(`/terminals/${encodeURIComponent(id)}/keys`, body, keysResponseSchema),
     readFile: (body) => post("/fs/read", omitUndefined(body), readResponseSchema),
     readFileBytes: (body) => post("/fs/read_bytes", body, readBytesResponseSchema),
     writeFile: (body) => post("/fs/write", body, writeResponseSchema),
     editFile: (body) => post("/fs/edit", body, editResponseSchema),
     glob: (body) => post("/fs/glob", omitUndefined(body), globResponseSchema),
     grep: (body) => post("/fs/grep", omitUndefined(body), grepResponseSchema),
-    createBrowser: (body = {}) => post("/browsers", omitUndefined(body), createBrowserResponseSchema),
-    listBrowsers: () => get("/browsers", z.array(browserInfoSchema)),
-    closeBrowser: (id) => del(`/browsers/${id}`),
-    browserScreenshot: async (id) => {
-      const data = await withRetry(config, async () => {
-        const res = await http.get(`/browsers/${id}/screenshot`, {
-          responseType: "arraybuffer",
-          timeout: Math.max(config.nas.timeout_ms, 60_000),
-        });
-        return Buffer.from(res.data as ArrayBuffer);
-      });
-      if (!Buffer.isBuffer(data)) {
-        throw new HathError(502, "nas", "Nas screenshot response is malformed");
-      }
-      return data;
-    },
-    getStatus: () => get("/status", nasStatusSchema),
-    getLogs: (params = {}) =>
-      get("/logs", z.object({ entries: z.array(nasLogEntrySchema) }).passthrough(), {
-        params: omitUndefined(params as Record<string, unknown>),
-      }),
-    restartModule: (name) =>
-      post(`/modules/${encodeURIComponent(name)}/restart`, {}, statusOkSchema),
-    pullUpdates: (scope) =>
-      post("/pull_updates", { scope }, updateRunSchema),
-    getUpdateStatus: () => get("/pull_updates", updateRunSchema),
-    stackUp: () => post("/stack/up", {}, statusOkSchema),
-    stackDown: () => post("/stack/down", {}, statusOkSchema),
-    provision: (nodeName) =>
-      post("/provision", { node_name: nodeName }, provisionResponseSchema),
-    listClients: () => get("/clients", listClientsResponseSchema),
   };
+}
+
+/**
+ * openReportStream connects to Nas's server-sent event stream and resolves once it answers,
+ * yielding each `helper_report` and `changed` event and ignoring the rest. A malformed event, a refused
+ * connection and a dropped stream all throw, so the caller reconnects and reconciles.
+ */
+async function openReportStream(signal: AbortSignal): Promise<AsyncIterable<NasEvent>> {
+  const response = await fetch(`${NAS}/events`, { headers: { accept: "text/event-stream" }, signal });
+  if (!response.ok || response.body === null) {
+    throw new HathError(502, "nas", `Nas event stream refused: ${response.status}`);
+  }
+  const body = response.body;
+  return { [Symbol.asyncIterator]: () => parseEvents(body) };
+}
+
+/**
+ * parseEvents reads server-sent event frames from `body`, yielding the `helper_report` and
+ * `changed` events and ignoring the rest. A frame that is not JSON or a report that does not
+ * match its schema throws, and so does the end of the stream.
+ */
+export async function* parseEvents(body: AsyncIterable<Uint8Array>): AsyncGenerator<NasEvent> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    for (;;) {
+      const end = buffer.indexOf("\n\n");
+      if (end < 0) {
+        break;
+      }
+      const frame = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const data = frame
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("\n");
+      if (data === "") {
+        continue;
+      }
+      const event: unknown = JSON.parse(data);
+      const type = typeof event === "object" && event !== null ? (event as { type?: unknown }).type : undefined;
+      if (type === "helper_report") {
+        yield { type, report: parseResponse(reportSchema, event) };
+      } else if (type === "changed") {
+        yield { type };
+      }
+    }
+  }
+  throw new HathError(502, "nas", "Nas event stream ended");
 }
 
 function omitUndefined(obj: Record<string, unknown>): Record<string, unknown> {

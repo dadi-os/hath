@@ -134,6 +134,48 @@
       "when": 1791990000000,
       "tag": "0018_lane_names",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792080000000,
+      "tag": "0019_grant_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1792170000000,
+      "tag": "0020_async_and_waits",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792260000000,
+      "tag": "0021_attachment_files",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792350000000,
+      "tag": "0022_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792440000000,
+      "tag": "0023_retire_tool_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792526400000,
+      "tag": "0024_self_schedules",
+      "breakpoints": true
     }
   ]
 }

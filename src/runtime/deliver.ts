@@ -1,11 +1,12 @@
 import { toAttachmentSummary, type NewAttachment } from "../db/attachments.js";
 import type { Db } from "../db/client.js";
-import { awaitingReply, clearAwaitedReply } from "../db/handoffs.js";
+import { awaitingReply, clearAwaitedReply } from "../db/outbox.js";
 import { insertMessage, NO_ATTACHMENTS, type MessageAttachments } from "../db/messages.js";
 import { writeAgentLog } from "../db/logs.js";
 import type { MessageStatus } from "../types/domain.js";
 import type { EventBus } from "./events.js";
-import { opensLine, recordDelivery } from "./jobs.js";
+import { takeWatch } from "./watches.js";
+import { recordDelivery } from "./jobs.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 
 /**
@@ -15,28 +16,29 @@ import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 export const NOTICE = "notice";
 
 /**
- * What a notice is about: a lane that failed or a wake a restart cut short. A notice is
- * hath's word between the agent it is about and an agent waiting on it, never chat, and
- * never sent to Ankur:
- * stored with kind notice, it opens no job and makes no one a requester.
+ * What a notice is about: a lane that failed, a wake a restart cut short, one of the
+ * agent's browser or terminal helpers that finished, stopped, or needs an answer, or the
+ * result of one of its async tool calls, or a wait that timed out (the last three sent from the agent to itself, see
+ * rewake.ts). A notice is hath's word, never chat, and never sent to Ankur: stored with
+ * kind notice, it opens no job and makes no one a requester.
  */
-export type NoticeKind = "lane_failed" | "wake_interrupted";
+export type NoticeKind = "lane_failed" | "wake_interrupted" | "helper" | "tool" | "wait";
 
 export type DeliverDeps = {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  /** Queue a lane run; returns the id of the wake it joins (see engine.ts). */
-  enqueueProcess: (agentId: string) => string;
-  enqueueWork: (agentId: string) => string;
+  /** Queue a lane run; returns the id of the wake it joins (see engine.ts). `reason` is why, for the wake's first line. */
+  enqueueProcess: (agentId: string, reason?: string) => string;
+  enqueueWork: (agentId: string, reason?: string) => string;
   /** The id of an agent's current wake, stamped on the log of a message it sends; null outside a wake. */
   wakeOf?: (agentId: string) => string | null;
 };
 
 /**
  * Persist a human → agent message (from_agent_id null) and wake the recipient's
- * process lane once, however many files it carries. Shared by POST /messages
- * and the router's send_message and forward_attachment. The null side is logged
+ * process lane once, however many files it carries, or its work lane when it is waiting
+ * on Ankur's reply. Shared by POST /messages and the router's send_message and forward_attachment. The null side is logged
  * too, so the router's get_logs sees what Ankur (or it, as him) sent.
  */
 export async function deliverUserMessage(
@@ -71,7 +73,11 @@ export async function deliverUserMessage(
       seq: row.seq,
     },
   });
-  const wakeId = deps.enqueueProcess(toAgentId);
+  const awaited = await awaitingReply(deps.db, toAgentId, null);
+  if (awaited) {
+    await clearAwaitedReply(deps.db, toAgentId, null);
+  }
+  const wakeId = awaited ? deps.enqueueWork(toAgentId, "reply from Ankur") : deps.enqueueProcess(toAgentId, "message from Ankur");
   await writeAgentLog(deps.db, {
     agentId: toAgentId,
     lane: "process",
@@ -101,11 +107,10 @@ export async function deliverUserMessage(
 }
 
 /**
- * Persist an agent → agent|user message. Shared by dispatch_message,
- * forward_attachment and the scheduled-message ticker. Caller checks agent
- * existence/active before calling. A message from an agent the recipient opened
- * the line to (its worker or helper, reporting back), or from one whose reply its
- * work lane is waiting on (it handed off a question or request to it), wakes the
+ * Persist an agent → agent|user message. Shared by send, the scheduled-message ticker
+ * and hath's notices. Caller checks agent existence/active before calling. A reply the
+ * recipient's work lane is waiting on (it queued a message marked expects_reply to the
+ * sender), a wait that names the sender, or a caller that says `wakeWork` wakes the
  * recipient's work lane; any other message wakes its process lane.
  */
 export async function deliverAgentMessage(
@@ -129,6 +134,10 @@ export async function deliverAgentMessage(
     notice?: NoticeKind;
     /** The sender's lane that sent it, for its log row; the process lane when left out. */
     lane?: "process" | "work";
+    /** True wakes the recipient's work lane whoever sent it, as a helper's result does. */
+    wakeWork?: boolean;
+    /** Why the recipient wakes, for its wake's first line; "message from <sender>" when left out. */
+    wokenBy?: string;
   },
 ): Promise<TranscriptEntry> {
   const extra = { ...(args.extraPayload ?? {}), ...(args.notice !== undefined ? { kind: "notice", [NOTICE]: args.notice } : {}) };
@@ -166,11 +175,12 @@ export async function deliverAgentMessage(
   if (row.toAgentId !== null) {
     let wakeId: string | null = null;
     if (args.wake !== false) {
-      const awaited = await awaitingReply(deps.db, row.toAgentId, args.fromAgentId);
+      const awaited = (await awaitingReply(deps.db, row.toAgentId, args.fromAgentId)) || (await takeWatch(deps.db, row.toAgentId, args.fromAgentId));
+      const reason = args.wokenBy ?? `${args.scheduled === true ? "scheduled message" : "message"} from ${args.fromAgentId}`;
       wakeId =
-        awaited || (await opensLine(deps.db, row.toAgentId, args.fromAgentId))
-          ? deps.enqueueWork(row.toAgentId)
-          : deps.enqueueProcess(row.toAgentId);
+        args.wakeWork === true || awaited
+          ? deps.enqueueWork(row.toAgentId, reason)
+          : deps.enqueueProcess(row.toAgentId, reason);
       if (awaited) {
         await clearAwaitedReply(deps.db, row.toAgentId, args.fromAgentId);
       }

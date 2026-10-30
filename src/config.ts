@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { z } from "zod";
 import {
-  CHAAVI_BASE_URL,
   DWAR_BASE_URL,
   GHAR_BASE_URL,
   HOST,
@@ -22,7 +21,7 @@ const tomlPath = join(serviceRoot, "config.toml");
 const fileSchema = z.object({
   runtime: z.object({
     lane_queue_timeout_ms: z.number().int().positive(),
-    process_transcript_window_chars: z.number().int().positive(),
+    process_context_tokens: z.number().int().positive(),
     work_transcript_window_chars: z.number().int().positive(),
     transcript_window_step_chars: z.number().int().positive(),
     tool_debounce_base_ms: z.number().int().positive(),
@@ -36,10 +35,8 @@ const fileSchema = z.object({
   }).refine((runtime) => runtime.wake_tool_results_kept_chars < runtime.wake_tool_results_max_chars, {
     message: "wake_tool_results_kept_chars must be below wake_tool_results_max_chars",
   }).refine(
-    (runtime) =>
-      runtime.transcript_window_step_chars <
-      Math.min(runtime.process_transcript_window_chars, runtime.work_transcript_window_chars),
-    { message: "transcript_window_step_chars must be below both lanes' transcript_window_chars" },
+    (runtime) => runtime.transcript_window_step_chars < runtime.work_transcript_window_chars,
+    { message: "transcript_window_step_chars must be below work_transcript_window_chars" },
   ).refine((runtime) => runtime.prompt_trim_tokens < runtime.prompt_ceiling_tokens, {
     message: "prompt_trim_tokens must be below prompt_ceiling_tokens",
   }),
@@ -58,11 +55,6 @@ const fileSchema = z.object({
     retry_attempts: z.number().int().positive(),
     backoff_ms: z.array(z.number().min(0)).nonempty(),
   }),
-  chaavi: z.object({
-    timeout_ms: z.number().int().positive(),
-    retry_attempts: z.number().int().positive(),
-    backoff_ms: z.array(z.number().min(0)).nonempty(),
-  }),
   nas: z.object({
     timeout_ms: z.number().int().positive(),
     retry_attempts: z.number().int().positive(),
@@ -71,11 +63,11 @@ const fileSchema = z.object({
   devices: z.object({
     timeout_ms: z.number().int().positive(),
   }),
-  browser: z.object({
-    action_timeout_ms: z.number().int().positive(),
-    navigation_timeout_ms: z.number().int().positive(),
-    snapshot_max_bytes: z.number().int().positive(),
-    click_settle_ms: z.number().int().positive(),
+  files: z.object({
+    dir: z.string().refine((dir) => dir.startsWith("/") && !dir.endsWith("/"), {
+      message: "files.dir must be an absolute path without a trailing slash",
+    }),
+    cache_retention_days: z.number().int().positive(),
   }),
   schedule: z.object({
     tick_seconds: z.number().int().positive(),
@@ -93,7 +85,6 @@ export type Config = {
     dwarBaseUrl: string;
     yaadBaseUrl: string;
     gharBaseUrl: string;
-    chaaviBaseUrl: string;
     nasBaseUrl: string;
     host: string;
     port: number;
@@ -103,10 +94,9 @@ export type Config = {
   dwar: FileConfig["dwar"];
   yaad: FileConfig["yaad"];
   ghar: FileConfig["ghar"];
-  chaavi: FileConfig["chaavi"];
   nas: FileConfig["nas"];
   devices: FileConfig["devices"];
-  browser: FileConfig["browser"];
+  files: FileConfig["files"];
   schedule: FileConfig["schedule"];
 };
 
@@ -160,7 +150,6 @@ export function loadConfig(): Config {
       dwarBaseUrl: DWAR_BASE_URL,
       yaadBaseUrl: YAAD_BASE_URL,
       gharBaseUrl: GHAR_BASE_URL,
-      chaaviBaseUrl: CHAAVI_BASE_URL,
       nasBaseUrl: NAS,
       host: HOST,
       port: PORT,
@@ -170,10 +159,9 @@ export function loadConfig(): Config {
     dwar: file.dwar,
     yaad: file.yaad,
     ghar: file.ghar,
-    chaavi: file.chaavi,
     nas: file.nas,
     devices: file.devices,
-    browser: file.browser,
+    files: file.files,
     schedule: file.schedule,
   };
   return cached;

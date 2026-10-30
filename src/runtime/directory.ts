@@ -13,7 +13,7 @@ export const DESCRIPTION_MAX_CHARS = 400;
 /** The template every description follows, as the tools that set one show it. */
 export const DESCRIPTION_TEMPLATE =
   'Three lines: "Owns: <what you are responsible for>", "Ask for: <what other agents should bring you, with an example or two>", and optionally "Not for: <what looks like yours but goes elsewhere, and to whom>". At most ' +
-  `${DESCRIPTION_MAX_CHARS} characters. Example:\nOwns: Every browser and browser worker.\nAsk for: a one-shot browser worker that reaches a site or account you name ("a worker signed in to D2L").\nNot for: doing the web task itself: you give your worker its steps.`;
+  `${DESCRIPTION_MAX_CHARS} characters. Example:\nOwns: Ankur's money: budgets, recurring costs, what a decision would cost.\nAsk for: the numbers behind a decision ("what does this lease cost over its term").\nNot for: buying or paying; Ankur says yes to every purchase.`;
 
 /** A description in the template: Owns, Ask for, and an optional Not for, one line each. */
 export const descriptionSchema = z

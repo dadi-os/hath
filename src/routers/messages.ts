@@ -17,7 +17,7 @@ export async function registerMessages(app: FastifyInstance): Promise<void> {
   app.post("/messages", async (request, reply) => {
     const body = parse(postMessageBody, request.body);
     await requireActiveAgent(app.db, body.to_agent_id);
-    const uploads = await prepareUploads(app.dwar, body.attachments ?? []);
+    const uploads = await prepareUploads({ dwar: app.dwar, files: app.runtime.files }, body.attachments ?? []);
     const row = await deliverUserMessage(
       {
         db: app.db,

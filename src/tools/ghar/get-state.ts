@@ -24,7 +24,7 @@ export const getState = defineTool({
         type: "array",
         items: { type: "string" },
         minItems: 1,
-        description: "Device ids to read",
+        description: "Read the current values of one or more devices, with when each value last changed (changed_at), in one call. Use it for what is on, open, locked or measured now and how long it has been that way; ghar_get_device_events reads what happened over time.",
       },
     },
     required: ["device_ids"],

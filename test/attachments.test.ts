@@ -3,23 +3,19 @@ import { Buffer } from "node:buffer";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
-import { INLINE_TEXT_CHARS, type AttachmentMeta } from "../src/db/attachments.js";
 import { migrate } from "../src/db/migrate.js";
 import { attachments } from "../src/db/schema.js";
-import { HathError } from "../src/errors.js";
-import { MAX_ATTACHMENT_BYTES, attachmentStub, prepareUploads } from "../src/runtime/attachments.js";
+import { MAX_ATTACHMENT_BYTES, moveLegacyAttachments } from "../src/runtime/attachments.js";
 import { assembleContext } from "../src/runtime/context.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import {
-  CREATE_ATTACHMENT,
-  FORWARD_ATTACHMENT,
-  HAND_OFF,
-  READ_ATTACHMENT,
+  MESSAGE,
+  READ_FILE,
+  SEND,
 } from "../src/types/domain.js";
 import {
-  insertWorker,
-  mockChaavi,
+  insertAgent,
   mockDwar,
   mockGhar,
   mockNas,
@@ -48,19 +44,6 @@ function b64(text: string): string {
   return Buffer.from(text, "utf8").toString("base64");
 }
 
-function meta(overrides: Partial<AttachmentMeta>): AttachmentMeta {
-  return {
-    id: "00000000-0000-4000-8000-000000000001",
-    filename: "f",
-    mediaType: "text/plain",
-    sizeBytes: 1,
-    description: null,
-    textLength: null,
-    textHead: null,
-    ...overrides,
-  };
-}
-
 async function harness(nas = mockNas({})) {
   const dwar = mockDwar({});
   const runtime = createRuntime({
@@ -68,7 +51,6 @@ async function harness(nas = mockNas({})) {
     dwar,
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas,
     config,
     log: silentLog,
@@ -79,62 +61,21 @@ async function harness(nas = mockNas({})) {
     dwar,
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas,
     runtime,
   });
   return { dwar, runtime, app };
 }
 
-test("prepareUploads keeps text as text, describes images and keeps their bytes, and keeps other files as bytes", async () => {
-  const dwar = mockDwar({});
-  const prepared = await prepareUploads(dwar, [
-    { media_type: "text/markdown", data: b64("# Report\n"), filename: "report.md" },
-    { media_type: "image/png", data: PNG, filename: "dot.png" },
-    { media_type: "application/pdf", data: b64("%PDF-1.4"), filename: "notes.pdf" },
-  ]);
-
-  assert.equal(dwar.describeCalls.length, 1);
-  assert.equal(prepared[0]?.textContent, "# Report\n");
-  assert.equal(prepared[0]?.data, null);
-  assert.equal(prepared[1]?.description, "mock image description");
-  assert.deepEqual(prepared[1]?.data, Buffer.from(PNG, "base64"));
-  assert.equal(prepared[2]?.textContent, null);
-  assert.equal(prepared[2]?.description, null);
-  assert.equal(prepared[2]?.sizeBytes, 8);
-});
-
-test("prepareUploads rejects a text file that is not UTF-8", async () => {
-  await assert.rejects(
-    prepareUploads(mockDwar({}), [
-      { media_type: "text/plain", data: Buffer.from([0xff, 0xfe, 0xfd]).toString("base64") },
-    ]),
-    (err: unknown) => err instanceof HathError && err.statusCode === 422,
-  );
-});
-
-test("attachmentStub shows short text whole, previews long text, and describes or labels binaries", () => {
-  const short = attachmentStub(meta({ textLength: 5, textHead: "hello" }));
-  assert.match(short, /\nhello$/);
-
-  const long = "x".repeat(INLINE_TEXT_CHARS + 10);
-  const preview = attachmentStub(meta({ textLength: long.length, textHead: long.slice(0, INLINE_TEXT_CHARS) }));
-  assert.ok(preview.length < 1000);
-  assert.match(preview, /read_attachment/);
-
-  assert.match(attachmentStub(meta({ mediaType: "image/png", description: "a dot" })), /\na dot$/);
-  assert.match(attachmentStub(meta({ mediaType: "application/pdf" })), /Not text/);
-});
-
 test("POST /messages stores attachments, the transcript shows stubs, and GET /attachments/:id returns the file", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, { name: "reader", systemPrompt: "reads", tools: [] });
+  const agentId = await insertAgent(handle.db, { name: "reader", systemPrompt: "reads" });
   const { app, runtime } = await harness();
   t.after(async () => {
     await runtime.waitUntilIdle();
     await app.close();
   });
-  const report = "r".repeat(INLINE_TEXT_CHARS * 2);
+  const report = "r".repeat(20_000);
 
   const posted = await app.inject({
     method: "POST",
@@ -170,7 +111,8 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
   });
   const seen = JSON.stringify(context.transcripts.process);
   assert.ok(seen.includes(sent.attachments[0]!.id));
-  assert.ok(!seen.includes(report));
+  assert.match(seen, /Path: \/var\/home\/dadi\/\.dadi\/attachments\//, "the block shows the file's path");
+  assert.ok(!seen.includes(report), "the contents never enter the transcript");
   assert.ok(seen.includes("mock image description"));
 
   const file = await app.inject({ method: "GET", url: `/attachments/${sent.attachments[0]!.id}` });
@@ -185,11 +127,12 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
   assert.equal(missing.statusCode, 404);
 });
 
-test("forward_attachment copies a carried file to the recipient and read_attachment pages through it", async (t) => {
+test("send with an attachment id copies the carried file's row to the recipient, sharing the one file, and read_file opens it", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
-  const senderId = await insertWorker(handle.db, { name: "sender", systemPrompt: "sends", tools: [] });
-  const recipientId = await insertWorker(handle.db, { name: "recipient", systemPrompt: "gets", tools: [] });
-  const { app, runtime } = await harness();
+  const senderId = await insertAgent(handle.db, { name: "sender", systemPrompt: "sends" });
+  const recipientId = await insertAgent(handle.db, { name: "recipient", systemPrompt: "gets" });
+  const nas = mockNas({});
+  const { app, runtime } = await harness(nas);
   t.after(async () => {
     await runtime.waitUntilIdle();
     await app.close();
@@ -209,14 +152,16 @@ test("forward_attachment copies a carried file to the recipient and read_attachm
   const forwarded = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "f1",
-    name: FORWARD_ATTACHMENT,
-    input: { to_agent_id: recipientId, attachment_ids: [originalId], note: "from Ankur" },
+    name: SEND,
+    input: { to: recipientId, attachments: [originalId], content: "from Ankur" },
   });
   assert.equal(forwarded.isError, false, forwarded.content);
   const copyId = (JSON.parse(forwarded.content) as { attachments: Array<{ id: string }> }).attachments[0]!.id;
   assert.notEqual(copyId, originalId);
-  const rows = await handle.db.select().from(attachments).where(eq(attachments.textContent, report));
+  const rows = await handle.db.select().from(attachments).where(eq(attachments.filename, "report.txt"));
   assert.equal(rows.length, 2);
+  assert.equal(rows[0]?.path, rows[1]?.path, "both rows name the same file");
+  assert.equal(nas.files.size, 1);
 
   const received = runtime.transcript.transcriptFor(recipientId).at(-1);
   assert.equal(received?.content, "from Ankur");
@@ -225,66 +170,35 @@ test("forward_attachment copies a carried file to the recipient and read_attachm
   const page = await executeTool(runtime.toolContext(recipientId, "work"), {
     type: "tool_use",
     id: "r1",
-    name: READ_ATTACHMENT,
-    input: { attachment_id: copyId, offset: 29_990, limit: 100 },
+    name: READ_FILE,
+    input: { path: received!.attachments[0]!.path, offset: 29_990, limit: 100 },
   });
   assert.equal(page.isError, false, page.content);
   assert.deepEqual(JSON.parse(page.content), {
-    attachment_id: copyId,
-    filename: "report.txt",
-    media_type: "text/plain",
-    offset: 29_990,
+    path: received!.attachments[0]!.path,
     total_chars: 30_000,
+    offset: 29_990,
     next_offset: null,
     content: "abcdefghij",
   });
 });
 
-test("create_attachment needs terminal_read_file, stores the host file, and the first send binds that same row", async (t) => {
+test("send copies a host file path as it is now, and the send binds that same row", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
-  const nas = mockNas({
-    readFileBytes: () => ({ data: Buffer.from("# Title\nbody\n").toString("base64"), size_bytes: 13 }),
-  });
-  const plainId = await insertWorker(handle.db, { name: "plain", systemPrompt: "no grants", tools: [] });
-  const workerId = await insertWorker(handle.db, {
-    name: "writer",
-    systemPrompt: "writes",
-    tools: ["terminal_read_file"],
-  });
+  const nas = mockNas({});
+  nas.files.set("/var/home/dadi/report.md", Buffer.from("# Title\nbody\n"));
+  const workerId = await insertAgent(handle.db, { name: "writer", systemPrompt: "writes" });
   const { app, runtime } = await harness(nas);
   t.after(async () => {
     await runtime.waitUntilIdle();
     await app.close();
   });
 
-  const denied = await executeTool(runtime.toolContext(plainId, "work"), {
-    type: "tool_use",
-    id: "c0",
-    name: CREATE_ATTACHMENT,
-    input: { path: "/var/home/dadi/report.md" },
-  });
-  assert.equal(denied.isError, true);
-  assert.match(denied.content, /^forbidden/);
-
-  const created = await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "c1",
-    name: CREATE_ATTACHMENT,
-    input: { path: "/var/home/dadi/report.md" },
-  });
-  assert.equal(created.isError, false, created.content);
-  const staged = JSON.parse(created.content) as { id: string; filename: string; media_type: string };
-  assert.equal(staged.filename, "report.md");
-  assert.equal(staged.media_type, "text/markdown");
-  const [row] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
-  assert.equal(row?.textContent, "# Title\nbody\n");
-  assert.equal(row?.messageId, null);
-
   const unknown = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "s0",
-    name: HAND_OFF,
-    input: { to: "ankur", kind: "note", content: "send it", attachment_ids: ["00000000-0000-4000-8000-000000000000"] },
+    name: MESSAGE,
+    input: { to: "ankur", content: "send it", attachments: ["00000000-0000-4000-8000-000000000000"] },
   });
   assert.equal(unknown.isError, true);
   assert.match(unknown.content, /^not_found/);
@@ -292,29 +206,23 @@ test("create_attachment needs terminal_read_file, stores the host file, and the 
   const sent = await executeTool(runtime.toolContext(workerId, "process"), {
     type: "tool_use",
     id: "f1",
-    name: FORWARD_ATTACHMENT,
-    input: { to_agent_id: null, attachment_ids: [staged.id], note: "your report" },
+    name: SEND,
+    input: { to: "ankur", content: "your report", attachments: ["/var/home/dadi/report.md"] },
   });
   assert.equal(sent.isError, false, sent.content);
-  assert.equal(
-    (JSON.parse(sent.content) as { attachments: Array<{ id: string }> }).attachments[0]?.id,
-    staged.id,
-  );
-  const [bound] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
-  assert.notEqual(bound?.messageId, null);
+  const [row] = await handle.db.select().from(attachments).where(eq(attachments.filename, "report.md"));
+  assert.equal(row?.mediaType, "text/markdown");
+  assert.equal(nas.files.get(row!.path!)?.toString(), "# Title\nbody\n");
+  nas.files.set("/var/home/dadi/report.md", Buffer.from("changed later"));
+  assert.equal(nas.files.get(row!.path!)?.toString(), "# Title\nbody\n", "the copy is a snapshot");
+  assert.notEqual(row?.messageId, null);
 });
 
-test("create_attachment stores a Word document and an unlisted binary as bytes with their media types", async (t) => {
+test("send gives a Word document and an unlisted binary their media types and keeps their bytes", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const zipBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0xfe]);
-  const nas = mockNas({
-    readFileBytes: () => ({ data: zipBytes.toString("base64"), size_bytes: zipBytes.length }),
-  });
-  const workerId = await insertWorker(handle.db, {
-    name: "filer",
-    systemPrompt: "files",
-    tools: ["terminal_read_file"],
-  });
+  const nas = mockNas({});
+  const workerId = await insertAgent(handle.db, { name: "filer", systemPrompt: "files" });
   const { app, runtime } = await harness(nas);
   t.after(async () => {
     await runtime.waitUntilIdle();
@@ -327,54 +235,48 @@ test("create_attachment stores a Word document and an unlisted binary as bytes w
       mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     },
     { path: "/var/home/dadi/scratch/model.onnx", mediaType: "application/octet-stream" },
+    { path: "/var/home/dadi/career/Resume.PDF", mediaType: "application/pdf" },
   ];
   for (const [index, { path, mediaType }] of cases.entries()) {
-    const created = await executeTool(runtime.toolContext(workerId, "work"), {
+    nas.files.set(path, zipBytes);
+    const sent = await executeTool(runtime.toolContext(workerId, "process"), {
       type: "tool_use",
       id: `c${index}`,
-      name: CREATE_ATTACHMENT,
-      input: { path },
+      name: SEND,
+      input: { to: "ankur", content: `file ${index}`, attachments: [path] },
     });
-    assert.equal(created.isError, false, created.content);
-    const staged = JSON.parse(created.content) as { id: string; media_type: string };
-    assert.equal(staged.media_type, mediaType);
-    const [row] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
-    assert.deepEqual(row?.data, zipBytes);
-    assert.equal(row?.textContent, null);
+    assert.equal(sent.isError, false, sent.content);
+    const [row] = await handle.db.select().from(attachments).where(eq(attachments.filename, path.split("/").at(-1)!));
+    assert.equal(row?.mediaType, mediaType);
+    assert.deepEqual(nas.files.get(row!.path!), zipBytes);
   }
+  assert.deepEqual(nas.readFileBytesCalls.map((call) => call.max_bytes), [MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_BYTES]);
 });
 
-test("create_attachment reads a host PDF whole as bytes and stores it as application/pdf", async (t) => {
+test("boot moves attachments that still hold their bytes in the database to files, once", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
-  const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x0a]);
-  const nas = mockNas({
-    readFileBytes: () => ({ data: pdf.toString("base64"), size_bytes: pdf.length }),
+  const agentId = await insertAgent(handle.db, { name: "old", systemPrompt: "old" });
+  const id = "00000000-0000-4000-8000-0000000000aa";
+  await handle.db.insert(attachments).values({
+    id,
+    createdByAgentId: agentId,
+    position: 0,
+    filename: "old.txt",
+    mediaType: "text/plain",
+    sizeBytes: 3,
+    textContent: "old",
   });
-  const workerId = await insertWorker(handle.db, {
-    name: "builder",
-    systemPrompt: "builds",
-    tools: ["terminal_read_file"],
-  });
+  const nas = mockNas({});
   const { app, runtime } = await harness(nas);
   t.after(async () => {
     await runtime.waitUntilIdle();
     await app.close();
   });
 
-  const created = await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "c1",
-    name: CREATE_ATTACHMENT,
-    input: { path: "/var/home/dadi/career/Resume.PDF" },
-  });
-  assert.equal(created.isError, false, created.content);
-  assert.deepEqual(nas.readFileBytesCalls, [
-    { path: "/var/home/dadi/career/Resume.PDF", max_bytes: MAX_ATTACHMENT_BYTES },
-  ]);
-  assert.equal(nas.readFileCalls.length, 0);
-  const staged = JSON.parse(created.content) as { id: string; filename: string; media_type: string };
-  assert.equal(staged.media_type, "application/pdf");
-  const [row] = await handle.db.select().from(attachments).where(eq(attachments.id, staged.id));
-  assert.deepEqual(row?.data, pdf);
+  assert.equal(await moveLegacyAttachments(handle.db, runtime.files), 1);
+  const [row] = await handle.db.select().from(attachments).where(eq(attachments.id, id));
+  assert.equal(row?.path, `${config.files.dir}/attachments/${id}/old.txt`);
   assert.equal(row?.textContent, null);
+  assert.equal(nas.files.get(row!.path!)?.toString(), "old");
+  assert.equal(await moveLegacyAttachments(handle.db, runtime.files), 0);
 });

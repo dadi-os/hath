@@ -33,6 +33,12 @@ const ingestMemoryInput = z
   })
   .strict();
 
+/**
+ * ingest_memory runs in the background (see async.ts): Yaad's ingest took 47 seconds at the
+ * median and 11 minutes at worst (370 calls, 2026-10-22 to 29).
+ */
+export const INGEST_MEMORY_ASYNC = true;
+
 /** Read memory by meaning, from known nodes, or by exact filters, walking `hops` links out. */
 export const recallMemoryTool: DwarTool = {
   name: RECALL_MEMORY,

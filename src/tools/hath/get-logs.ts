@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, lt, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { agentIdSchema } from "../../agent-id.js";
 import { agentLogs } from "../../db/schema.js";
@@ -50,13 +50,12 @@ function clipStrings(value: unknown): unknown {
 /**
  * Query durable audit logs. Agents read themselves or a direct child. The router
  * reads any agent but never the null identity: it is ephemeral, so earlier runs
- * and Ankur's messages stay out of reach. The user (CLI) with no agent_id reads
- * the null identity — the router's turns and every message to or from Ankur.
+ * and Ankur's messages stay out of reach.
  */
 export const getLogs = defineTool({
   name: "get_logs",
   description:
-    "Read cognition audit logs for yourself or a direct child, newest first: response rows hold one model turn in order (thinking, text, tool calls), tool_result rows hold each tool's name and outcome, message rows hold every message sent or received, so this is how you find something said earlier that has left your transcript (a plan, a list, an approval). `search` keeps rows whose content contains that text (case-insensitive); `before` (an ISO time, e.g. a result's `next_before`) pages back to older rows. Long strings are clipped and a result stops at a size budget with `next_before` set when older rows remain. Defaults to yourself when agent_id is omitted. The router may read any agent and must name one: it has no logs of its own to read. Not system HTTP logs — use nas_get_logs for those.",
+    "Read the audit log for yourself or a direct child, newest first: response rows are whole model turns (thinking, text, tool calls), tool_result rows each tool's name and outcome, message rows every message sent or received. It is how you find what was said or done after it left your transcript (a plan, a list, an approval, a result). search keeps rows containing that text; before (an ISO time, such as a result's next_before) pages back. Long text is clipped and next_before is set when older rows remain. As the router, name the agent.",
   input,
   inputSchema: {
     type: "object",
@@ -76,22 +75,19 @@ export const getLogs = defineTool({
     required: [],
   },
   async handler(ctx, parsed) {
-    if (ctx.callerKind === "router" && parsed.agent_id === undefined) {
+    const targetId = parsed.agent_id ?? ctx.callerId;
+    if (targetId === null) {
       return fail("the router is ephemeral and has no logs of its own; pass an agent_id");
     }
-    const targetId = parsed.agent_id ?? ctx.callerId;
-    if (targetId !== null) {
-      const target = await requireAgent(ctx.db, targetId);
-      if (
-        ctx.callerId !== null &&
-        target.id !== ctx.callerId &&
-        target.parentAgentId !== ctx.callerId
-      ) {
-        return fail("get_logs is limited to self or direct children");
-      }
+    const target = await requireAgent(ctx.db, targetId);
+    if (
+      ctx.callerId !== null &&
+      target.id !== ctx.callerId &&
+      target.parentAgentId !== ctx.callerId
+    ) {
+      return fail("get_logs is limited to self or direct children");
     }
-    const party: SQL =
-      targetId === null ? isNull(agentLogs.agentId) : eq(agentLogs.agentId, targetId);
+    const party: SQL = eq(agentLogs.agentId, targetId);
     const limit = parsed.limit ?? 50;
     const filters: SQL[] = [party];
     if (parsed.event) {

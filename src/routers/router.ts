@@ -17,7 +17,7 @@ import { parse, postRouterBody } from "./schemas.js";
 export async function registerRouter(app: FastifyInstance): Promise<void> {
   app.post("/router", async (request, reply) => {
     const body = parse(postRouterBody, request.body);
-    const uploads = await prepareUploads(app.dwar, body.attachments ?? []);
+    const uploads = await prepareUploads({ dwar: app.dwar, files: app.runtime.files }, body.attachments ?? []);
     const staged = await stageAttachments(app.db, null, uploads);
     const utterance = [body.content.trim(), ...staged.map(attachmentStub)]
       .filter((part) => part.length > 0)

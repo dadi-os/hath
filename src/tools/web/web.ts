@@ -2,12 +2,13 @@
  * Web search and fetch for every agent, without a browser: public pages only, no logins.
  * Both run in Dwar (see dwar inference/web.py) and come back shaped for the prompt: a
  * search is one line per result, a fetch is each page's answer to the agent's question (or
- * its opening, with no question), and every fetched page's whole text is stored with the
- * call, where read_result pages through it or searches it by pattern without fetching again.
+ * its opening, with no question), and every fetched page's whole text is saved to a file
+ * (see runtime/files.ts) that read_file pages through or searches by pattern without fetching again.
  */
 
 import { z } from "zod";
 import { HathError } from "../../errors.js";
+import { resultPath } from "../../runtime/files.js";
 import { defineTool } from "../types.js";
 import { fail, failWithoutAgentIdentity, type ToolExecResult } from "../shared.js";
 
@@ -55,7 +56,7 @@ function dwarFailure(err: unknown) {
 export const webSearch = defineTool({
   name: "web_search",
   description:
-    "Search the public web (one search, about 1 cent). Returns one line per result: title, url, how old the page is, and a few words on what it says about your query. Use it for anything public: facts, dates, docs, forums, news, people's public pages. Then read the pages that matter with web_fetch. Narrow with allowed_domains (e.g. [\"msu.edu\"]) or blocked_domains. For anything behind a login or that needs clicking, ask browser-manager for a worker instead.",
+    "Search the public web (about 1 cent a search). Returns one line per result: title, url, how old the page is, and a few words on what it says about your query. Narrow with allowed_domains or blocked_domains. Read the pages that matter with web_fetch. Anything behind a sign-in, or that needs clicking, forms or several steps, is for steer_browser.",
   input: searchInput,
   inputSchema: {
     type: "object",
@@ -95,7 +96,7 @@ export const webSearch = defineTool({
 export const webFetch = defineTool({
   name: "web_fetch",
   description:
-    "Read up to 10 public web pages at once, in parallel, as text (no logins, no clicking; PDFs and pages that need a browser fail with a reason). With a question, each page is read on its own and you get only its answer, quoted from the page, or \"Not on this page\". Without one, you get each page's title, size and opening lines. Either way every page's whole text is kept: read_result with this call's id pages through it (offset, limit) or finds lines in it (pattern) without fetching again.",
+    "Read up to 10 public web pages at once, as text. With a question, each page is read on its own and you get only its answer, quoted from the page, or \"Not on this page\"; without one, each page's title, size and opening lines. Every page's whole text is saved to a file whose path the result gives: read_file pages through it or finds lines by pattern, without fetching again. Pages behind a sign-in, PDFs that will not load and pages that need a real browser fail with a reason; use steer_browser for those and for anything that needs clicking or forms.",
   input: fetchInput,
   inputSchema: {
     type: "object",
@@ -128,7 +129,7 @@ export const webFetch = defineTool({
         .map((page, index) => `=== ${index + 1}. ${page.final_url}${page.title ? ` — ${page.title}` : ""}\n${page.error ?? page.text}`)
         .join("\n\n");
       const read = fetched.pages.filter((page) => page.error === null).length;
-      const header = `${read} of ${fetched.pages.length} pages read${parsed.question !== undefined ? `, each answering: ${clip(parsed.question, 160)}` : ""}. read_result on this call reads or searches their whole text.`;
+      const header = `${read} of ${fetched.pages.length} pages read${parsed.question !== undefined ? `, each answering: ${clip(parsed.question, 160)}` : ""}. their whole text is saved at ${ctx.callId === null ? "(no call)" : resultPath(ctx.files.dir, ctx.callId)}: read_file reads or searches it.`;
       return text(`${header}\n${shown.join("\n")}`, { full, pages: fetched.pages.length });
     } catch (err) {
       return dwarFailure(err);

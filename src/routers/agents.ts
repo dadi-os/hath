@@ -3,9 +3,11 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { listHumanMessages, markThreadRead } from "../db/messages.js";
-import { agentLogs, agents, agentTools, tools } from "../db/schema.js";
-import type { AgentRow } from "../db/schema.js";
+import { agentLogs, agents, watches } from "../db/schema.js";
+import type { AgentRow, WatchRow } from "../db/schema.js";
+import type { HelperTask } from "../nas/client.js";
 import { requireAgent } from "../runtime/tools.js";
+import { allTools } from "../tools/registry.js";
 import { toAgentRecord, toLogRecord } from "../serialize.js";
 import type { AgentRecord } from "../types/domain.js";
 import { agentLogsQuery, agentMessagesQuery, idParam, logsQuery, parse, threadReadBody } from "./schemas.js";
@@ -96,40 +98,47 @@ async function agentWakeLogs(app: FastifyInstance, id: string, wakes: number) {
   return [...stamped, ...unstamped];
 }
 
-/** Attach ephemeral running locks and host sessions for API responses. */
-function withLive(row: AgentRow, runtime: FastifyInstance["runtime"]): AgentRecord {
+/** What a response shows beyond the stored rows: Nas's tasks and every agent's watch. */
+type Live = { tasks: HelperTask[]; watches: Map<string, WatchRow> };
+
+async function loadLive(app: FastifyInstance): Promise<Live> {
+  const [tasks, watchRows] = await Promise.all([app.runtime.sessions.snapshot(), app.db.select().from(watches)]);
+  return { tasks, watches: new Map(watchRows.map((row) => [row.agentId, row])) };
+}
+
+/**
+ * Attach ephemeral running locks, what each lane waits on, the status block while a lane
+ * runs or the work lane waits (null otherwise), and the agent's Nas tasks for API responses.
+ */
+async function withLive(row: AgentRow, runtime: FastifyInstance["runtime"], live: Live): Promise<AgentRecord> {
+  const watch = live.watches.get(row.id);
+  const work = runtime.locks.isHeld(row.id, "work");
+  const process = runtime.locks.isHeld(row.id, "process");
   return {
     ...toAgentRecord(row),
     running: {
-      work: runtime.locks.isHeld(row.id, "work"),
-      process: runtime.locks.isHeld(row.id, "process"),
+      work,
+      process,
+      waiting_on:
+        watch === undefined
+          ? null
+          : { targets: watch.targets, since: watch.since.toISOString(), wakes_by: watch.dueAt.toISOString() },
+      status: work || process || watch !== undefined ? await runtime.statusOf(row.id) : null,
     },
-    sessions: runtime.sessions.forAgent(row.id),
+    sessions: runtime.sessions.forAgent(live.tasks, row.id),
   };
 }
 
 async function agentDetail(app: FastifyInstance, agentRow: AgentRow) {
+  const live = await loadLive(app);
   const childRows = await app.db
     .select()
     .from(agents)
     .where(eq(agents.parentAgentId, agentRow.id));
-  const toolRows = await app.db
-    .select({
-      name: tools.name,
-      description: tools.description,
-      usage: agentTools.usage,
-    })
-    .from(agentTools)
-    .innerJoin(tools, eq(agentTools.toolId, tools.id))
-    .where(eq(agentTools.agentId, agentRow.id));
   return {
-    ...withLive(agentRow, app.runtime),
-    children: childRows.map((row) => withLive(row, app.runtime)),
-    tools: toolRows.map((row) => ({
-      name: row.name,
-      description: row.description,
-      usage: row.usage,
-    })),
+    ...(await withLive(agentRow, app.runtime, live)),
+    children: await Promise.all(childRows.map((row) => withLive(row, app.runtime, live))),
+    tools: allTools().map((tool) => ({ name: tool.name, description: tool.description })),
   };
 }
 
@@ -137,8 +146,9 @@ async function agentDetail(app: FastifyInstance, agentRow: AgentRow) {
 export async function registerAgents(app: FastifyInstance): Promise<void> {
   app.get("/agents", async () => {
     const rows = await app.db.select().from(agents);
+    const live = await loadLive(app);
     return {
-      agents: rows.map((row) => withLive(row, app.runtime)),
+      agents: await Promise.all(rows.map((row) => withLive(row, app.runtime, live))),
     };
   });
 

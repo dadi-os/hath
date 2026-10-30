@@ -3,14 +3,12 @@ import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { and, asc, eq } from "drizzle-orm";
 import {
-  DECLINE_HANDOFF,
-  DISPATCH_MESSAGE,
   GET_AGENT,
-  HAND_OFF,
   LIST_AGENTS,
   MANAGE_AGENT,
+  MESSAGE,
   MODIFY_AGENT_PROMPT,
-  SEND_MESSAGE,
+  SEND,
 } from "../src/types/domain.js";
 import { currentRequester, insertMessage, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { assembleContext } from "../src/runtime/context.js";
@@ -20,18 +18,14 @@ import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, agents, agentTools, jobs, messages, scheduledMessages, tools } from "../src/db/schema.js";
+import { agentLogs, agents, jobs, messages, scheduledMessages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { toolId } from "../src/tools/sync.js";
-import { allTools, findTool } from "../src/tools/registry.js";
+import { allTools } from "../src/tools/registry.js";
 import {
   endTurn,
   insertAgent,
-  insertManager,
-  insertWorker,
   mockDwar,
   mockGhar,
-  mockChaavi,
   mockNas,
   mockYaad,
   openTestDb,
@@ -39,7 +33,6 @@ import {
   silentLog,
   testConfig,
   toolUse,
-  waitingHandoffId,
   yieldTurn,
   wideWindows,
 } from "./helpers.js";
@@ -58,10 +51,9 @@ after(async () => {
 
 test("two concurrent messages to one agent serialize on its process-lane lock", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: [],
   });
   let active = 0;
   let overlap = false;
@@ -76,13 +68,13 @@ test("two concurrent messages to one agent serialize on its process-lane lock", 
       return yieldTurn();
     },
   });
-  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
+  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
   const app = await buildApp(config, {
     db: handle.db,
     sql: handle.sql,
     dwar,
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     runtime,
   });
   t.after(() => app.close());
@@ -105,10 +97,9 @@ test("two concurrent messages to one agent serialize on its process-lane lock", 
 
 test("manage_agent on a non-child is rejected", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "parent",
     systemPrompt: "parent prompt",
-    tools: [],
   });
   const strangerId = await insertAgent(handle.db, {
     name: "stranger",
@@ -118,7 +109,7 @@ test("manage_agent on a non-child is rejected", async () => {
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -134,10 +125,9 @@ test("manage_agent on a non-child is rejected", async () => {
 
 test("modify_agent_prompt on a direct child is allowed", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "boss",
     systemPrompt: "boss prompt",
-    tools: [],
   });
   const childId = await insertAgent(handle.db, {
     name: "worker",
@@ -148,7 +138,7 @@ test("modify_agent_prompt on a direct child is allowed", async () => {
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -178,7 +168,6 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -201,8 +190,8 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   const blocked = await executeTool(runtime.toolContext(parentId, "process"), {
     type: "tool_use",
     id: "rh3",
-    name: "dispatch_message",
-    input: { to_agent_id: childId, content: "are you there?" },
+    name: "send",
+    input: { to: childId, content: "are you there?" },
   });
   assert.equal(blocked.isError, true);
 
@@ -216,8 +205,8 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   const delivered = await executeTool(runtime.toolContext(parentId, "process"), {
     type: "tool_use",
     id: "rh5",
-    name: "dispatch_message",
-    input: { to_agent_id: childId, content: "welcome back" },
+    name: "send",
+    input: { to: childId, content: "welcome back" },
   });
   assert.equal(delivered.isError, false, delivered.content);
   await runtime.waitUntilIdle();
@@ -225,10 +214,9 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
 
 test("modify_agent_prompt edits the prompt of self and a direct child", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "boss",
     systemPrompt: "boss prompt",
-    tools: [],
   });
   const childId = await insertAgent(handle.db, {
     name: "worker",
@@ -240,7 +228,6 @@ test("modify_agent_prompt edits the prompt of self and a direct child", async ()
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -276,10 +263,9 @@ test("modify_agent_prompt edits the prompt of self and a direct child", async ()
 
 test("modify_agent_prompt of a stranger is rejected", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "parent",
     systemPrompt: "parent",
-    tools: [],
   });
   const strangerId = await insertAgent(handle.db, {
     name: "stranger",
@@ -290,7 +276,6 @@ test("modify_agent_prompt of a stranger is rejected", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -309,17 +294,15 @@ test("modify_agent_prompt of a stranger is rejected", async () => {
 
 test("modify_agent_prompt saves nothing unless every edit matches exactly once", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const selfId = await insertWorker(handle.db, {
+  const selfId = await insertAgent(handle.db, {
     name: "alpha",
     systemPrompt: "alpha beta alpha",
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -364,17 +347,15 @@ test("modify_agent_prompt saves nothing unless every edit matches exactly once",
 
 test("manage_agent retires without touching the prompt", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const selfId = await insertWorker(handle.db, {
+  const selfId = await insertAgent(handle.db, {
     name: "solo",
     systemPrompt: "keep me",
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -412,12 +393,11 @@ test("manage_agent retires without touching the prompt", async () => {
   );
 });
 
-test("work-lane context has hand_off, send_message, list_agents, and no dispatch_message", async () => {
+test("work-lane context has message, list_agents, and no send, send_message, hand_off or create_attachment", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: [],
   });
   const ctx = await assembleContext({
     windows: wideWindows,
@@ -428,12 +408,12 @@ test("work-lane context has hand_off, send_message, list_agents, and no dispatch
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  assert.ok(names.includes(HAND_OFF));
-  assert.ok(names.includes(SEND_MESSAGE));
+  assert.ok(names.includes(MESSAGE));
   assert.ok(names.includes(LIST_AGENTS));
   assert.ok(names.includes("yield"));
-  assert.equal(names.includes(DISPATCH_MESSAGE), false);
-  assert.equal(names.includes(DECLINE_HANDOFF), false);
+  for (const gone of [SEND, "send_message", "hand_off", "dispatch_message", "decline_handoff", "forward_attachment", "create_attachment"]) {
+    assert.equal(names.includes(gone), false, gone);
+  }
 });
 
 test("the work lane cannot write another agent's mailbox", async () => {
@@ -450,7 +430,7 @@ test("the work lane cannot write another agent's mailbox", async () => {
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -458,8 +438,8 @@ test("the work lane cannot write another agent's mailbox", async () => {
   const result = await executeTool(runtime.toolContext(callerId, "work"), {
     type: "tool_use",
     id: "d1",
-    name: DISPATCH_MESSAGE,
-    input: { to_agent_id: targetId, content: "sneak" },
+    name: SEND,
+    input: { to: targetId, content: "sneak" },
   });
   assert.equal(result.isError, true);
   assert.match(result.content, /unknown work-lane tool/);
@@ -477,7 +457,7 @@ test("a steer with the work lane idle starts a Dwar work-lane call", async () =>
     work: async () => yieldTurn("steered"),
     process: async () => yieldTurn(),
   });
-  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
+  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
   await executeTool(runtime.toolContext(callerId, "process"), {
     type: "tool_use",
     id: "s1",
@@ -492,7 +472,7 @@ test("a steer with the work lane idle starts a Dwar work-lane call", async () =>
   assert.match(blob, /wake up/);
 });
 
-test("work-lane exit without send_message does not wake the process lane", async () => {
+test("work-lane exit without a message does not wake the process lane", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, {
     name: "quiet-reasoner",
@@ -506,7 +486,6 @@ test("work-lane exit without send_message does not wake the process lane", async
     db: handle.db,
     dwar,
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     yaad: mockYaad(),
     config,
@@ -533,29 +512,29 @@ test("work-lane exit without send_message does not wake the process lane", async
   assert.equal(dwar.processCalls.length, 0);
 });
 
-test("the work lane's send_message delivers the message as written to an agent it brought in", async () => {
+test("the work lane never sends itself: its message is queued, and the process lane sends it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const callerId = await insertAgent(handle.db, {
-    name: "direct-sender",
-    systemPrompt: "send directly",
-  });
+  const callerId = await insertAgent(handle.db, { name: "direct-sender", systemPrompt: "send via the front desk" });
   const childId = await insertAgent(handle.db, { id: "direct-child", systemPrompt: "child", parentAgentId: callerId });
   let reasonTurn = 0;
+  let sentByProcess = false;
   const dwar = mockDwar({
     work: async () => {
       reasonTurn += 1;
-      if (reasonTurn === 1) {
-        return toolUse(SEND_MESSAGE, { to_agent_id: childId, content: "say hi" }, "sm-1");
-      }
-      return yieldTurn("r-yield");
+      return reasonTurn === 1 ? toolUse(MESSAGE, { to: childId, content: "say hi" }, "sm-1") : yieldTurn("r-yield");
     },
-    process: async () => yieldTurn("c-yield"),
+    process: async (request) => {
+      if (!sentByProcess && JSON.stringify(request.messages).includes("[Messages from work]")) {
+        sentByProcess = true;
+        return toolUse(SEND, { to: childId, content: "say hi" }, "sm-send");
+      }
+      return yieldTurn("c-yield");
+    },
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar,
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     yaad: mockYaad(),
     config,
@@ -572,7 +551,7 @@ test("the work lane's send_message delivers the message as written to an agent i
   assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[childId, "say hi"]]);
 });
 
-test("the work lane's send_message to Ankur or to an agent it did not bring in is refused and points to hand_off", async () => {
+test("send_message is not a work-lane tool, and message refuses itself as a recipient", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, { id: "refused-sender", systemPrompt: "sender" });
   const peerId = await insertAgent(handle.db, { id: "refused-peer", systemPrompt: "peer" });
@@ -581,31 +560,30 @@ test("the work lane's send_message to Ankur or to an agent it did not bring in i
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
   });
-  const toPeer = await executeTool(runtime.toolContext(callerId, "work"), {
+  const legacy = await executeTool(runtime.toolContext(callerId, "work"), {
     type: "tool_use",
     id: "sm-peer",
-    name: SEND_MESSAGE,
+    name: "send_message",
     input: { to_agent_id: peerId, content: "hello" },
   });
-  assert.equal(toPeer.isError, true);
-  assert.match(toPeer.content, /call hand_off/);
-  const toAnkur = await executeTool(runtime.toolContext(callerId, "work"), {
+  assert.equal(legacy.isError, true);
+  assert.match(legacy.content, /unknown work-lane tool/);
+  const toSelf = await executeTool(runtime.toolContext(callerId, "work"), {
     type: "tool_use",
-    id: "sm-ankur",
-    name: SEND_MESSAGE,
-    input: { to_agent_id: null, content: "hello" },
+    id: "sm-self",
+    name: MESSAGE,
+    input: { to: callerId, content: "hello" },
   });
-  assert.equal(toAnkur.isError, true);
+  assert.equal(toSelf.isError, true);
   assert.equal((await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId))).length, 0);
   await runtime.waitUntilIdle();
 });
 
-test("an agent that retires itself still gets its handed-off report sent, and does nothing after", async () => {
+test("an agent that retires itself still gets its queued message sent, and does nothing after", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, { name: "retiring-worker", systemPrompt: "report and retire" });
   let reasonTurn = 0;
@@ -617,7 +595,7 @@ test("an agent that retires itself still gets its handed-off report sent, and do
         provider: "anthropic",
         content: [
           { type: "tool_use", id: "rt-retire", name: MANAGE_AGENT, input: { agent_id: callerId, retired: true } },
-          { type: "tool_use", id: "rt-report", name: HAND_OFF, input: { to: "ankur", kind: "note", content: "Browser 13 is not running." } },
+          { type: "tool_use", id: "rt-report", name: MESSAGE, input: { to: "ankur", content: "Browser 13 is not running." } },
           { type: "tool_use", id: "rt-yield", name: "yield", input: {} },
         ],
         stop_reason: "tool_use",
@@ -625,9 +603,9 @@ test("an agent that retires itself still gets its handed-off report sent, and do
       };
     },
     process: async (request) => {
-      if (!dispatched && JSON.stringify(request.messages).includes("[Hand-offs waiting]")) {
+      if (!dispatched && JSON.stringify(request.messages).includes("[Messages from work]")) {
         dispatched = true;
-        return toolUse(DISPATCH_MESSAGE, { handoff_id: waitingHandoffId(request) }, "rt-dispatch");
+        return toolUse(SEND, { to: "ankur", content: "Browser 13 is not running." }, "rt-dispatch");
       }
       return yieldTurn("rt-c-yield");
     },
@@ -636,7 +614,6 @@ test("an agent that retires itself still gets its handed-off report sent, and do
     db: handle.db,
     dwar,
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     yaad: mockYaad(),
     config,
@@ -646,17 +623,16 @@ test("an agent that retires itself still gets its handed-off report sent, and do
   await runtime.waitUntilIdle();
 
   assert.equal(reasonTurn, 1, "a retired agent's the work lane does not run again");
-  assert.ok(dispatched, "the retired agent's process lane still ran to send the hand-off");
+  assert.ok(dispatched, "the retired agent's process lane still ran to send the message");
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
   assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[null, "Browser 13 is not running."]]);
 });
 
-test("process-lane tools are dispatch_message, steer_work, list_agents, yield â€” never route_message", async () => {
+test("process-lane tools are the fixed front-desk list, with no grants or async tools", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: [],
   });
   const ctx = await assembleContext({
     windows: wideWindows,
@@ -667,23 +643,17 @@ test("process-lane tools are dispatch_message, steer_work, list_agents, yield â€
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  assert.ok(names.includes(DISPATCH_MESSAGE));
-  assert.ok(names.includes(DECLINE_HANDOFF));
-  assert.ok(names.includes("steer_work"));
-  assert.ok(names.includes(LIST_AGENTS));
-  assert.ok(names.includes("yield"));
-  assert.equal(names.includes(SEND_MESSAGE), false);
-  assert.equal(names.includes("route_message"), false);
+  assert.deepEqual(names, [SEND, "steer_work", "read_file", "find", "get_logs", "web_search", "web_fetch", "recall_memory", LIST_AGENTS, "yield"]);
 });
 
-test("spawn_agent requires system_prompt and grants nothing", async () => {
+test("spawn_agent requires system_prompt, and the child holds the whole registry", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const managerId = await insertManager(handle.db);
+  const managerId = await insertAgent(handle.db, { id: "manager", systemPrompt: "manage children" });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -714,21 +684,27 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
   assert.deepEqual(
     childCtx.tools.map((tool) => tool.name),
     [
-      HAND_OFF,
-      SEND_MESSAGE,
-      "read_attachment",
-      "create_attachment",
+      "hath_spawn_agent",
+      "ghar_list_devices",
+      "ghar_get_state",
+      "ghar_control_device",
+      "ghar_get_device_events",
+      MESSAGE,
       LIST_AGENTS,
       "wait",
-      "read_result",
       "recall_memory",
       "ingest_memory",
       "manage_agent",
       "modify_agent_prompt",
+      "steer_browser",
+      "steer_terminal",
+      "list_browsers",
+      "list_terminals",
+      "read_file",
+      "find",
+      "write_file",
+      "edit_file",
       "get_agent",
-      "grant_tool",
-      "revoke_tool",
-      "list_tools",
       "get_logs",
       "web_search",
       "web_fetch",
@@ -738,177 +714,6 @@ test("spawn_agent requires system_prompt and grants nothing", async () => {
       "yield",
     ],
   );
-});
-
-test("grant_tool on a direct child succeeds and appears in assembleContext", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const managerId = await insertManager(handle.db);
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const childId = await insertAgent(handle.db, {
-    name: "grantee",
-    systemPrompt: "child",
-    parentAgentId: managerId,
-  });
-  const granted = await executeTool(runtime.toolContext(managerId, "work"), {
-    type: "tool_use",
-    id: "g1",
-    name: "grant_tool",
-    input: {
-      agent_id: childId,
-      tools: [{ tool_name: "hath_spawn_agent", usage: "tune your own prompt" }],
-    },
-  });
-  assert.equal(granted.isError, false);
-  const ctx = await assembleContext({
-    windows: wideWindows,
-    db: handle.db,
-    serviceRoot: config.serviceRoot,
-    agentId: childId,
-    lane: "work",
-    transcript: new TranscriptStore(),
-  });
-  const names = ctx.tools.map((tool) => tool.name);
-  assert.ok(names.includes("hath_spawn_agent"));
-  assert.ok(names.includes(SEND_MESSAGE));
-});
-
-test("grant_tool on a non-child fails", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const managerId = await insertManager(handle.db);
-  const strangerId = await insertAgent(handle.db, {
-    name: "stranger-grant",
-    systemPrompt: "stranger",
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const result = await executeTool(runtime.toolContext(managerId, "work"), {
-    type: "tool_use",
-    id: "g2",
-    name: "grant_tool",
-    input: {
-      agent_id: strangerId,
-      tools: [{ tool_name: "hath_spawn_agent", usage: "nope" }],
-    },
-  });
-  assert.equal(result.isError, true);
-  assert.match(result.content, /direct children/);
-});
-
-test("grant_tool and manage_agent reject a grandchild for a normal agent", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertManager(handle.db, {
-    name: "grandparent",
-    systemPrompt: "top",
-  });
-  const childId = await insertAgent(handle.db, {
-    name: "child",
-    systemPrompt: "mid",
-    parentAgentId: parentId,
-  });
-  const grandchildId = await insertAgent(handle.db, {
-    name: "grandchild",
-    systemPrompt: "leaf",
-    parentAgentId: childId,
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const grant = await executeTool(runtime.toolContext(parentId, "work"), {
-    type: "tool_use",
-    id: "g-gc",
-    name: "grant_tool",
-    input: {
-      agent_id: grandchildId,
-      tools: [{ tool_name: "yaad_search_history", usage: "nope" }],
-    },
-  });
-  assert.equal(grant.isError, true);
-  assert.match(grant.content, /direct children/);
-
-  const modify = await executeTool(runtime.toolContext(parentId, "work"), {
-    type: "tool_use",
-    id: "m-gc",
-    name: MANAGE_AGENT,
-    input: { agent_id: grandchildId, retired: true },
-  });
-  assert.equal(modify.isError, true);
-  assert.match(modify.content, /direct children/);
-});
-
-test("as the router, grant_tool reaches a root but not a nested agent", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const rootId = await insertAgent(handle.db, {
-    name: "root-for-dadi",
-    systemPrompt: "root",
-  });
-  const parentId = await insertAgent(handle.db, {
-    name: "other-parent",
-    systemPrompt: "parent",
-  });
-  const nestedId = await insertAgent(handle.db, {
-    name: "nested-under-other",
-    systemPrompt: "nested",
-    parentAgentId: parentId,
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const dadi = runtime.toolContext(null, "work");
-
-  const rootGrant = await executeTool(dadi, {
-    type: "tool_use",
-    id: "dadi-root",
-    name: "grant_tool",
-    input: {
-      agent_id: rootId,
-      tools: [{ tool_name: "yaad_search_history", usage: "remember for the root" }],
-    },
-  });
-  assert.equal(rootGrant.isError, false, rootGrant.content);
-
-  const nestedGrant = await executeTool(dadi, {
-    type: "tool_use",
-    id: "dadi-nested",
-    name: "grant_tool",
-    input: {
-      agent_id: nestedId,
-      tools: [{ tool_name: "yaad_get_node_history", usage: "query for the nested agent" }],
-    },
-  });
-  assert.equal(nestedGrant.isError, true);
-  assert.match(nestedGrant.content, /direct children/);
-
-  const grants = await handle.db.select().from(agentTools);
-  const byAgent = new Map(grants.map((row) => [row.agentId, row.toolId]));
-  assert.equal(byAgent.get(rootId), toolId("yaad_search_history"));
-  assert.equal(byAgent.get(nestedId), undefined);
 });
 
 test("as the router, manage_agent and modify_agent_prompt are refused and change nothing", async () => {
@@ -927,7 +732,6 @@ test("as the router, manage_agent and modify_agent_prompt are refused and change
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -957,10 +761,9 @@ const storedPrompt = "revise me in place\nkeep  the double space\tand \"quotes\"
 
 test("get_agent returns a direct child's stored prompt byte for byte", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "prompt-parent",
     systemPrompt: "parent",
-    tools: [],
   });
   const childId = await insertAgent(handle.db, {
     name: "prompt-child",
@@ -972,7 +775,6 @@ test("get_agent returns a direct child's stored prompt byte for byte", async () 
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -993,17 +795,15 @@ test("get_agent returns a direct child's stored prompt byte for byte", async () 
 
 test("get_agent lets an agent read itself", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const selfId = await insertWorker(handle.db, {
+  const selfId = await insertAgent(handle.db, {
     name: "self-reader",
     systemPrompt: storedPrompt,
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1029,10 +829,9 @@ test("get_agent lets an agent read itself", async () => {
 
 test("get_agent refuses a grandchild and a sibling with the self-or-direct-child rule", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const grandparentId = await insertWorker(handle.db, {
+  const grandparentId = await insertAgent(handle.db, {
     name: "grandparent",
     systemPrompt: "top",
-    tools: [],
   });
   const childId = await insertAgent(handle.db, {
     name: "mid",
@@ -1044,18 +843,16 @@ test("get_agent refuses a grandchild and a sibling with the self-or-direct-child
     systemPrompt: "leaf prompt",
     parentAgentId: childId,
   });
-  const siblingId = await insertWorker(handle.db, {
+  const siblingId = await insertAgent(handle.db, {
     name: "sibling",
     systemPrompt: "sibling",
     parentAgentId: grandparentId,
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1098,7 +895,6 @@ test("as Dadi, get_agent reads any agent", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1113,25 +909,22 @@ test("as Dadi, get_agent reads any agent", async () => {
   assert.equal(JSON.parse(result.content).system_prompt, storedPrompt);
 });
 
-test("get_agent tool names match agent_tools for that agent", async () => {
+test("get_agent lists the registry tools", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "tools-parent",
     systemPrompt: "parent",
-    tools: [],
   });
-  const childId = await insertWorker(handle.db, {
+  const childId = await insertAgent(handle.db, {
     name: "tools-child",
     systemPrompt: "child",
     parentAgentId: parentId,
-    tools: ["yaad_search_history", "hath_spawn_agent"],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1143,28 +936,17 @@ test("get_agent tool names match agent_tools for that agent", async () => {
     input: { agent_id: childId },
   });
   assert.equal(result.isError, false, result.content);
-  const held = await handle.db
-    .select({ name: tools.name })
-    .from(agentTools)
-    .innerJoin(tools, eq(agentTools.toolId, tools.id))
-    .where(eq(agentTools.agentId, childId))
-    .orderBy(asc(tools.name));
   assert.deepEqual(
     (JSON.parse(result.content) as { tools: string[] }).tools,
-    held.map((row) => row.name),
+    allTools().map((tool) => tool.name),
   );
-  assert.deepEqual((JSON.parse(result.content) as { tools: string[] }).tools, [
-    "hath_spawn_agent",
-    "yaad_search_history",
-  ]);
 });
 
 test("an edit built from get_agent's prompt changes only the edited text", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "round-parent",
     systemPrompt: "parent",
-    tools: [],
   });
   const childId = await insertAgent(handle.db, {
     name: "round-child",
@@ -1176,7 +958,6 @@ test("an edit built from get_agent's prompt changes only the edited text", async
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1227,7 +1008,6 @@ test("as Dadi, schedule_message fails without writing a row", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1249,7 +1029,7 @@ test("as Dadi, schedule_message fails without writing a row", async () => {
   assert.equal(after.length, before.length);
 });
 
-test("as Dadi, send_message and dispatch_message fail and deliver nothing", async () => {
+test("as Dadi, message and send fail and deliver nothing", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const targetId = await insertAgent(handle.db, {
     name: "msg-target",
@@ -1260,7 +1040,6 @@ test("as Dadi, send_message and dispatch_message fail and deliver nothing", asyn
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1270,8 +1049,8 @@ test("as Dadi, send_message and dispatch_message fail and deliver nothing", asyn
   const send = await executeTool(runtime.toolContext(null, "work"), {
     type: "tool_use",
     id: "dadi-send",
-    name: SEND_MESSAGE,
-    input: { to_agent_id: targetId, content: "say hi" },
+    name: MESSAGE,
+    input: { to: targetId, content: "say hi" },
   });
   assert.equal(send.isError, true);
   assert.match(send.content, /agent identity/);
@@ -1279,8 +1058,8 @@ test("as Dadi, send_message and dispatch_message fail and deliver nothing", asyn
   const dispatch = await executeTool(runtime.toolContext(null, "process"), {
     type: "tool_use",
     id: "dadi-dispatch",
-    name: DISPATCH_MESSAGE,
-    input: { to_agent_id: targetId, content: "hi" },
+    name: SEND,
+    input: { to: targetId, content: "hi" },
   });
   assert.equal(dispatch.isError, true);
   assert.match(dispatch.content, /agent identity/);
@@ -1288,209 +1067,7 @@ test("as Dadi, send_message and dispatch_message fail and deliver nothing", asyn
   assert.equal(runtime.transcript.transcriptFor(targetId).length, before);
 });
 
-test("grant_tool naming an unknown tool fails", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const managerId = await insertManager(handle.db);
-  const childId = await insertAgent(handle.db, {
-    name: "unknown-tool-child",
-    systemPrompt: "child",
-    parentAgentId: managerId,
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const result = await executeTool(runtime.toolContext(managerId, "work"), {
-    type: "tool_use",
-    id: "g3",
-    name: "grant_tool",
-    input: {
-      agent_id: childId,
-      tools: [
-        { tool_name: "hath_spawn_agent", usage: "would be fine alone" },
-        { tool_name: "not_a_real_tool", usage: "nope" },
-      ],
-    },
-  });
-  assert.equal(result.isError, true);
-  assert.match(result.content, /no tool named not_a_real_tool; nothing was granted/);
-  const grants = await handle.db.select().from(agentTools).where(eq(agentTools.agentId, childId));
-  assert.equal(grants.length, 0);
-});
-
-test("grant_tool grants a list in one call, updates usage, and rejects a repeated name", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const managerId = await insertManager(handle.db);
-  const childId = await insertAgent(handle.db, {
-    name: "list-grant-child",
-    systemPrompt: "child",
-    parentAgentId: managerId,
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const grant = (tools: unknown, id: string) =>
-    executeTool(runtime.toolContext(managerId, "work"), {
-      type: "tool_use",
-      id,
-      name: "grant_tool",
-      input: { agent_id: childId, tools },
-    });
-
-  const both = await grant(
-    [
-      { tool_name: "yaad_search_history", usage: "find past plans" },
-      { tool_name: "yaad_get_node_history", usage: "check corrections" },
-    ],
-    "gl1",
-  );
-  assert.equal(both.isError, false, both.content);
-  assert.deepEqual(JSON.parse(both.content).tool_names, [
-    "yaad_search_history",
-    "yaad_get_node_history",
-  ]);
-
-  const again = await grant([{ tool_name: "yaad_search_history", usage: "newer reason" }], "gl2");
-  assert.equal(again.isError, false, again.content);
-  const rows = await handle.db.select().from(agentTools).where(eq(agentTools.agentId, childId));
-  assert.equal(rows.length, 2);
-  assert.equal(
-    rows.find((row) => row.toolId === toolId("yaad_search_history"))?.usage,
-    "newer reason",
-  );
-
-  const repeated = await grant(
-    [
-      { tool_name: "hath_spawn_agent", usage: "one" },
-      { tool_name: "hath_spawn_agent", usage: "two" },
-    ],
-    "gl3",
-  );
-  assert.equal(repeated.isError, true);
-  assert.match(repeated.content, /hath_spawn_agent listed more than once; nothing was granted/);
-
-  const empty = await grant([], "gl4");
-  assert.equal(empty.isError, true);
-});
-
-test("revoke_tool removes a grant and fails when the child does not hold it", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const managerId = await insertManager(handle.db);
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const childId = await insertAgent(handle.db, {
-    name: "revoke-child",
-    systemPrompt: "child",
-    parentAgentId: managerId,
-  });
-  await executeTool(runtime.toolContext(managerId, "work"), {
-    type: "tool_use",
-    id: "r0",
-    name: "grant_tool",
-    input: {
-      agent_id: childId,
-      tools: [{ tool_name: "hath_spawn_agent", usage: "temporary" }],
-    },
-  });
-  const revoked = await executeTool(runtime.toolContext(managerId, "work"), {
-    type: "tool_use",
-    id: "r1",
-    name: "revoke_tool",
-    input: { agent_id: childId, tool_name: "hath_spawn_agent" },
-  });
-  assert.equal(revoked.isError, false);
-  const ctx = await assembleContext({
-    windows: wideWindows,
-    db: handle.db,
-    serviceRoot: config.serviceRoot,
-    agentId: childId,
-    lane: "work",
-    transcript: new TranscriptStore(),
-  });
-  assert.equal(
-    ctx.tools.map((tool) => tool.name).includes("hath_spawn_agent"),
-    false,
-  );
-  const again = await executeTool(runtime.toolContext(managerId, "work"), {
-    type: "tool_use",
-    id: "r2",
-    name: "revoke_tool",
-    input: { agent_id: childId, tool_name: "hath_spawn_agent" },
-  });
-  assert.equal(again.isError, true);
-  assert.match(again.content, /does not hold/);
-});
-
-test("an agent can grant a tool it does not itself hold", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertAgent(handle.db, {
-    name: "router",
-    systemPrompt: "router",
-  });
-  const childId = await insertAgent(handle.db, {
-    name: "worker",
-    systemPrompt: "worker",
-    parentAgentId: parentId,
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const parentCtx = await assembleContext({
-    windows: wideWindows,
-    db: handle.db,
-    serviceRoot: config.serviceRoot,
-    agentId: parentId,
-    lane: "work",
-    transcript: new TranscriptStore(),
-  });
-  assert.equal(
-    parentCtx.tools.map((tool) => tool.name).includes("hath_spawn_agent"),
-    false,
-  );
-  const granted = await executeTool(runtime.toolContext(parentId, "work"), {
-    type: "tool_use",
-    id: "g4",
-    name: "grant_tool",
-    input: {
-      agent_id: childId,
-      tools: [{ tool_name: "hath_spawn_agent", usage: "you may modify yourself" }],
-    },
-  });
-  assert.equal(granted.isError, false);
-  const childCtx = await assembleContext({
-    windows: wideWindows,
-    db: handle.db,
-    serviceRoot: config.serviceRoot,
-    agentId: childId,
-    lane: "work",
-    transcript: new TranscriptStore(),
-  });
-  assert.ok(childCtx.tools.map((tool) => tool.name).includes("hath_spawn_agent"));
-});
-
-test("list_agents is in both lanes for an agent with no grants", async () => {
+test("list_agents is in both lanes", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, {
     name: "no-grants",
@@ -1513,21 +1090,27 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     transcript: new TranscriptStore(),
   });
   assert.deepEqual(workContext.tools.map((tool) => tool.name), [
-    HAND_OFF,
-    SEND_MESSAGE,
-    "read_attachment",
-    "create_attachment",
+    "hath_spawn_agent",
+    "ghar_list_devices",
+    "ghar_get_state",
+    "ghar_control_device",
+    "ghar_get_device_events",
+    MESSAGE,
     LIST_AGENTS,
     "wait",
-    "read_result",
     "recall_memory",
     "ingest_memory",
     "manage_agent",
     "modify_agent_prompt",
+    "steer_browser",
+    "steer_terminal",
+    "list_browsers",
+    "list_terminals",
+    "read_file",
+    "find",
+    "write_file",
+    "edit_file",
     "get_agent",
-    "grant_tool",
-    "revoke_tool",
-    "list_tools",
     "get_logs",
     "web_search",
     "web_fetch",
@@ -1537,63 +1120,6 @@ test("list_agents is in both lanes for an agent with no grants", async () => {
     "yield",
   ]);
   assert.ok(processContext.tools.map((tool) => tool.name).includes(LIST_AGENTS));
-});
-
-test("list_agents is absent from GET /tools, the tools table, and grant_tool", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  assert.equal(findTool(LIST_AGENTS), undefined);
-  assert.equal(
-    allTools().some((tool) => tool.name === LIST_AGENTS),
-    false,
-  );
-  const rows = await handle.db.select().from(tools).where(eq(tools.name, LIST_AGENTS));
-  assert.equal(rows.length, 0);
-
-  const app = await buildApp(config, {
-    db: handle.db,
-    sql: handle.sql,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-  });
-  const res = await app.inject({ method: "GET", url: "/tools" });
-  assert.equal(res.statusCode, 200);
-  const body = res.json() as { tools: { name: string }[] };
-  assert.equal(
-    body.tools.some((tool) => tool.name === LIST_AGENTS),
-    false,
-  );
-  await app.close();
-
-  const managerId = await insertManager(handle.db);
-  const childId = await insertAgent(handle.db, {
-    name: "grant-list-child",
-    systemPrompt: "child",
-    parentAgentId: managerId,
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const granted = await executeTool(runtime.toolContext(managerId, "work"), {
-    type: "tool_use",
-    id: "g-list",
-    name: "grant_tool",
-    input: {
-      agent_id: childId,
-      tools: [{ tool_name: LIST_AGENTS, usage: "should fail" }],
-    },
-  });
-  assert.equal(granted.isError, true);
-  assert.match(granted.content, /no tool named list_agents/);
 });
 
 test("list_agents exact id is case-sensitive and empty on miss", async () => {
@@ -1611,7 +1137,6 @@ test("list_agents exact id is case-sensitive and empty on miss", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1672,7 +1197,6 @@ test("list_agents omits retired agents unless show_retired", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1726,7 +1250,6 @@ test("list_agents resolves parent_name when the parent is retired", async () => 
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1771,7 +1294,6 @@ test("list_agents visibility is global across parents", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1804,7 +1326,7 @@ test("list_agents visibility is global across parents", async () => {
 
 test("get_logs searches, clips long strings, and pages back with next_before", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertWorker(handle.db, { name: "log-search", systemPrompt: "searcher", tools: [] });
+  const agentId = await insertAgent(handle.db, { name: "log-search", systemPrompt: "searcher" });
   await writeAgentLog(handle.db, {
     agentId,
     lane: "process",
@@ -1824,7 +1346,6 @@ test("get_logs searches, clips long strings, and pages back with next_before", a
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -1858,52 +1379,13 @@ test("get_logs searches, clips long strings, and pages back with next_before", a
   assert.ok(older.logs.length > 0);
 });
 
-test("read_result reopens the caller's own logged result by id, in pages or by pattern, and no one else's", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const ownerId = await insertAgent(handle.db, { id: "result-owner", systemPrompt: "reads" });
-  const otherId = await insertAgent(handle.db, { id: "result-other", systemPrompt: "other" });
-  const body = Array.from({ length: 50 }, (_, i) => `line ${i + 1}${i === 41 ? " deadline Friday" : ""}`).join("\n");
-  await writeAgentLog(handle.db, {
-    agentId: ownerId,
-    lane: "work",
-    event: "tool_result",
-    payload: { tool_use_id: "toolu_read_1", name: "terminal_read_file", content: body, is_error: false },
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas: mockNas(),
-    config,
-    log: silentLog,
-  });
-  const read = (agentId: string, input: Record<string, unknown>) =>
-    executeTool(runtime.toolContext(agentId, "work"), { type: "tool_use", id: "rr", name: "read_result", input });
-
-  const page = JSON.parse((await read(ownerId, { id: "toolu_read_1", limit: 20 })).content);
-  assert.equal(page.tool, "terminal_read_file");
-  assert.equal(page.total_chars, body.length);
-  assert.equal(page.content, body.slice(0, 20));
-  assert.equal(page.next_offset, 20);
-
-  const found = JSON.parse((await read(ownerId, { id: "toolu_read_1", pattern: "deadline" })).content);
-  assert.equal(found.matches, 1);
-  assert.equal(found.lines, "42: line 42 deadline Friday");
-
-  const theirs = await read(otherId, { id: "toolu_read_1" });
-  assert.equal(theirs.isError, true);
-  assert.match(theirs.content, /^not_found/);
-});
-
 test("every agent's system lists the standing agents with their directory entries, and an agent sets its own entry in the template", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const browserId = await insertAgent(handle.db, { id: "dir-browser-manager", systemPrompt: "You run browsers." });
   const ownerId = await insertAgent(handle.db, { id: "dir-course-owner", systemPrompt: "You own a course." });
   const childId = await insertAgent(handle.db, { id: "dir-course-helper", systemPrompt: "You help.", parentAgentId: ownerId });
   await insertAgent(handle.db, { id: "dir-browser-worker-1", systemPrompt: "One job.", parentAgentId: browserId });
-  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), config, log: silentLog });
+  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas: mockNas(), config, log: silentLog });
   const modify = (input: Record<string, unknown>) =>
     executeTool(runtime.toolContext(browserId, "work"), { type: "tool_use", id: "md", name: "modify_agent_prompt", input });
 
@@ -1938,8 +1420,8 @@ test("a wakes read returns whole stamped wakes, then older unstamped rows back t
   await log("message", { direction: "receive", content: "new opener" }, wakeId);
   await log("tool_result", { name: "terminal_read_file", content: "new step" }, wakeId);
   // A runtime of the test's own, so boot recovery does not wake the agent over the unanswered openers.
-  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), config, log: silentLog });
-  const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), runtime });
+  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas: mockNas(), config, log: silentLog });
+  const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas: mockNas(), runtime });
   try {
     const res = await app.inject({ method: "GET", url: `/agents/${agentId}/logs?wakes=10` });
     assert.equal(res.statusCode, 200, res.body);
@@ -1954,21 +1436,18 @@ test("a wakes read returns whole stamped wakes, then older unstamped rows back t
 
 test("get_logs defaults to caller and allows direct children only", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const parentId = await insertWorker(handle.db, {
+  const parentId = await insertAgent(handle.db, {
     name: "log-parent",
     systemPrompt: "parent",
-    tools: [],
   });
-  const childId = await insertWorker(handle.db, {
+  const childId = await insertAgent(handle.db, {
     name: "log-child",
     systemPrompt: "child",
     parentAgentId: parentId,
-    tools: [],
   });
-  const strangerId = await insertWorker(handle.db, {
+  const strangerId = await insertAgent(handle.db, {
     name: "log-stranger",
     systemPrompt: "stranger",
-    tools: [],
   });
   await writeAgentLog(handle.db, {
     agentId: parentId,
@@ -1993,7 +1472,6 @@ test("get_logs defaults to caller and allows direct children only", async () => 
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -2043,28 +1521,13 @@ test("get_logs defaults to caller and allows direct children only", async () => 
   });
   assert.equal(asRouter.isError, true);
   assert.match(asRouter.content, /ephemeral/);
-
-  const asUser = await executeTool(runtime.toolContext(null, "router", "user"), {
-    type: "tool_use",
-    id: "gl5",
-    name: "get_logs",
-    input: {},
-  });
-  assert.equal(asUser.isError, false, asUser.content);
-  assert.deepEqual(JSON.parse(asUser.content).logs, []);
 });
 
-test("executeTool denies registry tools without grant or when retired", async () => {
+test("executeTool refuses a registry tool for a retired agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const ungranted = await insertWorker(handle.db, {
-    name: "no-grant",
-    systemPrompt: "none",
-    tools: [],
-  });
-  const retired = await insertWorker(handle.db, {
+  const retired = await insertAgent(handle.db, {
     name: "retired-worker",
     systemPrompt: "retired",
-    tools: ["yaad_search_history"],
   });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retired));
   const runtime = createRuntime({
@@ -2072,31 +1535,20 @@ test("executeTool denies registry tools without grant or when retired", async ()
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
   });
 
-  const noGrant = await executeTool(runtime.toolContext(ungranted, "work"), {
-    type: "tool_use",
-    id: "eg1",
-    name: "yaad_search_history",
-    input: { query: "x" },
-  });
-  assert.equal(noGrant.isError, true);
-  assert.match(noGrant.content, /does not hold yaad_search_history/);
-
   const refused = await executeTool(runtime.toolContext(retired, "work"), {
     type: "tool_use",
     id: "eg2",
-    name: "yaad_search_history",
-    input: { query: "x" },
+    name: "ghar_list_devices",
+    input: {},
   });
   assert.equal(refused.isError, true);
   assert.equal(refused.content, `retired: agent ${retired} is retired`);
 });
-
 
 test("a failed work-lane wake is reported to the parent and wakes it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
@@ -2120,7 +1572,6 @@ test("a failed work-lane wake is reported to the parent and wakes it", async () 
     }),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -2180,7 +1631,6 @@ test("a lane that fails on Ankur's job sends him nothing: hath logs its own fail
     }),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -2223,7 +1673,6 @@ test("a work lane that fails on Ankur's job sends him nothing and leaves the job
     }),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -2266,7 +1715,6 @@ test("the same lane failure on every wake is reported once to a waiting agent un
     }),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -2293,7 +1741,7 @@ test("the same lane failure on every wake is reported once to a waiting agent un
 test("queued steers for a missing agent end the work-lane wake instead of re-queuing it", { timeout: 10_000 }, async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const dwar = mockDwar({});
-  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
+  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
   runtime.steer.append("ghost-agent", "keep going");
   runtime.enqueueWork("ghost-agent");
   await runtime.waitUntilIdle();
@@ -2304,7 +1752,7 @@ test("queued steers for a missing agent end the work-lane wake instead of re-que
 
 test("a lane logs each model turn whole before its tools run, and each result with its tool name", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, { name: "log-shape", systemPrompt: "work", tools: [] });
+  const workerId = await insertAgent(handle.db, { name: "log-shape", systemPrompt: "work" });
   let turn = 0;
   const dwar = mockDwar({
     work: async () => {
@@ -2325,7 +1773,7 @@ test("a lane logs each model turn whole before its tools run, and each result wi
       return yieldTurn("log-yield");
     },
   });
-  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
+  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
   runtime.enqueueWork(workerId);
   await runtime.waitUntilIdle();
 

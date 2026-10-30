@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
@@ -5,15 +6,13 @@ import { migrate } from "../src/db/migrate.js";
 import { jobs, messages } from "../src/db/schema.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime, type Runtime } from "../src/runtime/engine.js";
-import { openJobsNote } from "../src/runtime/jobs.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { DISPATCH_MESSAGE, LIST_AGENTS, STEER_WORK, WAIT, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
+import { LIST_AGENTS, SEND, STEER_WORK, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
 import {
   insertAgent,
   toolUse,
   yieldTurn,
-  mockChaavi,
   mockDwar,
   mockGhar,
   mockNas,
@@ -42,33 +41,32 @@ function idleRuntime(): Runtime {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
   });
 }
 
-/** dispatch sends `content` from `from` to `to` on the process lane, with `status` when given. */
+/** dispatch sends `content` from `from` to `to` (null is Ankur) on the process lane, with `status` when given. */
 function dispatch(runtime: Runtime, from: string, to: string | null, content: string, status?: MessageStatus) {
   return executeTool(runtime.toolContext(from, "process"), {
     type: "tool_use",
     id: `d-${content}`,
-    name: DISPATCH_MESSAGE,
-    input: { to_agent_id: to, content, ...(status !== undefined ? { status } : {}) },
+    name: SEND,
+    input: { to: to ?? "ankur", content, ...(status !== undefined ? { status } : {}) },
   });
 }
 
 /** deps delivers without waking anyone, so no lane runs. */
 function deps(runtime: Runtime) {
-  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => {}, enqueueWork: () => {} };
+  return { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() };
 }
 
 async function jobsOf(agentId: string) {
   return handle.db.select().from(jobs).where(eq(jobs.agentId, agentId));
 }
 
-test("Ankur's message opens a job whose reports carry a status, one progress update and one open question at a time", async () => {
+test("Ankur's message opens a job; a status on send records its progress and nothing refuses a send for it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "job-agent", systemPrompt: "agent" });
   const runtime = idleRuntime();
@@ -78,29 +76,19 @@ test("Ankur's message opens a job whose reports carry a status, one progress upd
   assert.equal(job?.state, "open");
   assert.equal(job?.requesterId, null);
 
-  const bare = await dispatch(runtime, agentId, null, "working on it");
-  assert.equal(bare.isError, true);
-  assert.match(bare.content, /^Not sent: Ankur gave you a job/);
-  assert.equal((await handle.db.select().from(messages).where(eq(messages.fromAgentId, agentId))).length, 0);
-
+  assert.equal((await dispatch(runtime, agentId, null, "working on it")).isError, false, "no status is required");
   assert.equal((await dispatch(runtime, agentId, null, "on it", "running")).isError, false);
-  const second = await dispatch(runtime, agentId, null, "still on it", "running");
-  assert.equal(second.isError, true);
-  assert.match(second.content, /one progress update/);
+  assert.equal((await dispatch(runtime, agentId, null, "still on it", "running")).isError, false, "a second progress update goes");
 
   assert.equal((await dispatch(runtime, agentId, null, "which semester?", "needs_input")).isError, false);
   [job] = await jobsOf(agentId);
   assert.equal(job?.state, "needs_input");
-  const again = await dispatch(runtime, agentId, null, "which semester, again?", "needs_input");
-  assert.equal(again.isError, true);
-  assert.match(again.content, /still open/);
+  assert.equal((await dispatch(runtime, agentId, null, "which semester, again?", "needs_input")).isError, false, "a second question goes");
 
   await deliverUserMessage(deps(runtime), agentId, "fall 2026");
   [job] = await jobsOf(agentId);
   assert.equal(job?.state, "open");
   assert.equal(job?.questionSeq, null);
-
-  assert.equal((await dispatch(runtime, agentId, null, "checking the registrar now", "running")).isError, false);
 
   assert.equal((await dispatch(runtime, agentId, null, "Wed 1:00 PM", "done")).isError, false);
   [job] = await jobsOf(agentId);
@@ -125,8 +113,7 @@ test("an agent's line to its worker opens a job only one way, and a scheduled tr
   assert.equal((await jobsOf(workerId)).length, 1);
   assert.equal((await jobsOf(managerId)).length, 0);
 
-  const bare = await dispatch(runtime, workerId, managerId, "page read");
-  assert.equal(bare.isError, true);
+  assert.equal((await dispatch(runtime, workerId, managerId, "page read")).isError, false);
   assert.equal((await dispatch(runtime, workerId, managerId, "page read: 3 items", "done")).isError, false);
   await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "thanks, stop there" });
   assert.deepEqual((await jobsOf(workerId)).map((row) => row.state).sort(), ["done", "open"]);
@@ -142,45 +129,18 @@ test("an agent's line to its worker opens a job only one way, and a scheduled tr
   await runtime.waitUntilIdle();
 });
 
-test("a status sent to an agent that gave no job, while someone else's job is open, is refused and names the real requester", async () => {
+test("a status sent to an agent that gave no job, while someone else's job is open, is no longer refused", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "misaddr-parent", systemPrompt: "parent" });
   const courseId = await insertAgent(handle.db, { id: "misaddr-course", systemPrompt: "course", parentAgentId: parentId });
   const runtime = idleRuntime();
 
-  const before = await dispatch(runtime, courseId, parentId, "FYI with a status", "done");
-  assert.equal(before.isError, false, "with no open job anywhere, a status is harmless");
-
   await deliverUserMessage(deps(runtime), courseId, "what did I get on the last exam?");
-  const refused = await dispatch(runtime, courseId, parentId, "Exam answers for Ankur", "done");
-  assert.equal(refused.isError, true);
-  assert.match(refused.content, /misaddr-parent gave you no open job.*Your open job is from Ankur \(to_agent_id null\)/);
-  assert.equal((await dispatch(runtime, courseId, parentId, "FYI: Ankur asked about his exam")).isError, false, "without a status it still goes");
+  assert.equal((await dispatch(runtime, courseId, parentId, "Exam answers for Ankur", "done")).isError, false);
+  assert.equal((await dispatch(runtime, courseId, parentId, "FYI: Ankur asked about his exam")).isError, false);
   assert.equal((await dispatch(runtime, courseId, null, "Exam 2: not recorded yet", "done")).isError, false);
-  await runtime.waitUntilIdle();
-});
-
-test("the open-jobs note tells each lane whom it owes a status, what it has spent, and who directs the agents it brought in", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const managerId = await insertAgent(handle.db, { id: "note-manager", systemPrompt: "manager" });
-  const workerId = await insertAgent(handle.db, { id: "note-worker", systemPrompt: "worker", parentAgentId: managerId });
-  const runtime = idleRuntime();
-  assert.equal(await openJobsNote(handle.db, managerId, "process"), null);
-
-  await deliverUserMessage(deps(runtime), managerId, "find my exam times");
-  await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "read the exam page" });
-  let note = await openJobsNote(handle.db, managerId, "process");
-  assert.match(note!, /Ankur gave you a job that is still open: every message to Ankur carries a status, and running is free/);
-  assert.match(note!, /You gave work that is still open to note-worker: your work lane directs it and messages them itself/);
-  assert.match((await openJobsNote(handle.db, managerId, "work"))!, /note-worker: their reports come to you/);
-
-  assert.equal((await dispatch(runtime, managerId, null, "on it", "running")).isError, false);
-  note = await openJobsNote(handle.db, managerId, "process");
-  assert.match(note!, /your one progress update is spent/);
-  assert.equal((await dispatch(runtime, managerId, null, "which semester?", "needs_input")).isError, false);
-  assert.match((await openJobsNote(handle.db, managerId, "process"))!, /your question to Ankur waits for a reply/);
-
-  assert.match((await openJobsNote(handle.db, workerId, "work"))!, /note-manager gave you a job/);
+  const [job] = await jobsOf(courseId);
+  assert.equal(job?.state, "done", "only the status to the requester moves the job");
   await runtime.waitUntilIdle();
 });
 
@@ -205,7 +165,6 @@ test("a wake that works a job and stops without reporting leaves it open and tel
     }),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -223,7 +182,7 @@ test("a wake that works a job and stops without reporting leaves it open and tel
   assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 0);
 });
 
-test("a report from an agent the recipient brought in wakes its work lane; everything else wakes the process lane", async () => {
+test("every message wakes the recipient's process lane, a spawned agent's report included", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "route-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "route-worker", systemPrompt: "worker", parentAgentId: managerId });
@@ -235,16 +194,18 @@ test("a report from an agent the recipient brought in wakes its work lane; every
     events: runtime.events,
     enqueueProcess: (agentId: string) => {
       woke.push(`${agentId}:process`);
-    },
+   return randomUUID();
+ },
     enqueueWork: (agentId: string) => {
       woke.push(`${agentId}:work`);
-    },
+   return randomUUID();
+ },
   };
 
   await deliverUserMessage(spy, managerId, "book the room");
   await deliverAgentMessage(spy, { fromAgentId: managerId, toAgentId: workerId, content: "open the booking page" });
   await deliverAgentMessage(spy, { fromAgentId: workerId, toAgentId: managerId, content: "page open", status: "running" });
-  assert.deepEqual(woke, ["route-manager:process", "route-worker:process", "route-manager:work"]);
+  assert.deepEqual(woke, ["route-manager:process", "route-worker:process", "route-manager:process"]);
 });
 
 /** A model turn of `calls`, each [name, input], ending in yield. */
@@ -274,7 +235,6 @@ function scriptedRuntime(turns: Array<() => DwarChatResponse | Promise<DwarChatR
     }),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
     config,
     log: silentLog,
@@ -286,14 +246,14 @@ async function sentBy(agentId: string): Promise<string[]> {
   return rows.sort((a, b) => a.seq - b.seq).map((row) => row.content);
 }
 
-test("a turn sends one message per recipient", async () => {
+test("a second send to one recipient in the same turn is held back with what already went out", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "turn-agent", systemPrompt: "agent" });
   const runtime = scriptedRuntime([
     () =>
       turnOf(
-        [DISPATCH_MESSAGE, { to_agent_id: null, content: "the times", status: "done" }],
-        [DISPATCH_MESSAGE, { to_agent_id: null, content: "and the file", status: "done" }],
+        [SEND, { to: "ankur", content: "the times", status: "done" }],
+        [SEND, { to: "ankur", content: "and the file", status: "done" }],
       ),
   ]);
   await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, agentId, "exam times?");
@@ -308,24 +268,24 @@ test("a send over a message the lane has not read waits for the next step", asyn
   runtime = scriptedRuntime([
     async () => {
       await deliverUserMessage(deps(runtime), agentId, "actually, Thursday");
-      return turnOf([DISPATCH_MESSAGE, { to_agent_id: null, content: "Wednesday is set", status: "done" }]);
+      return turnOf([SEND, { to: "ankur", content: "Wednesday is set", status: "done" }]);
     },
-    () => turnOf([DISPATCH_MESSAGE, { to_agent_id: null, content: "Thursday is set", status: "done" }]),
+    () => turnOf([SEND, { to: "ankur", content: "Thursday is set", status: "done" }]),
   ]);
   await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, agentId, "book Wednesday");
   await runtime.waitUntilIdle();
   assert.deepEqual(await sentBy(agentId), ["Thursday is set"]);
 });
 
-test("the process lane never messages an agent this agent brought in, since the work lane directs it", async () => {
+test("the process lane may message an agent this agent spawned: there is no brought-in gate", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "voice-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "voice-worker", systemPrompt: "worker", parentAgentId: managerId });
   const runtime = scriptedRuntime([
-    () => turnOf([DISPATCH_MESSAGE, { to_agent_id: workerId, content: "stop now" }]),
+    () => turnOf([SEND, { to: workerId, content: "stop now" }]),
   ]);
   await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "open the page" });
   await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, managerId, "stop the worker");
   await runtime.waitUntilIdle();
-  assert.deepEqual(await sentBy(managerId), ["open the page"]);
+  assert.deepEqual(await sentBy(managerId), ["open the page", "stop now"]);
 });

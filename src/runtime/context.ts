@@ -3,50 +3,28 @@ import { join } from "node:path";
 import { formatISO } from "date-fns";
 import { asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agentTools, agents, tools } from "../db/schema.js";
+import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarChatRequest, DwarMessage, DwarTool, Lane } from "../types/domain.js";
-import {
-  CREATE_ATTACHMENT,
-  DECLINE_HANDOFF,
-  DISPATCH_MESSAGE,
-  FORWARD_ATTACHMENT,
-  HAND_OFF,
-  INGEST_MEMORY,
-  LIST_AGENTS,
-  MANAGE_AGENT,
-  MODIFY_AGENT_PROMPT,
-  READ_ATTACHMENT,
-  READ_RESULT,
-  RECALL_MEMORY,
-  SEND_MESSAGE,
-  STEER_WORK,
-  WAIT,
-  YIELD,
-} from "../types/domain.js";
-import { readResultTool } from "./results.js";
-import {
-  attachmentStub,
-  createAttachmentTool,
-  forwardAttachmentTool,
-  readAttachmentTool,
-} from "./attachments.js";
-import {
-  dispatchMessageTool,
-  listAgentsTool,
-  sendMessageTool,
-  steerWorkTool,
-  waitTool,
-  yieldTool,
-} from "./tools.js";
+import { attachmentStub } from "./attachments.js";
+import { listAgentsTool, PROCESS_REGISTRY_TOOLS, steerWorkTool, yieldTool } from "./tools.js";
+import { sendTool } from "./send.js";
+import { waitTool } from "./watches.js";
 import { directoryBlock, ownDescriptionLine } from "./directory.js";
-import { declineHandoffTool, handOffTool } from "./handoffs.js";
-import { openJobsNote } from "./jobs.js";
+import { messageTool } from "./outbox.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
 import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "./wake.js";
-import { embeddedAgentTools, embeddedSchedulingTools } from "../tools/registry.js";
+import {
+  embeddedAgentTools,
+  embeddedFileReadTools,
+  embeddedFileWriteTools,
+  embeddedHelperTools,
+  allTools,
+  embeddedSchedulingTools,
+  findEmbeddedTool,
+} from "../tools/registry.js";
 import { asDwarTool } from "../tools/types.js";
 import { routerLaneTools } from "./router.js";
 
@@ -198,13 +176,10 @@ export function windowStart(sizes: number[], window: Omit<TranscriptWindow, "bud
 /**
  * An agent lane's request: its system, then each lane's rolling window of its
  * history (see historyFor, windowStart), no wider than the room the window's budget leaves
- * after the system and that lane's tools. Messages that left a window are reached
- * through get_logs and memory. When the process lane's history ends on something for it
- * to answer, hath's note on the agent's open jobs follows it (see openJobsNote); a
- * history that ends on the agent's own turn gets none, so a run with nothing to
- * answer still makes no call. The work lane, which also sends, always gets its note when it
- * has open jobs; its runs start from a steer or a report, never from the transcript's
- * end. Dwar appends lane doctrine as a cached block.
+ * after the system and that lane's tools. The process lane's budget is the small
+ * `process_context_tokens`, since it is the front desk and reads detail on demand;
+ * the work lane's is the prompt ceiling less its trim. Messages that left a window are
+ * reached through get_logs and memory. Dwar appends lane doctrine as a cached block.
  */
 export async function assembleContext(opts: {
   db: Db;
@@ -219,8 +194,8 @@ export async function assembleContext(opts: {
   const messages = historyFor(thread, opts.agentId);
   const sizes = messages.map((message) => message.content.length);
   const laneTools = {
-    process: await toolsForLane(opts.db, opts.agentId, "process"),
-    work: await toolsForLane(opts.db, opts.agentId, "work"),
+    process: toolsForLane(opts.agentId, "process"),
+    work: toolsForLane(opts.agentId, "work"),
   };
   const windowed = (lane: keyof TranscriptWindows) => {
     const window = opts.windows[lane];
@@ -231,22 +206,12 @@ export async function assembleContext(opts: {
       window.chars,
       Math.floor(Math.max(0, window.budgetTokens - fixedTokens) * PROSE_CHARS_PER_TOKEN),
     );
-    return messages.slice(windowStart(sizes, { ...window, chars }));
+    return messages.slice(windowStart(sizes, { chars, stepChars: Math.max(1, Math.min(window.stepChars, Math.floor(chars / 4))) }));
   };
 
-  const processTranscript = windowed("process");
-  const workTranscript = windowed("work");
-  const processNote = await openJobsNote(opts.db, opts.agentId, "process");
-  const workNote = await openJobsNote(opts.db, opts.agentId, "work");
   return {
     system,
-    transcripts: {
-      process:
-        processNote !== null && processTranscript.at(-1)?.role === "user"
-          ? [...processTranscript, { role: "user", content: processNote }]
-          : processTranscript,
-      work: workNote !== null ? [...workTranscript, { role: "user", content: workNote }] : workTranscript,
-    },
+    transcripts: { process: windowed("process"), work: windowed("work") },
     tools: laneTools[opts.lane],
     throughSeq: thread.at(-1)?.seq ?? 0,
   };
@@ -274,32 +239,30 @@ export async function assembleRouterContext(opts: {
 }
 
 /**
- * arrivalsSince folds transcript entries newer than `afterSeq` into one user
- * turn, so messages that land mid-wake join the scratchpad at the point they
- * arrived instead of rewriting the history above it. The agent's own messages to
- * others are not arrivals: the wake already holds the call that sent each one, and
- * folding them in again woke its lanes to read their own words back. `turn` is null
- * when nothing arrived; `throughSeq` is the newest seq seen, own messages included.
+ * arrivalsSince folds transcript entries newer than `afterSeq` into user turns, so
+ * messages that land mid-wake join the scratchpad at the point they arrived instead of
+ * rewriting the history above it. `turn` is what arrived (messages to the agent, and its
+ * own notes to itself) and is shown to both lanes. The agent's messages to others are not
+ * arrivals: the process lane already holds the call that sent each, and folding them in
+ * again woke it to read its own words back. The work lane never sees process's calls, so
+ * `sent` carries those messages to it, as what its process lane sent. Each is null when
+ * there is none; `throughSeq` is the newest seq seen, own messages included.
  */
 export function arrivalsSince(
   transcript: TranscriptStore,
   agentId: string,
   afterSeq: number,
-): { turn: DwarMessage | null; throughSeq: number } {
+): { turn: DwarMessage | null; sent: DwarMessage | null; throughSeq: number } {
   const fresh = transcript.transcriptFor(agentId).filter((row) => row.seq > afterSeq);
   if (fresh.length === 0) {
-    return { turn: null, throughSeq: afterSeq };
+    return { turn: null, sent: null, throughSeq: afterSeq };
   }
   const throughSeq = fresh.at(-1)!.seq;
   const arrived = fresh.filter((row) => row.fromAgentId !== agentId || row.toAgentId === agentId);
-  if (arrived.length === 0) {
-    return { turn: null, throughSeq };
-  }
-  const lines = arrived.map((row) => transcriptText(row, agentId));
-  return {
-    turn: { role: "user", content: `[Arrived during this wake]\n\n${lines.join("\n\n")}` },
-    throughSeq,
-  };
+  const sent = fresh.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId);
+  const fold = (label: string, rows: TranscriptEntry[]): DwarMessage | null =>
+    rows.length === 0 ? null : { role: "user", content: [label, ...rows.map((row) => transcriptText(row, agentId))].join("\n\n") };
+  return { turn: fold("[Arrived during this wake]", arrived), sent: fold("[Sent by your process lane]", sent), throughSeq };
 }
 
 /**
@@ -352,81 +315,39 @@ function entryBody(row: TranscriptEntry): string {
 
 /**
  * toolsForLane is what a lane may call: the process lane's routing tools, or the
- * work lane's grants plus the embedded tools. A worker gets no `ingest_memory`: it
+ * work lane's registry plus the embedded tools. A worker gets no `ingest_memory`: it
  * reports what it found to the agent that owns the domain, which stores what matters.
  */
-async function toolsForLane(db: Db, agentId: string, lane: Lane): Promise<DwarTool[]> {
+export function toolsForLane(agentId: string, lane: Lane): DwarTool[] {
   if (lane === "router") {
     throw new HathError(500, "internal_error", `agent ${agentId} has no router lane`);
   }
   if (lane === "process") {
     return [
-      dispatchMessageTool,
-      declineHandoffTool,
-      forwardAttachmentTool,
-      readAttachmentTool,
+      sendTool,
       steerWorkTool,
+      ...embeddedFileReadTools().map(asDwarTool),
+      ...(PROCESS_REGISTRY_TOOLS as readonly string[]).map((name) => asDwarTool(findEmbeddedTool(name)!)),
+      recallMemoryTool,
       listAgentsTool,
       yieldTool,
     ];
   }
-  const grants = await db
-    .select({
-      name: tools.name,
-      description: tools.description,
-      inputSchema: tools.inputSchema,
-      usage: agentTools.usage,
-    })
-    .from(agentTools)
-    .innerJoin(tools, eq(agentTools.toolId, tools.id))
-    .where(eq(agentTools.agentId, agentId))
-    .orderBy(asc(tools.name));
-  const granted: DwarTool[] = grants.map((grant) => ({
-    name: grant.name,
-    description: `${grant.description}\n\n${grant.usage}`,
-    input_schema: grant.inputSchema,
-  }));
   return [
-    ...granted,
-    handOffTool,
-    sendMessageTool,
-    readAttachmentTool,
-    createAttachmentTool,
+    ...allTools().map(asDwarTool),
+    messageTool,
     listAgentsTool,
     waitTool,
-    readResultTool,
     recallMemoryTool,
     ...(WORKER_ID.test(agentId) ? [] : [ingestMemoryTool]),
     manageAgentTool,
     modifyAgentPromptTool,
+    ...embeddedHelperTools().map(asDwarTool),
+    ...embeddedFileReadTools().map(asDwarTool),
+    ...embeddedFileWriteTools().map(asDwarTool),
     ...embeddedAgentTools().map(asDwarTool),
     ...embeddedSchedulingTools().map(asDwarTool),
     yieldTool,
   ];
 }
 
-export const embeddedWorkTools = [
-  HAND_OFF,
-  SEND_MESSAGE,
-  READ_ATTACHMENT,
-  CREATE_ATTACHMENT,
-  LIST_AGENTS,
-  WAIT,
-  READ_RESULT,
-  RECALL_MEMORY,
-  INGEST_MEMORY,
-  MANAGE_AGENT,
-  MODIFY_AGENT_PROMPT,
-  ...embeddedAgentTools().map((tool) => tool.name),
-  ...embeddedSchedulingTools().map((tool) => tool.name),
-  YIELD,
-];
-export const embeddedProcessTools = [
-  DISPATCH_MESSAGE,
-  DECLINE_HANDOFF,
-  FORWARD_ATTACHMENT,
-  READ_ATTACHMENT,
-  STEER_WORK,
-  LIST_AGENTS,
-  YIELD,
-] as const;

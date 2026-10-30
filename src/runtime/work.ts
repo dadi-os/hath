@@ -1,5 +1,5 @@
 import type { DwarResponseBlock } from "../types/domain.js";
-import { HAND_OFF, SEND_MESSAGE } from "../types/domain.js";
+import { MESSAGE } from "../types/domain.js";
 import type { SteerQueue } from "./steer.js";
 import { formatSteerTurn } from "./steer.js";
 import { textChars } from "./process.js";
@@ -8,12 +8,16 @@ import { callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.
 /** Step deps plus the steer queue the process lane writes to. */
 export type WorkLoopDeps = StepDeps & {
   steer: SteerQueue;
+  /** Runs once, before the run's first model call: the lane is awake, so whatever it waited on no longer holds. */
+  woke: () => Promise<void>;
+  /** The note a yield is answered with once, or null when the agent has left nothing unanswered (see yield-reminder.ts). */
+  yieldReminder: () => Promise<string | null>;
 };
 
 /**
- * Work-lane loop over the agent's shared wake. Each call sees the whole
- * wake — the model's own thinking, text and tool calls, their full results,
- * the process lane's steps, and mid-wake arrivals — and the model is free to think
+ * Work-lane loop over the agent's wake. Each call sees the model's own thinking, text and
+ * tool calls, their full results, what the process lane sent, and mid-wake arrivals — never
+ * the process lane's own turns — and the model is free to think
  * and write before or instead of calling a tool. A turn with no tool call
  * continues; the only clean exit is the embedded yield tool.
  *
@@ -22,10 +26,13 @@ export type WorkLoopDeps = StepDeps & {
  * already read it. Steers join the wake as the work lane-only turns where they happened. When
  * the process lane sets terminate, this wake stops in its tracks: no further tool
  * calls run (in-flight model output is logged, then its calls are refused).
- * A yield in a turn that wrote a message's worth of text and handed off nothing is answered
- * once with UNSENT_REPORT_TURN, since that text is a report nobody would otherwise get.
- * This lane messages only the agents it brought in (send_message); everything it has to
- * say to anyone else goes to the process lane as a hand_off.
+ * A yield in a turn that wrote a message's worth of text and queued no message is answered
+ * once with UNSENT_REPORT_TURN, since that text is a report nobody would otherwise get; a
+ * yield that leaves the requester's latest message unanswered, with nothing pending to wake
+ * the agent, is answered once with the reminder yieldReminder gives.
+ * The wait tool ends the run like yield, after recording what it waits on.
+ * This lane never messages anyone itself; everything it has to say goes to the process
+ * lane with `message`, which sends it.
  */
 export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
   const stop = () => deps.steer.isTerminate(deps.agentId);
@@ -34,6 +41,8 @@ export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
   };
 
   let reminded = false;
+  let remindedUnanswered = false;
+  let woke = false;
   let turnsSinceReport = 0;
   for (;;) {
     if (stop()) {
@@ -56,6 +65,10 @@ export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
       return;
     }
 
+    if (!woke) {
+      woke = true;
+      await deps.woke();
+    }
     const response = await callLane(deps, laneRequest(deps, assembled));
     turnsSinceReport = reports(response.content) ? 0 : turnsSinceReport + 1;
 
@@ -64,6 +77,14 @@ export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
         reminded = true;
         deps.wake.push({ message: { role: "user", content: UNSENT_REPORT_TURN }, only: "work" });
         continue;
+      }
+      if (!stop() && !remindedUnanswered) {
+        const unanswered = await deps.yieldReminder();
+        if (unanswered !== null) {
+          remindedUnanswered = true;
+          deps.wake.push({ message: { role: "user", content: unanswered }, only: "work" });
+          continue;
+        }
       }
       exit();
       return;
@@ -75,7 +96,7 @@ export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
   }
 }
 
-/** How many model turns in a row may pass without a hand_off or send_message before the lane is asked what it has. */
+
 export const TURNS_BEFORE_NUDGE = 60;
 
 /**
@@ -84,23 +105,23 @@ export const TURNS_BEFORE_NUDGE = 60;
  * grepping a 3,000-line tracker for one answer and never reported what it had.
  */
 export const LONG_SILENCE_TURN =
-  "[continue] Many turns have passed since you last handed off or sent anything. If you are reading a large file or log to answer one question, search it for just that and stop paging through it; if you already have an answer worth giving, hand it off now; if you are partway through ordinary steps, carry on.";
+  "[continue] Many turns have passed since you last sent your process lane a message. If you are reading a large file or log to answer one question, search it for just that and stop paging through it; if you already have an answer worth giving, call message now; if you are partway through ordinary steps, carry on.";
 
-/** reports is true when a turn called hand_off or send_message. */
+/** reports is true when a turn called message. */
 function reports(content: DwarResponseBlock[]): boolean {
-  return content.some((block) => block.type === "tool_use" && (block.name === HAND_OFF || block.name === SEND_MESSAGE));
+  return content.some((block) => block.type === "tool_use" && (block.name === MESSAGE));
 }
 
-/** A work-lane turn whose text is at least this long, sent nowhere, reads as a report left unsent. */
+/** A work-lane turn whose text is at least this long, queued nowhere, reads as a report left unsent. */
 const UNSENT_REPORT_CHARS = 400;
 
-/** The reminder a yield gets after a turn wrote a report as text and handed off nothing. */
+/** The reminder a yield gets after a turn wrote a report as text and queued no message. */
 export const UNSENT_REPORT_TURN =
-  "[continue] Your last turn wrote a report as text and handed off nothing: text reaches no one. If it was meant for Ankur or any agent but one you brought in, hand it off with hand_off now; otherwise yield again.";
+  "[continue] Your last turn wrote a report as text and queued no message: text reaches no one. If it was meant for Ankur or any agent, queue it with message now; otherwise yield again.";
 
 /**
- * unsentReport is true when a turn wrote a message's worth of text but called neither
- * hand_off nor send_message, so whatever it reported went nowhere.
+ * unsentReport is true when a turn wrote a message's worth of text but did not call
+ * message, so whatever it reported went nowhere.
  */
 function unsentReport(content: DwarResponseBlock[]): boolean {
   return textChars(content) >= UNSENT_REPORT_CHARS && !reports(content);

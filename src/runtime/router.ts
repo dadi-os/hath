@@ -9,13 +9,13 @@
 import { z } from "zod";
 import { agentIdSchema } from "../agent-id.js";
 import { spawnAgent } from "../tools/hath/spawn-agent.js";
-import { embeddedAgentTools } from "../tools/registry.js";
+import { embeddedAgentTools, embeddedFileReadTools } from "../tools/registry.js";
 import { fail, ok, requireActiveAgent, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import { asDwarTool, type ToolDefinition } from "../tools/types.js";
 import type { DwarTool, DwarToolUseBlock, RoutedMessage } from "../types/domain.js";
-import { FORWARD_ATTACHMENT, RECALL_MEMORY, SEND_MESSAGE } from "../types/domain.js";
+import { FORWARD_ATTACHMENT, READ_FILE, RECALL_MEMORY, SEND_MESSAGE } from "../types/domain.js";
 import { toAttachmentSummary } from "../db/attachments.js";
-import { MAX_ATTACHMENTS, readAttachmentTool } from "./attachments.js";
+import { MAX_ATTACHMENTS } from "./attachments.js";
 import { deliverUserMessage } from "./deliver.js";
 import { recallMemoryTool, runRecallMemory } from "./memory.js";
 import { listAgentsTool, yieldTool } from "./tools.js";
@@ -83,7 +83,7 @@ const routerForwardAttachmentTool: DwarTool = {
 const AGENT_ONLY_TOOLS = new Set(["web_search", "web_fetch"]);
 
 /**
- * Registry-style tools the router holds without grants: spawning roots and the
+ * Registry-style tools the router holds: spawning roots and the
  * embedded agent-management set.
  */
 function routerRegistryTools(): ToolDefinition[] {
@@ -93,17 +93,12 @@ function routerRegistryTools(): ToolDefinition[] {
   ];
 }
 
-/** Every tool name the router may run, lane or CLI (`as_agent_id: "router"`). */
-export function routerToolNames(): Set<string> {
-  return new Set(routerRegistryTools().map((tool) => tool.name));
-}
-
 /** What the model sees on the router lane. */
 export function routerLaneTools(): DwarTool[] {
   return [
     routerSendMessageTool,
     routerForwardAttachmentTool,
-    readAttachmentTool,
+    ...embeddedFileReadTools().filter((tool) => tool.name === READ_FILE).map(asDwarTool),
     listAgentsTool,
     recallMemoryTool,
     ...routerRegistryTools().map(asDwarTool),
@@ -111,7 +106,7 @@ export function routerLaneTools(): DwarTool[] {
   ];
 }
 
-/** Run one router-lane tool call. list_agents, read_attachment and yield are handled before this. */
+/** Run one router-lane tool call. list_agents, read_file and yield are handled before this. */
 export async function runRouterTool(
   ctx: ToolContext,
   call: DwarToolUseBlock,

@@ -1,43 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HostSessions } from "../src/runtime/sessions.js";
+import { mockNas } from "./helpers.js";
 
-test("HostSessions attaches worker tools and ignores spawn/list", () => {
-  const sessions = new HostSessions();
-  sessions.observe("a1", "browser_spawn", {}, false);
-  sessions.observe("a1", "browser_list", {}, false);
-  sessions.observe("a1", "terminal_spawn", {}, false);
-  assert.deepEqual(sessions.forAgent("a1"), { browsers: [], terminals: [] });
+test("an agent's sessions are the Nas tasks it owns or last steered, read live", async () => {
+  const nas = mockNas();
+  const sessions = new HostSessions(nas);
+  await nas.startTask("browser", { agent_id: "a1", message: "open the portal" });
+  await nas.startTask("terminal", { agent_id: "a2", message: "run tests" });
+  await nas.startTask("browser", { agent_id: "a2", message: "other" });
+  await nas.steerTask("browser", "3", { agent_id: "a1", message: "take over" });
 
-  sessions.observe("a1", "browser_navigate", { browser_id: 10, url: "https://x" }, false);
-  sessions.observe("a1", "chaavi_fill_passkey", { browser_id: 12, item_id: "pk" }, false);
-  sessions.observe("a1", "browser_click", { browser_id: 11, ref: "e1" }, true);
-  sessions.observe("a1", "browser_navigate", { browser_id: 10, url: "https://y" }, false);
-  assert.deepEqual(sessions.forAgent("a1").browsers, [12, 11, 10]);
+  const snapshot = await sessions.snapshot();
+  const a1 = sessions.forAgent(snapshot, "a1").tasks.map((task) => task.id);
+  assert.deepEqual(a1.sort(), ["task/browser/1", "task/browser/3"]);
+  assert.deepEqual(sessions.forAgent(snapshot, "a2").tasks.map((task) => task.id).sort(), ["task/browser/3", "task/terminal/2"]);
+  assert.deepEqual(sessions.forAgent(snapshot, "nobody").tasks, []);
 
-  sessions.observe("a1", "terminal_execute_shell", { terminal_id: "t1", command: "ls" }, false);
-  sessions.observe("a1", "terminal_read", { terminal_id: "t1" }, false);
-  sessions.observe("a1", "terminal_execute_shell", { terminal_id: "t2", command: "pwd" }, false);
-  sessions.observe(
-    "a1",
-    "chaavi_fill_secret",
-    { terminal_id: "t3", command: "notary sign" },
-    false,
-  );
-  assert.deepEqual(sessions.forAgent("a1").terminals, [
-    { id: "t1", last_command: "ls" },
-    { id: "t2", last_command: "pwd" },
-    { id: "t3", last_command: "notary sign" },
-  ]);
-
-  sessions.observe("a2", "browser_close", { browser_id: 10 }, false);
-  assert.deepEqual(sessions.forAgent("a1").browsers, [12, 11]);
-  sessions.observe("a2", "terminal_close", { terminal_id: "t1" }, true);
-  assert.deepEqual(sessions.forAgent("a1").terminals, [
-    { id: "t2", last_command: "pwd" },
-    { id: "t3", last_command: "notary sign" },
-  ]);
-  sessions.observe("a1", "browser_navigate", { browser_id: 11, url: "https://z" }, false);
-  sessions.observe("a2", "browser_close", { browser_id: 11 }, true);
-  assert.deepEqual(sessions.forAgent("a1").browsers, [12]);
+  const task = sessions.forAgent(snapshot, "a1").tasks.find((entry) => entry.id === "task/browser/1");
+  assert.equal(task?.kind, "browser");
+  assert.equal(task?.status, "working");
+  assert.equal(task?.purpose, "open the portal");
 });

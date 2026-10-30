@@ -7,10 +7,54 @@ export type Lane = "work" | "process" | "router";
  */
 export type LogEvent = "response" | "tool_result" | "message";
 
-/** Nas browsers/terminals this agent recently drove. Empty after process restart. */
+/** One browser or terminal task in Nas that an agent owns or last steered. */
+export type AgentSession = {
+  /** The task's address, such as `task/browser/3`. */
+  id: string;
+  kind: "browser" | "terminal";
+  status: "working" | "idle" | "asking" | "asleep";
+  purpose: string;
+  /** The page a browser is on, or the directory and files a terminal has touched. */
+  current: string;
+  last_activity: string;
+};
+
+/** The helper tasks this agent owns or last steered (see runtime/sessions.ts). */
 export type AgentSessions = {
-  browsers: number[];
-  terminals: Array<{ id: string; last_command: string | null }>;
+  tasks: AgentSession[];
+};
+
+/** What an agent's work lane is waiting on, and since when (see runtime/watches.ts). */
+export type AgentWaiting = {
+  targets: string[];
+  since: string;
+  wakes_by: string;
+};
+
+/**
+ * Where an agent's work stands, rendered by hath without a model call (see runtime/status.ts):
+ * the process lane's last turn, and the UI's popover.
+ */
+export type AgentStatus = {
+  /** The latest message from whoever gave the agent its job; null when none has. */
+  job: { from: string | null; at: string; content: string } | null;
+  work: {
+    state: "running" | "waiting" | "idle";
+    /** When it began waiting, or its last step while running; null while idle. */
+    since: string | null;
+    /** What it waits on, when waiting. */
+    waiting_on: string[];
+  };
+  /** The work lane's current step: its last tool call, with a short argument; null before it has acted. */
+  step: string | null;
+  /** The work lane's last five tool calls, oldest first; `ok` is null while a call has no result. */
+  recent: { name: string; arg: string; ok: boolean | null }[];
+  /** The Nas tasks the agent owns that are in flight. */
+  tasks: { id: string; status: string; current: string }[];
+  /** Why the tasks could not be read from Nas, or null. */
+  tasks_unreadable: string | null;
+  /** Messages the work lane queued that the process lane has not sent. */
+  pending: { id: number; to: string | null; expects_reply: boolean; preview: string }[];
 };
 
 export type AgentRecord = {
@@ -21,9 +65,9 @@ export type AgentRecord = {
   description: string | null;
   parent_agent_id: string | null;
   active: boolean;
-  /** In-memory lane lock ownership. Always false right after a process restart. */
-  running: { work: boolean; process: boolean };
-  /** In-memory host attachments. Always empty right after a process restart. */
+  /** In-memory lane lock ownership (always false right after a process restart), and what the work lane is waiting on. */
+  running: { work: boolean; process: boolean; waiting_on: AgentWaiting | null; status: AgentStatus | null };
+  /** The browser and terminal tasks the agent has in Nas. */
   sessions: AgentSessions;
   created_at: string;
   updated_at: string;
@@ -174,38 +218,22 @@ export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop";
 /** A message someone wrote, or hath's notice that an agent's work stopped (see deliver.ts). */
 export type MessageKind = "message" | "notice";
 
-/**
- * What a hand-off from the work lane is: the result of the work, a wall, a question
- * only the recipient can answer, the one progress update, something to tell, or something
- * to ask for. Hath sets the message's job status from it (see HANDOFF_STATUS).
- */
-export const HANDOFF_KINDS = ["result", "blocker", "question", "progress", "note", "request"] as const;
-export type HandoffKind = (typeof HANDOFF_KINDS)[number];
 
-/** The job status a hand-off's message carries; none for a note or a request. */
-export const HANDOFF_STATUS: Record<HandoffKind, MessageStatus | undefined> = {
-  result: "done",
-  blocker: "blocked",
-  question: "needs_input",
-  progress: "running",
-  note: undefined,
-  request: undefined,
-};
-
-/** Where a hand-off stands: waiting for the process lane, sent, declined by it, or lost with its lane. */
+/** Where an outbox row stands: waiting for the process lane, sent, declined (rows from before the lane overhaul), or lost with its lane. */
 export type HandoffState = "pending" | "sent" | "declined" | "failed";
 
+/** The router's own send tools; agents' are SEND and MESSAGE. */
 export const SEND_MESSAGE = "send_message";
-export const DISPATCH_MESSAGE = "dispatch_message";
-export const HAND_OFF = "hand_off";
-export const DECLINE_HANDOFF = "decline_handoff";
-export const READ_ATTACHMENT = "read_attachment";
 export const FORWARD_ATTACHMENT = "forward_attachment";
-export const CREATE_ATTACHMENT = "create_attachment";
+/** The process lane's voice: messages Ankur or an agent. */
+export const SEND = "send";
+/** The work lane's way to give its process lane something to say. */
+export const MESSAGE = "message";
 export const STEER_WORK = "steer_work";
 export const YIELD = "yield";
 export const WAIT = "wait";
-export const READ_RESULT = "read_result";
+export const READ_FILE = "read_file";
+export const FIND = "find";
 export const RECALL_MEMORY = "recall_memory";
 export const INGEST_MEMORY = "ingest_memory";
 export const LIST_AGENTS = "list_agents";

@@ -12,13 +12,12 @@ import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus, type RuntimeEvent } from "../src/runtime/events.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { DISPATCH_MESSAGE, LIST_AGENTS, SEND_MESSAGE, YIELD } from "../src/types/domain.js";
+import { allTools } from "../src/tools/registry.js";
+import { LIST_AGENTS, MESSAGE, SEND, YIELD } from "../src/types/domain.js";
 import {
   insertAgent,
-  insertWorker,
   mockDwar,
   mockGhar,
-  mockChaavi,
   mockNas,
   mockYaad,
   openTestDb,
@@ -100,16 +99,15 @@ test("a throwing listener is logged and does not block others or the emitter", (
 
 test("POST /messages emits a message event", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -124,7 +122,7 @@ test("POST /messages emits a message event", async () => {
     sql: handle.sql,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     runtime,
   });
   const res = await app.inject({
@@ -152,7 +150,6 @@ test("GET /health includes started_at for live-transcript alignment", async () =
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas: mockNas(),
   });
   const res = await app.inject({ method: "GET", url: "/health" });
@@ -164,12 +161,11 @@ test("GET /health includes started_at for live-transcript alignment", async () =
   await app.close();
 });
 
-test("dispatch_message emits message with agent_id set to the recipient", async () => {
+test("send emits message with agent_id set to the recipient", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const callerId = await insertWorker(handle.db, {
+  const callerId = await insertAgent(handle.db, {
     name: "dispatcher",
     systemPrompt: "dispatch",
-    tools: [],
   });
   const targetId = await insertAgent(handle.db, {
     name: "dispatch-target",
@@ -179,7 +175,7 @@ test("dispatch_message emits message with agent_id set to the recipient", async 
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -192,8 +188,8 @@ test("dispatch_message emits message with agent_id set to the recipient", async 
   const result = await executeTool(runtime.toolContext(callerId, "process"), {
     type: "tool_use",
     id: "d-evt",
-    name: DISPATCH_MESSAGE,
-    input: { to_agent_id: targetId, content: "ping" },
+    name: SEND,
+    input: { to: targetId, content: "ping" },
   });
   assert.equal(result.isError, false);
   assert.equal(seen.length, 1);
@@ -207,10 +203,9 @@ test("dispatch_message emits message with agent_id set to the recipient", async 
 
 test("deliverAgentMessage merges extraPayload into both message log rows", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const fromId = await insertWorker(handle.db, {
+  const fromId = await insertAgent(handle.db, {
     name: "from",
     systemPrompt: "from",
-    tools: [],
   });
   const toId = await insertAgent(handle.db, {
     name: "deliver-extra-target",
@@ -234,8 +229,9 @@ test("deliverAgentMessage merges extraPayload into both message log rows", async
       events,
       enqueueProcess: (agentId) => {
         enqueued.push(agentId);
-      },
-      enqueueWork: () => {},
+     return randomUUID();
+ },
+      enqueueWork: () => randomUUID(),
     },
     {
       fromAgentId: fromId,
@@ -265,10 +261,9 @@ test("deliverAgentMessage merges extraPayload into both message log rows", async
 
 test("lane_finished is emitted even when the lane run throws", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: [],
   });
   const dwar = mockDwar({
     process: async () => {
@@ -279,7 +274,7 @@ test("lane_finished is emitted even when the lane run throws", async () => {
     db: handle.db,
     dwar,
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -301,16 +296,15 @@ test("lane_finished is emitted even when the lane run throws", async () => {
 
 test("GET /agents includes running and it flips true while a lane holds the lock", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -319,7 +313,7 @@ test("GET /agents includes running and it flips true while a lane holds the lock
     sql: handle.sql,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     runtime,
   });
 
@@ -330,38 +324,32 @@ test("GET /agents includes running and it flips true while a lane holds the lock
   };
   const idleAgent = idleBody.agents.find((agent) => agent.id === workerId);
   assert.ok(idleAgent);
-  assert.deepEqual(idleAgent.running, { work: false, process: false });
+  assert.deepEqual(idleAgent.running, { work: false, process: false, waiting_on: null, status: null });
 
   const release = await runtime.locks.acquire(workerId, "process", 1000);
   const held = await app.inject({ method: "GET", url: "/agents" });
   assert.equal(held.statusCode, 200);
   const heldBody = held.json() as {
-    agents: Array<{ id: string; running: { work: boolean; process: boolean } }>;
+    agents: Array<{ id: string; running: { work: boolean; process: boolean; status?: { work: { state: string } } | null } }>;
   };
   const heldAgent = heldBody.agents.find((agent) => agent.id === workerId);
   assert.ok(heldAgent);
-  assert.deepEqual(heldAgent.running, { work: false, process: true });
+  assert.deepEqual({ ...heldAgent.running, status: undefined }, { work: false, process: true, waiting_on: null, status: undefined });
+  assert.equal(heldAgent.running.status?.work.state, "idle", "a running lane carries the status block");
   release();
 
   await app.close();
 });
 
-test("GET /agents surfaces sessions after worker host tools", async () => {
+test("GET /agents shows the helper tasks an agent owns, read from Nas, and steering one announces the change", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
-    name: "thread",
-    systemPrompt: "do the job",
-    tools: ["browser_screenshot", "terminal_execute_shell", "browser_close"],
-  });
-  const nas = mockNas({
-    browserScreenshot: () => Buffer.from("png"),
-  });
+  const workerId = await insertAgent(handle.db, { name: "thread", systemPrompt: "do the job" });
+  const nas = mockNas({});
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas,
     config,
     log: silentLog,
@@ -372,168 +360,53 @@ test("GET /agents surfaces sessions after worker host tools", async () => {
     dwar: mockDwar({}),
     yaad: mockYaad(),
     ghar: mockGhar(),
-    chaavi: mockChaavi(),
     nas,
     runtime,
   });
+  const sessionsOf = async () =>
+    (
+      (await app.inject({ method: "GET", url: "/agents" })).json() as {
+        agents: Array<{ id: string; sessions: { tasks: Array<{ id: string; kind: string; purpose: string }> } }>;
+      }
+    ).agents.find((agent) => agent.id === workerId)!.sessions;
+  assert.deepEqual(await sessionsOf(), { tasks: [] });
 
-  const idle = await app.inject({ method: "GET", url: "/agents" });
-  assert.equal(idle.statusCode, 200);
-  const idleWorker = (
-    idle.json() as {
-      agents: Array<{ id: string; sessions: { browsers: number[]; terminals: unknown[] } }>;
-    }
-  ).agents.find((agent) => agent.id === workerId);
-  assert.ok(idleWorker);
-  assert.deepEqual(idleWorker.sessions, { browsers: [], terminals: [] });
-
-  const shot = await executeTool(runtime.toolContext(workerId, "work"), {
+  const changes: string[] = [];
+  runtime.events.subscribe((event) => changes.push(event.type));
+  const steered = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
-    id: "shot1",
-    name: "browser_screenshot",
-    input: { browser_id: 10, scope: "display" },
+    id: "sb1",
+    name: "steer_browser",
+    input: { message: "open the portal" },
   });
-  assert.equal(shot.isError, false, shot.content);
+  assert.equal(steered.isError, false, steered.content);
+  assert.ok(changes.includes("sessions_changed"));
+  const live = await sessionsOf();
+  assert.equal(live.tasks.length, 1);
+  assert.equal(live.tasks[0]?.id, "task/browser/1");
+  assert.equal(live.tasks[0]?.kind, "browser");
+  assert.equal(live.tasks[0]?.purpose, "open the portal");
 
-  const exec = await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "ex1",
-    name: "terminal_execute_shell",
-    input: { terminal_id: "t1", command: "git status" },
-  });
-  assert.equal(exec.isError, false, exec.content);
-
-  const live = await app.inject({ method: "GET", url: "/agents" });
-  const liveWorker = (
-    live.json() as {
-      agents: Array<{
-        id: string;
-        sessions: { browsers: number[]; terminals: Array<{ id: string; last_command: string | null }> };
-      }>;
-    }
-  ).agents.find((agent) => agent.id === workerId);
-  assert.ok(liveWorker);
-  assert.deepEqual(liveWorker.sessions.browsers, [10]);
-  assert.deepEqual(liveWorker.sessions.terminals, [{ id: "t1", last_command: "git status" }]);
-
-  const closed = await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "cb1",
-    name: "browser_close",
-    input: { browser_id: 10 },
-  });
-  assert.equal(closed.isError, false, closed.content);
-
-  const afterClose = await app.inject({ method: "GET", url: "/agents" });
-  const afterWorker = (
-    afterClose.json() as {
-      agents: Array<{ id: string; sessions: { browsers: number[] } }>;
-    }
-  ).agents.find((agent) => agent.id === workerId);
-  assert.ok(afterWorker);
-  assert.deepEqual(afterWorker.sessions.browsers, []);
-
-  await app.close();
-});
-
-test("GET /agents drops sessions when close tools error", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
-    name: "thread",
-    systemPrompt: "do the job",
-    tools: ["browser_screenshot", "terminal_execute_shell", "browser_close", "terminal_close"],
-  });
-  const nas = mockNas({
-    browserScreenshot: () => Buffer.from("png"),
-    closeBrowser: () => {
-      throw new HathError(404, "not_found", "browser already gone");
-    },
-    closeTerminal: () => {
-      throw new HathError(404, "not_found", "terminal already gone");
-    },
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas,
-    config,
-    log: silentLog,
-  });
-  const app = await buildApp(config, {
-    db: handle.db,
-    sql: handle.sql,
-    dwar: mockDwar({}),
-    yaad: mockYaad(),
-    ghar: mockGhar(),
-    chaavi: mockChaavi(),
-    nas,
-    runtime,
-  });
-
-  await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "shot1",
-    name: "browser_screenshot",
-    input: { browser_id: 10, scope: "display" },
-  });
-  await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "ex1",
-    name: "terminal_execute_shell",
-    input: { terminal_id: "t1", command: "pwd" },
-  });
-
-  const closedBrowser = await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "cb1",
-    name: "browser_close",
-    input: { browser_id: 10 },
-  });
-  assert.equal(closedBrowser.isError, true);
-
-  const closedTerminal = await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "ct1",
-    name: "terminal_close",
-    input: { terminal_id: "t1" },
-  });
-  assert.equal(closedTerminal.isError, true);
-
-  const after = await app.inject({ method: "GET", url: "/agents" });
-  const afterWorker = (
-    after.json() as {
-      agents: Array<{
-        id: string;
-        sessions: { browsers: number[]; terminals: unknown[] };
-      }>;
-    }
-  ).agents.find((agent) => agent.id === workerId);
-  assert.ok(afterWorker);
-  assert.deepEqual(afterWorker.sessions, { browsers: [], terminals: [] });
-
+  nas.tasks.clear();
+  assert.deepEqual(await sessionsOf(), { tasks: [] }, "a task Nas forgot is gone at once");
   await app.close();
 });
 
 test("GET /agents lists multiple top-level workers without conflict", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const firstId = await insertWorker(handle.db, {
+  const firstId = await insertAgent(handle.db, {
     name: "first",
     systemPrompt: "first job",
-    tools: [],
   });
-  const secondId = await insertWorker(handle.db, {
+  const secondId = await insertAgent(handle.db, {
     name: "second",
     systemPrompt: "second job",
-    tools: [],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -542,7 +415,7 @@ test("GET /agents lists multiple top-level workers without conflict", async () =
     sql: handle.sql,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     runtime,
   });
 
@@ -561,18 +434,17 @@ test("GET /agents lists multiple top-level workers without conflict", async () =
   await app.close();
 });
 
-test("GET /agents/:id includes granted tools with usage and excludes embedded tools", async () => {
+test("GET /agents/:id includes granted tools and excludes embedded tools", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
-    tools: ["yaad_search_history", "terminal_execute_shell"],
   });
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -581,13 +453,13 @@ test("GET /agents/:id includes granted tools with usage and excludes embedded to
     sql: handle.sql,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     runtime,
   });
   const res = await app.inject({ method: "GET", url: `/agents/${workerId}` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as {
-    tools: Array<{ name: string; description: string; usage: string }>;
+    tools: Array<{ name: string; description: string }>;
     running: { work: boolean; process: boolean };
   };
   assert.ok(body.running);
@@ -595,13 +467,11 @@ test("GET /agents/:id includes granted tools with usage and excludes embedded to
   for (const tool of body.tools) {
     assert.ok(typeof tool.name === "string" && tool.name.length > 0);
     assert.ok(typeof tool.description === "string");
-    assert.ok(typeof tool.usage === "string" && tool.usage.length > 0);
   }
   const names = body.tools.map((tool) => tool.name);
-  assert.ok(names.includes("yaad_search_history"));
-  assert.ok(names.includes("terminal_execute_shell"));
-  assert.equal(names.includes(SEND_MESSAGE), false);
-  assert.equal(names.includes(DISPATCH_MESSAGE), false);
+  assert.deepEqual(names, allTools().map((tool) => tool.name));
+  assert.equal(names.includes(MESSAGE), false);
+  assert.equal(names.includes(SEND), false);
   assert.equal(names.includes("steer_work"), false);
   assert.equal(names.includes(YIELD), false);
   assert.equal(names.includes(LIST_AGENTS), false);
@@ -610,10 +480,9 @@ test("GET /agents/:id includes granted tools with usage and excludes embedded to
 
 test("GET /logs returns across agents; event filters; limit above cap is 422", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertWorker(handle.db, {
+  const workerId = await insertAgent(handle.db, {
     name: "log-worker",
     systemPrompt: "logs",
-    tools: [],
   });
   const otherId = await insertAgent(handle.db, {
     name: "log-other",
@@ -642,7 +511,7 @@ test("GET /logs returns across agents; event filters; limit above cap is 422", a
     db: handle.db,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     config,
     log: silentLog,
   });
@@ -651,7 +520,7 @@ test("GET /logs returns across agents; event filters; limit above cap is 422", a
     sql: handle.sql,
     dwar: mockDwar({}),
     yaad: mockYaad(),
-    ghar: mockGhar(), chaavi: mockChaavi(), nas: mockNas(),
+    ghar: mockGhar(), nas: mockNas(),
     runtime,
   });
 

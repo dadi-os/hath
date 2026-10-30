@@ -6,19 +6,17 @@
  * longer see. Across wakes, the agent's tool log (get_logs) holds what it did.
  */
 
-import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock } from "../types/domain.js";
+import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock, Lane } from "../types/domain.js";
+import { resultPath, savesResult } from "./files.js";
 import {
-  CREATE_ATTACHMENT,
-  DECLINE_HANDOFF,
-  FORWARD_ATTACHMENT,
-  HAND_OFF,
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
+  MESSAGE,
   MODIFY_AGENT_PROMPT,
-  READ_RESULT,
-  SEND_MESSAGE,
+  SEND,
   SPAWN_AGENT,
+  STEER_WORK,
   WAIT,
   YIELD,
 } from "../types/domain.js";
@@ -29,45 +27,19 @@ import {
  * recorded call is a read, which a record shows by its size.
  */
 export const ACTION_TOOLS = new Set<string>([
-  "browser_click",
-  "browser_type",
-  "browser_press_key",
-  "browser_select",
-  "browser_upload_file",
-  "browser_new_tab",
-  "browser_close_tab",
-  "browser_close",
-  "browser_spawn",
-  "terminal_spawn",
-  "terminal_close",
-  "terminal_execute_shell",
-  "terminal_send_keys",
-  "terminal_write_file",
-  "terminal_edit_file",
-  "chaavi_create_login",
-  "chaavi_fill_card",
-  "chaavi_fill_login",
-  "chaavi_fill_passkey",
-  "chaavi_fill_secret",
-  "chaavi_save_secret",
+  "steer_browser",
+  "steer_terminal",
+  "write_file",
+  "edit_file",
   "ghar_control_device",
-  "grant_tool",
-  "revoke_tool",
   "schedule_message",
   "cancel_schedule",
-  "nas_provision",
-  "nas_pull_updates",
-  "nas_restart_module",
-  "nas_stack_up",
-  "nas_stack_down",
   SPAWN_AGENT,
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
   INGEST_MEMORY,
-  CREATE_ATTACHMENT,
-  FORWARD_ATTACHMENT,
-  HAND_OFF,
-  DECLINE_HANDOFF,
+  MESSAGE,
+  STEER_WORK,
 ]);
 
 /** How much of a step's own text a record keeps: what the lane said it was doing. */
@@ -89,7 +61,7 @@ const NO_RESULT = "no result (hath stopped before it returned)";
  * Calls a record leaves out: ending or pausing a turn, a send (the transcript already
  * holds the message), reopening a result, and the roster.
  */
-export const UNRECORDED_TOOLS = new Set<string>([YIELD, WAIT, SEND_MESSAGE, READ_RESULT, LIST_AGENTS]);
+export const UNRECORDED_TOOLS = new Set<string>([YIELD, WAIT, SEND, LIST_AGENTS]);
 
 /** How much of a read's input a record keeps: enough to name what was read. */
 const READ_INPUT_CHARS = 120;
@@ -104,14 +76,15 @@ export type ActionResult = Pick<DwarToolResultBlock, "content" | "is_error"> & {
  * stepActions is one model turn as a record shows it: the turn's text, then each call
  * it made (UNRECORDED_TOOLS aside). An action shows its clipped input and outcome; a
  * read shows what it read and how large the result was, since its content is what
- * fills a prompt. A result too long to show whole names the id read_result reopens it
- * by, so a later wake reads it back instead of running the tool again. With
+ * fills a prompt. A result too long to show whole names the file it was saved to, so a
+ * later wake reads it back with read_file instead of running the tool again. With
  * `actionsOnly` (a trimmed note, which must stay small inside the wake) reads are left
  * out. Null when the turn made no call the record shows.
  */
 export function stepActions(
   content: DwarContentBlock[],
   results: Map<string, ActionResult>,
+  filesDir: string,
   actionsOnly = false,
 ): string | null {
   const calls = content.filter(
@@ -135,19 +108,24 @@ export function stepActions(
       return `  ${call.name} ${clip(JSON.stringify(call.input), ACTION_TOOLS.has(call.name) ? CALL_INPUT_CHARS : READ_INPUT_CHARS)} → ${result.is_error ? "error: " : ""}${clip(outcome, CALL_RESULT_CHARS)}`;
     }
     if (ACTION_TOOLS.has(call.name)) {
-      return `  ${call.name} ${clip(JSON.stringify(call.input), CALL_INPUT_CHARS)} → ${outcome.slice(0, CALL_RESULT_CHARS)}… (${chars} chars, read_result ${call.id})`;
+      return `  ${call.name} ${clip(JSON.stringify(call.input), CALL_INPUT_CHARS)} → ${outcome.slice(0, CALL_RESULT_CHARS)}… (${chars} chars${savedAt(call, filesDir)})`;
     }
-    return `  ${call.name} ${clip(JSON.stringify(call.input), READ_INPUT_CHARS)} → read ${chars} chars (read_result ${call.id})`;
+    return `  ${call.name} ${clip(JSON.stringify(call.input), READ_INPUT_CHARS)} → read ${chars} chars${savedAt(call, filesDir)}`;
   });
   return [text.length > 0 ? clip(text, STEP_TEXT_CHARS) : "(no note)", ...lines].join("\n");
 }
 
+/** savedAt names the file a call's whole result was saved to, or nothing for a call whose result is not saved. */
+function savedAt(call: DwarToolUseBlock, filesDir: string): string {
+  return savesResult(call.name) ? `, saved at ${resultPath(filesDir, call.id)}` : "";
+}
+
 /**
- * formatActions lists, oldest first, every step of the work lane in `turns` that
+ * formatActions lists, oldest first, every step of `lane` in `turns` that
  * called an action tool, with its actions only (see stepActions). Past RECORD_MAX_CHARS it keeps the newest
  * steps and says how many earlier ones get_logs holds. Null when no step acted.
  */
-export function formatActions(turns: DwarMessage[]): string | null {
+export function formatActions(turns: DwarMessage[], filesDir: string, lane: Lane): string | null {
   const results = new Map<string, ActionResult>();
   for (const turn of turns) {
     if (turn.role === "user" && typeof turn.content !== "string") {
@@ -161,10 +139,10 @@ export function formatActions(turns: DwarMessage[]): string | null {
 
   const steps: string[] = [];
   for (const turn of turns) {
-    if (turn.role !== "assistant" || turn.lane !== "work" || typeof turn.content === "string") {
+    if (turn.role !== "assistant" || turn.lane !== lane || typeof turn.content === "string") {
       continue;
     }
-    const step = stepActions(turn.content, results, true);
+    const step = stepActions(turn.content, results, filesDir, true);
     if (step !== null) {
       steps.push(`- ${step}`);
     }

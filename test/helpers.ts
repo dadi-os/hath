@@ -2,25 +2,10 @@ import { AGENT_ID_PATTERN } from "../src/agent-id.js";
 import type { Config } from "../src/config.js";
 import { loadConfig } from "../src/config.js";
 import { createDb, type Db, type Sql } from "../src/db/client.js";
-import { agentTools, agents } from "../src/db/schema.js";
-import { toolId } from "../src/tools/sync.js";
+import { agents } from "../src/db/schema.js";
 import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
-import type { DwarClient } from "../src/dwar/client.js";
+import type { DwarClient, DwarDescribeImageResponse } from "../src/dwar/client.js";
 import type { WakeLimits } from "../src/runtime/wake.js";
-import type {
-  ChaaviCard,
-  ChaaviClient,
-  ChaaviFolder,
-  ChaaviItem,
-  ChaaviLogin,
-  ChaaviPasskey,
-  ChaaviSavedSecret,
-  ChaaviSecret,
-  CreateLoginRequest,
-  ListItemsRequest,
-  RevealRequest,
-  SaveSecretRequest,
-} from "../src/chaavi/client.js";
 import type {
   CommandRequest,
   GharAttributeState,
@@ -31,22 +16,18 @@ import type {
   ListEventsRequest,
 } from "../src/ghar/client.js";
 import type {
-  BrowserInfo,
-  CaptureRequest,
-  CreateBrowserRequest,
-  CreateBrowserResponse,
-  CreateTerminalRequest,
-  CreateTerminalResponse,
   EditFileRequest,
   ExecRequest,
   ExecResponse,
   GlobRequest,
   GrepRequest,
-  KeysRequest,
+  HelperTask,
   NasClient,
+  NasEvent,
   ReadFileBytesRequest,
   ReadFileRequest,
-  TerminalInfo,
+  TaskKind,
+  TaskRequest,
   WriteFileRequest,
 } from "../src/nas/client.js";
 import type {
@@ -56,7 +37,6 @@ import type {
   RecallResponse,
   YaadClient,
 } from "../src/yaad/client.js";
-import { syncTools } from "../src/tools/sync.js";
 import { HathError } from "../src/errors.js";
 
 export function testConfig(): Config {
@@ -76,6 +56,7 @@ export const roomyWakeLimits: WakeLimits = {
   supersedeWindowTurns: 8,
   promptCeilingTokens: 10_000_000,
   promptTrimTokens: 1_000_000,
+  filesDir: "/files",
 };
 
 export const silentLog = {
@@ -115,11 +96,11 @@ export function yieldTurn(id = "yield-1"): DwarChatResponse {
   return toolUse("yield", {}, id);
 }
 
-/** The id of the newest hand-off to `to` that a process-lane request shows in a [Hand-offs waiting] turn. */
-export function waitingHandoffId(request: DwarChatRequest, to = "Ankur"): number {
-  const found = [...JSON.stringify(request.messages).matchAll(new RegExp(`#(\\d+) · to ${to} ·`, "g"))].at(-1);
+/** The id of the newest work-lane message to `to` that a process-lane request shows in a [Messages from work] turn. */
+export function waitingMessageId(request: DwarChatRequest, to = "Ankur"): number {
+  const found = [...JSON.stringify(request.messages).matchAll(new RegExp(`#(\\d+) · to ${to}(?: ·|\\\\n)`, "g"))].at(-1);
   if (found === undefined) {
-    throw new Error(`no hand-off to ${to} is waiting in the request`);
+    throw new Error(`no message from work to ${to} is waiting in the request`);
   }
   return Number(found[1]);
 }
@@ -138,11 +119,7 @@ export function mockDwar(opts: {
     image: { media_type: string; data: string };
     prompt?: string;
   }) =>
-    | { description: string; usage: { input_tokens: number; output_tokens: number } }
-    | Promise<{
-        description: string;
-        usage: { input_tokens: number; output_tokens: number };
-      }>;
+    DwarDescribeImageResponse | Promise<DwarDescribeImageResponse>;
 }): DwarClient & {
   workCalls: DwarChatRequest[];
   processCalls: DwarChatRequest[];
@@ -192,8 +169,14 @@ export function mockDwar(opts: {
       }
       return {
         description: "mock image description",
-        usage: { input_tokens: 1, output_tokens: 1 },
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
       };
+    },
+    async webSearch() {
+      throw new Error("mockDwar.webSearch is not stubbed");
+    },
+    async webFetch() {
+      throw new Error("mockDwar.webFetch is not stubbed");
     },
   };
 }
@@ -204,15 +187,12 @@ export function mockYaad(opts: {
 } = {}): YaadClient & {
   recallCalls: RecallRequest[];
   ingestCalls: IngestRequest[];
-  searchHistoryCalls: Array<{ query: string; limit?: number }>;
 } {
   const recallCalls: RecallRequest[] = [];
   const ingestCalls: IngestRequest[] = [];
-  const searchHistoryCalls: Array<{ query: string; limit?: number }> = [];
   return {
     recallCalls,
     ingestCalls,
-    searchHistoryCalls,
     async recall(body) {
       recallCalls.push(body);
       if (opts.recall) {
@@ -241,13 +221,6 @@ export function mockYaad(opts: {
         },
         operations: [{ op: "noop", reason: "nothing" }],
       };
-    },
-    async getNodeHistory() {
-      return { history: [] };
-    },
-    async searchHistory(body) {
-      searchHistoryCalls.push(body);
-      return { results: [] };
     },
   };
 }
@@ -314,165 +287,19 @@ export function mockGhar(opts: {
   };
 }
 
-/** Test double for ChaaviClient. Unstubbed reads that decrypt throw `not_found`. */
-export function mockChaavi(
-  opts: {
-    listItems?: (
-      query?: ListItemsRequest,
-    ) => Promise<{ items: ChaaviItem[] }> | { items: ChaaviItem[] };
-    listFolders?: () => Promise<{ folders: ChaaviFolder[] }> | { folders: ChaaviFolder[] };
-    getItem?: (itemId: string) => Promise<ChaaviItem> | ChaaviItem;
-    createLogin?: (input: CreateLoginRequest) => Promise<ChaaviItem> | ChaaviItem;
-    reveal?: (itemId: string, request: RevealRequest) => Promise<ChaaviSecret> | ChaaviSecret;
-    getLogin?: (itemId: string) => Promise<ChaaviLogin> | ChaaviLogin;
-    getCard?: (itemId: string) => Promise<ChaaviCard> | ChaaviCard;
-    getPasskey?: (itemId: string) => Promise<ChaaviPasskey> | ChaaviPasskey;
-    saveSecret?: (name: string, input: SaveSecretRequest) => Promise<ChaaviSavedSecret> | ChaaviSavedSecret;
-    revealSecret?: (name: string) => Promise<ChaaviSecret> | ChaaviSecret;
-  } = {},
-): ChaaviClient & {
-  listItemsCalls: Array<ListItemsRequest | undefined>;
-  getItemCalls: string[];
-  createLoginCalls: CreateLoginRequest[];
-  revealCalls: Array<{ itemId: string; request: RevealRequest }>;
-  getLoginCalls: string[];
-  getCardCalls: string[];
-  getPasskeyCalls: string[];
-  saveSecretCalls: Array<{ name: string; input: SaveSecretRequest }>;
-  revealSecretCalls: string[];
-} {
-  const listItemsCalls: Array<ListItemsRequest | undefined> = [];
-  const getItemCalls: string[] = [];
-  const createLoginCalls: CreateLoginRequest[] = [];
-  const revealCalls: Array<{ itemId: string; request: RevealRequest }> = [];
-  const getLoginCalls: string[] = [];
-  const getCardCalls: string[] = [];
-  const getPasskeyCalls: string[] = [];
-  const saveSecretCalls: Array<{ name: string; input: SaveSecretRequest }> = [];
-  const revealSecretCalls: string[] = [];
-  const notFound = (what: string) => new HathError(404, "not_found", `${what} not found`);
-  return {
-    listItemsCalls,
-    getItemCalls,
-    createLoginCalls,
-    revealCalls,
-    getLoginCalls,
-    getCardCalls,
-    getPasskeyCalls,
-    saveSecretCalls,
-    revealSecretCalls,
-    async listItems(query) {
-      listItemsCalls.push(query);
-      if (opts.listItems) {
-        return opts.listItems(query);
-      }
-      return { items: [] };
-    },
-    async listFolders() {
-      if (opts.listFolders) {
-        return opts.listFolders();
-      }
-      return { folders: [] };
-    },
-    async getItem(itemId) {
-      getItemCalls.push(itemId);
-      if (opts.getItem) {
-        return opts.getItem(itemId);
-      }
-      throw notFound(`item ${itemId}`);
-    },
-    async createLogin(input) {
-      createLoginCalls.push(input);
-      if (opts.createLogin) {
-        return opts.createLogin(input);
-      }
-      throw new HathError(500, "chaavi", "createLogin is not stubbed");
-    },
-    async reveal(itemId, request) {
-      revealCalls.push({ itemId, request });
-      if (opts.reveal) {
-        return opts.reveal(itemId, request);
-      }
-      throw notFound(`item ${itemId}`);
-    },
-    async getLogin(itemId) {
-      getLoginCalls.push(itemId);
-      if (opts.getLogin) {
-        return opts.getLogin(itemId);
-      }
-      throw notFound(`item ${itemId}`);
-    },
-    async getCard(itemId) {
-      getCardCalls.push(itemId);
-      if (opts.getCard) {
-        return opts.getCard(itemId);
-      }
-      throw notFound(`item ${itemId}`);
-    },
-    async getPasskey(itemId) {
-      getPasskeyCalls.push(itemId);
-      if (opts.getPasskey) {
-        return opts.getPasskey(itemId);
-      }
-      throw notFound(`item ${itemId}`);
-    },
-    async saveSecret(name, input) {
-      saveSecretCalls.push({ name, input });
-      if (opts.saveSecret) {
-        return opts.saveSecret(name, input);
-      }
-      throw new HathError(500, "chaavi", "saveSecret is not stubbed");
-    },
-    async revealSecret(name) {
-      revealSecretCalls.push(name);
-      if (opts.revealSecret) {
-        return opts.revealSecret(name);
-      }
-      throw notFound(`secure note ${name}`);
-    },
-  };
-}
-
-/** A Chaavi item for tool tests: a login unless `type` and its object say otherwise. */
-export function chaaviItem(overrides: Partial<ChaaviItem> & { id: string; name: string }): ChaaviItem {
-  return {
-    type: "login",
-    folderId: null,
-    hasNotes: false,
-    fields: [],
-    ...overrides,
-  } as ChaaviItem;
-}
-
+/**
+ * A Nas double. Files live in memory (`files`): writeFile and editFile change them and
+ * readFile, readFileBytes read them. Helper tasks live in memory too (`tasks`): startTask
+ * and steerTask create and change them, and `emit` pushes an event down the stream
+ * openReports returns. Anything else is stubbed through `opts`.
+ */
 export function mockNas(opts: {
-  createTerminal?: (
-    body?: CreateTerminalRequest,
-  ) => Promise<CreateTerminalResponse> | CreateTerminalResponse;
-  listTerminals?: () => Promise<TerminalInfo[]> | TerminalInfo[];
-  closeTerminal?: (id: string) => Promise<void> | void;
   exec?: (id: string, body: ExecRequest) => Promise<ExecResponse> | ExecResponse;
-  capture?: (
-    id: string,
-    query?: CaptureRequest,
-  ) => Promise<{ output: string }> | { output: string };
-  sendKeys?: (
-    id: string,
-    body: KeysRequest,
-  ) => Promise<{ sent: true }> | { sent: true };
   readFile?: (
     body: ReadFileRequest,
   ) =>
     | Promise<{ content: string; total_lines: number; truncated: boolean }>
     | { content: string; total_lines: number; truncated: boolean };
-  readFileBytes?: (
-    body: ReadFileBytesRequest,
-  ) => Promise<{ data: string; size_bytes: number }> | { data: string; size_bytes: number };
-  writeFile?: (
-    body: WriteFileRequest,
-  ) => Promise<{ bytes: number }> | { bytes: number };
-  editFile?: (
-    body: EditFileRequest,
-  ) => Promise<{ replaced: true }> | { replaced: true };
   glob?: (
     body: GlobRequest,
   ) => Promise<{ paths: string[]; truncated: boolean }> | { paths: string[]; truncated: boolean };
@@ -481,88 +308,156 @@ export function mockNas(opts: {
   ) =>
     | Promise<{ matches: Array<{ path: string; line: number; text: string }>; truncated: boolean }>
     | { matches: Array<{ path: string; line: number; text: string }>; truncated: boolean };
-  createBrowser?: (
-    body?: CreateBrowserRequest,
-  ) => Promise<CreateBrowserResponse> | CreateBrowserResponse;
-  listBrowsers?: () => Promise<BrowserInfo[]> | BrowserInfo[];
-  closeBrowser?: (id: number) => Promise<void> | void;
-  browserScreenshot?: (id: number) => Promise<Buffer> | Buffer;
+  /** Make every file read fail with this error. */
+  readError?: HathError;
 } = {}): NasClient & {
-  createTerminalCalls: Array<CreateTerminalRequest | undefined>;
-  listTerminalsCalls: number;
-  closeTerminalCalls: string[];
+  files: Map<string, Buffer>;
+  tasks: Map<string, HelperTask>;
+  startTaskCalls: Array<{ kind: TaskKind; body: TaskRequest }>;
+  steerTaskCalls: Array<{ kind: TaskKind; id: string; body: TaskRequest }>;
   execCalls: Array<{ id: string; body: ExecRequest }>;
-  captureCalls: Array<{ id: string; query?: CaptureRequest }>;
-  sendKeysCalls: Array<{ id: string; body: KeysRequest }>;
-  readFileCalls: ReadFileRequest[];
+  terminalsCreated: string[];
+  terminalsClosed: string[];
   readFileBytesCalls: ReadFileBytesRequest[];
   writeFileCalls: WriteFileRequest[];
   editFileCalls: EditFileRequest[];
   globCalls: GlobRequest[];
   grepCalls: GrepRequest[];
-  createBrowserCalls: number;
-  listBrowsersCalls: number;
-  closeBrowserCalls: number[];
-  browserScreenshotCalls: number[];
+  /** Whether a stream from openReports is open. */
+  streamOpen: () => boolean;
+  /** Push an event to the open stream. */
+  emit: (event: NasEvent) => void;
+  /** End the open stream with an error, as a dropped connection does. */
+  dropStream: (error: Error) => void;
+  /** How many times openReports was called. */
+  opens: () => number;
 } {
-  const createTerminalCalls: Array<CreateTerminalRequest | undefined> = [];
-  let listTerminalsCalls = 0;
-  const closeTerminalCalls: string[] = [];
+  const files = new Map<string, Buffer>();
+  const tasks = new Map<string, HelperTask>();
+  const startTaskCalls: Array<{ kind: TaskKind; body: TaskRequest }> = [];
+  const steerTaskCalls: Array<{ kind: TaskKind; id: string; body: TaskRequest }> = [];
   const execCalls: Array<{ id: string; body: ExecRequest }> = [];
-  const captureCalls: Array<{ id: string; query?: CaptureRequest }> = [];
-  const sendKeysCalls: Array<{ id: string; body: KeysRequest }> = [];
-  const readFileCalls: ReadFileRequest[] = [];
+  const terminalsCreated: string[] = [];
+  const terminalsClosed: string[] = [];
   const readFileBytesCalls: ReadFileBytesRequest[] = [];
   const writeFileCalls: WriteFileRequest[] = [];
   const editFileCalls: EditFileRequest[] = [];
   const globCalls: GlobRequest[] = [];
   const grepCalls: GrepRequest[] = [];
-  let createBrowserCalls = 0;
-  let listBrowsersCalls = 0;
-  const closeBrowserCalls: number[] = [];
-  const browserScreenshotCalls: number[] = [];
+  let counter = 0;
+  let opens = 0;
+  let push: ((event: NasEvent) => void) | undefined;
+  let fail: ((error: Error) => void) | undefined;
+
+  const view = (kind: TaskKind, id: string, body: TaskRequest): HelperTask => {
+    const now = new Date().toISOString();
+    return {
+      task: `task/${kind}/${id}`,
+      kind,
+      id,
+      owner: body.agent_id,
+      steered_by: body.agent_id,
+      purpose: body.message,
+      status: "working",
+      state: "",
+      created_at: now,
+      last_activity: now,
+    };
+  };
+  const notFound = (path: string) => new HathError(404, "not_found", `${path} not found`);
+
   return {
-    createTerminalCalls,
-    get listTerminalsCalls() {
-      return listTerminalsCalls;
-    },
-    closeTerminalCalls,
+    files,
+    tasks,
+    startTaskCalls,
+    steerTaskCalls,
     execCalls,
-    captureCalls,
-    sendKeysCalls,
-    readFileCalls,
+    terminalsCreated,
+    terminalsClosed,
     readFileBytesCalls,
     writeFileCalls,
     editFileCalls,
     globCalls,
     grepCalls,
-    get createBrowserCalls() {
-      return createBrowserCalls;
+    streamOpen: () => push !== undefined,
+    emit: (event) => push?.(event),
+    dropStream: (error) => fail?.(error),
+    opens: () => opens,
+    async startTask(kind, body) {
+      startTaskCalls.push({ kind, body });
+      counter += 1;
+      const task = view(kind, String(counter), body);
+      tasks.set(task.task, task);
+      return task;
     },
-    get listBrowsersCalls() {
-      return listBrowsersCalls;
-    },
-    closeBrowserCalls,
-    browserScreenshotCalls,
-    async createTerminal(body) {
-      createTerminalCalls.push(body);
-      if (opts.createTerminal) {
-        return opts.createTerminal(body);
+    async steerTask(kind, id, body) {
+      steerTaskCalls.push({ kind, id, body });
+      const existing = tasks.get(`task/${kind}/${id}`);
+      if (!existing) {
+        throw new HathError(404, "not_found", `no task ${kind}/${id}`);
       }
-      return { id: "t1", cwd: "/var/lib/dadi" };
+      const task: HelperTask = { ...existing, steered_by: body.agent_id, status: "working" };
+      tasks.set(task.task, task);
+      return task;
     },
-    async listTerminals() {
-      listTerminalsCalls += 1;
-      if (opts.listTerminals) {
-        return opts.listTerminals();
+    async listTasks() {
+      return [...tasks.values()];
+    },
+    async getTask(kind, id) {
+      const task = tasks.get(`task/${kind}/${id}`);
+      if (!task) {
+        throw new HathError(404, "not_found", `no task ${kind}/${id}`);
       }
-      return [];
+      return task;
+    },
+    async openReports(signal) {
+      opens += 1;
+      const queue: NasEvent[] = [];
+      let wake: (() => void) | undefined;
+      let failure: Error | undefined;
+      push = (event) => {
+        queue.push(event);
+        wake?.();
+      };
+      fail = (error) => {
+        failure = error;
+        wake?.();
+      };
+      signal.addEventListener("abort", () => {
+        failure = new Error("aborted");
+        wake?.();
+      });
+      return {
+        async *[Symbol.asyncIterator]() {
+          try {
+            for (;;) {
+              const next = queue.shift();
+              if (next !== undefined) {
+                yield next;
+                continue;
+              }
+              if (failure !== undefined) {
+                throw failure;
+              }
+              await new Promise<void>((resolve) => {
+                wake = resolve;
+              });
+              wake = undefined;
+            }
+          } finally {
+            push = undefined;
+            fail = undefined;
+          }
+        },
+      };
+    },
+    async createTerminal(cwd) {
+      const id = `t${terminalsCreated.length + 1}`;
+      terminalsCreated.push(id);
+      return { id, cwd: cwd ?? "/" };
     },
     async closeTerminal(id) {
-      closeTerminalCalls.push(id);
-      if (opts.closeTerminal) {
-        await opts.closeTerminal(id);
-      }
+      terminalsClosed.push(id);
     },
     async exec(id, body) {
       execCalls.push({ id, body });
@@ -571,22 +466,7 @@ export function mockNas(opts: {
       }
       return { exit_code: 0, output: "", truncated: false, timed_out: false };
     },
-    async capture(id, query) {
-      captureCalls.push({ id, query });
-      if (opts.capture) {
-        return opts.capture(id, query);
-      }
-      return { output: "" };
-    },
-    async sendKeys(id, body) {
-      sendKeysCalls.push({ id, body });
-      if (opts.sendKeys) {
-        return opts.sendKeys(id, body);
-      }
-      return { sent: true };
-    },
     async readFile(body) {
-      readFileCalls.push(body);
       if (opts.readFile) {
         return opts.readFile(body);
       }
@@ -594,23 +474,36 @@ export function mockNas(opts: {
     },
     async readFileBytes(body) {
       readFileBytesCalls.push(body);
-      if (opts.readFileBytes) {
-        return opts.readFileBytes(body);
+      if (opts.readError) {
+        throw opts.readError;
       }
-      return { data: "", size_bytes: 0 };
+      const bytes = files.get(body.path);
+      if (bytes === undefined) {
+        throw notFound(body.path);
+      }
+      if (bytes.length > body.max_bytes) {
+        throw new HathError(400, "invalid_request", `${body.path} is ${bytes.length} bytes, over max_bytes ${body.max_bytes}`);
+      }
+      return { data: bytes.toString("base64"), size_bytes: bytes.length };
     },
     async writeFile(body) {
       writeFileCalls.push(body);
-      if (opts.writeFile) {
-        return opts.writeFile(body);
-      }
-      return { bytes: body.content.length };
+      const bytes = "data" in body ? Buffer.from(body.data, "base64") : Buffer.from(body.content, "utf8");
+      files.set(body.path, bytes);
+      return { bytes: bytes.length };
     },
     async editFile(body) {
       editFileCalls.push(body);
-      if (opts.editFile) {
-        return opts.editFile(body);
+      const bytes = files.get(body.path);
+      if (bytes === undefined) {
+        throw notFound(body.path);
       }
+      const text = bytes.toString("utf8");
+      const count = text.split(body.old_string).length - 1;
+      if (count !== 1) {
+        throw new HathError(409, "conflict", `old_string occurs ${count} times in ${body.path}; it must occur exactly once`);
+      }
+      files.set(body.path, Buffer.from(text.replace(body.old_string, () => body.new_string), "utf8"));
       return { replaced: true };
     },
     async glob(body) {
@@ -627,74 +520,6 @@ export function mockNas(opts: {
       }
       return { matches: [], truncated: false };
     },
-    async createBrowser(body) {
-      createBrowserCalls += 1;
-      if (opts.createBrowser) {
-        return opts.createBrowser(body);
-      }
-      return {
-        id: 10,
-        display: ":10",
-        cdp_url: "ws://127.0.0.1:9310/devtools/browser/test",
-        downloads_dir: "/home/dadi/Downloads",
-      };
-    },
-    async listBrowsers() {
-      listBrowsersCalls += 1;
-      if (opts.listBrowsers) {
-        return opts.listBrowsers();
-      }
-      return [];
-    },
-    async closeBrowser(id) {
-      closeBrowserCalls.push(id);
-      if (opts.closeBrowser) {
-        await opts.closeBrowser(id);
-      }
-    },
-    async browserScreenshot(id) {
-      browserScreenshotCalls.push(id);
-      if (opts.browserScreenshot) {
-        return opts.browserScreenshot(id);
-      }
-      // 1x1 PNG
-      return Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-        "base64",
-      );
-    },
-    async getStatus() {
-      return {
-        uptime_seconds: 0,
-        services: [],
-        disk: { free_bytes: 0, total_bytes: 0 },
-        errors: [],
-      };
-    },
-    async getLogs() {
-      return { entries: [] };
-    },
-    async restartModule() {
-      return { status: "ok" };
-    },
-    async pullUpdates(scope) {
-      return { state: "running", scope, started_at: "2026-01-01T00:00:00Z", reboot_required: false };
-    },
-    async getUpdateStatus() {
-      return { state: "idle", reboot_required: false };
-    },
-    async stackUp() {
-      return { status: "ok" };
-    },
-    async stackDown() {
-      return { status: "ok" };
-    },
-    async provision(nodeName) {
-      return { bundle: Buffer.from(JSON.stringify({ node_name: nodeName })).toString("base64") };
-    },
-    async listClients() {
-      return { clients: [] };
-    },
   };
 }
 
@@ -709,52 +534,7 @@ export async function openTestDb(): Promise<{ db: Db; sql: Sql; close: () => Pro
 }
 
 export async function resetRuntime(sql: Sql, db: Db, _config: Config): Promise<void> {
-  await sql`TRUNCATE scheduled_messages, messages, agent_logs, agent_tools, tools, agents CASCADE`;
-  await syncTools(db);
-}
-
-/** Agent with an explicit grant list (tests state the capability under test). */
-export async function insertWorker(
-  db: Db,
-  args: {
-    id?: string;
-    name?: string;
-    systemPrompt: string;
-    parentAgentId?: string | null;
-    tools: readonly string[];
-  },
-): Promise<string> {
-  const id = await insertAgent(db, args);
-  for (const tool of args.tools) {
-    await db.insert(agentTools).values({
-      agentId: id,
-      toolId: toolId(tool),
-      usage: "test",
-    });
-  }
-  return id;
-}
-
-/** Grant-, revoke-, and modify-children tools are embedded; spawning is the manager's grant. */
-const MANAGER_TOOLS = ["hath_spawn_agent"] as const;
-
-/** Agent that can spawn/grant/revoke/modify children. */
-export async function insertManager(
-  db: Db,
-  args: { id?: string; name?: string; systemPrompt: string } = {
-    id: "manager",
-    systemPrompt: "manage children",
-  },
-): Promise<string> {
-  const id = await insertAgent(db, args);
-  for (const tool of MANAGER_TOOLS) {
-    await db.insert(agentTools).values({
-      agentId: id,
-      toolId: toolId(tool),
-      usage: "manage children",
-    });
-  }
-  return id;
+  await sql`TRUNCATE delivered_reports, scheduled_messages, messages, agent_logs, agents CASCADE`;
 }
 
 /** insertAgent creates an agent row; `id` is kebab-case (`name` accepted as alias). */
@@ -784,3 +564,9 @@ export async function insertAgent(
   });
   return id;
 }
+
+/** The work loop's wake hooks, doing nothing: a lane with no watch and no requester waiting. */
+export const workLoopHooks = {
+  woke: async () => {},
+  yieldReminder: async () => null,
+};
