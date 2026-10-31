@@ -24,7 +24,7 @@ export type ProcessLoopDeps = StepDeps & {
  * send, which closes the ones to that recipient, and a yield with one still waiting is
  * answered, up to OUTBOX_RETRIES times, before the lane fails loudly and the rest are
  * recorded as failed.
- * A turn with no tool call continues; the only clean exit is the embedded yield tool.
+ * A turn with no tool call continues; the only clean exit is the yield tool.
  * Skips the provider call when the visible history is empty or ends on an assistant turn
  * (providers reject those requests, and nothing is waiting) or when nothing it can see has
  * joined the wake since it last yielded, as when several wake-ups queue behind one run

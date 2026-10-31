@@ -1,5 +1,5 @@
 /**
- * Embedded memory tools every work lane holds: `recall_memory` reads Yaad,
+ * Memory tools: `recall_memory` reads Yaad,
  * `ingest_memory` writes it stamped with the calling agent.
  */
 

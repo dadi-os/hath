@@ -1,6 +1,6 @@
 /**
- * Async tools. A tool is async when its definition says so (`async: true` on a registry or
- * embedded definition, or the flag its lane module exports, as memory.ts does for
+ * Async tools. A tool is async when its definition says so (`async: true` on a tool
+ * definition, or the flag its lane module exports, as memory.ts does for
  * ingest_memory); changing that is a code change. A flagged call returns `{ pending: id }` at
  * once and runs on; when it ends, its result (or its failure) reaches the agent as a message
  * that wakes its work lane, the way a helper's report does (see rewake.ts). A restart loses
@@ -11,7 +11,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { pendingAsync } from "../db/schema.js";
-import { findEmbeddedTool, findTool } from "../tools/registry.js";
+import { findTool } from "../tools/registry.js";
 import { INGEST_MEMORY_ASYNC } from "./memory.js";
 import { ok, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarToolUseBlock } from "../types/domain.js";
@@ -31,7 +31,7 @@ export function toolIsAsync(name: string): boolean {
   if (name === INGEST_MEMORY) {
     return INGEST_MEMORY_ASYNC;
   }
-  return (findEmbeddedTool(name) ?? findTool(name))?.async === true;
+  return findTool(name)?.async === true;
 }
 
 /** deliverDeps is what delivering to the caller's thread needs, from a tool context. */

@@ -1,5 +1,5 @@
 /**
- * Embedded agent self-management: `manage_agent` retires an agent or reactivates
+ * Agent self-management: `manage_agent` retires an agent or reactivates
  * a retired child, and `modify_agent_prompt` edits a prompt in place. Every
  * agent can change itself and its direct children; only a parent can reactivate
  * a retired child. Not the router's — the router hands work

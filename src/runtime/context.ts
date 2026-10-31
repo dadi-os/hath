@@ -5,28 +5,12 @@ import { asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
-import type { DwarChatRequest, DwarMessage, DwarTool, Lane } from "../types/domain.js";
+import type { DwarChatRequest, DwarMessage, Lane } from "../types/domain.js";
 import { attachmentStub } from "./attachments.js";
-import { listAgentsTool, PROCESS_REGISTRY_TOOLS, steerWorkTool, yieldTool } from "./tools.js";
-import { sendTool } from "./send.js";
-import { waitTool } from "./watches.js";
 import { directoryBlock, ownDescriptionLine } from "./directory.js";
-import { messageTool } from "./outbox.js";
-import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
-import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "./wake.js";
-import {
-  embeddedAgentTools,
-  embeddedFileReadTools,
-  embeddedFileWriteTools,
-  embeddedHelperTools,
-  allTools,
-  embeddedSchedulingTools,
-  findEmbeddedTool,
-} from "../tools/registry.js";
-import { asDwarTool } from "../tools/types.js";
-import { routerLaneTools } from "./router.js";
+import { toolsForLane, WORKER_ID } from "./lanes.js";
 
 const promptCache = new Map<string, { mtimeMs: number; text: string }>();
 
@@ -73,9 +57,6 @@ export type AssembledContext = Omit<DwarChatRequest, "tool_choice" | "messages">
   transcripts: Partial<Record<Lane, DwarMessage[]>>;
   throughSeq: number;
 };
-
-/** A worker's id names its pool and task (`browser-worker-ibio-150-quiz-2`), per the system doctrine. */
-const WORKER_ID = /(^|-)worker-/;
 
 /**
  * hath's system for an identity, in order: the system doctrine
@@ -233,7 +214,7 @@ export async function assembleRouterContext(opts: {
     transcripts: {
       router: [{ role: "user", content: `[From: Ankur · ${formatISO(new Date())}]\n${opts.utterance}` }],
     },
-    tools: routerLaneTools(),
+    tools: toolsForLane(null, "router"),
     throughSeq: 0,
   };
 }
@@ -312,42 +293,3 @@ function entryBody(row: TranscriptEntry): string {
     .filter((part) => part.length > 0)
     .join("\n\n");
 }
-
-/**
- * toolsForLane is what a lane may call: the process lane's routing tools, or the
- * work lane's registry plus the embedded tools. A worker gets no `ingest_memory`: it
- * reports what it found to the agent that owns the domain, which stores what matters.
- */
-export function toolsForLane(agentId: string, lane: Lane): DwarTool[] {
-  if (lane === "router") {
-    throw new HathError(500, "internal_error", `agent ${agentId} has no router lane`);
-  }
-  if (lane === "process") {
-    return [
-      sendTool,
-      steerWorkTool,
-      ...embeddedFileReadTools().map(asDwarTool),
-      ...(PROCESS_REGISTRY_TOOLS as readonly string[]).map((name) => asDwarTool(findEmbeddedTool(name)!)),
-      recallMemoryTool,
-      listAgentsTool,
-      yieldTool,
-    ];
-  }
-  return [
-    ...allTools().map(asDwarTool),
-    messageTool,
-    listAgentsTool,
-    waitTool,
-    recallMemoryTool,
-    ...(WORKER_ID.test(agentId) ? [] : [ingestMemoryTool]),
-    manageAgentTool,
-    modifyAgentPromptTool,
-    ...embeddedHelperTools().map(asDwarTool),
-    ...embeddedFileReadTools().map(asDwarTool),
-    ...embeddedFileWriteTools().map(asDwarTool),
-    ...embeddedAgentTools().map(asDwarTool),
-    ...embeddedSchedulingTools().map(asDwarTool),
-    yieldTool,
-  ];
-}
-

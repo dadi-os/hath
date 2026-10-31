@@ -12,8 +12,7 @@ import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus, type RuntimeEvent } from "../src/runtime/events.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { allTools } from "../src/tools/registry.js";
-import { LIST_AGENTS, MESSAGE, SEND, YIELD } from "../src/types/domain.js";
+import { SEND } from "../src/types/domain.js";
 import {
   insertAgent,
   mockDwar,
@@ -434,7 +433,7 @@ test("GET /agents lists multiple top-level workers without conflict", async () =
   await app.close();
 });
 
-test("GET /agents/:id includes granted tools and excludes embedded tools", async () => {
+test("GET /agents/:id carries no tool list, since no tool is granted per agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
@@ -458,23 +457,9 @@ test("GET /agents/:id includes granted tools and excludes embedded tools", async
   });
   const res = await app.inject({ method: "GET", url: `/agents/${workerId}` });
   assert.equal(res.statusCode, 200);
-  const body = res.json() as {
-    tools: Array<{ name: string; description: string }>;
-    running: { work: boolean; process: boolean };
-  };
+  const body = res.json() as { running: { work: boolean; process: boolean } };
   assert.ok(body.running);
-  assert.ok(body.tools.length > 0);
-  for (const tool of body.tools) {
-    assert.ok(typeof tool.name === "string" && tool.name.length > 0);
-    assert.ok(typeof tool.description === "string");
-  }
-  const names = body.tools.map((tool) => tool.name);
-  assert.deepEqual(names, allTools().map((tool) => tool.name));
-  assert.equal(names.includes(MESSAGE), false);
-  assert.equal(names.includes(SEND), false);
-  assert.equal(names.includes("steer_work"), false);
-  assert.equal(names.includes(YIELD), false);
-  assert.equal(names.includes(LIST_AGENTS), false);
+  assert.equal("tools" in body, false);
   await app.close();
 });
 

@@ -7,7 +7,6 @@ import { agentLogs, agents, watches } from "../db/schema.js";
 import type { AgentRow, WatchRow } from "../db/schema.js";
 import type { HelperTask } from "../nas/client.js";
 import { requireAgent } from "../runtime/tools.js";
-import { allTools } from "../tools/registry.js";
 import { toAgentRecord, toLogRecord } from "../serialize.js";
 import type { AgentRecord } from "../types/domain.js";
 import { agentLogsQuery, agentMessagesQuery, idParam, logsQuery, parse, threadReadBody } from "./schemas.js";
@@ -138,7 +137,6 @@ async function agentDetail(app: FastifyInstance, agentRow: AgentRow) {
   return {
     ...(await withLive(agentRow, app.runtime, live)),
     children: await Promise.all(childRows.map((row) => withLive(row, app.runtime, live))),
-    tools: allTools().map((tool) => ({ name: tool.name, description: tool.description })),
   };
 }
 

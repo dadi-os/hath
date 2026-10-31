@@ -21,8 +21,8 @@ hath/
     yaad/         Yaad axios client
     ghar/         Ghar axios client
     nas/          Nas axios client (helper tasks + event stream, filesystem, terminals)
-    runtime/      dual-lane engine, outbox and send, status block, transcript cache, attachments, events, locks
-    tools/        the tool registry (a code file: `hath_spawn_agent` and the Ghar tools) and the embedded tools
+    runtime/      dual-lane engine, `lanes.ts` (the tool set of each lane), outbox and send, status block, transcript cache, attachments, events, locks
+    tools/        every tool defined by a zod schema and a handler, in one registry (a code file)
     routers/      HTTP routes + schemas
     types/        domain types
   test/
@@ -75,7 +75,7 @@ Every `agents` row is an agent. The router is not a row — it is `POST /router`
 2. Runs the router lane: the same step loop as agent lanes, calling Dwar `POST /chat/complete` (context-free on Dwar's side). System is `prompts/system.md` + `prompts/router.md` + identity + the active root agents; messages are exactly one turn, this utterance (headed `[From: Ankur]`) — no earlier run, nothing sent as Ankur, no reply to him, and nothing that arrives mid-run. What is underway it finds with its tools. Nothing in code caps the loop; it ends when the model calls `yield`.
 3. Returns `201 { messages: [{ to_agent_id, content, attachments, seq, created_at }] }` — every message it sent or forwarded, in order (may be empty).
 
-Router tools (hardcoded, not grants): `send_message` (deliver as Ankur; a retired recipient is a `retired` error), `forward_attachment` (deliver attachment ids from the message's `Path:` blocks as Ankur), `read_file`, `list_agents`, `recall_memory`, `hath_spawn_agent` (creates a root), and the embedded agent-management tools `get_agent` and `get_logs` on any agent. It cannot modify agents: agents reshape themselves. Its model turns and tool results log to `agent_logs` with a null `agent_id` on the `router` lane. The router's `get_logs` must name an agent; nobody reads the null identity's rows through a tool: they hold the router's turns and every message sent by or to Ankur. Runs are serialized.
+Router tools (declared in `src/runtime/lanes.ts`): `send_message` (deliver as Ankur; a retired recipient is a `retired` error), `forward_attachment` (deliver attachment ids from the message's `Path:` blocks as Ankur), `read_file`, `list_agents`, `recall_memory`, `hath_spawn_agent` (creates a root), and `get_agent` and `get_logs` on any agent. It cannot modify agents: agents reshape themselves. Its model turns and tool results log to `agent_logs` with a null `agent_id` on the `router` lane. The router's `get_logs` must name an agent; nobody reads the null identity's rows through a tool: they hold the router's turns and every message sent by or to Ankur. Runs are serialized.
 
 SSE: `router_started` / `router_finished` / `router_failed`. After a route, each thread's `lane_*` and `message` events take over.
 
@@ -85,7 +85,7 @@ No user table. Human messages use `from_agent_id = null` / `to_agent_id = null`;
 
 ## Dual lanes
 
-Every agent has both lanes. **Work** is the executor: every registry tool plus embedded `message` / `list_agents` / `wait` / `recall_memory` / `ingest_memory` / `manage_agent` / `modify_agent_prompt` / `steer_browser` / `steer_terminal` / `list_browsers` / `list_terminals` / `read_file` / `find` / `write_file` / `edit_file` / `get_agent` / `get_logs` / `yield`. **Process** is the front desk and the agent's only voice, with a fixed list, no async tools, no `wait` and no `list_*` helper tools: `send`, `steer_work`, `read_file`, `find`, `get_logs`, `recall_memory`, `web_search`, `web_fetch`, `list_agents`, `yield`. Speech is only via `send` (the work lane's `message` gives the process lane something to say) — model text is thought, never speech. Both lanes call Dwar with `tool_choice: "auto"`, so the model can think and write before, alongside, or instead of a tool call; a turn with no tool call continues the lane (a `[continue]` user turn follows it, saying the text reached no one), and a turn ends only on `yield`. `list_agents` looks up kebab-case ids (or lists the roster). Assembled transcripts stamp each turn `[From: …]` / `[To: …]` (Ankur or an agent id) so multi-party threads stay attributable.
+Every agent has both lanes. **Work** is the executor: every tool in the registry plus `message` / `list_agents` / `wait` / `recall_memory` / `ingest_memory` / `manage_agent` / `modify_agent_prompt` / `yield`. **Process** is the front desk and the agent's only voice, with a fixed list, no async tools, no `wait` and no `list_*` helper tools: `send`, `steer_work`, `read_file`, `find`, `get_logs`, `recall_memory`, `web_search`, `web_fetch`, `list_agents`, `yield`. Speech is only via `send` (the work lane's `message` gives the process lane something to say) — model text is thought, never speech. Both lanes call Dwar with `tool_choice: "auto"`, so the model can think and write before, alongside, or instead of a tool call; a turn with no tool call continues the lane (a `[continue]` user turn follows it, saying the text reached no one), and a turn ends only on `yield`. `list_agents` looks up kebab-case ids (or lists the roster). Assembled transcripts stamp each turn `[From: …]` / `[To: …]` (Ankur or an agent id) so multi-party threads stay attributable.
 
 The process lane wakes on any inbound message except a reply the work lane awaits, and on a work-lane `message`. The work lane wakes on a `steer_work`, on helper, async and wait results, and on the reply to a message it marked `expects_reply` (from an agent or from Ankur), which bypasses the process lane. `steer_work` queues instructions for the next work-lane step.
 
@@ -109,13 +109,13 @@ Transcripts never hold file contents. Each file renders under its message as an 
 
 ## Tools
 
-The registry (`src/tools/registry.ts`) is a hard-coded file: `hath_spawn_agent` and the four Ghar tools. Every agent's work lane holds every registry tool plus the embedded tools below; there are no grants, no usage text and no tool tables (the old `tools` and `agent_tools` tables are kept, renamed `*_retired_20261029`, for Ankur to drop). Hath has no tools for Nas host ops, device surveys, the vault or Yaad's correction history: the vault belongs to the helpers, and a history tool comes back if one is needed.
+Tools are code. `src/tools/registry.ts` lists every tool defined by a zod schema and a handler, and `src/runtime/lanes.ts` declares each lane's whole tool set: the work lane holds the whole registry plus its own lane tools, the process lane a named few, the router lane a named few. Every agent has the same tools; there are no grants, no usage text and no tool tables (the old `tools` and `agent_tools` tables are kept, renamed `*_retired_20261029`, for Ankur to drop). Hath has no tools for Nas host ops, device surveys, the vault or Yaad's correction history: the vault belongs to the helpers, and a history tool comes back if one is needed.
 
 ### Yaad (memory)
 
 Every work lane holds the two memory tools, so each agent reads and writes memory itself; there is no memory agent to hand facts to.
 
-| embedded tool | Yaad route | when to use |
+| tool | Yaad route | when to use |
 | --- | --- | --- |
 | `recall_memory` | `POST /recall` | anchor on a `query` (by meaning), `from` node ids, or exact filters (`kind`, `name`, date window, `status`), then walk `hops` links out; `{ from: [id], hops: 1 }` is a node with its neighbors |
 | `ingest_memory` | `POST /ingest` | store a fact, event, or scheduled meeting about Ankur's world, and every calendar write: scheduling time, moving or cancelling one session, its outcome, and its notes |
@@ -126,19 +126,19 @@ There are no planner tools: Ankur's timeline is Yaad's plans, so agents schedule
 
 ### Helpers (browser and terminal)
 
-Browser and terminal work is done by helpers in Nas (`nas/service/helpers`), not by agents and not by Hath: a helper is a charter and a loop on Dwar `/chat/complete` that drives one Chromium or one shell, and its tasks live in Nas as `task/browser/<id>` and `task/terminal/<id>`. Nothing in Hath drives a browser or a terminal, and no tool takes a browser or terminal id. Agents reach helpers through four embedded tools (work lane), thin calls to Nas's Tasks API (`src/tools/helper/tasks.ts`, `src/nas/client.ts`):
+Browser and terminal work is done by helpers in Nas (`nas/service/helpers`), not by agents and not by Hath: a helper is a charter and a loop on Dwar `/chat/complete` that drives one Chromium or one shell, and its tasks live in Nas as `task/browser/<id>` and `task/terminal/<id>`. Nothing in Hath drives a browser or a terminal, and no tool takes a browser or terminal id. Agents reach helpers through four work-lane tools, thin calls to Nas's Tasks API (`src/tools/helper/tasks.ts`, `src/nas/client.ts`):
 
 | tool | Nas route | notes |
 | --- | --- | --- |
 | `steer_browser({id?, message})` | `POST /tasks/browser` or `POST /tasks/browser/{id}/steer` | no id starts a task; an id steers it, waking it if asleep; returns `{ id }` at once |
 | `steer_terminal({id?, message, workdir?})` | `POST /tasks/terminal` or `.../{id}/steer` | the same; `workdir` is the new task's starting directory |
-| `list_browsers` / `list_terminals` | `GET /tasks` | id, status, owner, purpose, current page or directory, minutes idle; the process lane gets them in the lane overhaul |
+| `list_browsers` / `list_terminals` | `GET /tasks` | id, status, owner, purpose, current page or directory, minutes idle |
 
 A helper's report (`done`, `needs_input`, `failed`) reaches the agent that steered it as a notice (a message from the agent to itself) that wakes its work lane, with the files it names as attachments (`src/runtime/helper-reports.ts`). Hath follows Nas's `GET /events` stream and reconciles from `GET /tasks` (`last_report`) on boot and after every reconnect, because the stream has no replay. A report is delivered once: the table `delivered_reports` holds, per task, the time of the newest report delivered, and a report no newer than that is skipped. Reports are compared by the time they carry, not their number, which Nas restarts from 1. A crash between a message and its mark delivers that report again. `GET /agents` reads each agent's `sessions` (the tasks it owns or last steered) from `GET /tasks` on every call.
 
 ### Files
 
-Embedded, instant tools through Nas's `/fs` API (`src/tools/files/files.ts`); there is no terminal in the path.
+Instant tools through Nas's `/fs` API (`src/tools/files/files.ts`); there is no terminal in the path.
 
 | tool | lanes | notes |
 | --- | --- | --- |
@@ -153,7 +153,7 @@ A PDF is turned into text once by the box's `pdftotext -layout`, run in a termin
 
 `wait({on, timeout_minutes})` (work lane) ends the run like `yield`, with no model call, after recording a watch in `watches` (one row per agent: the task ids and agent ids it waits on, since, due). The awaited helper report or message wakes the work lane by itself and drops the watch; on timeout the scheduler's tick wakes it with facts (a task's status and minutes since it last did anything; an agent's minutes since its last logged activity and whether it has run since it was messaged). The lane's next real run drops any watch left. `GET /agents` shows `running.waiting_on` (`targets`, `since`, `wakes_by`).
 
-A tool is async when its definition says so (`async: true` on a registry or embedded definition; `ingest_memory` sets `INGEST_MEMORY_ASYNC` in `src/runtime/memory.ts`). In the work lane such a call returns `{ pending: <call id> }` at once and runs in the background; its result, or its failure, arrives as a notice that wakes the work lane through the same path as a helper report (`src/runtime/rewake.ts`). Results over 4,000 characters arrive as their opening and the path of a file holding them whole. Each running call is a row in `pending_async`; a Hath restart loses the call itself (the Yaad ingest may or may not have finished), and at boot every leftover row is reported to its agent as lost so it can check and run it again.
+A tool is async when its definition says so (`async: true` on a tool definition; `ingest_memory` sets `INGEST_MEMORY_ASYNC` in `src/runtime/memory.ts`). In the work lane such a call returns `{ pending: <call id> }` at once and runs in the background; its result, or its failure, arrives as a notice that wakes the work lane through the same path as a helper report (`src/runtime/rewake.ts`). Results over 4,000 characters arrive as their opening and the path of a file holding them whole. Each running call is a row in `pending_async`; a Hath restart loses the call itself (the Yaad ingest may or may not have finished), and at boot every leftover row is reported to its agent as lost so it can check and run it again.
 
 The first line of every wake is `Woken by: <reasons>` (message from X, helper result from task/..., async tool result, scheduled message, wait timeout). A work-lane yield that leaves the requester's latest message unanswered, with nothing pending that would wake the agent (a working Nas task, a wait, a one-shot scheduled message, a running async call, a work-lane message waiting to be sent), is answered once with `[continue] <who> asked "<what>" at <time> and nothing you started will wake you. ...` (`src/runtime/yield-reminder.ts`).
 
@@ -163,7 +163,7 @@ Everything Hath keeps as a file lives under `[files].dir` (`/var/home/dadi/.dadi
 
 ### Ghar (house)
 
-Registry tools over Ghar's HTTP API (`src/tools/ghar/`):
+Tools over Ghar's HTTP API (`src/tools/ghar/`):
 
 | tool | notes |
 | --- | --- |
@@ -178,20 +178,13 @@ Hath keeps the reverse-RPC gateway for the apps (`DeviceGateway`): presence hear
 
 ### Hath (meta)
 
-Registry tool:
-
 | tool | notes |
 | --- | --- |
 | `hath_spawn_agent` | create a child (a root when the router calls it); makes an agent a manager |
-
-Embedded in every work lane (not in the registry):
-
-| tool | notes |
-| --- | --- |
 | `message` | give the process lane something to say to Ankur, a requester or any agent, with optional files and `expects_reply`; the process lane's `send` is the other half (see Dual lanes) |
 | `manage_agent` | retire yourself or a direct child, or reactivate a retired direct child (immutable ids) |
 | `modify_agent_prompt` | exact-match `old_string` → `new_string` edits to your own or a direct child's prompt; all apply or none |
-| `get_agent` | id, system prompt, parent, active flag, and the registry's tool names for self or a direct child (any agent for the router) |
+| `get_agent` | id, system prompt, parent and active flag for self or a direct child (any agent for the router) |
 | `get_logs` | audit (`response` / `tool_result` / `message`) for self or a direct child (any named agent for the router, which never reads its own) |
 | `schedule_message` / `list_schedules` / `cancel_schedule` | durable schedules sent from and owned by the caller, so every agent automates its own work; not the router's |
 
@@ -214,7 +207,7 @@ Schedule tools (`schedule_message`, `list_schedules`, `cancel_schedule`) persist
 | `POST` | `/agents/:id/read` | `{ seq }`: Ankur has read the thread through `seq`; the mark only moves forward, `seq` past the newest message is `422`; returns `{ agent_id, read_seq, unread }` and emits SSE `thread_read` so every device clears it |
 | `GET` | `/events` | SSE live events; no replay. `schedules_changed` fires when a scheduled message is created, edited, cancelled, delivered or advanced, and names no schedule: clients refetch the lists they show; `sessions_changed` fires when a helper task is steered, reports, or Nas says its task list changed (the `sessions` on `GET /agents`) |
 | `GET` | `/agents` | all agents + `running` (lane locks, `waiting_on`, and `status`, the status block's data while a lane runs or the work lane waits: `job`, `work` state and since, `step`, the last five `recent` tool calls, in-flight `tasks`, `pending` work-lane messages) + `sessions` (Nas helper tasks) |
-| `GET` | `/agents/:id` | agent, children, and the registry's tools (`tools: [{ name, description }]`, the same for every agent) |
+| `GET` | `/agents/:id` | agent and children |
 | `GET` | `/agents/:id/logs` | per-agent audit trail |
 | `GET` | `/agents/:id/schedules` | every schedule the agent sends or receives, next run first |
 | `PATCH` | `/schedules/:id` | hand edit as Ankur: any of `run_at` (future, with offset), `interval_minutes` (null for one-shot), `content` |

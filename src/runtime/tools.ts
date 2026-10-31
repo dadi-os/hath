@@ -1,8 +1,7 @@
 /**
- * Built-in lane tools (steer/yield/list_agents) and the executeTool dispatcher.
- * Registry tools are resolved for the work lane; the process lane's fixed tools are the
- * switch below (send, steer_work, the read tools).
- * Every lane's file tools, and the async flag, apply here (see async.ts).
+ * The lane tools steer_work, yield and list_agents, and the executeTool dispatcher. A lane's
+ * registry tools resolve through laneRegistryTool (lanes.ts, which also declares each lane's
+ * whole tool set); the async flag applies here (see async.ts).
  */
 
 import { and, asc, eq } from "drizzle-orm";
@@ -17,19 +16,16 @@ import {
   MANAGE_AGENT,
   MESSAGE,
   MODIFY_AGENT_PROMPT,
-  FIND,
-  READ_FILE,
   RECALL_MEMORY,
   SEND,
   STEER_WORK,
   WAIT,
   YIELD,
 } from "../types/domain.js";
-import { findEmbeddedTool, findTool } from "../tools/registry.js";
+import { laneRegistryTool, toolsForLane } from "./lanes.js";
 import {
   fail,
   ok,
-  requireActiveAgent,
   failWithoutAgentIdentity,
   type ToolContext,
   type ToolExecResult,
@@ -43,9 +39,6 @@ import { runIngestMemory, runRecallMemory } from "./memory.js";
 import { runManageAgent, runModifyAgentPrompt } from "./modify.js";
 import { runRouterTool } from "./router.js";
 import { runSend } from "./send.js";
-
-/** The embedded registry tools the process lane holds besides its own: reads of the logs and the web. */
-export const PROCESS_REGISTRY_TOOLS = ["get_logs", "web_search", "web_fetch"] as const;
 
 export type { ToolContext, ToolExecResult } from "../tools/shared.js";
 export { requireAgent, requireActiveAgent } from "../tools/shared.js";
@@ -204,13 +197,6 @@ async function dispatchTool(
     if (call.name === LIST_AGENTS) {
       return await runListAgents(ctx, call.input);
     }
-    if (call.name === READ_FILE || (call.name === FIND && ctx.lane !== "router")) {
-      const reader = findEmbeddedTool(call.name);
-      if (!reader) {
-        throw new Error(`${call.name} is not registered`);
-      }
-      return await reader.handler(ctx, reader.input.parse(call.input));
-    }
     if (ctx.lane === "router") {
       return await runRouterTool(ctx, call);
     }
@@ -233,19 +219,11 @@ async function dispatchTool(
       if (call.name === MODIFY_AGENT_PROMPT) {
         return await runModifyAgentPrompt(ctx, call.input);
       }
-      const embedded = findEmbeddedTool(call.name);
-      if (embedded) {
-        return await embedded.handler(ctx, embedded.input.parse(call.input));
-      }
-      const definition = findTool(call.name);
+      const definition = laneRegistryTool("work", call.name);
       if (!definition) {
         return fail(`unknown work-lane tool: ${call.name}`);
       }
-      if (ctx.callerId !== null) {
-        await requireActiveAgent(ctx.db, ctx.callerId);
-      }
-      const parsed = definition.input.parse(call.input);
-      return await definition.handler(ctx, parsed);
+      return await definition.handler(ctx, definition.input.parse(call.input));
     }
     switch (call.name) {
       case SEND:
@@ -255,12 +233,12 @@ async function dispatchTool(
       case RECALL_MEMORY:
         return await runRecallMemory(ctx, call.input);
       default: {
-        const registry = (PROCESS_REGISTRY_TOOLS as readonly string[]).includes(call.name) ? findEmbeddedTool(call.name) : undefined;
+        const registry = laneRegistryTool("process", call.name);
         if (registry) {
           return await registry.handler(ctx, registry.input.parse(call.input));
         }
         return fail(
-          `${call.name} is not a process-lane tool. Yours are ${SEND}, ${STEER_WORK}, ${READ_FILE}, ${FIND}, get_logs, ${RECALL_MEMORY}, web_search, web_fetch, ${LIST_AGENTS} and ${YIELD}. Every other tool this agent holds runs in the work lane: call ${STEER_WORK} with what you need done.`,
+          `${call.name} is not a process-lane tool. Yours are ${toolsForLane(ctx.callerId, "process").map((tool) => tool.name).join(", ")}. Every other tool this agent holds runs in the work lane: call ${STEER_WORK} with what you need done.`,
         );
       }
     }

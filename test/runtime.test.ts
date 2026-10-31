@@ -20,7 +20,6 @@ import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
 import { agentLogs, agents, jobs, messages, scheduledMessages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { allTools } from "../src/tools/registry.js";
 import {
   endTurn,
   insertAgent,
@@ -689,13 +688,13 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "ghar_get_state",
       "ghar_control_device",
       "ghar_get_device_events",
-      MESSAGE,
-      LIST_AGENTS,
-      "wait",
-      "recall_memory",
-      "ingest_memory",
-      "manage_agent",
-      "modify_agent_prompt",
+      "get_agent",
+      "get_logs",
+      "web_search",
+      "web_fetch",
+      "schedule_message",
+      "list_schedules",
+      "cancel_schedule",
       "steer_browser",
       "steer_terminal",
       "list_browsers",
@@ -704,13 +703,13 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "find",
       "write_file",
       "edit_file",
-      "get_agent",
-      "get_logs",
-      "web_search",
-      "web_fetch",
-      "schedule_message",
-      "list_schedules",
-      "cancel_schedule",
+      MESSAGE,
+      LIST_AGENTS,
+      "wait",
+      "recall_memory",
+      "ingest_memory",
+      "manage_agent",
+      "modify_agent_prompt",
       "yield",
     ],
   );
@@ -909,7 +908,7 @@ test("as Dadi, get_agent reads any agent", async () => {
   assert.equal(JSON.parse(result.content).system_prompt, storedPrompt);
 });
 
-test("get_agent lists the registry tools", async () => {
+test("get_agent returns no tool list, since no tool is granted per agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, {
     name: "tools-parent",
@@ -936,10 +935,7 @@ test("get_agent lists the registry tools", async () => {
     input: { agent_id: childId },
   });
   assert.equal(result.isError, false, result.content);
-  assert.deepEqual(
-    (JSON.parse(result.content) as { tools: string[] }).tools,
-    allTools().map((tool) => tool.name),
-  );
+  assert.equal("tools" in (JSON.parse(result.content) as object), false);
 });
 
 test("an edit built from get_agent's prompt changes only the edited text", async () => {

@@ -8,17 +8,14 @@
 
 import { z } from "zod";
 import { agentIdSchema } from "../agent-id.js";
-import { spawnAgent } from "../tools/hath/spawn-agent.js";
-import { embeddedAgentTools, embeddedFileReadTools } from "../tools/registry.js";
 import { fail, ok, requireActiveAgent, type ToolContext, type ToolExecResult } from "../tools/shared.js";
-import { asDwarTool, type ToolDefinition } from "../tools/types.js";
 import type { DwarTool, DwarToolUseBlock, RoutedMessage } from "../types/domain.js";
-import { FORWARD_ATTACHMENT, READ_FILE, RECALL_MEMORY, SEND_MESSAGE } from "../types/domain.js";
+import { FORWARD_ATTACHMENT, RECALL_MEMORY, SEND_MESSAGE } from "../types/domain.js";
 import { toAttachmentSummary } from "../db/attachments.js";
 import { MAX_ATTACHMENTS } from "./attachments.js";
 import { deliverUserMessage } from "./deliver.js";
-import { recallMemoryTool, runRecallMemory } from "./memory.js";
-import { listAgentsTool, yieldTool } from "./tools.js";
+import { runRecallMemory } from "./memory.js";
+import { laneRegistryTool } from "./lanes.js";
 
 /** Lock and wake key for the router; not a valid agent id, so it never collides with one. */
 export const ROUTER_KEY = "(router)";
@@ -31,7 +28,7 @@ const routerSendInput = z
   .strict();
 
 /** The router's send: persist and deliver as Ankur. There is no separate intent step. */
-const routerSendMessageTool: DwarTool = {
+export const routerSendMessageTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
     "Send a message to an agent as Ankur. It lands in that agent's thread from him and wakes it; a retired agent cannot be messaged. Write it in his first person. Does not end your turn — call yield when you are done.",
@@ -59,7 +56,7 @@ const routerForwardInput = z
   .strict();
 
 /** The router's forward: deliver attachments as Ankur, with the message they arrive with. */
-const routerForwardAttachmentTool: DwarTool = {
+export const routerForwardAttachmentTool: DwarTool = {
   name: FORWARD_ATTACHMENT,
   description:
     "Send attachments (by id, from an [Attachment …] block in Ankur's message) to an agent as Ankur, with the message they arrive with. The agent gets the files themselves, so never paste their contents into send_message. Write the message in his first person. Does not end your turn — call yield when you are done.",
@@ -79,34 +76,7 @@ const routerForwardAttachmentTool: DwarTool = {
   },
 };
 
-/** Embedded tools that do an agent's work, which the router hands off rather than does. */
-const AGENT_ONLY_TOOLS = new Set(["web_search", "web_fetch"]);
-
-/**
- * Registry-style tools the router holds: spawning roots and the
- * embedded agent-management set.
- */
-function routerRegistryTools(): ToolDefinition[] {
-  return [
-    spawnAgent as unknown as ToolDefinition,
-    ...embeddedAgentTools().filter((tool) => !AGENT_ONLY_TOOLS.has(tool.name)),
-  ];
-}
-
-/** What the model sees on the router lane. */
-export function routerLaneTools(): DwarTool[] {
-  return [
-    routerSendMessageTool,
-    routerForwardAttachmentTool,
-    ...embeddedFileReadTools().filter((tool) => tool.name === READ_FILE).map(asDwarTool),
-    listAgentsTool,
-    recallMemoryTool,
-    ...routerRegistryTools().map(asDwarTool),
-    yieldTool,
-  ];
-}
-
-/** Run one router-lane tool call. list_agents, read_file and yield are handled before this. */
+/** Run one router-lane tool call. list_agents and yield are handled before this. */
 export async function runRouterTool(
   ctx: ToolContext,
   call: DwarToolUseBlock,
@@ -120,7 +90,7 @@ export async function runRouterTool(
   if (call.name === RECALL_MEMORY) {
     return runRecallMemory(ctx, call.input);
   }
-  const definition = routerRegistryTools().find((tool) => tool.name === call.name);
+  const definition = laneRegistryTool("router", call.name);
   if (!definition) {
     return fail(`unknown router tool: ${call.name}`);
   }

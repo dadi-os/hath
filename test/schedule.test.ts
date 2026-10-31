@@ -10,7 +10,6 @@ import { createRuntime } from "../src/runtime/engine.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
 import { advanceRunAt } from "../src/runtime/scheduler.js";
 import { executeTool } from "../src/runtime/tools.js";
-import { allTools, findEmbeddedTool, findTool } from "../src/tools/registry.js";
 import {
   insertAgent,
   mockDwar,
@@ -65,14 +64,6 @@ before(async () => {
 
 after(async () => {
   await handle.close();
-});
-
-test("the three schedule tools are embedded, not grantable", async () => {
-  assert.equal(allTools().length, 5);
-  for (const name of ["schedule_message", "list_schedules", "cancel_schedule"]) {
-    assert.equal(findTool(name), undefined);
-    assert.equal(findEmbeddedTool(name)?.name, name);
-  }
 });
 
 test("due one-shot delivers once and deletes the row", async () => {

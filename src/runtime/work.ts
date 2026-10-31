@@ -19,7 +19,7 @@ export type WorkLoopDeps = StepDeps & {
  * tool calls, their full results, what the process lane sent, and mid-wake arrivals — never
  * the process lane's own turns — and the model is free to think
  * and write before or instead of calling a tool. A turn with no tool call
- * continues; the only clean exit is the embedded yield tool.
+ * continues; the only clean exit is the yield tool.
  *
  * A run that finds nothing new since the work lane last yielded in this wake ends
  * without a model call, as when a worker's report queues a run behind one that

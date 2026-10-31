@@ -85,19 +85,10 @@ test("task addresses parse to a kind and an id, and nothing else does", () => {
 
 test("only ingest_memory is defined async, and the flag is a field on a tool's definition", async () => {
   const { toolIsAsync } = await import("../src/runtime/async.js");
-  const { allTools, embeddedAgentTools, embeddedFileReadTools, embeddedFileWriteTools, embeddedHelperTools, embeddedSchedulingTools } =
-    await import("../src/tools/registry.js");
+  const { allTools } = await import("../src/tools/registry.js");
   assert.equal(toolIsAsync("ingest_memory"), true);
-  const everyDefinition = [
-    ...allTools(),
-    ...embeddedAgentTools(),
-    ...embeddedFileReadTools(),
-    ...embeddedFileWriteTools(),
-    ...embeddedHelperTools(),
-    ...embeddedSchedulingTools(),
-  ];
   assert.deepEqual(
-    everyDefinition.filter((tool) => toolIsAsync(tool.name)).map((tool) => tool.name),
+    allTools().filter((tool) => toolIsAsync(tool.name)).map((tool) => tool.name),
     [],
     "no definition is flagged yet",
   );
