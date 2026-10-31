@@ -39,8 +39,8 @@ test("a record shows a long read by its size and file, a short one whole, and le
     [
       { type: "text", text: "Reading the plan." },
       { type: "tool_use", id: "r1", name: "web_fetch", input: { urls: ["https://p.example/"] } },
-      { type: "tool_use", id: "r2", name: "find", input: { name: "*.md" } },
-      { type: "tool_use", id: "s1", name: "send", input: { to: "ankur", content: "hi" } },
+      { type: "tool_use", id: "r2", name: "find_files", input: { name: "*.md" } },
+      { type: "tool_use", id: "s1", name: "send_message", input: { to: "ankur", content: "hi" } },
     ],
     new Map([
       ["r1", { content: "x".repeat(400), chars: 9_000, is_error: false }],
@@ -51,7 +51,7 @@ test("a record shows a long read by its size and file, a short one whole, and le
   );
   assert.equal(
     record,
-    'Reading the plan.\n  web_fetch {"urls":["https://p.example/"]} → read 9000 chars, saved at /files/results/r1.txt\n  find {"name":"*.md"} → /plan.md',
+    'Reading the plan.\n  web_fetch {"urls":["https://p.example/"]} → read 9000 chars, saved at /files/results/r1.txt\n  find_files {"name":"*.md"} → /plan.md',
   );
   assert.equal(stepActions([{ type: "tool_use", id: "r1", name: "read_file", input: {} }], new Map(), "/files", true), null, "a trimmed note lists actions only");
 });

@@ -1,5 +1,5 @@
 /**
- * `send`: the process lane's only way to speak. It delivers a message to Ankur or to an
+ * `send_message`: the process lane's only way to speak. It delivers a message to Ankur or to an
  * agent, snapshots any file path it is given into the attachments store at send time, and
  * closes the work lane's waiting messages (see outbox.ts) to that recipient.
  */
@@ -10,7 +10,7 @@ import { toAttachmentSummary } from "../db/attachments.js";
 import { markSent, pendingOutbox } from "../db/outbox.js";
 import { fail, failWithoutAgentIdentity, ok, requireActiveAgent, AGENT_MESSAGE_MAX_CHARS, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarTool } from "../types/domain.js";
-import { MESSAGE_STATUSES, SEND } from "../types/domain.js";
+import { MESSAGE_STATUSES, SEND_MESSAGE } from "../types/domain.js";
 import { MAX_ATTACHMENTS, resolveAttachments, textAttachment } from "./attachments.js";
 import { deliverAgentMessage } from "./deliver.js";
 
@@ -25,7 +25,7 @@ const sendInput = z
 
 /** The process lane's voice. */
 export const sendTool: DwarTool = {
-  name: SEND,
+  name: SEND_MESSAGE,
   description:
     'Send a message to Ankur (to: "ankur") or to another agent (to: its kebab-case id). This is the only way anything you or your work lane has to say reaches anyone; it is delivered when the call returns and wakes the recipient. Messages your work lane queued for the same recipient are sent with it and marked sent, so put everything for one recipient in one message. attachments are absolute file paths on the box (copied as they are now) or attachment ids; never paste a file into content. status is optional and only records the job: running, needs_input, blocked or done. Does not end the turn: call yield when done.',
   input_schema: {

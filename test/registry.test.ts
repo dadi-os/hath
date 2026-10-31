@@ -50,8 +50,8 @@ test("a worker's work lane has no ingest_memory and other agents' have it", () =
 test("the process and router lanes hold only the registry tools they name, and the router cannot find or search the web", () => {
   assert.equal(laneRegistryTool("process", "steer_browser"), undefined);
   assert.equal(laneRegistryTool("process", "web_search")?.name, "web_search");
-  assert.equal(laneRegistryTool("router", "hath_spawn_agent")?.name, "hath_spawn_agent");
-  assert.equal(laneRegistryTool("router", "find"), undefined);
+  assert.equal(laneRegistryTool("router", "spawn_agent")?.name, "spawn_agent");
+  assert.equal(laneRegistryTool("router", "find_files"), undefined);
   assert.equal(laneRegistryTool("router", "web_search"), undefined);
   assert.equal(laneRegistryTool("work", "web_search")?.name, "web_search");
 });

@@ -3,7 +3,7 @@ import { pendingOutbox } from "../db/outbox.js";
 import { HathError } from "../errors.js";
 import { fail, type ToolExecResult } from "../tools/shared.js";
 import type { DwarResponseBlock, DwarToolUseBlock } from "../types/domain.js";
-import { SEND } from "../types/domain.js";
+import { SEND_MESSAGE } from "../types/domain.js";
 import { outboxTurn, unresolvedOutboxTurn } from "./outbox.js";
 import { alreadySentRefusal, callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import type { TranscriptStore } from "./transcript.js";
@@ -20,7 +20,7 @@ export type ProcessLoopDeps = StepDeps & {
  * Process-lane loop: the front desk and the agent's only voice. Its view is its system,
  * its own turns, what arrived, and hath's status block as the last turn of every call
  * (see status.ts); the work lane's thinking, tool calls and results are not in it. The
- * work lane's `message` calls reach it as a [Messages from work] turn; it sends them with
+ * work lane's `queue_message` calls reach it as a [Messages from work] turn; it sends them with
  * send, which closes the ones to that recipient, and a yield with one still waiting is
  * answered, up to OUTBOX_RETRIES times, before the lane fails loudly and the rest are
  * recorded as failed.
@@ -59,7 +59,7 @@ export async function runProcessLoop(deps: ProcessLoopDeps): Promise<void> {
     const sent = sends(response.content);
     let refused = false;
     const gated = async (call: DwarToolUseBlock): Promise<ToolExecResult> => {
-      if (call.name !== SEND) {
+      if (call.name !== SEND_MESSAGE) {
         return deps.executeTool(call);
       }
       const to = recipientOf(call);
@@ -158,7 +158,7 @@ const UNSENT_TEXT_CHARS = 400;
 
 /** The reminder a yield gets after a turn wrote a message's worth of text and sent nothing. */
 export const UNSENT_TEXT_TURN =
-  "[continue] Your last turn wrote a message as text and sent nothing: text reaches no one. If it was meant for someone, send it with send now; otherwise yield again.";
+  "[continue] Your last turn wrote a message as text and sent nothing: text reaches no one. If it was meant for someone, send it with send_message now; otherwise yield again.";
 
 /** textChars is the length of a turn's visible text, not counting its thinking. */
 export function textChars(content: DwarResponseBlock[]): number {
@@ -167,5 +167,5 @@ export function textChars(content: DwarResponseBlock[]): number {
 
 /** sends counts the messages a process-lane turn delivers. */
 function sends(content: DwarResponseBlock[]): number {
-  return content.filter((block) => block.type === "tool_use" && block.name === SEND).length;
+  return content.filter((block) => block.type === "tool_use" && block.name === SEND_MESSAGE).length;
 }

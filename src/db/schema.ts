@@ -239,7 +239,7 @@ export const scheduledMessages = pgTable(
 );
 
 /**
- * What an agent's work lane has asked its process lane to say (the work lane's `message`
+ * What an agent's work lane has asked its process lane to say (the work lane's `queue_message`
  * tool). The process lane sends it, alone or merged with others to the same recipient;
  * each row is `sent` once a message to its recipient went out, and `failed` when the lane
  * failed first. `expects_reply` holds from the send until the recipient's next message,

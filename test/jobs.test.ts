@@ -8,7 +8,7 @@ import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.
 import { createRuntime, type Runtime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { LIST_AGENTS, SEND, STEER_WORK, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
+import { LIST_AGENTS, SEND_MESSAGE, STEER_WORK, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
 import {
   insertAgent,
   toolUse,
@@ -52,7 +52,7 @@ function dispatch(runtime: Runtime, from: string, to: string | null, content: st
   return executeTool(runtime.toolContext(from, "process"), {
     type: "tool_use",
     id: `d-${content}`,
-    name: SEND,
+    name: SEND_MESSAGE,
     input: { to: to ?? "ankur", content, ...(status !== undefined ? { status } : {}) },
   });
 }
@@ -252,8 +252,8 @@ test("a second send to one recipient in the same turn is held back with what alr
   const runtime = scriptedRuntime([
     () =>
       turnOf(
-        [SEND, { to: "ankur", content: "the times", status: "done" }],
-        [SEND, { to: "ankur", content: "and the file", status: "done" }],
+        [SEND_MESSAGE, { to: "ankur", content: "the times", status: "done" }],
+        [SEND_MESSAGE, { to: "ankur", content: "and the file", status: "done" }],
       ),
   ]);
   await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, agentId, "exam times?");
@@ -268,9 +268,9 @@ test("a send over a message the lane has not read waits for the next step", asyn
   runtime = scriptedRuntime([
     async () => {
       await deliverUserMessage(deps(runtime), agentId, "actually, Thursday");
-      return turnOf([SEND, { to: "ankur", content: "Wednesday is set", status: "done" }]);
+      return turnOf([SEND_MESSAGE, { to: "ankur", content: "Wednesday is set", status: "done" }]);
     },
-    () => turnOf([SEND, { to: "ankur", content: "Thursday is set", status: "done" }]),
+    () => turnOf([SEND_MESSAGE, { to: "ankur", content: "Thursday is set", status: "done" }]),
   ]);
   await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, agentId, "book Wednesday");
   await runtime.waitUntilIdle();
@@ -282,7 +282,7 @@ test("the process lane may message an agent this agent spawned: there is no brou
   const managerId = await insertAgent(handle.db, { id: "voice-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "voice-worker", systemPrompt: "worker", parentAgentId: managerId });
   const runtime = scriptedRuntime([
-    () => turnOf([SEND, { to: workerId, content: "stop now" }]),
+    () => turnOf([SEND_MESSAGE, { to: workerId, content: "stop now" }]),
   ]);
   await deliverAgentMessage(deps(runtime), { fromAgentId: managerId, toAgentId: workerId, content: "open the page" });
   await deliverUserMessage({ ...deps(runtime), enqueueProcess: runtime.enqueueProcess }, managerId, "stop the worker");

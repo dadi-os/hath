@@ -1,4 +1,4 @@
-/** The work lane's `message` rows, waiting for the process lane to send them (see the `outbox` table). */
+/** The work lane's `queue_message` rows, waiting for the process lane to send them (see the `outbox` table). */
 
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "./client.js";

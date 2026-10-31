@@ -73,7 +73,7 @@ type RoutedBody = {
 test("POST /router spawns a root, sends as Ankur, and returns what it sent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const dwar = scripted([
-    toolUse("hath_spawn_agent", { id: "escape-room-booking", system_prompt: "Own the escape room booking." }, "c1"),
+    toolUse("spawn_agent", { id: "escape-room-booking", system_prompt: "Own the escape room booking." }, "c1"),
     toolUse("send_message", { to_agent_id: "escape-room-booking", content: "Check I can afford the escape room tomorrow, then book it." }, "c3"),
   ]);
   const { app, runtime } = await appWith(dwar);
@@ -136,7 +136,7 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
     "forward_attachment",
     "get_agent",
     "get_logs",
-    "hath_spawn_agent",
+    "spawn_agent",
     "list_agents",
     "read_file",
     "recall_memory",

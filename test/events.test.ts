@@ -12,7 +12,7 @@ import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus, type RuntimeEvent } from "../src/runtime/events.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { SEND } from "../src/types/domain.js";
+import { SEND_MESSAGE } from "../src/types/domain.js";
 import {
   insertAgent,
   mockDwar,
@@ -187,7 +187,7 @@ test("send emits message with agent_id set to the recipient", async () => {
   const result = await executeTool(runtime.toolContext(callerId, "process"), {
     type: "tool_use",
     id: "d-evt",
-    name: SEND,
+    name: SEND_MESSAGE,
     input: { to: targetId, content: "ping" },
   });
   assert.equal(result.isError, false);

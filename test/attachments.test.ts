@@ -10,9 +10,9 @@ import { assembleContext } from "../src/runtime/context.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import {
-  MESSAGE,
+  QUEUE_MESSAGE,
   READ_FILE,
-  SEND,
+  SEND_MESSAGE,
 } from "../src/types/domain.js";
 import {
   insertAgent,
@@ -152,7 +152,7 @@ test("send with an attachment id copies the carried file's row to the recipient,
   const forwarded = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "f1",
-    name: SEND,
+    name: SEND_MESSAGE,
     input: { to: recipientId, attachments: [originalId], content: "from Ankur" },
   });
   assert.equal(forwarded.isError, false, forwarded.content);
@@ -197,7 +197,7 @@ test("send copies a host file path as it is now, and the send binds that same ro
   const unknown = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "s0",
-    name: MESSAGE,
+    name: QUEUE_MESSAGE,
     input: { to: "ankur", content: "send it", attachments: ["00000000-0000-4000-8000-000000000000"] },
   });
   assert.equal(unknown.isError, true);
@@ -206,7 +206,7 @@ test("send copies a host file path as it is now, and the send binds that same ro
   const sent = await executeTool(runtime.toolContext(workerId, "process"), {
     type: "tool_use",
     id: "f1",
-    name: SEND,
+    name: SEND_MESSAGE,
     input: { to: "ankur", content: "your report", attachments: ["/var/home/dadi/report.md"] },
   });
   assert.equal(sent.isError, false, sent.content);
@@ -242,7 +242,7 @@ test("send gives a Word document and an unlisted binary their media types and ke
     const sent = await executeTool(runtime.toolContext(workerId, "process"), {
       type: "tool_use",
       id: `c${index}`,
-      name: SEND,
+      name: SEND_MESSAGE,
       input: { to: "ankur", content: `file ${index}`, attachments: [path] },
     });
     assert.equal(sent.isError, false, sent.content);

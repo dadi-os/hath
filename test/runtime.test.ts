@@ -6,9 +6,9 @@ import {
   GET_AGENT,
   LIST_AGENTS,
   MANAGE_AGENT,
-  MESSAGE,
+  QUEUE_MESSAGE,
   MODIFY_AGENT_PROMPT,
-  SEND,
+  SEND_MESSAGE,
 } from "../src/types/domain.js";
 import { currentRequester, insertMessage, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { assembleContext } from "../src/runtime/context.js";
@@ -189,7 +189,7 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   const blocked = await executeTool(runtime.toolContext(parentId, "process"), {
     type: "tool_use",
     id: "rh3",
-    name: "send",
+    name: "send_message",
     input: { to: childId, content: "are you there?" },
   });
   assert.equal(blocked.isError, true);
@@ -204,7 +204,7 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   const delivered = await executeTool(runtime.toolContext(parentId, "process"), {
     type: "tool_use",
     id: "rh5",
-    name: "send",
+    name: "send_message",
     input: { to: childId, content: "welcome back" },
   });
   assert.equal(delivered.isError, false, delivered.content);
@@ -392,7 +392,7 @@ test("manage_agent retires without touching the prompt", async () => {
   );
 });
 
-test("work-lane context has message, list_agents, and no send, send_message, hand_off or create_attachment", async () => {
+test("work-lane context has queue_message, list_agents, and no send_message, hand_off or create_attachment", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
@@ -407,10 +407,10 @@ test("work-lane context has message, list_agents, and no send, send_message, han
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  assert.ok(names.includes(MESSAGE));
+  assert.ok(names.includes(QUEUE_MESSAGE));
   assert.ok(names.includes(LIST_AGENTS));
   assert.ok(names.includes("yield"));
-  for (const gone of [SEND, "send_message", "hand_off", "dispatch_message", "decline_handoff", "forward_attachment", "create_attachment"]) {
+  for (const gone of [SEND_MESSAGE, "hand_off", "dispatch_message", "decline_handoff", "forward_attachment", "create_attachment"]) {
     assert.equal(names.includes(gone), false, gone);
   }
 });
@@ -437,7 +437,7 @@ test("the work lane cannot write another agent's mailbox", async () => {
   const result = await executeTool(runtime.toolContext(callerId, "work"), {
     type: "tool_use",
     id: "d1",
-    name: SEND,
+    name: SEND_MESSAGE,
     input: { to: targetId, content: "sneak" },
   });
   assert.equal(result.isError, true);
@@ -520,12 +520,12 @@ test("the work lane never sends itself: its message is queued, and the process l
   const dwar = mockDwar({
     work: async () => {
       reasonTurn += 1;
-      return reasonTurn === 1 ? toolUse(MESSAGE, { to: childId, content: "say hi" }, "sm-1") : yieldTurn("r-yield");
+      return reasonTurn === 1 ? toolUse(QUEUE_MESSAGE, { to: childId, content: "say hi" }, "sm-1") : yieldTurn("r-yield");
     },
     process: async (request) => {
       if (!sentByProcess && JSON.stringify(request.messages).includes("[Messages from work]")) {
         sentByProcess = true;
-        return toolUse(SEND, { to: childId, content: "say hi" }, "sm-send");
+        return toolUse(SEND_MESSAGE, { to: childId, content: "say hi" }, "sm-send");
       }
       return yieldTurn("c-yield");
     },
@@ -550,7 +550,7 @@ test("the work lane never sends itself: its message is queued, and the process l
   assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[childId, "say hi"]]);
 });
 
-test("send_message is not a work-lane tool, and message refuses itself as a recipient", async () => {
+test("send_message is not a work-lane tool, and queue_message refuses itself as a recipient", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, { id: "refused-sender", systemPrompt: "sender" });
   const peerId = await insertAgent(handle.db, { id: "refused-peer", systemPrompt: "peer" });
@@ -574,7 +574,7 @@ test("send_message is not a work-lane tool, and message refuses itself as a reci
   const toSelf = await executeTool(runtime.toolContext(callerId, "work"), {
     type: "tool_use",
     id: "sm-self",
-    name: MESSAGE,
+    name: QUEUE_MESSAGE,
     input: { to: callerId, content: "hello" },
   });
   assert.equal(toSelf.isError, true);
@@ -594,7 +594,7 @@ test("an agent that retires itself still gets its queued message sent, and does 
         provider: "anthropic",
         content: [
           { type: "tool_use", id: "rt-retire", name: MANAGE_AGENT, input: { agent_id: callerId, retired: true } },
-          { type: "tool_use", id: "rt-report", name: MESSAGE, input: { to: "ankur", content: "Browser 13 is not running." } },
+          { type: "tool_use", id: "rt-report", name: QUEUE_MESSAGE, input: { to: "ankur", content: "Browser 13 is not running." } },
           { type: "tool_use", id: "rt-yield", name: "yield", input: {} },
         ],
         stop_reason: "tool_use",
@@ -604,7 +604,7 @@ test("an agent that retires itself still gets its queued message sent, and does 
     process: async (request) => {
       if (!dispatched && JSON.stringify(request.messages).includes("[Messages from work]")) {
         dispatched = true;
-        return toolUse(SEND, { to: "ankur", content: "Browser 13 is not running." }, "rt-dispatch");
+        return toolUse(SEND_MESSAGE, { to: "ankur", content: "Browser 13 is not running." }, "rt-dispatch");
       }
       return yieldTurn("rt-c-yield");
     },
@@ -642,7 +642,7 @@ test("process-lane tools are the fixed front-desk list, with no grants or async 
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  assert.deepEqual(names, [SEND, "steer_work", "read_file", "find", "get_logs", "web_search", "web_fetch", "recall_memory", LIST_AGENTS, "yield"]);
+  assert.deepEqual(names, [SEND_MESSAGE, "steer_work", "read_file", "find_files", "get_logs", "web_search", "web_fetch", "recall_memory", LIST_AGENTS, "yield"]);
 });
 
 test("spawn_agent requires system_prompt, and the child holds the whole registry", async () => {
@@ -659,7 +659,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
   const missing = await executeTool(runtime.toolContext(managerId, "work"), {
     type: "tool_use",
     id: "sp0",
-    name: "hath_spawn_agent",
+    name: "spawn_agent",
     input: { id: "no-prompt-child" },
   });
   assert.equal(missing.isError, true);
@@ -667,7 +667,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
   const spawned = await executeTool(runtime.toolContext(managerId, "work"), {
     type: "tool_use",
     id: "sp1",
-    name: "hath_spawn_agent",
+    name: "spawn_agent",
     input: { id: "fresh-child", system_prompt: "do one job" },
   });
   assert.equal(spawned.isError, false);
@@ -683,7 +683,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
   assert.deepEqual(
     childCtx.tools.map((tool) => tool.name),
     [
-      "hath_spawn_agent",
+      "spawn_agent",
       "ghar_list_devices",
       "ghar_get_state",
       "ghar_control_device",
@@ -700,10 +700,10 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "list_browsers",
       "list_terminals",
       "read_file",
-      "find",
+      "find_files",
       "write_file",
       "edit_file",
-      MESSAGE,
+      QUEUE_MESSAGE,
       LIST_AGENTS,
       "wait",
       "recall_memory",
@@ -1045,7 +1045,7 @@ test("as Dadi, message and send fail and deliver nothing", async () => {
   const send = await executeTool(runtime.toolContext(null, "work"), {
     type: "tool_use",
     id: "dadi-send",
-    name: MESSAGE,
+    name: QUEUE_MESSAGE,
     input: { to: targetId, content: "say hi" },
   });
   assert.equal(send.isError, true);
@@ -1054,7 +1054,7 @@ test("as Dadi, message and send fail and deliver nothing", async () => {
   const dispatch = await executeTool(runtime.toolContext(null, "process"), {
     type: "tool_use",
     id: "dadi-dispatch",
-    name: SEND,
+    name: SEND_MESSAGE,
     input: { to: targetId, content: "hi" },
   });
   assert.equal(dispatch.isError, true);
@@ -1086,12 +1086,12 @@ test("list_agents is in both lanes", async () => {
     transcript: new TranscriptStore(),
   });
   assert.deepEqual(workContext.tools.map((tool) => tool.name), [
-    "hath_spawn_agent",
+    "spawn_agent",
     "ghar_list_devices",
     "ghar_get_state",
     "ghar_control_device",
     "ghar_get_device_events",
-    MESSAGE,
+    QUEUE_MESSAGE,
     LIST_AGENTS,
     "wait",
     "recall_memory",
@@ -1103,7 +1103,7 @@ test("list_agents is in both lanes", async () => {
     "list_browsers",
     "list_terminals",
     "read_file",
-    "find",
+    "find_files",
     "write_file",
     "edit_file",
     "get_agent",

@@ -530,7 +530,7 @@ test("child may still message and send to the user", async () => {
   const send = await executeTool(runtime.toolContext(childId, "work"), {
     type: "tool_use",
     id: "child-send-user",
-    name: "message",
+    name: "queue_message",
     input: { to: "ankur", content: "status for Ankur" },
   });
   assert.equal(send.isError, false);
@@ -538,7 +538,7 @@ test("child may still message and send to the user", async () => {
   const dispatch = await executeTool(runtime.toolContext(childId, "process"), {
     type: "tool_use",
     id: "child-dispatch-user",
-    name: "send",
+    name: "send_message",
     input: { to: "ankur", content: "hello Ankur" },
   });
   assert.equal(dispatch.isError, false);
@@ -546,7 +546,7 @@ test("child may still message and send to the user", async () => {
   const toParent = await executeTool(runtime.toolContext(childId, "process"), {
     type: "tool_use",
     id: "child-dispatch-parent",
-    name: "send",
+    name: "send_message",
     input: { to: parentId, content: "blocked on login" },
   });
   assert.equal(toParent.isError, false);
@@ -554,7 +554,7 @@ test("child may still message and send to the user", async () => {
   const rootSend = await executeTool(runtime.toolContext(parentId, "work"), {
     type: "tool_use",
     id: "root-send-user",
-    name: "message",
+    name: "queue_message",
     input: { to: "ankur", content: "report to Ankur" },
   });
   assert.equal(rootSend.isError, false);
@@ -580,7 +580,7 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   const toPeer = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "cap-dispatch-peer",
-    name: "send",
+    name: "send_message",
     input: { to: peerId, content: dump },
   });
   assert.equal(toPeer.isError, false);
@@ -595,7 +595,7 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   const toAnkur = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "cap-dispatch-ankur",
-    name: "send",
+    name: "send_message",
     input: { to: "ankur", content: dump },
   });
   assert.equal(toAnkur.isError, false);
@@ -637,7 +637,7 @@ test("messaging a retired agent is a retired error on every path and stores noth
   const send = await executeTool(runtime.toolContext(senderId, "work"), {
     type: "tool_use",
     id: "send-retired",
-    name: "message",
+    name: "queue_message",
     input: { to: retiredId, content: "ask it something" },
   });
   assert.equal(send.isError, true);
@@ -646,7 +646,7 @@ test("messaging a retired agent is a retired error on every path and stores noth
   const dispatch = await executeTool(runtime.toolContext(senderId, "process"), {
     type: "tool_use",
     id: "dispatch-retired",
-    name: "send",
+    name: "send_message",
     input: { to: retiredId, content: "hello?" },
   });
   assert.equal(dispatch.isError, true);

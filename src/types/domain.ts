@@ -222,22 +222,20 @@ export type MessageKind = "message" | "notice";
 /** Where an outbox row stands: waiting for the process lane, sent, declined (rows from before the lane overhaul), or lost with its lane. */
 export type HandoffState = "pending" | "sent" | "declined" | "failed";
 
-/** The router's own send tools; agents' are SEND and MESSAGE. */
+/** The tool that sends a message: the router's and the process lane's voice. */
 export const SEND_MESSAGE = "send_message";
 export const FORWARD_ATTACHMENT = "forward_attachment";
-/** The process lane's voice: messages Ankur or an agent. */
-export const SEND = "send";
 /** The work lane's way to give its process lane something to say. */
-export const MESSAGE = "message";
+export const QUEUE_MESSAGE = "queue_message";
 export const STEER_WORK = "steer_work";
 export const YIELD = "yield";
 export const WAIT = "wait";
 export const READ_FILE = "read_file";
-export const FIND = "find";
+export const FIND_FILES = "find_files";
 export const RECALL_MEMORY = "recall_memory";
 export const INGEST_MEMORY = "ingest_memory";
 export const LIST_AGENTS = "list_agents";
-export const SPAWN_AGENT = "hath_spawn_agent";
+export const SPAWN_AGENT = "spawn_agent";
 export const MANAGE_AGENT = "manage_agent";
 export const MODIFY_AGENT_PROMPT = "modify_agent_prompt";
 export const GET_AGENT = "get_agent";

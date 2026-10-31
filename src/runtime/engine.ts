@@ -2,7 +2,7 @@
  * Agent runtime: lane locks, the steer queue, transcript, and lane runners.
  * Process-lane enqueue always schedules a run — the lane lock serializes concurrent
  * wakes so a second user message is not dropped while the process lane is busy.
- * The work lane wakes the process lane when it queues a message (`message`), not on exit.
+ * The work lane wakes the process lane when it queues a message (`queue_message`), not on exit.
  * A blanket wake races a follow-up run whose transcript ends on an assistant turn, which
  * chat providers reject.
  */

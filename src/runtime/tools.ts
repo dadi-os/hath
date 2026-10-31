@@ -14,10 +14,10 @@ import {
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
-  MESSAGE,
+  QUEUE_MESSAGE,
   MODIFY_AGENT_PROMPT,
   RECALL_MEMORY,
-  SEND,
+  SEND_MESSAGE,
   STEER_WORK,
   WAIT,
   YIELD,
@@ -201,7 +201,7 @@ async function dispatchTool(
       return await runRouterTool(ctx, call);
     }
     if (ctx.lane === "work") {
-      if (call.name === MESSAGE) {
+      if (call.name === QUEUE_MESSAGE) {
         return await runMessage(ctx, call.input);
       }
       if (call.name === WAIT) {
@@ -226,7 +226,7 @@ async function dispatchTool(
       return await definition.handler(ctx, definition.input.parse(call.input));
     }
     switch (call.name) {
-      case SEND:
+      case SEND_MESSAGE:
         return await runSend(ctx, call.input);
       case STEER_WORK:
         return await runSteerWork(ctx, call.input);

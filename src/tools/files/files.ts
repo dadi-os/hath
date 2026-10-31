@@ -12,9 +12,9 @@ import { DESCRIBABLE_IMAGE_TYPES, pdfTextPath } from "../../runtime/files.js";
 import { nasToolCall } from "../nas/call.js";
 import { fail, ok, type ToolContext, type ToolExecResult } from "../shared.js";
 import { defineTool } from "../types.js";
-import { FIND, READ_FILE } from "../../types/domain.js";
+import { FIND_FILES, READ_FILE } from "../../types/domain.js";
 
-/** Largest file read_file opens: bigger ones are searched with find, or worked on in a terminal task. */
+/** Largest file read_file opens: bigger ones are searched with find_files, or worked on in a terminal task. */
 const READ_MAX_BYTES = 10 * 1024 * 1024;
 
 /** Characters a read returns when the caller gives no limit, and the most it returns at once. */
@@ -189,7 +189,7 @@ const findInput = z
 
 /** Locate files by name or by what they contain. */
 export const findFiles = defineTool({
-  name: FIND,
+  name: FIND_FILES,
   description: `Find files on the box under path (default the dadi home): by name, by text inside them, or both. name is a glob matched against file names at any depth (*.md, report-*.pdf) or against paths under path when it contains a slash (notes/**/*.md); the result is paths, newest first, up to ${FIND_MAX_PATHS}. text is a regular expression searched in file contents (with name, only in the files that match it); the result is each matching file with its matching lines and line numbers, long lines clipped, up to ${FIND_MAX_MATCHES} lines. Use it to locate a file or a line, then read_file the part you need or edit_file it.`,
   input: findInput,
   inputSchema: {

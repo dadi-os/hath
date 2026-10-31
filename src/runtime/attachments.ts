@@ -1,7 +1,7 @@
 /**
  * Attachments: files that travel with messages. Each is a file on the box (see files.ts)
  * with a row of metadata, so a message names it by path and read_file opens it, and no lane
- * ever retypes a file to pass it on: `send` and `message` take attachment ids or file paths
+ * ever retypes a file to pass it on: `send_message` and `queue_message` take attachment ids or file paths
  * (see resolveAttachments).
  */
 
@@ -209,7 +209,7 @@ export async function attachHostFile(
 const ATTACHMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * resolveAttachments turns what `send` or `message` was given into attachment ids: an
+ * resolveAttachments turns what `send_message` or `queue_message` was given into attachment ids: an
  * entry that is an id must name an attachment that exists, and an absolute path is
  * copied as the file is now (see attachHostFile), so later changes to it do not reach
  * the message. A relative path, a repeat, or more than MAX_ATTACHMENTS entries is refused.

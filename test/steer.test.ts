@@ -42,7 +42,7 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
       turn += 1;
       if (turn === 1) {
         steer.append(agentId, "check the voice PR");
-        return toolUse("message", { to: "ankur", content: "status" });
+        return toolUse("queue_message", { to: "ankur", content: "status" });
       }
       return toolUse("yield", {});
     },
@@ -185,7 +185,7 @@ test("steer_work with terminate stops the next tool call from running", async ()
       turn += 1;
       if (turn === 1) {
         steer.requestTerminate(agentId);
-        return toolUse("message", { to: "ankur", content: "should not run" });
+        return toolUse("queue_message", { to: "ankur", content: "should not run" });
       }
       return toolUse("yield", {});
     },
@@ -218,8 +218,8 @@ test("steer_work terminate mid-batch blocks remaining domain tools", async () =>
     call: async () => ({
       provider: "anthropic",
       content: [
-        { type: "tool_use", id: "a", name: "message", input: { to: "ankur", content: "one" } },
-        { type: "tool_use", id: "b", name: "message", input: { to: "ankur", content: "two" } },
+        { type: "tool_use", id: "a", name: "queue_message", input: { to: "ankur", content: "one" } },
+        { type: "tool_use", id: "b", name: "queue_message", input: { to: "ankur", content: "two" } },
       ],
       stop_reason: "tool_use",
       usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
@@ -234,7 +234,7 @@ test("steer_work terminate mid-batch blocks remaining domain tools", async () =>
     logToolResult: async () => {},
   });
 
-  assert.deepEqual(executed, ["message"]);
+  assert.deepEqual(executed, ["queue_message"]);
   assert.equal(steer.isTerminate(agentId), false);
 });
 

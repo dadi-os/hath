@@ -327,7 +327,7 @@ test("a send to someone already messaged since this one was written is refused w
       if (n === 1) {
         transcript.append({ fromAgentId: "agent-1", toAgentId: null, content: "HW3 is submitted." });
         return turn("gemini", [
-          { type: "tool_use", id: "d1", name: "send", input: { to: "ankur", content: "Checking HW3 now." } },
+          { type: "tool_use", id: "d1", name: "send_message", input: { to: "ankur", content: "Checking HW3 now." } },
           call("yield", "y1"),
         ]);
       }

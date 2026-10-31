@@ -13,7 +13,7 @@ const input = z.object({
 
 /** Create a child of the caller, or a root when the caller is the router. */
 export const spawnAgent = defineTool({
-  name: "hath_spawn_agent",
+  name: "spawn_agent",
   description:
     "Create a new agent as your child (as the router, a root agent). Give it an immutable kebab-case id named for what it owns, a charter (system_prompt: its purpose, who it works for and with), and for a standing agent its directory description, which every agent sees. It starts with the tools every agent holds (messaging, memory, scheduling, files, web search and fetch, browser and terminal tasks, and the house tools). Returns { agent_id }. Fails if the id is taken.",
   input,

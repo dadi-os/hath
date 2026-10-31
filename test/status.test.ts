@@ -70,15 +70,15 @@ test("the wake lists the work lane's last calls with their outcome and leaves th
     only: lane,
   });
   wake.push(use("a", "read_file", "work"), result("a", false, "work"));
-  wake.push(use("b", "send", "process"), result("b", false, "process"));
-  wake.push(use("c", "find", "work"), result("c", true, "work"));
+  wake.push(use("b", "send_message", "process"), result("b", false, "process"));
+  wake.push(use("c", "find_files", "work"), result("c", true, "work"));
   wake.push(use("d", "web_fetch", "work"));
   assert.deepEqual(wake.workCalls(5), [
     { name: "read_file", input: { path: "/a" }, failed: false },
-    { name: "find", input: { path: "/c" }, failed: true },
+    { name: "find_files", input: { path: "/c" }, failed: true },
     { name: "web_fetch", input: { path: "/d" }, failed: null },
   ]);
-  assert.deepEqual(wake.workCalls(2).map((call) => call.name), ["find", "web_fetch"]);
+  assert.deepEqual(wake.workCalls(2).map((call) => call.name), ["find_files", "web_fetch"]);
 });
 
 test("the status block is the process view's last turn and the work view never carries it", () => {

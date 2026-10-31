@@ -1,7 +1,7 @@
 /**
  * The outbox: how the work lane gets something said. The work lane never messages anyone
- * itself; it calls `message`, which queues the content for its process lane. The process
- * lane sends it with `send`, merging messages to one recipient and keeping them consistent
+ * itself; it calls `queue_message`, which queues the content for its process lane. The process
+ * lane sends it with `send_message`, merging messages to one recipient and keeping them consistent
  * with what was already said, and may reword one for Ankur, but never drops one: every row
  * ends in a recorded state (see db/outbox.ts), so none is lost silently.
  */
@@ -13,7 +13,7 @@ import { currentRequester } from "../db/messages.js";
 import type { OutboxRow } from "../db/schema.js";
 import { fail, failWithoutAgentIdentity, ok, requireActiveAgent, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarTool } from "../types/domain.js";
-import { MESSAGE } from "../types/domain.js";
+import { QUEUE_MESSAGE } from "../types/domain.js";
 import { MAX_ATTACHMENTS, resolveAttachments } from "./attachments.js";
 
 const messageInput = z
@@ -30,7 +30,7 @@ export const OUTBOX_LABEL = "[Messages from work]";
 
 /** The work lane's way to get anything said to Ankur, a requester or another agent. */
 export const messageTool: DwarTool = {
-  name: MESSAGE,
+  name: QUEUE_MESSAGE,
   description:
     'Give your process lane something to say: a result, a question, an update, or a request for another agent (to: "ankur", "requester" for whoever gave you this job, or an agent id). You never message anyone yourself; your process lane sends it, may merge it with other messages to the same recipient and keep it consistent with what was already said, and may reword it for Ankur, but it never drops one. The call returns at once and you keep working. attachments are file paths on the box (copied as they are now) or attachment ids. Set expects_reply when you need the recipient\'s answer: their reply wakes you, not your process lane. After sending a question or request, yield or wait; the reply wakes you.',
   input_schema: {
@@ -106,7 +106,7 @@ export function outboxTurn(waiting: OutboxRow[]): string {
     const reply = row.expectsReply ? " · expects a reply" : "";
     return `#${row.id} · to ${row.toAgentId ?? "Ankur"}${reply}\n${row.content}${files}`;
   });
-  return `${OUTBOX_LABEL} Your work lane wants these said. Send them with send, merged where they go to the same recipient and consistent with what you already said; reword for Ankur if it reads better. None may be dropped.\n\n${blocks.join("\n\n")}`;
+  return `${OUTBOX_LABEL} Your work lane wants these said. Send them with send_message, merged where they go to the same recipient and consistent with what you already said; reword for Ankur if it reads better. None may be dropped.\n\n${blocks.join("\n\n")}`;
 }
 
 /** The turn a yield gets while messages from the work lane are still waiting. */

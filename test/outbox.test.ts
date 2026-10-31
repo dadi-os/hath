@@ -9,7 +9,7 @@ import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.
 import { createRuntime, type Runtime } from "../src/runtime/engine.js";
 import { recoverInterruptedWakes } from "../src/runtime/recovery.js";
 import { executeTool } from "../src/runtime/tools.js";
-import { MESSAGE, SEND } from "../src/types/domain.js";
+import { QUEUE_MESSAGE, SEND_MESSAGE } from "../src/types/domain.js";
 import {
   insertAgent,
   mockDwar,
@@ -60,7 +60,7 @@ function sendsOutboxToAnkur(content: string): Converse {
   return async (request) => {
     if (!sent && JSON.stringify(request.messages).includes("[Messages from work]")) {
       sent = true;
-      return toolUse(SEND, { to: "ankur", content }, "c-send");
+      return toolUse(SEND_MESSAGE, { to: "ankur", content }, "c-send");
     }
     return yieldTurn("c-yield");
   };
@@ -81,7 +81,7 @@ function message(runtime: Runtime, agentId: string, input: Record<string, unknow
   return executeTool(runtime.toolContext(agentId, "work"), {
     type: "tool_use",
     id: `m-${String(input.content)}`,
-    name: MESSAGE,
+    name: QUEUE_MESSAGE,
     input,
   });
 }
@@ -90,7 +90,7 @@ function send(runtime: Runtime, agentId: string, input: Record<string, unknown>)
   return executeTool(runtime.toolContext(agentId, "process"), {
     type: "tool_use",
     id: `s-${String(input.content)}`,
-    name: SEND,
+    name: SEND_MESSAGE,
     input,
   });
 }
@@ -222,7 +222,7 @@ test("the reply to a message marked expects_reply wakes the work lane, not the p
   const { dwar, runtime } = runtimeWith(async (request) => {
     if (!sent && JSON.stringify(request.messages).includes("[Messages from work]")) {
       sent = true;
-      return toolUse(SEND, { to: askedId, content: "which semester?" }, "c-send");
+      return toolUse(SEND_MESSAGE, { to: askedId, content: "which semester?" }, "c-send");
     }
     return yieldTurn("c-yield");
   });

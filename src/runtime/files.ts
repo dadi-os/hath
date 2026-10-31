@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import type { NasClient } from "../nas/client.js";
-import { FIND, READ_FILE, WAIT, YIELD } from "../types/domain.js";
+import { FIND_FILES, READ_FILE, WAIT, YIELD } from "../types/domain.js";
 
 /** The folder hath's files live in (config `files.dir`) and the Nas that writes them. */
 export type FileStore = {
@@ -37,7 +37,7 @@ export function resultPath(dir: string, toolUseId: string): string {
 }
 
 /** The tools whose results are not saved to a file when they are large: they are cheap to run again, or end the turn. */
-const UNSAVED_TOOLS = new Set<string>([READ_FILE, FIND, YIELD, WAIT]);
+const UNSAVED_TOOLS = new Set<string>([READ_FILE, FIND_FILES, YIELD, WAIT]);
 
 /** savesResult is true when a large result of tool `name` is kept in a file, for read_file to reopen. */
 export function savesResult(name: string): boolean {
