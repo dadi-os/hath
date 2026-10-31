@@ -642,7 +642,22 @@ test("process-lane tools are the fixed front-desk list, with no grants or async 
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  assert.deepEqual(names, [SEND_MESSAGE, "steer_work", "read_file", "find_files", "get_logs", "web_search", "web_fetch", "recall_memory", LIST_AGENTS, "yield"]);
+  assert.deepEqual(names, [
+    SEND_MESSAGE,
+    "steer_work",
+    "read_file",
+    "find_files",
+    "get_logs",
+    "web_search",
+    "web_fetch",
+    "get_agent",
+    "list_schedules",
+    "get_device",
+    "control_device",
+    "recall_memory",
+    LIST_AGENTS,
+    "yield",
+  ]);
 });
 
 test("spawn_agent requires system_prompt, and the child holds the whole registry", async () => {
@@ -684,10 +699,8 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
     childCtx.tools.map((tool) => tool.name),
     [
       "spawn_agent",
-      "ghar_list_devices",
-      "ghar_get_state",
-      "ghar_control_device",
-      "ghar_get_device_events",
+      "get_device",
+      "control_device",
       "get_agent",
       "get_logs",
       "web_search",
@@ -1087,10 +1100,8 @@ test("list_agents is in both lanes", async () => {
   });
   assert.deepEqual(workContext.tools.map((tool) => tool.name), [
     "spawn_agent",
-    "ghar_list_devices",
-    "ghar_get_state",
-    "ghar_control_device",
-    "ghar_get_device_events",
+    "get_device",
+    "control_device",
     QUEUE_MESSAGE,
     LIST_AGENTS,
     "wait",
@@ -1539,7 +1550,7 @@ test("executeTool refuses a registry tool for a retired agent", async () => {
   const refused = await executeTool(runtime.toolContext(retired, "work"), {
     type: "tool_use",
     id: "eg2",
-    name: "ghar_list_devices",
+    name: "get_device",
     input: {},
   });
   assert.equal(refused.isError, true);

@@ -30,7 +30,10 @@ import {
   type ToolContext,
   type ToolExecResult,
 } from "../tools/shared.js";
-import { runInBackground, toolIsAsync } from "./async.js";
+import { deliverDeps, runInBackground, toolIsAsync } from "./async.js";
+import { deliverAgentMessage } from "./deliver.js";
+import { ACTION_TOOLS } from "./record.js";
+import { shortArg } from "./status.js";
 import { KEEP_WHOLE_CHARS } from "./wake.js";
 import { resultPath, savesResult, writeBytes } from "./files.js";
 import { runWait } from "./watches.js";
@@ -235,7 +238,9 @@ async function dispatchTool(
       default: {
         const registry = laneRegistryTool("process", call.name);
         if (registry) {
-          return await registry.handler(ctx, registry.input.parse(call.input));
+          const result = await registry.handler(ctx, registry.input.parse(call.input));
+          await noteProcessAction(ctx, call, result);
+          return result;
         }
         return fail(
           `${call.name} is not a process-lane tool. Yours are ${toolsForLane(ctx.callerId, "process").map((tool) => tool.name).join(", ")}. Every other tool this agent holds runs in the work lane: call ${STEER_WORK} with what you need done.`,
@@ -248,6 +253,29 @@ async function dispatchTool(
     }
     return unexpectedToolError(err);
   }
+}
+
+/** How much of an action's result its note keeps. */
+const ACTION_NOTE_RESULT_CHARS = 200;
+
+/**
+ * noteProcessAction tells the work lane what the process lane just did to the world: the
+ * work lane never sees the process lane's calls, so a successful action is recorded as a
+ * note from hath to the agent, delivered without waking anyone, which both lanes read among
+ * their next arrivals.
+ */
+async function noteProcessAction(ctx: ToolContext, call: DwarToolUseBlock, result: ToolExecResult): Promise<void> {
+  if (ctx.callerId === null || result.isError || !ACTION_TOOLS.has(call.name)) {
+    return;
+  }
+  await deliverAgentMessage(deliverDeps(ctx), {
+    fromAgentId: ctx.callerId,
+    toAgentId: ctx.callerId,
+    content: `Your process lane ran ${call.name} ${shortArg(call.input)}: ${result.content.slice(0, ACTION_NOTE_RESULT_CHARS)}`,
+    notice: "tool",
+    wake: false,
+    lane: "process",
+  });
 }
 
 async function runSteerWork(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {

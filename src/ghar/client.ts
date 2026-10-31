@@ -118,34 +118,12 @@ const devicesResponseSchema = z
   })
   .passthrough();
 
-const stateResponseSchema = z
+const controlRunSchema = z
   .object({
-    devices: z.record(z.record(attributeStateSchema)),
-  })
-  .passthrough();
-
-const commandResponseSchema = z
-  .object({
-    ok: z.literal(true),
-  })
-  .passthrough();
-
-const eventSchema = z
-  .object({
-    id: z.string(),
-    device_id: z.string().uuid(),
-    attribute_key: z.string(),
-    old_value: z.unknown(),
-    new_value: z.unknown(),
-    cause: z.enum(["agent", "user", "external"]),
-    cause_ref: z.string().nullable(),
-    created_at: z.string(),
-  })
-  .passthrough();
-
-const eventsResponseSchema = z
-  .object({
-    events: z.array(eventSchema),
+    id: z.string().uuid(),
+    status: z.enum(["running", "done", "failed"]),
+    result: z.string().optional(),
+    error: z.object({ type: z.string(), message: z.string() }).passthrough().optional(),
   })
   .passthrough();
 
@@ -153,7 +131,7 @@ export type GharCapability = z.infer<typeof capability>;
 export type GharKind = z.infer<typeof kind>;
 export type GharDevice = z.infer<typeof deviceSchema>;
 export type GharAttributeState = z.infer<typeof attributeStateSchema>;
-export type GharEvent = z.infer<typeof eventSchema>;
+export type GharControlRun = z.infer<typeof controlRunSchema>;
 
 export type ListDevicesRequest = {
   room?: string;
@@ -162,32 +140,22 @@ export type ListDevicesRequest = {
   kind?: GharKind;
 };
 
-export type CommandRequest = {
-  capability: GharCapability;
-  command: string;
-  params?: Record<string, unknown>;
-  cause?: "agent" | "user";
-  cause_ref?: string;
-};
-
-export type ListEventsRequest = {
-  device_id?: string | string[];
-  room?: string;
-  tag?: string;
-  key?: string;
-  since?: string;
-  until?: string;
-  cause?: "agent" | "user" | "external";
-  limit?: number;
-  order?: "asc" | "desc";
+/** A plain-language request for Ghar's control loop. */
+export type ControlRequest = {
+  request: string;
+  /** The agent the commands are attributed to. */
+  caller: string;
+  /** How long Ghar holds the call for the run to settle before answering `running`. */
+  wait_ms: number;
 };
 
 /** Ghar surface used by agent tools. */
 export type GharClient = {
   listDevices: (query?: ListDevicesRequest) => Promise<{ devices: GharDevice[] }>;
-  getState: () => Promise<{ devices: Record<string, Record<string, GharAttributeState>> }>;
-  command: (deviceId: string, body: CommandRequest) => Promise<{ ok: true }>;
-  listEvents: (query?: ListEventsRequest) => Promise<{ events: GharEvent[] }>;
+  getDevice: (id: string) => Promise<GharDevice>;
+  /** Starts a control run; never retried, since a repeated request could repeat its commands. */
+  control: (body: ControlRequest) => Promise<GharControlRun>;
+  getControl: (id: string) => Promise<GharControlRun>;
 };
 
 /** Build a retrying axios client pointed at `GHAR_BASE_URL`. */
@@ -210,17 +178,19 @@ export function createGharClient(config: Config): GharClient {
     return parseResponse(schema, data);
   }
 
-  async function post<T>(path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
-    const data = await withRetry(config, () => http.post(path, body).then((res) => res.data));
-    return parseResponse(schema, data);
+  async function postOnce<T>(path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
+    try {
+      return parseResponse(schema, (await http.post(path, body)).data);
+    } catch (err) {
+      throw mapGharError(err);
+    }
   }
 
   return {
     listDevices: (query = {}) => get("/devices", devicesResponseSchema, omitUndefined(query)),
-    getState: () => get("/state", stateResponseSchema),
-    command: (deviceId, body) =>
-      post(`/devices/${deviceId}/command`, omitUndefined(body), commandResponseSchema),
-    listEvents: (query = {}) => get("/events", eventsResponseSchema, omitUndefined(query)),
+    getDevice: (id) => get(`/devices/${id}`, deviceSchema),
+    control: (body) => postOnce("/control", body, controlRunSchema),
+    getControl: (id) => get(`/control/${id}`, controlRunSchema),
   };
 }
 

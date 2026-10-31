@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { AGENT_ID_PATTERN } from "../src/agent-id.js";
 import type { Config } from "../src/config.js";
 import { loadConfig } from "../src/config.js";
@@ -7,13 +8,11 @@ import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
 import type { DwarClient, DwarDescribeImageResponse } from "../src/dwar/client.js";
 import type { WakeLimits } from "../src/runtime/wake.js";
 import type {
-  CommandRequest,
-  GharAttributeState,
+  ControlRequest,
   GharClient,
+  GharControlRun,
   GharDevice,
-  GharEvent,
   ListDevicesRequest,
-  ListEventsRequest,
 } from "../src/ghar/client.js";
 import type {
   EditFileRequest,
@@ -229,33 +228,24 @@ export function mockGhar(opts: {
   listDevices?: (
     query?: ListDevicesRequest,
   ) => Promise<{ devices: GharDevice[] }> | { devices: GharDevice[] };
-  getState?: () =>
-    | Promise<{ devices: Record<string, Record<string, GharAttributeState>> }>
-    | { devices: Record<string, Record<string, GharAttributeState>> };
-  command?: (
-    deviceId: string,
-    body: CommandRequest,
-  ) => Promise<{ ok: true }> | { ok: true };
-  listEvents?: (
-    query?: ListEventsRequest,
-  ) => Promise<{ events: GharEvent[] }> | { events: GharEvent[] };
+  getDevice?: (id: string) => Promise<GharDevice> | GharDevice;
+  control?: (body: ControlRequest) => Promise<GharControlRun> | GharControlRun;
+  getControl?: (id: string) => Promise<GharControlRun> | GharControlRun;
 } = {}): GharClient & {
   listDevicesCalls: Array<ListDevicesRequest | undefined>;
-  getStateCalls: number;
-  commandCalls: Array<{ deviceId: string; body: CommandRequest }>;
-  listEventsCalls: Array<ListEventsRequest | undefined>;
+  getDeviceCalls: string[];
+  controlCalls: ControlRequest[];
+  getControlCalls: string[];
 } {
   const listDevicesCalls: Array<ListDevicesRequest | undefined> = [];
-  let getStateCalls = 0;
-  const commandCalls: Array<{ deviceId: string; body: CommandRequest }> = [];
-  const listEventsCalls: Array<ListEventsRequest | undefined> = [];
+  const getDeviceCalls: string[] = [];
+  const controlCalls: ControlRequest[] = [];
+  const getControlCalls: string[] = [];
   return {
     listDevicesCalls,
-    get getStateCalls() {
-      return getStateCalls;
-    },
-    commandCalls,
-    listEventsCalls,
+    getDeviceCalls,
+    controlCalls,
+    getControlCalls,
     async listDevices(query) {
       listDevicesCalls.push(query);
       if (opts.listDevices) {
@@ -263,26 +253,26 @@ export function mockGhar(opts: {
       }
       return { devices: [] };
     },
-    async getState() {
-      getStateCalls += 1;
-      if (opts.getState) {
-        return opts.getState();
+    async getDevice(id) {
+      getDeviceCalls.push(id);
+      if (opts.getDevice) {
+        return opts.getDevice(id);
       }
-      return { devices: {} };
+      throw new HathError(404, "not_found", "device not found");
     },
-    async command(deviceId, body) {
-      commandCalls.push({ deviceId, body });
-      if (opts.command) {
-        return opts.command(deviceId, body);
+    async control(body) {
+      controlCalls.push(body);
+      if (opts.control) {
+        return opts.control(body);
       }
-      return { ok: true };
+      return { id: randomUUID(), status: "done", result: "Done." };
     },
-    async listEvents(query) {
-      listEventsCalls.push(query);
-      if (opts.listEvents) {
-        return opts.listEvents(query);
+    async getControl(id) {
+      getControlCalls.push(id);
+      if (opts.getControl) {
+        return opts.getControl(id);
       }
-      return { events: [] };
+      throw new HathError(404, "not_found", "control run not found");
     },
   };
 }

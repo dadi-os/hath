@@ -1,57 +1,81 @@
 import { z } from "zod";
-import { GHAR_CAPABILITIES } from "../../ghar/client.js";
+import { CONTROL_GIVE_UP_MS, CONTROL_POLL_MS, CONTROL_WAIT_MS } from "../../constants.js";
+import { HathError } from "../../errors.js";
+import type { GharControlRun } from "../../ghar/client.js";
+import { runInBackground } from "../../runtime/async.js";
+import { CONTROL_DEVICE } from "../../types/domain.js";
+import { fail, failWithoutAgentIdentity, ok, type ToolContext, type ToolExecResult } from "../shared.js";
 import { defineTool } from "../types.js";
-import { gharToolCall } from "./call.js";
 
-const input = z
-  .object({
-    device_id: z.string().uuid(),
-    capability: z.enum(GHAR_CAPABILITIES),
-    command: z.string().min(1),
-    params: z.record(z.unknown()).optional(),
-  })
-  .strict();
+const input = z.object({ request: z.string().min(1) }).strict();
 
-/** Issue a capability command via Ghar, attributed to the calling agent. */
+/** settled is the tool result for a control run that is no longer running. */
+function settled(run: GharControlRun): ToolExecResult {
+  if (run.status === "done") {
+    return ok({ result: run.result });
+  }
+  return fail(run.error ? `${run.error.type}: ${run.error.message}` : "control run failed without a reason");
+}
+
+/** followRun reads Ghar's run until it settles, or reports it unfinished after CONTROL_GIVE_UP_MS. */
+async function followRun(ctx: ToolContext, runId: string): Promise<ToolExecResult> {
+  const giveUpAt = Date.now() + CONTROL_GIVE_UP_MS;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, CONTROL_POLL_MS));
+    try {
+      const run = await ctx.ghar.getControl(runId);
+      if (run.status !== "running") {
+        return settled(run);
+      }
+    } catch (err) {
+      if (err instanceof HathError) {
+        return fail(`${err.type}: ${err.message}. Ghar no longer knows this request, so read the devices with get_device to see what happened.`);
+      }
+      throw err;
+    }
+    if (Date.now() >= giveUpAt) {
+      return fail("The request is still running in Ghar after 5 minutes. Read the devices with get_device to see where it stands.");
+    }
+  }
+}
+
+/**
+ * Changes the house from a request in plain words, via Ghar `POST /control`, where Ghar's own
+ * model loop does the reading and commanding. A request that settles within CONTROL_WAIT_MS
+ * answers in the call; a slower one returns `{ pending }` and its result wakes the calling lane.
+ */
 export const controlDevice = defineTool({
-  name: "ghar_control_device",
-  description: [
-    "Change a device: pass its id, one of its capabilities from ghar_list_devices, a command, and that command's params.",
-    "Commands: on_off on|off|toggle. level move_to {level 0–100} (brightness, or volume on speakers and TVs). color temperature {mireds} | hue_saturation {hue, saturation 0–254}.",
-    "cover open|close|stop|go_to_lift {percent_open}|go_to_tilt {percent}. fan set_mode {mode off|low|medium|high|on|auto}|set_percent {percent}.",
-    "thermostat set_mode {mode off|auto|cool|heat|fan_only|dry|…}|set_setpoint {heat_c, cool_c in °C, either or both}. temperature_control set {celsius} or {level} per its config.",
-    "valve open {duration_s?, level?}|close. pump set_mode {mode normal|minimum|maximum|local}; run a pump with on_off and level.",
-    "alarm self_test. rvc pause|go_home|set_clean_mode {mode}|select_areas {areas}. appliance pause|stop. mode change_to {mode}; mode and area ids come from the capability's config.",
-    "media play|pause|stop|next|previous|select_input {index}|send_key {key}|launch_app {application_id, catalog_vendor_id}. camera set_privacy {enabled}.",
-    "lock, sensor, button, power_source and energy are read-only through this tool; read them with ghar_get_state.",
-    "If the device lacks the capability or command you named, that is your mistake — pick one it lists. command_rejected means the device refused; device_unreachable means it did not answer. Both are facts about the world, not bad arguments.",
-  ].join(" "),
+  name: CONTROL_DEVICE,
+  description:
+    "Change the house, or ask it something that needs more than a read, in plain words: \"turn off the kitchen lights\", \"set the bedroom thermostat to 21\", \"close the garage door and tell me if it did\". Ghar finds the devices and runs the commands itself, and answers what changed and the state now, or what it could not do and why. One request may cover several devices or a whole room. A request that takes more than a few seconds returns { pending } at once and its answer arrives as a message that wakes you. To read devices yourself, use get_device.",
   input,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      device_id: { type: "string", description: "Change a device: its id, one of its capabilities from ghar_list_devices, a command and that command's params. Commands: on_off on|off|toggle. level move_to {level 0–100} (brightness, or volume on speakers and TVs). color temperature {mireds} | hue_saturation {hue, saturation 0–254}. cover open|close|stop|go_to_lift {percent_open}|go_to_tilt {percent}. fan set_mode {mode off|low|medium|high|on|auto}|set_percent {percent}. thermostat set_mode {mode off|auto|cool|heat|fan_only|dry|…}|set_setpoint {heat_c, cool_c in °C, either or both}. temperature_control set {celsius} or {level} per its config. valve open {duration_s?, level?}|close. pump set_mode {mode normal|minimum|maximum|local}; run a pump with on_off and level. alarm self_test. rvc pause|go_home|set_clean_mode {mode}|select_areas {areas}. appliance pause|stop. mode change_to {mode}; mode and area ids come from the capability's config. media play|pause|stop|next|previous|select_input {index}|send_key {key}|launch_app {application_id, catalog_vendor_id}. camera set_privacy {enabled}. lock, sensor, button, power_source and energy are read-only here; read them with ghar_get_state. Returns Ghar's answer for the command. A capability or command the device does not list is a bad argument; command_rejected means the device refused and device_unreachable that it did not answer." },
-      capability: { type: "string", enum: [...GHAR_CAPABILITIES] },
-      command: { type: "string", description: "Command name for that capability, e.g. on, move_to, set_setpoint" },
-      params: {
-        type: "object",
-        description: "The command's params, e.g. {\"level\":40}, {\"heat_c\":21.5}, {\"percent_open\":60}; omit when it takes none",
-      },
+      request: { type: "string", description: "What you want done or asked, as you would tell a person: which devices or rooms, and the change" },
     },
-    required: ["device_id", "capability", "command"],
+    required: ["request"],
   },
   async handler(ctx, parsed) {
-    return gharToolCall(
-      () =>
-        ctx.ghar.command(parsed.device_id, {
-          capability: parsed.capability,
-          command: parsed.command,
-          ...(parsed.params !== undefined ? { params: parsed.params } : {}),
-          cause: "agent",
-          cause_ref: ctx.callerId ?? ctx.callerKind,
-        }),
-      (response) => response,
-    );
+    if (ctx.callerId === null) {
+      return failWithoutAgentIdentity();
+    }
+    if (ctx.callId === null) {
+      throw new Error("control_device ran outside a tool call");
+    }
+    let run: GharControlRun;
+    try {
+      run = await ctx.ghar.control({ request: parsed.request, caller: ctx.callerId, wait_ms: CONTROL_WAIT_MS });
+    } catch (err) {
+      if (err instanceof HathError) {
+        return fail(`${err.type}: ${err.message}`);
+      }
+      throw err;
+    }
+    if (run.status !== "running") {
+      return settled(run);
+    }
+    return runInBackground(ctx, ctx.callerId, { type: "tool_use", id: ctx.callId, name: CONTROL_DEVICE, input: parsed }, () => followRun(ctx, run.id));
   },
 });

@@ -299,6 +299,8 @@ export const pendingAsync = pgTable(
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     toolName: text("tool_name").notNull(),
+    /** The lane that made the call, and so the lane its result wakes. */
+    lane: text("lane").$type<"process" | "work">().notNull().default("work"),
     startedAt: timestamptz("started_at").notNull().defaultNow(),
   },
   (table) => [index("pending_async_agent_id_idx").on(table.agentId)],

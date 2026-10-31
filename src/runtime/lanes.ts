@@ -1,5 +1,5 @@
 import type { DwarTool, Lane } from "../types/domain.js";
-import { FIND_FILES, GET_AGENT, READ_FILE, SPAWN_AGENT } from "../types/domain.js";
+import { CONTROL_DEVICE, FIND_FILES, GET_AGENT, GET_DEVICE, READ_FILE, SPAWN_AGENT } from "../types/domain.js";
 import { allTools, findTool } from "../tools/registry.js";
 import { asDwarTool, type ToolDefinition } from "../tools/types.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
@@ -14,7 +14,17 @@ import { waitTool } from "./watches.js";
 export const WORKER_ID = /(^|-)worker-/;
 
 /** The registry tools the process lane holds; the work lane holds every one. */
-const PROCESS_REGISTRY_TOOLS = [READ_FILE, FIND_FILES, "get_logs", "web_search", "web_fetch"] as const;
+const PROCESS_REGISTRY_TOOLS = [
+  READ_FILE,
+  FIND_FILES,
+  "get_logs",
+  "web_search",
+  "web_fetch",
+  GET_AGENT,
+  "list_schedules",
+  GET_DEVICE,
+  CONTROL_DEVICE,
+] as const;
 
 /** The registry tools the router lane holds. */
 const ROUTER_REGISTRY_TOOLS = [READ_FILE, GET_AGENT, "get_logs", SPAWN_AGENT] as const;

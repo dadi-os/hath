@@ -28,7 +28,7 @@ const ARG_CHARS = 80;
 const PENDING_CHARS = 120;
 
 /** The input keys a call's short argument is taken from, first one present. */
-const ARG_KEYS = ["path", "url", "query", "command", "id", "message", "to", "name", "pattern", "text", "content", "on"];
+const ARG_KEYS = ["path", "url", "query", "command", "request", "id", "message", "to", "name", "pattern", "text", "content", "on"];
 
 function clip(text: string, limit: number): string {
   const line = text.replace(/\s+/g, " ").trim();

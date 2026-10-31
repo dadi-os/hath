@@ -81,7 +81,7 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
         steer.append(agentId, "use the google pivot");
       }
       return turn < 4
-        ? { ...toolUse("ghar_get_state", {}), content: [{ type: "tool_use", id: `w${turn}`, name: "ghar_get_state", input: {} }] }
+        ? { ...toolUse("get_device", {}), content: [{ type: "tool_use", id: `w${turn}`, name: "get_device", input: {} }] }
         : toolUse("yield", {});
     },
     executeTool: async () => ({ content: "{}", isError: false, audit: {} }),

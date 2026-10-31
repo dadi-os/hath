@@ -208,7 +208,7 @@ test("messages arriving mid-wake join the wake after it and never rewrite earlie
           content: "on it",
         });
       }
-      const name = turn < 3 ? "ghar_get_state" : "yield";
+      const name = turn < 3 ? "get_device" : "yield";
       return {
         provider: "anthropic" as const,
         content: [{ type: "tool_use" as const, id: `c${turn}`, name, input: {} }],

@@ -6,25 +6,21 @@ import { listSchedules } from "./hath/list-schedules.js";
 import { cancelSchedule } from "./hath/cancel-schedule.js";
 import { getLogs as hathGetLogs } from "./hath/get-logs.js";
 import { webFetch, webSearch } from "./web/web.js";
-import { listDevices } from "./ghar/list-devices.js";
-import { getState } from "./ghar/get-state.js";
+import { getDevice } from "./ghar/get-device.js";
 import { controlDevice } from "./ghar/control-device.js";
-import { getDeviceEvents } from "./ghar/get-device-events.js";
 import { listBrowsers, listTerminals, steerBrowser, steerTerminal } from "./helper/tasks.js";
 import { editFile, findFiles, readFile, writeFile } from "./files/files.js";
 
 /**
  * Every tool defined by a zod schema and a handler, in the order agents see them. Which
  * lane may call which is declared in runtime/lanes.ts, together with the lane tools
- * (send, message, steer_work, yield, memory, list_agents, wait, manage_agent,
+ * (send_message, queue_message, steer_work, yield, memory, list_agents, wait, manage_agent,
  * modify_agent_prompt) that have no definition here.
  */
 const definitions = [
   spawnAgent,
-  listDevices,
-  getState,
+  getDevice,
   controlDevice,
-  getDeviceEvents,
   getAgent,
   hathGetLogs,
   webSearch,

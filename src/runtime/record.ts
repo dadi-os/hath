@@ -9,6 +9,7 @@
 import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock, Lane } from "../types/domain.js";
 import { resultPath, savesResult } from "./files.js";
 import {
+  CONTROL_DEVICE,
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
@@ -31,7 +32,7 @@ export const ACTION_TOOLS = new Set<string>([
   "steer_terminal",
   "write_file",
   "edit_file",
-  "ghar_control_device",
+  CONTROL_DEVICE,
   "schedule_message",
   "cancel_schedule",
   SPAWN_AGENT,

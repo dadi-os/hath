@@ -5,7 +5,10 @@
  * once and runs on; when it ends, its result (or its failure) reaches the agent as a message
  * that wakes its work lane, the way a helper's report does (see rewake.ts). A restart loses
  * a call still running, so each running call has a row in `pending_async`, and boot tells the
- * agent which ones were lost. Only the work lane runs tools async.
+ * agent which ones were lost. A tool flagged async runs async only in the work lane; a
+ * tool that is not flagged may still start a background call itself, when the service it
+ * calls decides a request is too slow to wait for (control_device), and then its result wakes
+ * the lane that made the call.
  */
 
 import { eq } from "drizzle-orm";
@@ -18,7 +21,7 @@ import type { DwarToolUseBlock } from "../types/domain.js";
 import { INGEST_MEMORY } from "../types/domain.js";
 import type { DeliverDeps } from "./deliver.js";
 import { resultPath, savesResult, writeBytes } from "./files.js";
-import { rewakeWork } from "./rewake.js";
+import { rewakeProcess, rewakeWork } from "./rewake.js";
 
 /** A result longer than this reaches the agent as its opening and the path of a file holding it all. */
 const INLINE_RESULT_CHARS = 4_000;
@@ -46,10 +49,15 @@ export function deliverDeps(ctx: ToolContext): DeliverDeps {
   };
 }
 
+/** wakeLane is the rewake that wakes the lane `lane`. */
+function wakeLane(lane: "process" | "work") {
+  return lane === "process" ? rewakeProcess : rewakeWork;
+}
+
 /**
  * runInBackground starts `run` for the caller's call and returns `{ pending: id }` at once;
- * the call's result reaches the caller as a message when `run` settles. `run` must return
- * its outcome, never throw.
+ * the call's result reaches the caller as a message that wakes the lane that made the call
+ * (`ctx.lane`) when `run` settles. `run` must return its outcome, never throw.
  */
 export async function runInBackground(
   ctx: ToolContext,
@@ -57,11 +65,15 @@ export async function runInBackground(
   call: DwarToolUseBlock,
   run: () => Promise<ToolExecResult>,
 ): Promise<ToolExecResult> {
-  await ctx.db.insert(pendingAsync).values({ id: call.id, agentId, toolName: call.name });
+  if (ctx.lane === "router") {
+    throw new Error("the router lane runs no background calls");
+  }
+  const lane = ctx.lane;
+  await ctx.db.insert(pendingAsync).values({ id: call.id, agentId, toolName: call.name, lane });
   ctx.background(
     (async () => {
       const result = await run();
-      await rewakeWork(deliverDeps(ctx), agentId, {
+      await wakeLane(lane)(deliverDeps(ctx), agentId, {
         content: await resultMessage(ctx, call, result),
         notice: "tool",
         wokenBy: `async tool result (${call.name} ${call.id})`,
@@ -93,7 +105,7 @@ async function resultMessage(ctx: ToolContext, call: DwarToolUseBlock, result: T
 export async function reportLostAsync(deps: DeliverDeps): Promise<number> {
   const lost = await deps.db.select().from(pendingAsync);
   for (const call of lost) {
-    await rewakeWork(deps, call.agentId, {
+    await wakeLane(call.lane)(deps, call.agentId, {
       content: `Result of ${call.toolName} (${call.id}) lost: hath restarted while it was running, so it may or may not have taken effect. Check what it was for, and run it again if it still matters.`,
       notice: "tool",
       wokenBy: `async tool result lost in a restart (${call.toolName} ${call.id})`,
