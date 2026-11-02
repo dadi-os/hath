@@ -158,4 +158,5 @@ const HEADLINES: Record<HelperReport["state"], string> = {
   done: "Helper finished",
   needs_input: "Helper needs something from you",
   failed: "Helper failed",
+  stopped: "Helper stopped by Ankur",
 };

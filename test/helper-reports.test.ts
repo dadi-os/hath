@@ -162,6 +162,20 @@ test("a needs_input report and a failure say so, and a report for a missing agen
   assert.equal(marked.length, 1);
 });
 
+test("a stopped report tells the agent Ankur stopped its helper", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
+  const { runtime } = harness();
+
+  await runtime.helperReports.handle(report({ state: "stopped", text: "Ankur stopped this task while he was driving it." }));
+  await runtime.waitUntilIdle();
+
+  assert.deepEqual(
+    notices(runtime).map((row) => row.content),
+    ["Helper stopped by Ankur (task/browser/1):\nAnkur stopped this task while he was driving it."],
+  );
+});
+
 test("the stream is followed: a pushed report is delivered, and a dropped stream reconnects and reconciles", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });

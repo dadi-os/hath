@@ -47,3 +47,9 @@ test("a report that does not match its schema stops the stream loudly", async ()
   assert.deepEqual(events, []);
   assert.match(String(error), /Nas response is malformed/);
 });
+
+test("a stopped report is a report the stream accepts", async () => {
+  const stopped = { ...report, state: "stopped", text: "Ankur stopped this task while he was driving it." };
+  const { events } = await collect(parseEvents(chunks(`data: ${JSON.stringify(stopped)}\n\n`)));
+  assert.deepEqual(events, [{ type: "helper_report", report: stopped }]);
+});

@@ -12,7 +12,7 @@ export type AgentSession = {
   /** The task's address, such as `task/browser/3`. */
   id: string;
   kind: "browser" | "terminal";
-  status: "working" | "idle" | "asking" | "asleep";
+  status: "working" | "paused" | "idle" | "asking" | "asleep";
   purpose: string;
   /** The page a browser is on, or the directory and files a terminal has touched. */
   current: string;

@@ -22,3 +22,13 @@ test("an agent's sessions are the Nas tasks it owns or last steered, read live",
   assert.equal(task?.status, "working");
   assert.equal(task?.purpose, "open the portal");
 });
+
+test("a task Ankur has paused is listed as paused", async () => {
+  const nas = mockNas();
+  const sessions = new HostSessions(nas);
+  const started = await nas.startTask("browser", { agent_id: "a1", message: "fill the form" });
+  nas.tasks.set(started.task, { ...started, status: "paused" });
+
+  const tasks = sessions.forAgent(await sessions.snapshot(), "a1").tasks;
+  assert.deepEqual(tasks.map((task) => task.status), ["paused"]);
+});

@@ -39,7 +39,7 @@ const idProperty = (kind: TaskKind) => ({
 export const steerBrowser = defineTool({
   name: "steer_browser",
   description:
-    "Get work done in a real browser and carry on: it returns { id } at once, and when the browser's helper has finished, needs something from you, or failed, its report arrives as a message that wakes you, with any files it downloaded. With no id it starts a new browser task on message. With an id it steers that task, waking it if it was asleep; its tabs, sign-ins and history are as they were. The helper signs in from the vault, clicks, fills and submits forms, downloads and uses as many tabs as it needs. Use it for anything behind a sign-in or that needs clicking, forms or several steps; web_search and web_fetch answer public pages at once. list_browsers shows what is open, so you can reuse a task instead of starting another.",
+    "Get work done in a real browser and carry on: it returns { id } at once, and when the browser's helper has finished, needs something from you, failed, or was stopped by Ankur, its report arrives as a message that wakes you, with any files it downloaded. With no id it starts a new browser task on message. With an id it steers that task, waking it if it was asleep; its tabs, sign-ins and history are as they were. While Ankur has taken a task over (it shows paused) your steer is held until he hands it back. The helper signs in from the vault, clicks, fills and submits forms, downloads and uses as many tabs as it needs. Use it for anything behind a sign-in or that needs clicking, forms or several steps; web_search and web_fetch answer public pages at once. list_browsers shows what is open, so you can reuse a task instead of starting another.",
   input: steerInput,
   inputSchema: {
     type: "object",
@@ -65,7 +65,7 @@ export const steerBrowser = defineTool({
 export const steerTerminal = defineTool({
   name: "steer_terminal",
   description:
-    "Get work done on the box (Dadi's Linux host) in a shell and carry on: it returns { id } at once, and when the terminal's helper has finished, needs something from you, or failed, its report arrives as a message that wakes you, with any files it handed back. With no id it starts a new terminal task on message, in workdir (default the dadi home). With an id it steers that task, waking it if it was asleep. The helper runs commands, builds, tests, git and package managers, edits files and uses vault secrets without seeing them. For one file read, one edit or one search use read_file, edit_file and find, which answer at once. list_terminals shows what is open.",
+    "Get work done on the box (Dadi's Linux host) in a shell and carry on: it returns { id } at once, and when the terminal's helper has finished, needs something from you, failed, or was stopped by Ankur, its report arrives as a message that wakes you, with any files it handed back. With no id it starts a new terminal task on message, in workdir (default the dadi home). With an id it steers that task, waking it if it was asleep; while Ankur has taken it over (it shows paused) your steer is held until he hands it back. The helper runs commands, builds, tests, git and package managers, edits files and uses vault secrets without seeing them. For one file read, one edit or one search use read_file, edit_file and find, which answer at once. list_terminals shows what is open.",
   input: steerTerminalInput,
   inputSchema: {
     type: "object",
@@ -124,7 +124,7 @@ function minutesSince(at: string): number {
 function listTool(kind: TaskKind, current: string) {
   return defineTool({
     name: `list_${kind}s`,
-    description: `List every ${kind} task open on the box, whoever started it: id, status (working, idle, asking for something, or asleep), owner, purpose, ${current} and minutes since it last did anything. Use it to find a task to steer with steer_${kind} instead of starting another.`,
+    description: `List every ${kind} task open on the box, whoever started it: id, status (working, paused while Ankur drives it, idle, asking for something, or asleep), owner, purpose, ${current} and minutes since it last did anything. Use it to find a task to steer with steer_${kind} instead of starting another.`,
     input: listInput,
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     async handler(ctx) {

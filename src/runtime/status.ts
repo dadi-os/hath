@@ -82,7 +82,7 @@ export async function gatherStatus(deps: StatusDeps, agentId: string): Promise<A
   let unreadable: string | null = null;
   try {
     tasks = (await deps.nas.listTasks())
-      .filter((task) => (task.owner === agentId || task.steered_by === agentId) && (task.status === "working" || task.status === "asking"))
+      .filter((task) => (task.owner === agentId || task.steered_by === agentId) && (task.status === "working" || task.status === "paused" || task.status === "asking"))
       .map((task) => ({ id: task.task, status: task.status, current: clip(task.state, ARG_CHARS) }));
   } catch (err) {
     unreadable = err instanceof Error ? err.message : String(err);

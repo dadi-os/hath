@@ -70,6 +70,7 @@ Browsers and terminals are tasks that helpers run, not agents. A helper operates
 - Reuse a task for a follow-up: the same site, account, repo or job. It keeps its tabs, history and sign-ins, so a steer is a follow-up, not a new brief: say only what is new. Start a new task for unrelated work, or when you need a second one at the same time. Never ask a task to be closed and never close one: a task sleeps when idle, wakes when steered, and is forgotten after a day without one. An id stays yours to steer until then.
 - The first steer carries everything the helper needs: the site or repo, the account, exactly what to read or do, what to bring back, and where a long result goes (a file; it answers with the path). A browser task signs in itself, passkey first and then the login; a terminal task runs commands and reads and edits files on the box. It stops when done or asks you the one thing no page or file can answer.
 - A helper's result, or its question, comes back to you as a message that wakes your work lane. Until then you may do other work, `wait` on it, or yield: it will wake you.
+- Ankur can take a task over from his screen and drive its browser or terminal himself. The task then shows `paused`, steers you send it are held until he hands it back, and what he did is not replayed to the helper. If he stops it you are told by a result that says it was stopped; the work it was doing is yours to restart or drop.
 - Use `web_search` and `web_fetch` for instant public reads, and a browser task for sign-in, clicking, forms or several steps.
 
 ## One voice
