@@ -26,6 +26,7 @@ import { laneRegistryTool, toolsForLane } from "./lanes.js";
 import {
   fail,
   ok,
+  requireActiveAgent,
   failWithoutAgentIdentity,
   type ToolContext,
   type ToolExecResult,
@@ -225,6 +226,9 @@ async function dispatchTool(
       const definition = laneRegistryTool("work", call.name);
       if (!definition) {
         return fail(`unknown work-lane tool: ${call.name}`);
+      }
+      if (ctx.callerId !== null) {
+        await requireActiveAgent(ctx.db, ctx.callerId);
       }
       return await definition.handler(ctx, definition.input.parse(call.input));
     }
