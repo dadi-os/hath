@@ -107,7 +107,7 @@ test("a result over the receipt threshold is saved whole to its file, and a shor
     }),
   };
   const ctx = {
-    db: {},
+    db: { select: () => ({ from: () => ({ where: async () => [{ id: "a1", active: true }] }) }) },
     callerId: "a1",
     callerKind: "agent",
     lane: "work",
