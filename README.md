@@ -77,7 +77,7 @@ Every `agents` row is an agent. The router is not a row — it is `POST /router`
 
 Router tools (declared in `src/runtime/lanes.ts`): `send_message` (deliver as Ankur; a retired recipient is a `retired` error), `forward_attachment` (deliver attachment ids from the message's `Path:` blocks as Ankur), `read_file`, `list_agents`, `recall_memory`, `spawn_agent` (creates a root), and `get_agent` and `get_logs` on any agent. It cannot modify agents: agents reshape themselves. Its model turns and tool results log to `agent_logs` with a null `agent_id` on the `router` lane. The router's `get_logs` must name an agent; nobody reads the null identity's rows through a tool: they hold the router's turns and every message sent by or to Ankur. Runs are serialized.
 
-SSE: `router_started` / `router_finished` / `router_failed`. After a route, each thread's `lane_*` and `message` events take over.
+SSE: `router_started` / `router_finished` / `router_failed`, each with the `run_id` of its run, since a second `POST /router` waits for the lane while its `router_started` is already out, so runs overlap and a client keeps the set of run ids it has seen start; `GET /router` lists the runs in flight for a device that connects mid-run. After a route, each thread's `lane_*` and `message` events take over.
 
 ## The user is null
 
@@ -198,6 +198,7 @@ Schedule tools (`schedule_message`, `list_schedules`, `cancel_schedule`) persist
 | --- | --- | --- |
 | `GET` | `/health` | `{ "status": "ok", "started_at": "<iso>" }` — process identity only; not a chat epoch |
 | `POST` | `/router` | Ankur → router: runs the router lane until it yields; returns the messages it sent |
+| `GET` | `/router` | `{ "running": [{ "run_id", "at" }] }`: the router runs in flight, from the moment `POST /router` accepts one (one waiting for the lane included) until it finishes or fails; empty when the router is idle |
 | `POST` | `/messages` | user → agent; `attachments` stored as rows (images described via Dwar); returns them as summaries |
 | `GET` | `/attachments/:id` | the original file, with its media type |
 | `GET` | `/threads` | human↔agent conversation summaries (active agents only), each with `unread` (the agent's messages to Ankur after `read_seq`, notices left out) and `read_seq` (null until read) |

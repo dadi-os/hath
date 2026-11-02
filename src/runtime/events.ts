@@ -30,12 +30,10 @@ export type RuntimeEvent =
       message: string;
       at: string;
     }
-  | {
-      type: "router_started";
-      at: string;
-    }
-  | { type: "router_finished"; at: string }
-  | { type: "router_failed"; message: string; at: string }
+  /** A router run began; `run_id` ties it to its `router_finished` or `router_failed`, and runs can overlap. */
+  | { type: "router_started"; run_id: string; at: string }
+  | { type: "router_finished"; run_id: string; at: string }
+  | { type: "router_failed"; run_id: string; message: string; at: string }
   /** A scheduled message was created, edited, cancelled, delivered or advanced; the event names no schedule, so clients refetch the lists they show. */
   | { type: "schedules_changed"; at: string }
   /** The browsers or terminals an agent is remembered to use changed, so `sessions` on GET /agents is out of date. */

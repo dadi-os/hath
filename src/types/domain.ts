@@ -82,6 +82,14 @@ export type RoutedMessage = {
   created_at: string;
 };
 
+/** One router run in flight, from the moment `POST /router` accepts it until it finishes or fails; `GET /router` lists these. */
+export type RouterRun = {
+  /** The id its `router_started`, `router_finished` and `router_failed` events carry. */
+  run_id: string;
+  /** ISO time the run started. */
+  at: string;
+};
+
 /** Attachment metadata on HTTP responses and runtime events; bytes come from GET /attachments/:id. */
 export type AttachmentSummary = {
   id: string;
