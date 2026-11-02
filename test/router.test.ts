@@ -139,11 +139,11 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
     "forward_attachment",
     "get_agent",
     "get_logs",
-    "spawn_agent",
     "list_agents",
     "read_file",
     "recall_memory",
     "send_message",
+    "spawn_agent",
     "yield",
   ]);
 
