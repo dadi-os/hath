@@ -44,7 +44,6 @@ function device(name: string, brightness: number): GharDevice {
     kind: "light",
     device_types: [0x0101],
     bridge_name: "Hue Bridge",
-    room: { id: randomUUID(), name: "hall" },
     tags: [{ id: randomUUID(), name: "lighting" }],
     capabilities: [{ capability: "level", config: { min: 0, max: 100 } }],
     online: true,

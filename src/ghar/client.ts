@@ -99,7 +99,6 @@ const deviceSchema = z
     kind,
     device_types: z.array(z.number().int()),
     bridge_name: z.string().nullable(),
-    room: z.object({ id: z.string().uuid(), name: z.string() }).passthrough(),
     tags: z.array(z.object({ id: z.string().uuid(), name: z.string() }).passthrough()),
     capabilities: z.array(
       z.object({ capability, config: z.record(z.unknown()) }).passthrough(),
@@ -134,7 +133,6 @@ export type GharAttributeState = z.infer<typeof attributeStateSchema>;
 export type GharControlRun = z.infer<typeof controlRunSchema>;
 
 export type ListDevicesRequest = {
-  room?: string;
   tag?: string;
   capability?: GharCapability;
   kind?: GharKind;

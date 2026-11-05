@@ -17,7 +17,7 @@ const input = z
 export const getDevice = defineTool({
   name: GET_DEVICE,
   description:
-    "Read the house's devices: each one's id, name, room, tags, kind (light, plug, cover, thermostat, lock, robot_vacuum, washer, speaker, …), online flag, capabilities with their config, and current state, where every value carries changed_at, when it last changed. Give device_ids for specific devices, or nothing for every device. Use changed_at for how long something has been that way (\"has the hall been empty for a while\", \"how long has that light been on\"). To change a device, use control_device.",
+    "Read the house's devices: each one's id, name, tags, kind (light, plug, cover, thermostat, lock, robot_vacuum, washer, speaker, …), online flag, capabilities with their config, and current state, where every value carries changed_at, when it last changed. Tags are how the house is grouped (a device can have many, e.g. \"ankur's bed lights\"). Give device_ids for specific devices, or nothing for every device. Use changed_at for how long something has been that way (\"has the hall been empty for a while\", \"how long has that light been on\"). To change a device, use control_device.",
   input,
   inputSchema: {
     type: "object",
@@ -43,7 +43,6 @@ export const getDevice = defineTool({
           name: device.name,
           kind: device.kind,
           bridge_name: device.bridge_name,
-          room: device.room,
           tags: device.tags,
           capabilities: device.capabilities,
           online: device.online,

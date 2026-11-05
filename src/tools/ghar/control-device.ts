@@ -47,13 +47,13 @@ async function followRun(ctx: ToolContext, runId: string): Promise<ToolExecResul
 export const controlDevice = defineTool({
   name: CONTROL_DEVICE,
   description:
-    "Change the house, or ask it something that needs more than a read, in plain words: \"turn off the kitchen lights\", \"set the bedroom thermostat to 21\", \"close the garage door and tell me if it did\". Ghar finds the devices and runs the commands itself, and answers what changed and the state now, or what it could not do and why. One request may cover several devices or a whole room. A request that takes more than a few seconds returns { pending } at once and its answer arrives as a message that wakes you. To read devices yourself, use get_device.",
+    "Change the house, or ask it something that needs more than a read, in plain words: \"turn off the kitchen lights\", \"set the bedroom thermostat to 21\", \"close the garage door and tell me if it did\". Ghar finds the devices and runs the commands itself, and answers what changed and the state now, or what it could not do and why. One request may cover several devices or a whole tag (a named group of devices, like \"ankur's bed lights\"). A request that takes more than a few seconds returns { pending } at once and its answer arrives as a message that wakes you. To read devices yourself, use get_device.",
   input,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      request: { type: "string", description: "What you want done or asked, as you would tell a person: which devices or rooms, and the change" },
+      request: { type: "string", description: "What you want done or asked, as you would tell a person: which devices or tags, and the change" },
     },
     required: ["request"],
   },
