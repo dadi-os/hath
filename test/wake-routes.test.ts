@@ -399,7 +399,7 @@ test("a log read Nas refuses maps to stable codes: 404 task_not_found, 422 inval
   }
 });
 
-test("get_messages reads a conversation newest first, searches text, pages, and keeps utterances for the router", async () => {
+test("get_messages reads a conversation newest first, searches text, pages, and keeps utterances for the router", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const me = await insertAgent(handle.db, { id: "msg-reader", systemPrompt: "reads" });
   const child = await insertAgent(handle.db, { id: "msg-child", systemPrompt: "child", parentAgentId: me });
@@ -415,7 +415,8 @@ test("get_messages reads a conversation newest first, searches text, pages, and 
   await say(child, me, "child report");
   await insertUtterance(handle.db, "router heard this");
 
-  const { runtime } = await appWith();
+  const { app, runtime } = await appWith();
+  t.after(() => app.close());
   const read = async (callerId: string | null, lane: "work" | "router", input: Record<string, unknown>) => {
     const result = await executeTool(runtime.toolContext(callerId, lane), { type: "tool_use", id: "gm", name: "get_messages", input });
     return { isError: result.isError, body: result.isError ? result.content : (JSON.parse(result.content) as { messages: Array<{ content: string; seq: number; content_chars: number }>; next_before: string | null }) };
