@@ -106,6 +106,14 @@ export const sessionParam = z
   .object({ id: agentIdSchema, task_id: z.string().regex(/^task\/(browser|terminal)\/[^/]+$/, "expected task/<browser|terminal>/<id>") })
   .strict();
 
+/** Query of `GET /agents/:id/sessions/:task_id/log`: entries after `after_seq` (default 0), at most `limit` (default 200, max 1000). */
+export const sessionLogQuery = z
+  .object({
+    after_seq: z.coerce.number().int().nonnegative().default(0),
+    limit: z.coerce.number().int().positive().max(1000).default(200),
+  })
+  .strict();
+
 /** Query of `GET /agents/:id/wakes`: a page size and the keyset cursor `(before_started_at, before_id)`, given together. */
 export const wakesQuery = z
   .object({

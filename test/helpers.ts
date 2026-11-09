@@ -4,7 +4,7 @@ import type { Config } from "../src/config.js";
 import { loadConfig } from "../src/config.js";
 import { createDb, type Db, type Sql } from "../src/db/client.js";
 import { agents } from "../src/db/schema.js";
-import type { DwarChatRequest, DwarChatResponse } from "../src/types/domain.js";
+import type { DwarChatRequest, DwarChatResponse, HelperLogEntry } from "../src/types/domain.js";
 import type { DwarClient, DwarDescribeImageResponse } from "../src/dwar/client.js";
 import type { WakeLimits } from "../src/runtime/wake.js";
 import type {
@@ -306,6 +306,9 @@ export function mockNas(opts: {
   startTaskCalls: Array<{ kind: TaskKind; body: TaskRequest }>;
   steerTaskCalls: Array<{ kind: TaskKind; id: string; body: TaskRequest }>;
   haltTaskCalls: Array<{ kind: TaskKind; id: string }>;
+  /** Logs `getTaskLog` serves, by task address; a task without one answers 404. */
+  taskLogs: Map<string, HelperLogEntry[]>;
+  getTaskLogCalls: Array<{ kind: TaskKind; id: string; afterSeq: number; limit: number }>;
   execCalls: Array<{ id: string; body: ExecRequest }>;
   terminalsCreated: string[];
   terminalsClosed: string[];
@@ -328,6 +331,8 @@ export function mockNas(opts: {
   const startTaskCalls: Array<{ kind: TaskKind; body: TaskRequest }> = [];
   const steerTaskCalls: Array<{ kind: TaskKind; id: string; body: TaskRequest }> = [];
   const haltTaskCalls: Array<{ kind: TaskKind; id: string }> = [];
+  const taskLogs = new Map<string, HelperLogEntry[]>();
+  const getTaskLogCalls: Array<{ kind: TaskKind; id: string; afterSeq: number; limit: number }> = [];
   const execCalls: Array<{ id: string; body: ExecRequest }> = [];
   const terminalsCreated: string[] = [];
   const terminalsClosed: string[] = [];
@@ -364,6 +369,8 @@ export function mockNas(opts: {
     startTaskCalls,
     steerTaskCalls,
     haltTaskCalls,
+    taskLogs,
+    getTaskLogCalls,
     execCalls,
     terminalsCreated,
     terminalsClosed,
@@ -402,6 +409,16 @@ export function mockNas(opts: {
       const task: HelperTask = { ...existing, status: "stopped" };
       tasks.set(task.task, task);
       return task;
+    },
+    async getTaskLog(kind, id, page) {
+      const log = taskLogs.get(`task/${kind}/${id}`);
+      if (log === undefined) {
+        throw new HathError(404, "not_found", `no log for ${kind}/${id}`);
+      }
+      getTaskLogCalls.push({ kind, id, ...page });
+      const after = log.filter((entry) => entry.seq > page.afterSeq);
+      const entries = after.slice(0, page.limit);
+      return { task: `task/${kind}/${id}`, entries, next_seq: after.length > entries.length ? (entries.at(-1)?.seq ?? null) : null };
     },
     async listTasks() {
       return [...tasks.values()];

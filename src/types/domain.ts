@@ -330,3 +330,26 @@ export const CONTROL_DEVICE = "control_device";
 export const MANAGE_AGENT = "manage_agent";
 export const MODIFY_AGENT_PROMPT = "modify_agent_prompt";
 export const GET_AGENT = "get_agent";
+
+/** Token counts of one model call in a helper task's log. */
+export type HelperLogUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+};
+
+/** A tool call a helper's model turn made. */
+export type HelperLogCall = { id: string; name: string; input?: unknown };
+
+/** One entry of a helper task's activity log in Nas: a steer, model turn, tool result, state change or report. */
+export type HelperLogEntry = { seq: number; at: string; agent: string } & (
+  | { type: "steer"; from: string; message: string; held: boolean; start: boolean }
+  | { type: "turn"; ms: number; stop_reason: string; usage: HelperLogUsage; thinking: string; text: string; calls: HelperLogCall[] }
+  | { type: "result"; tool_use_id: string; name: string; is_error: boolean; chars: number; head: string; ms: number }
+  | { type: "state"; status: string; reason: string }
+  | { type: "report"; state: string; text: string; files: string[] }
+);
+
+/** One page of a helper task's log; `next_seq` is the `after_seq` of the next page, null on the last. */
+export type HelperTaskLog = { task: string; entries: HelperLogEntry[]; next_seq: number | null };

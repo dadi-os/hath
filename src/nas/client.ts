@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { NAS } from "../constants.js";
 import { HathError } from "../errors.js";
+import type { HelperTaskLog } from "../types/domain.js";
 
 const reportSchema = z
   .object({
@@ -37,6 +38,39 @@ const taskSchema = z
     last_report: reportSchema.nullish(),
   })
   .passthrough();
+
+const logUsageSchema = z.object({
+  input_tokens: z.number(),
+  output_tokens: z.number(),
+  cache_read_input_tokens: z.number(),
+  cache_creation_input_tokens: z.number(),
+});
+
+const logEntryBase = { seq: z.number().int(), at: z.string().min(1), agent: z.string() };
+
+/** The entries of a helper task's log, discriminated on `type`; a type Nas adds later fails the parse. */
+export const logEntrySchema = z.discriminatedUnion("type", [
+  z.object({ ...logEntryBase, type: z.literal("steer"), from: z.string(), message: z.string(), held: z.boolean(), start: z.boolean() }),
+  z.object({
+    ...logEntryBase,
+    type: z.literal("turn"),
+    ms: z.number(),
+    stop_reason: z.string(),
+    usage: logUsageSchema,
+    thinking: z.string(),
+    text: z.string(),
+    calls: z.array(z.object({ id: z.string(), name: z.string(), input: z.unknown() })),
+  }),
+  z.object({ ...logEntryBase, type: z.literal("result"), tool_use_id: z.string(), name: z.string(), is_error: z.boolean(), chars: z.number().int(), head: z.string(), ms: z.number() }),
+  z.object({ ...logEntryBase, type: z.literal("state"), status: z.string(), reason: z.string() }),
+  z.object({ ...logEntryBase, type: z.literal("report"), state: z.string(), text: z.string(), files: z.array(z.string()) }),
+]);
+
+const taskLogSchema: z.ZodType<HelperTaskLog> = z.object({
+  task: z.string().min(1),
+  entries: z.array(logEntrySchema),
+  next_seq: z.number().int().nullable(),
+});
 
 const terminalSchema = z.object({ id: z.string().min(1), cwd: z.string() }).passthrough();
 
@@ -145,6 +179,11 @@ export type NasClient = {
    */
   haltTask: (kind: TaskKind, id: string) => Promise<HelperTask>;
   /**
+   * One page of a task's activity log, entries with `seq` after `afterSeq`. The log outlives
+   * the task being forgotten. Throws `not_found` when the task has no log.
+   */
+  getTaskLog: (kind: TaskKind, id: string, page: { afterSeq: number; limit: number }) => Promise<HelperTaskLog>;
+  /**
    * Open Nas's event stream and resolve once it is connected, with every helper report
    * and task-list change that follows. The stream has no replay and ends, by throwing,
    * when the connection drops.
@@ -212,6 +251,8 @@ export function createNasClient(config: Config): NasClient {
     listTasks: () => get("/tasks", z.array(taskSchema)),
     getTask: (kind, id) => get(`/tasks/${kind}/${encodeURIComponent(id)}`, taskSchema),
     haltTask: (kind, id) => post(`/tasks/${kind}/${encodeURIComponent(id)}/halt`, {}, taskSchema),
+    getTaskLog: (kind, id, { afterSeq, limit }) =>
+      get(`/tasks/${kind}/${encodeURIComponent(id)}/log`, taskLogSchema, { params: { after_seq: afterSeq, limit } }),
     openReports: (signal) => openReportStream(signal),
     createTerminal: (cwd) => post("/terminals", omitUndefined({ cwd }), terminalSchema),
     closeTerminal: (id) => del(`/terminals/${encodeURIComponent(id)}`),

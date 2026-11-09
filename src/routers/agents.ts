@@ -18,6 +18,7 @@ import {
   logParam,
   logsQuery,
   parse,
+  sessionLogQuery,
   sessionParam,
   threadReadBody,
   wakeParam,
@@ -190,6 +191,32 @@ export async function registerAgents(app: FastifyInstance): Promise<void> {
     });
     app.runtime.events.emit({ type: "sessions_changed", at: new Date().toISOString() });
     return { task: toAgentSession(halted) };
+  });
+
+  app.get("/agents/:id/sessions/:task_id/log", async (request) => {
+    const { id, task_id } = parse(sessionParam, request.params);
+    const query = parse(sessionLogQuery, request.query);
+    await requireAgent(app.db, id);
+    const [, kind, taskId] = task_id.split("/") as [string, "browser" | "terminal", string];
+    const readLog = (afterSeq: number, limit: number) =>
+      app.nas.getTaskLog(kind, taskId, { afterSeq, limit }).catch((err: unknown) => {
+        if (err instanceof HathError && err.statusCode === 404) {
+          throw new HathError(404, "task_not_found", err.message);
+        }
+        throw err;
+      });
+    const live = (await app.runtime.sessions.snapshot()).some(
+      (task) => task.task === task_id && (task.owner === id || task.steered_by === id),
+    );
+    const page = await readLog(query.after_seq, query.limit);
+    if (!live) {
+      const first = query.after_seq === 0 ? page : await readLog(0, 1000);
+      const involved = first.entries.some((entry) => entry.agent === id || (entry.type === "steer" && entry.from === id));
+      if (!involved) {
+        throw new HathError(404, "task_not_found", `agent ${id} has no task ${task_id}`);
+      }
+    }
+    return page;
   });
 
   app.get("/logs", async (request) => {

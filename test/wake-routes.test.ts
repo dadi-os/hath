@@ -13,7 +13,7 @@ import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { WAKE_RESULT_MAX_CHARS } from "../src/serialize.js";
 import type { NasClient } from "../src/nas/client.js";
-import type { WakeEntry, WakeRecord } from "../src/types/domain.js";
+import type { HelperLogEntry, WakeEntry, WakeRecord } from "../src/types/domain.js";
 import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
 
 const config = testConfig();
@@ -298,6 +298,99 @@ test("a halt Nas refuses maps to stable codes: 404 task_not_found, 409 task_conf
     const { app } = await appWith(refusing(error));
     try {
       const res = await app.inject({ method: "POST", url: `/agents/${agentId}/sessions/${encodeURIComponent(started.task)}/halt` });
+      assert.equal(res.statusCode, status, res.body);
+      assert.equal((res.json() as { error: { type: string } }).error.type, type);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+const logAt = "2026-11-09T10:00:00Z";
+const steerEntry = (seq: number, from: string, agent: string): HelperLogEntry => ({ seq, at: logAt, agent, type: "steer", from, message: "go", held: false, start: true });
+const stateEntry = (seq: number, agent: string): HelperLogEntry => ({ seq, at: logAt, agent, type: "state", status: "idle", reason: "done" });
+const logUrl = (agentId: string, task: string, query = "") => `/agents/${agentId}/sessions/${encodeURIComponent(task)}/log${query}`;
+
+test("GET /agents/:id/sessions/:task_id/log passes a live owned task's log through and pages it", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "log-owner", systemPrompt: "owns" });
+  const nas = mockNas();
+  const mine = await nas.startTask("browser", { agent_id: agentId, message: "fill the form" });
+  const theirs = await nas.startTask("terminal", { agent_id: "someone-else", message: "build" });
+  nas.taskLogs.set(mine.task, [steerEntry(1, agentId, agentId), stateEntry(2, agentId), stateEntry(3, agentId)]);
+  nas.taskLogs.set(theirs.task, [steerEntry(1, "someone-else", "someone-else")]);
+  const { app } = await appWith(nas);
+  try {
+    const first = await app.inject({ method: "GET", url: logUrl(agentId, mine.task, "?limit=2") });
+    assert.equal(first.statusCode, 200, first.body);
+    const page = first.json() as { task: string; entries: HelperLogEntry[]; next_seq: number | null };
+    assert.equal(page.task, mine.task);
+    assert.deepEqual(page.entries.map((entry) => entry.seq), [1, 2]);
+    assert.equal(page.next_seq, 2);
+
+    const second = await app.inject({ method: "GET", url: logUrl(agentId, mine.task, "?after_seq=2") });
+    assert.deepEqual(second.json(), { task: mine.task, entries: [stateEntry(3, agentId)], next_seq: null });
+    assert.deepEqual(nas.getTaskLogCalls.at(-1), { kind: "browser", id: mine.id, afterSeq: 2, limit: 200 });
+
+    const foreign = await app.inject({ method: "GET", url: logUrl(agentId, theirs.task) });
+    assert.equal(foreign.statusCode, 404);
+    assert.equal((foreign.json() as { error: { type: string } }).error.type, "task_not_found");
+
+    for (const query of ["?limit=1001", "?limit=0", "?after_seq=-1", "?after_seq=x", "?extra=1"]) {
+      const bad = await app.inject({ method: "GET", url: logUrl(agentId, mine.task, query) });
+      assert.equal(bad.statusCode, 422, query);
+    }
+    const malformed = await app.inject({ method: "GET", url: logUrl(agentId, "task/browser") });
+    assert.equal(malformed.statusCode, 422);
+  } finally {
+    await app.close();
+  }
+});
+
+test("a forgotten task's log is readable only by an agent named in its first page", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const steerer = await insertAgent(handle.db, { id: "log-steerer", systemPrompt: "steers" });
+  const worker = await insertAgent(handle.db, { id: "log-worker", systemPrompt: "works" });
+  const stranger = await insertAgent(handle.db, { id: "log-stranger", systemPrompt: "nosy" });
+  const nas = mockNas();
+  const task = "task/browser/99";
+  nas.taskLogs.set(task, [steerEntry(1, steerer, worker), stateEntry(2, worker), stateEntry(3, worker)]);
+  const { app } = await appWith(nas);
+  try {
+    for (const allowed of [steerer, worker]) {
+      const res = await app.inject({ method: "GET", url: logUrl(allowed, task, "?after_seq=1") });
+      assert.equal(res.statusCode, 200, res.body);
+      assert.deepEqual((res.json() as { entries: HelperLogEntry[] }).entries.map((entry) => entry.seq), [2, 3]);
+    }
+    const denied = await app.inject({ method: "GET", url: logUrl(stranger, task) });
+    assert.equal(denied.statusCode, 404);
+    assert.equal((denied.json() as { error: { type: string } }).error.type, "task_not_found");
+    const deniedLater = await app.inject({ method: "GET", url: logUrl(stranger, task, "?after_seq=1") });
+    assert.equal(deniedLater.statusCode, 404);
+
+    const none = await app.inject({ method: "GET", url: logUrl(worker, "task/browser/100") });
+    assert.equal(none.statusCode, 404);
+    assert.equal((none.json() as { error: { type: string } }).error.type, "task_not_found");
+  } finally {
+    await app.close();
+  }
+});
+
+test("a log read Nas refuses maps to stable codes: 404 task_not_found, 422 invalid_request, 5xx stays nas", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "log-errors", systemPrompt: "owns" });
+  const base = mockNas();
+  const started = await base.startTask("browser", { agent_id: agentId, message: "work" });
+  const refusing = (error: HathError): NasClient => ({ ...base, getTaskLog: async () => { throw error; } });
+  const cases: Array<[HathError, number, string]> = [
+    [new HathError(404, "not_found", "no log"), 404, "task_not_found"],
+    [new HathError(422, "invalid_request", "bad after_seq"), 422, "invalid_request"],
+    [new HathError(502, "nas", "Nas failed: boom"), 502, "nas"],
+  ];
+  for (const [error, status, type] of cases) {
+    const { app } = await appWith(refusing(error));
+    try {
+      const res = await app.inject({ method: "GET", url: logUrl(agentId, started.task) });
       assert.equal(res.statusCode, status, res.body);
       assert.equal((res.json() as { error: { type: string } }).error.type, type);
     } finally {
