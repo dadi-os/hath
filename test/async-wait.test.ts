@@ -104,7 +104,7 @@ test("a call a restart cut short is reported lost at boot, and the agent's work 
     events: runtime.events,
     enqueueProcess: runtime.enqueueProcess,
     enqueueWork: runtime.enqueueWork,
-    wakeOf: runtime.wakeOf,
+    wakeActivity: runtime.wakeActivity,
   });
   await runtime.waitUntilIdle();
 
@@ -216,7 +216,7 @@ test("a message from the agent waited on wakes the work lane and drops the watch
 
   const { deliverAgentMessage } = await import("../src/runtime/deliver.js");
   await deliverAgentMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: runtime.enqueueProcess, enqueueWork: runtime.enqueueWork, wakeOf: runtime.wakeOf },
+    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: runtime.enqueueProcess, enqueueWork: runtime.enqueueWork, wakeActivity: runtime.wakeActivity },
     { fromAgentId: "other", toAgentId: "waiter", content: "here is the answer" },
   );
   await runtime.waitUntilIdle();

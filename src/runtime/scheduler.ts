@@ -3,9 +3,11 @@
 import { addDays, addMinutes } from "date-fns";
 import { asc, eq, lte } from "drizzle-orm";
 import type { Db } from "../db/client.js";
+import type { WakeOrigin } from "../types/domain.js";
 import { agents, scheduledMessages, type ScheduledMessageRow } from "../db/schema.js";
 import { deliverAgentMessage } from "./deliver.js";
 import type { EventBus } from "./events.js";
+import type { WakeActivity } from "./wake-activity.js";
 import { SWEEP_INTERVAL_MS } from "./retention.js";
 import type { TranscriptStore } from "./transcript.js";
 import { checkDueWatches, type WatchDeps } from "./watches.js";
@@ -39,8 +41,10 @@ export function createScheduler(opts: {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  enqueueProcess: (agentId: string, reason?: string) => string;
-  enqueueWork: (agentId: string, reason?: string) => string;
+  enqueueProcess: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  /** Told of each message a firing delivers, so the woken wake reports its count. */
+  wakeActivity: WakeActivity;
   log: SchedulerLog;
   tickSeconds: number;
   /** What a due wait needs (see watches.ts). */
@@ -136,12 +140,13 @@ export function createScheduler(opts: {
         events: opts.events,
         enqueueProcess: opts.enqueueProcess,
         enqueueWork: opts.enqueueWork,
+        wakeActivity: opts.wakeActivity,
       },
       {
         fromAgentId: row.fromAgentId,
         toAgentId: row.toAgentId,
         content: row.content,
-        extraPayload: { schedule_id: row.id },
+        scheduleId: row.id,
         scheduled: true,
       },
     );

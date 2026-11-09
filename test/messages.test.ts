@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { hydrateTranscript, insertMessage, listHumanMessages, listThreads, NO_ATTACHMENTS } from "../src/db/messages.js";
+import { hydrateTranscript, insertMessage, insertUtterance, listHumanMessages, listThreads, NO_ATTACHMENTS } from "../src/db/messages.js";
 import { agentLogs, agents, attachments, messages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { arrivalsSince, assembleContext, type TranscriptWindow, windowStart } from "../src/runtime/context.js";
@@ -13,6 +13,7 @@ import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus } from "../src/runtime/events.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { AGENT_MESSAGE_MAX_CHARS } from "../src/tools/shared.js";
+import type { WakeOrigin } from "../src/types/domain.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "../src/runtime/wake.js";
 import {
@@ -53,15 +54,26 @@ function deliverDeps(transcript: TranscriptStore) {
   };
 }
 
-test("deliverUserMessage persists messages row and log message_id", async () => {
+test("deliverUserMessage persists a messages row stamped with the wake it opened and writes no log row", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, {
     name: "persist-worker",
     systemPrompt: "you persist",
   });
   const transcript = new TranscriptStore();
-  const row = await deliverUserMessage(deliverDeps(transcript), agentId, "hello durable");
-
+  const wakeId = randomUUID();
+  let origin: WakeOrigin | undefined;
+  const row = await deliverUserMessage(
+    {
+      ...deliverDeps(transcript),
+      enqueueProcess: (_agentId, _reason, given) => {
+        origin = given;
+        return wakeId;
+      },
+    },
+    agentId,
+    "hello durable",
+  );
   assert.ok(row.id);
   assert.ok(row.seq > 0);
   const stored = await handle.db.select().from(messages).where(eq(messages.id, row.id!));
@@ -69,14 +81,37 @@ test("deliverUserMessage persists messages row and log message_id", async () => 
   assert.equal(stored[0]?.content, "hello durable");
   assert.equal(stored[0]?.fromAgentId, null);
   assert.equal(stored[0]?.toAgentId, agentId);
+  assert.equal(stored[0]?.wakeId, wakeId);
+  assert.deepEqual(origin, { kind: "message", ref: null, openedByMessageId: row.id });
+  assert.equal((await handle.db.select().from(agentLogs)).length, 0);
+});
 
-  const logs = await handle.db
-    .select()
-    .from(agentLogs)
-    .where(and(eq(agentLogs.agentId, agentId), eq(agentLogs.event, "message")));
-  assert.equal(logs.length, 1);
-  const payload = logs[0]?.payload as { message_id: string | null };
-  assert.equal(payload.message_id, row.id);
+test("a message that wakes no one has a null wake_id", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const fromId = await insertAgent(handle.db, { name: "quiet-from", systemPrompt: "from" });
+  const toId = await insertAgent(handle.db, { name: "quiet-to", systemPrompt: "to" });
+  const row = await deliverAgentMessage(deliverDeps(new TranscriptStore()), {
+    fromAgentId: fromId,
+    toAgentId: toId,
+    content: "no wake",
+    wake: false,
+  });
+  const [stored] = await handle.db.select().from(messages).where(eq(messages.id, row.id!));
+  assert.equal(stored?.wakeId, null);
+});
+
+test("an utterance is stored apart from every conversation and never hydrates a transcript", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { name: "utterance-agent", systemPrompt: "agent" });
+  await insertUtterance(handle.db, "tell utterance-agent hello");
+  const [stored] = await handle.db.select().from(messages);
+  assert.equal(stored?.kind, "utterance");
+  assert.equal(stored?.fromAgentId, null);
+  assert.equal(stored?.toAgentId, null);
+  assert.deepEqual(await listHumanMessages(handle.db, agentId, { limit: 50 }), []);
+  assert.deepEqual(await listThreads(handle.db), []);
+  const transcript = new TranscriptStore();
+  assert.equal(await hydrateTranscript(handle.db, transcript), 0);
 });
 
 test("windowStart keeps a thread under the window whole", () => {
@@ -390,86 +425,6 @@ test("listHumanMessages without since_seq returns the newest rows oldest first",
   const all = await listHumanMessages(handle.db, a, { limit: 50 });
   const forward = await listHumanMessages(handle.db, a, { sinceSeq: all[0]!.seq, limit: 2 });
   assert.deepEqual(forward.map((m) => m.content), ["m2", "m3"]);
-});
-
-test("backfill migration smoke: agent_logs message events land in messages after recreate", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertAgent(handle.db, {
-    name: "backfill-worker",
-    systemPrompt: "system",
-  });
-  await writeAgentLog(handle.db, {
-    agentId,
-    lane: "process",
-    event: "message",
-    payload: {
-      direction: "receive",
-      message_id: null,
-      from_agent_id: null,
-      to_agent_id: agentId,
-      content: "legacy from logs",
-      seq: 1,
-    },
-  });
-
-  await handle.sql`DROP TABLE IF EXISTS messages CASCADE`;
-  await handle.sql`
-    CREATE TABLE "messages" (
-      "id" uuid PRIMARY KEY NOT NULL,
-      "seq" bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
-      "from_agent_id" text,
-      "to_agent_id" text,
-      "content" text NOT NULL,
-      "status" text,
-      "kind" text DEFAULT 'message' NOT NULL,
-      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-      CONSTRAINT "messages_party_check" CHECK ("from_agent_id" IS NOT NULL OR "to_agent_id" IS NOT NULL),
-      CONSTRAINT "messages_status_check" CHECK ("status" IS NULL OR "status" IN ('running', 'needs_input', 'blocked', 'done'))
-    )
-  `;
-  await handle.sql`
-    ALTER TABLE "messages" ADD CONSTRAINT "messages_from_agent_id_agents_id_fk"
-      FOREIGN KEY ("from_agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade
-  `;
-  await handle.sql`
-    ALTER TABLE "messages" ADD CONSTRAINT "messages_to_agent_id_agents_id_fk"
-      FOREIGN KEY ("to_agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade
-  `;
-  await handle.sql`
-    ALTER TABLE "attachments" ADD CONSTRAINT "attachments_message_id_messages_id_fk"
-      FOREIGN KEY ("message_id") REFERENCES "public"."messages"("id") ON DELETE cascade
-  `;
-  await handle.sql`
-    INSERT INTO "messages" ("id", "from_agent_id", "to_agent_id", "content", "created_at")
-    SELECT
-      gen_random_uuid(),
-      CASE
-        WHEN payload->>'from_agent_id' IS NULL OR payload->>'from_agent_id' = '' THEN NULL
-        ELSE payload->>'from_agent_id'
-      END,
-      CASE
-        WHEN payload->>'to_agent_id' IS NULL OR payload->>'to_agent_id' = '' THEN NULL
-        ELSE payload->>'to_agent_id'
-      END,
-      payload->>'content',
-      "created_at"
-    FROM "agent_logs"
-    WHERE "event" = 'message'
-      AND coalesce(payload->>'content', '') <> ''
-      AND (
-        (payload->>'from_agent_id' IS NULL OR payload->>'from_agent_id' = '')
-        <> (payload->>'to_agent_id' IS NULL OR payload->>'to_agent_id' = '')
-      )
-    ORDER BY "created_at" ASC, "id" ASC
-  `;
-
-  const rows = await handle.db.select().from(messages);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0]?.content, "legacy from logs");
-  assert.equal(rows[0]?.toAgentId, agentId);
-  assert.equal(rows[0]?.fromAgentId, null);
-
-  await handle.sql`ALTER TABLE "messages" DROP CONSTRAINT IF EXISTS "messages_party_check"`;
 });
 
 test("assembleContext injects agent id and parent routing for children", async () => {

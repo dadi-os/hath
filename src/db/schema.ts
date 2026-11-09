@@ -16,7 +16,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { HandoffState, JobState, MessageStatus, MessageKind } from "../types/domain.js";
+import type { HandoffState, JobState, MessageStatus, MessageKind, WakeReasonKind } from "../types/domain.js";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -60,8 +60,8 @@ export const agentLogs = pgTable(
     event: text("event").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
     /**
-     * The wake this row belongs to (see runtime/wake.ts): its lanes' turns and tool results,
-     * the messages it received and sent. Null for the router, rows from before wake ids,
+     * The wake this row belongs to (see runtime/wake.ts): its lanes' turns and tool results.
+     * Null for the router, rows from before wake ids,
      * and runtime reports written outside any wake (boot recovery).
      */
     wakeId: uuid("wake_id"),
@@ -76,7 +76,7 @@ export const agentLogs = pgTable(
     check("agent_logs_lane_check", sql`${table.lane} IN ('work', 'process', 'router')`),
     check(
       "agent_logs_event_check",
-      sql`${table.event} IN ('response', 'tool_result', 'message')`,
+      sql`${table.event} IN ('response', 'tool_result')`,
     ),
   ],
 );
@@ -99,19 +99,52 @@ export const messages = pgTable(
      * message, or notice: hath's own word that an agent's work stopped (a failed lane, a job
      * left unfinished, a restart), between the agent it is about and its requester. A notice
      * is never chat: no one wrote it, it opens no job and makes no one a requester.
+     * utterance: what Ankur said to the router (from and to null), which is no one's message.
      */
     kind: text("kind").$type<MessageKind>().notNull().default("message"),
+    /** The recipient wake this message opened or joined (see `wakes`); null when it woke no one. */
+    wakeId: uuid("wake_id"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("messages_seq_idx").on(table.seq),
-    check("messages_kind_check", sql`${table.kind} IN ('message', 'notice')`),
+    check("messages_kind_check", sql`${table.kind} IN ('message', 'notice', 'utterance')`),
+    index("messages_wake_id_idx").on(table.wakeId),
     index("messages_to_agent_id_seq_idx").on(table.toAgentId, table.seq),
     index("messages_from_agent_id_seq_idx").on(table.fromAgentId, table.seq),
     index("messages_created_at_idx").on(table.createdAt),
     check(
       "messages_status_check",
       sql`${table.status} IS NULL OR ${table.status} IN ('running', 'needs_input', 'blocked', 'done')`,
+    ),
+  ],
+);
+
+/**
+ * One stretch of an agent's work (see runtime/wake.ts): written when the wake is created,
+ * `ended_at` set when the last lane run releases, `error` set when a lane died or boot
+ * recovery cut it. `reason_ref` is the sender agent id for `message`, the schedule id for
+ * `schedule`, else null. `opened_by_message_id` is a soft reference to `messages.id`.
+ */
+export const wakes = pgTable(
+  "wakes",
+  {
+    id: uuid("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    reasonKind: text("reason_kind").$type<WakeReasonKind>().notNull(),
+    reasonRef: text("reason_ref"),
+    openedByMessageId: uuid("opened_by_message_id"),
+    startedAt: timestamptz("started_at").notNull().defaultNow(),
+    endedAt: timestamptz("ended_at"),
+    error: text("error"),
+  },
+  (table) => [
+    index("wakes_agent_id_started_at_idx").on(table.agentId, table.startedAt.desc(), table.id),
+    check(
+      "wakes_reason_kind_check",
+      sql`${table.reasonKind} IN ('message', 'schedule', 'recovery', 'steer', 'manual')`,
     ),
   ],
 );
@@ -327,3 +360,4 @@ export type ScheduledMessageRow = typeof scheduledMessages.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type WatchRow = typeof watches.$inferSelect;
 export type OutboxRow = typeof outbox.$inferSelect;
+export type WakeRow = typeof wakes.$inferSelect;

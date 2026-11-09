@@ -124,7 +124,7 @@ async function deliverAsAnkur(
       events: ctx.events,
       enqueueProcess: ctx.enqueueProcess,
       enqueueWork: ctx.enqueueWork,
-      wakeOf: ctx.wakeOf,
+      ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
     },
     target.id,
     content,
@@ -137,5 +137,5 @@ async function deliverAsAnkur(
     seq: row.seq,
     created_at: row.createdAt.toISOString(),
   };
-  return ok(sent);
+  return ok(sent, { message_id: row.id });
 }

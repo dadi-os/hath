@@ -1,19 +1,13 @@
 import { toAttachmentSummary, type NewAttachment } from "../db/attachments.js";
 import type { Db } from "../db/client.js";
 import { awaitingReply, clearAwaitedReply } from "../db/outbox.js";
-import { insertMessage, NO_ATTACHMENTS, type MessageAttachments } from "../db/messages.js";
-import { writeAgentLog } from "../db/logs.js";
-import type { MessageStatus } from "../types/domain.js";
+import { insertMessage, NO_ATTACHMENTS, stampMessageWake, type MessageAttachments } from "../db/messages.js";
+import type { MessageStatus, WakeOrigin } from "../types/domain.js";
 import type { EventBus } from "./events.js";
+import type { WakeActivity } from "./wake-activity.js";
 import { takeWatch } from "./watches.js";
 import { recordDelivery } from "./jobs.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
-
-/**
- * Audit-payload key on a notice's log rows, naming what it is about (see NoticeKind).
- * Boot recovery reads notices to find where an agent's settled history ends.
- */
-export const NOTICE = "notice";
 
 /**
  * What a notice is about: a lane that failed, a wake a restart cut short, one of the
@@ -28,18 +22,18 @@ export type DeliverDeps = {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  /** Queue a lane run; returns the id of the wake it joins (see engine.ts). `reason` is why, for the wake's first line. */
-  enqueueProcess: (agentId: string, reason?: string) => string;
-  enqueueWork: (agentId: string, reason?: string) => string;
-  /** The id of an agent's current wake, stamped on the log of a message it sends; null outside a wake. */
-  wakeOf?: (agentId: string) => string | null;
+  /** Queue a lane run; returns the id of the wake it joins (see engine.ts). `reason` is why, for the wake's first line; `origin` is why, for the wake's row. */
+  enqueueProcess: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  /** Told of each message that opened or joined a wake, so the wake reports its new count (see wake-activity.ts). */
+  wakeActivity?: WakeActivity;
 };
 
 /**
  * Persist a human → agent message (from_agent_id null) and wake the recipient's
  * process lane once, however many files it carries, or its work lane when it is waiting
- * on Ankur's reply. Shared by POST /messages and the router's send_message and forward_attachment. The null side is logged
- * too, so the router's get_logs sees what Ankur (or it, as him) sent.
+ * on Ankur's reply. Shared by POST /messages and the router's send_message and forward_attachment.
+ * The message is stamped with the wake it opened or joined.
  */
 export async function deliverUserMessage(
   deps: DeliverDeps,
@@ -59,40 +53,16 @@ export async function deliverUserMessage(
   if (row.id === undefined) {
     throw new Error("durable message missing id");
   }
-  await writeAgentLog(deps.db, {
-    agentId: null,
-    lane: "router",
-    event: "message",
-    payload: {
-      direction: "send",
-      message_id: row.id,
-      from_agent_id: null,
-      to_agent_id: row.toAgentId,
-      content: row.content,
-      attachments: attached,
-      seq: row.seq,
-    },
-  });
   const awaited = await awaitingReply(deps.db, toAgentId, null);
   if (awaited) {
     await clearAwaitedReply(deps.db, toAgentId, null);
   }
-  const wakeId = awaited ? deps.enqueueWork(toAgentId, "reply from Ankur") : deps.enqueueProcess(toAgentId, "message from Ankur");
-  await writeAgentLog(deps.db, {
-    agentId: toAgentId,
-    lane: "process",
-    wakeId,
-    event: "message",
-    payload: {
-      direction: "receive",
-      message_id: row.id,
-      from_agent_id: null,
-      to_agent_id: row.toAgentId,
-      content: row.content,
-      attachments: attached,
-      seq: row.seq,
-    },
-  });
+  const origin: WakeOrigin = { kind: "message", ref: null, openedByMessageId: row.id };
+  const wakeId = awaited
+    ? deps.enqueueWork(toAgentId, "reply from Ankur", origin)
+    : deps.enqueueProcess(toAgentId, "message from Ankur", origin);
+  await stampMessageWake(deps.db, row.id, wakeId);
+  deps.wakeActivity?.touch(toAgentId, wakeId);
   deps.events.emit({
     type: "message",
     agent_id: toAgentId,
@@ -123,7 +93,8 @@ export async function deliverAgentMessage(
     attachmentIds?: string[];
     /** New files the message carries, stored with it. */
     uploads?: NewAttachment[];
-    extraPayload?: Record<string, unknown>;
+    /** The schedule that fired it, when a schedule did; its id is the wake's reason. */
+    scheduleId?: string;
     /** False delivers without waking the recipient; it reads the message on its next wake. */
     wake?: boolean;
     /** The job status of an agent's report to whoever gave it the job (see jobs.ts). */
@@ -132,15 +103,12 @@ export async function deliverAgentMessage(
     scheduled?: boolean;
     /** Set for hath's notice that this agent's work stopped, instead of a message it wrote. */
     notice?: NoticeKind;
-    /** The sender's lane that sent it, for its log row; the process lane when left out. */
-    lane?: "process" | "work";
     /** True wakes the recipient's work lane whoever sent it, as a helper's result does. */
     wakeWork?: boolean;
     /** Why the recipient wakes, for its wake's first line; "message from <sender>" when left out. */
     wokenBy?: string;
   },
 ): Promise<TranscriptEntry> {
-  const extra = { ...(args.extraPayload ?? {}), ...(args.notice !== undefined ? { kind: "notice", [NOTICE]: args.notice } : {}) };
   const row = await insertMessage(deps.db, {
     fromAgentId: args.fromAgentId,
     toAgentId: args.toAgentId,
@@ -155,68 +123,22 @@ export async function deliverAgentMessage(
   if (row.id === undefined) {
     throw new Error("durable message missing id");
   }
-  await writeAgentLog(deps.db, {
-    agentId: args.fromAgentId,
-    lane: args.lane ?? "process",
-    wakeId: deps.wakeOf?.(args.fromAgentId) ?? null,
-    event: "message",
-    payload: {
-      direction: "send",
-      message_id: row.id,
-      from_agent_id: args.fromAgentId,
-      to_agent_id: row.toAgentId,
-      content: row.content,
-      attachments: attached,
-      status: row.status,
-      seq: row.seq,
-      ...extra,
-    },
-  });
-  if (row.toAgentId !== null) {
-    let wakeId: string | null = null;
-    if (args.wake !== false) {
-      const awaited = (await awaitingReply(deps.db, row.toAgentId, args.fromAgentId)) || (await takeWatch(deps.db, row.toAgentId, args.fromAgentId));
-      const reason = args.wokenBy ?? `${args.scheduled === true ? "scheduled message" : "message"} from ${args.fromAgentId}`;
-      wakeId =
-        args.wakeWork === true || awaited
-          ? deps.enqueueWork(row.toAgentId, reason)
-          : deps.enqueueProcess(row.toAgentId, reason);
-      if (awaited) {
-        await clearAwaitedReply(deps.db, row.toAgentId, args.fromAgentId);
-      }
+  if (row.toAgentId !== null && args.wake !== false) {
+    const awaited = (await awaitingReply(deps.db, row.toAgentId, args.fromAgentId)) || (await takeWatch(deps.db, row.toAgentId, args.fromAgentId));
+    const reason = args.wokenBy ?? `${args.scheduled === true ? "scheduled message" : "message"} from ${args.fromAgentId}`;
+    const origin: WakeOrigin =
+      args.scheduleId !== undefined
+        ? { kind: "schedule", ref: args.scheduleId, openedByMessageId: row.id }
+        : { kind: "message", ref: args.fromAgentId, openedByMessageId: row.id };
+    const wakeId =
+      args.wakeWork === true || awaited
+        ? deps.enqueueWork(row.toAgentId, reason, origin)
+        : deps.enqueueProcess(row.toAgentId, reason, origin);
+    if (awaited) {
+      await clearAwaitedReply(deps.db, row.toAgentId, args.fromAgentId);
     }
-    await writeAgentLog(deps.db, {
-      agentId: row.toAgentId,
-      lane: "process",
-      wakeId,
-      event: "message",
-      payload: {
-        direction: "receive",
-        message_id: row.id,
-        from_agent_id: args.fromAgentId,
-        to_agent_id: row.toAgentId,
-        content: row.content,
-        attachments: attached,
-        seq: row.seq,
-        ...extra,
-      },
-    });
-  } else {
-    await writeAgentLog(deps.db, {
-      agentId: null,
-      lane: "router",
-      event: "message",
-      payload: {
-        direction: "receive",
-        message_id: row.id,
-        from_agent_id: args.fromAgentId,
-        to_agent_id: null,
-        content: row.content,
-        attachments: attached,
-        seq: row.seq,
-        ...extra,
-      },
-    });
+    await stampMessageWake(deps.db, row.id, wakeId);
+    deps.wakeActivity?.touch(row.toAgentId, wakeId);
   }
   deps.events.emit({
     type: "message",

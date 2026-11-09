@@ -29,8 +29,8 @@ export type StepDeps = {
    * both lanes, and what the agent's process lane sent, folded into one for the work lane.
    */
   arrivalsSince: (afterSeq: number) => { turn: DwarMessage | null; sent: DwarMessage | null; throughSeq: number };
-  /** This lane's Dwar chat endpoint. */
-  call: (request: DwarChatRequest) => Promise<DwarChatResponse>;
+  /** This lane's Dwar chat endpoint; the signal aborts the request in flight. */
+  call: (request: DwarChatRequest, signal?: AbortSignal) => Promise<DwarChatResponse>;
   executeTool: (call: DwarToolUseBlock) => Promise<ToolExecResult>;
   /** Writes the `response` log row; runs before the turn's tools. */
   logResponse: (response: DwarChatResponse) => Promise<void>;
@@ -116,9 +116,13 @@ const EMPTY_TURN_RETRIES = 1;
  * then on the process lane: three wakes failed that way between 2026-10-14 and
  * 2026-10-16, each sending its requester a lane-failure report.
  */
-export async function callLane(deps: StepDeps, request: DwarChatRequest): Promise<DwarChatResponse> {
+export async function callLane(
+  deps: StepDeps,
+  request: DwarChatRequest,
+  signal?: AbortSignal,
+): Promise<DwarChatResponse> {
   for (let attempt = 0; ; attempt += 1) {
-    const response = await deps.call(request);
+    const response = await deps.call(request, signal);
     await deps.logResponse(response);
     if (response.content.length > 0 || response.stop_reason === "error" || attempt >= EMPTY_TURN_RETRIES) {
       return response;

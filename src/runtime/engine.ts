@@ -12,7 +12,8 @@ import type { Config } from "../config.js";
 import type { Db } from "../db/client.js";
 import { failPendingOutbox, pendingOutbox } from "../db/outbox.js";
 import { writeAgentLog } from "../db/logs.js";
-import { currentRequester } from "../db/messages.js";
+import { currentRequester, insertUtterance } from "../db/messages.js";
+import { endWake, insertWake, MANUAL_ORIGIN } from "../db/wakes.js";
 import { agents } from "../db/schema.js";
 import type { DwarClient } from "../dwar/client.js";
 import type { GharClient } from "../ghar/client.js";
@@ -38,7 +39,7 @@ import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
 import { HelperReports } from "./helper-reports.js";
 import type { FileStore } from "./files.js";
-import { clearWatch } from "./watches.js";
+import { clearWatch, watchOf } from "./watches.js";
 import { yieldReminder } from "./yield-reminder.js";
 import { ToolDebounce } from "./tool-debounce.js";
 import { blockOpenJob, settleWakeJobs } from "./jobs.js";
@@ -48,9 +49,10 @@ import { TranscriptStore } from "./transcript.js";
 import { Wake, WakeStore, type WakeLimits } from "./wake.js";
 import { ROUTER_KEY } from "./router.js";
 import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
-import { FORWARD_ATTACHMENT, SEND_MESSAGE, type AgentStatus } from "../types/domain.js";
+import { FORWARD_ATTACHMENT, SEND_MESSAGE, type AgentStatus, type WakeOrigin } from "../types/domain.js";
 import { sweepCaches } from "./retention.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
+import { WakeActivity } from "./wake-activity.js";
 
 export type RuntimeLog = {
   error: (obj: unknown, msg?: string) => void;
@@ -69,9 +71,15 @@ export type Runtime = {
   /** Follows Nas's event stream and delivers helper reports to their agents. */
   helperReports: HelperReports;
   scheduler: Scheduler;
-  /** Queue a lane run; returns the id of the wake it joins. `reason` is why, for the wake's first line. */
-  enqueueProcess: (agentId: string, reason?: string) => string;
-  enqueueWork: (agentId: string, reason?: string) => string;
+  /**
+   * Queue a lane run; returns the id of the wake it joins. `reason` is why, for the wake's
+   * first line; `origin` is why, as the wake's row records it when the run creates the wake
+   * (manual when left out), and is ignored when the run joins a wake already running.
+   */
+  enqueueProcess: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  /** Coalesced `wake_activity` events (see wake-activity.ts). */
+  wakeActivity: WakeActivity;
   /** The id of the agent's current wake, or null when it has none. */
   wakeOf: (agentId: string) => string | null;
   /** The agent's status block data (see status.ts), for `GET /agents`. */
@@ -122,6 +130,7 @@ export function createRuntime(opts: {
     filesDir: opts.config.files.dir,
   };
   const wakes = new WakeStore(wakeLimits);
+  const wakeActivity = new WakeActivity(opts.db, events, opts.log);
   /** Per agent, the newest transcript seq its last finished wake covered (see settleJobs). */
   const settledThrough = new Map<string, number>();
   let pending = 0;
@@ -154,18 +163,57 @@ export function createRuntime(opts: {
    * dropping here would lose a second user message that arrives while busy. Returns
    * the id of the wake the run joins: the agent's current one, or a new one.
    */
-  function enqueueProcess(agentId: string, reason?: string): string {
-    const release = wakes.hold(agentId);
-    wakes.get(agentId).noteReason(reason);
-    track(runLane(agentId, "process", release));
-    return wakes.get(agentId).id;
+  function enqueueProcess(agentId: string, reason?: string, origin?: WakeOrigin): string {
+    return enqueue(agentId, "process", reason, origin);
   }
 
-  function enqueueWork(agentId: string, reason?: string): string {
+  function enqueueWork(agentId: string, reason?: string, origin?: WakeOrigin): string {
+    return enqueue(agentId, "work", reason, origin);
+  }
+
+  function enqueue(agentId: string, lane: Lane, reason: string | undefined, origin: WakeOrigin | undefined): string {
+    const created = wakes.peek(agentId) === undefined;
     const release = wakes.hold(agentId);
-    wakes.get(agentId).noteReason(reason);
-    track(runLane(agentId, "work", release));
-    return wakes.get(agentId).id;
+    const wake = wakes.get(agentId);
+    wake.noteReason(reason);
+    if (created) {
+      beginWake(agentId, wake, origin ?? MANUAL_ORIGIN);
+    }
+    track(runLane(agentId, lane, release));
+    return wake.id;
+  }
+
+  /**
+   * beginWake writes the new wake's row and announces it once written, so a client that
+   * refetches on `wake_started` finds it. A failed write is logged; the wake still runs.
+   */
+  function beginWake(agentId: string, wake: Wake, origin: WakeOrigin): void {
+    wake.recorded = insertWake(opts.db, { id: wake.id, agentId, origin })
+      .then(() => {
+        events.emit({
+          type: "wake_started",
+          agent_id: agentId,
+          wake_id: wake.id,
+          reason: { kind: origin.kind, ref: origin.ref },
+          at: new Date().toISOString(),
+        });
+      })
+      .catch((err: unknown) => {
+        opts.log.error({ err, agentId, wakeId: wake.id, code: "wake_insert_failed" }, "recording the wake failed");
+      });
+    track(wake.recorded);
+  }
+
+  /**
+   * finishWake closes the wake's row and announces its outcome: failed when a lane died,
+   * waiting when the work lane watches a task or agent, else yielded.
+   */
+  async function finishWake(agentId: string, wake: Wake): Promise<void> {
+    await wake.recorded;
+    wakeActivity.stop(wake.id);
+    await endWake(opts.db, wake.id, new Date(), wake.error);
+    const outcome = wake.error !== null ? "failed" : (await watchOf(opts.db, agentId)) !== undefined ? "waiting" : "yielded";
+    events.emit({ type: "wake_ended", agent_id: agentId, wake_id: wake.id, outcome, at: new Date().toISOString() });
   }
 
   /** background keeps `work` in the idle count and logs a failure, since nothing awaits it. */
@@ -185,13 +233,14 @@ export function createRuntime(opts: {
     return gatherStatus({ db: opts.db, nas: opts.nas, locks, transcript, wake: wakes.peek(agentId) }, agentId);
   }
 
-  const deliverDeps = { db: opts.db, transcript, events, enqueueProcess, enqueueWork, wakeOf };
+  const deliverDeps = { db: opts.db, transcript, events, enqueueProcess, enqueueWork, wakeActivity };
   const scheduler = createScheduler({
     db: opts.db,
     transcript,
     events,
     enqueueProcess,
     enqueueWork,
+    wakeActivity,
     log: opts.log,
     tickSeconds: opts.config.schedule.tick_seconds,
     watches: { deliver: deliverDeps, nas: opts.nas },
@@ -220,6 +269,7 @@ export function createRuntime(opts: {
     scheduler,
     enqueueProcess,
     enqueueWork,
+    wakeActivity,
     wakeOf,
     statusOf,
     waitUntilIdle,
@@ -253,7 +303,7 @@ export function createRuntime(opts: {
       toolDebounce,
       enqueueProcess,
       enqueueWork,
-      wakeOf,
+      wakeActivity,
     };
   }
 
@@ -319,6 +369,7 @@ export function createRuntime(opts: {
           opts.log.error({ err: outboxErr, agentId, code: "outbox_fail_failed" }, "recording failed work-lane messages failed");
         });
       }
+      wakes.peek(agentId)?.noteError(`${lane} lane failed: ${message}`);
       const failure = message.replace(/req_[A-Za-z0-9]+/g, "req");
       if (reportedFailures.get(agentId) === failure) {
         opts.log.warn({ code: "lane_failure_repeat", agentId, lane }, `${lane} lane failed again with the error already reported`);
@@ -331,11 +382,14 @@ export function createRuntime(opts: {
     } finally {
       release?.();
       if (reasoned && steer.hasItems(agentId)) {
-        enqueueWork(agentId);
+        enqueueWork(agentId, undefined, { kind: "steer", ref: null, openedByMessageId: null });
       }
       if (wakes.lastHold(agentId)) {
         await settleJobs(agentId).catch((settleErr: unknown) => {
           opts.log.error({ err: settleErr, agentId, code: "job_settle_failed" }, "job settle failed");
+        });
+        await finishWake(agentId, wakes.get(agentId)).catch((endErr: unknown) => {
+          opts.log.error({ err: endErr, agentId, code: "wake_end_failed" }, "closing the wake failed");
         });
       }
       releaseWake();
@@ -381,7 +435,7 @@ export function createRuntime(opts: {
       return;
     }
     const row = await deliverAgentMessage(
-      { db: opts.db, transcript, events, enqueueProcess, enqueueWork, wakeOf },
+      deliverDeps,
       {
         fromAgentId: agentId,
         toAgentId: requester,
@@ -462,24 +516,14 @@ export function createRuntime(opts: {
   /**
    * The router's run. The router is ephemeral: each run sees only this
    * utterance — no earlier run, nothing sent as Ankur, no reply to him, and
-   * nothing that arrives mid-run. The utterance is not stored as a message; an
-   * audit row records it. Loops the router lane on Dwar's context-free
+   * nothing that arrives mid-run. The utterance is stored as a `utterance` message,
+   * which belongs to no conversation. Loops the router lane on Dwar's context-free
    * chat/complete until it yields. Runs are serialized. Nothing caps the loop.
    */
   async function route(content: string): Promise<RoutedMessage[]> {
     const release = await locks.acquire(ROUTER_KEY, "router", opts.config.runtime.lane_queue_timeout_ms);
     try {
-      await writeAgentLog(opts.db, {
-        agentId: null,
-        lane: "router",
-        event: "message",
-        payload: {
-          direction: "receive",
-          from_agent_id: null,
-          to_agent_id: null,
-          content,
-        },
-      });
+      await insertUtterance(opts.db, content);
 
       const helpers = laneHelpers(null, "router");
       const sent: RoutedMessage[] = [];
@@ -523,7 +567,7 @@ export function createRuntime(opts: {
   function workDeps(agentId: string) {
     return {
       ...stepDeps(agentId, "work"),
-      call: (request: DwarChatRequest) => opts.dwar.work(request, `hath/${agentId}`),
+      call: (request: DwarChatRequest, signal?: AbortSignal) => opts.dwar.work(request, `hath/${agentId}`, signal),
       steer,
       woke: () => clearWatch(opts.db, agentId),
       yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas, transcript }, agentId),

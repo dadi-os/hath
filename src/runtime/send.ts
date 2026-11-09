@@ -88,7 +88,7 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
       events: ctx.events,
       enqueueProcess: ctx.enqueueProcess,
       enqueueWork: ctx.enqueueWork,
-      wakeOf: ctx.wakeOf,
+      ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
     },
     {
       fromAgentId: caller,
@@ -97,21 +97,23 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
       attachmentIds,
       uploads: whole === null ? [] : [whole],
       ...(input.status !== undefined ? { status: input.status } : {}),
-      lane: "process",
     },
   );
   const closed = await markSent(ctx.db, caller, to, row.id!);
   const attached = row.attachments.length > 0 ? { attachments: row.attachments.map(toAttachmentSummary) } : {};
-  return ok({
-    to_agent_id: row.toAgentId,
-    ...(oversized ? {} : { content: row.content }),
-    seq: row.seq,
-    ...(closed.length > 0 ? { sent_work_messages: closed.map((entry) => entry.id) } : {}),
-    ...attached,
-    ...(oversized
-      ? {
-          note: `Delivered, but at ${input.content.length} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`,
-        }
-      : {}),
-  });
+  return ok(
+    {
+      to_agent_id: row.toAgentId,
+      ...(oversized ? {} : { content: row.content }),
+      seq: row.seq,
+      ...(closed.length > 0 ? { sent_work_messages: closed.map((entry) => entry.id) } : {}),
+      ...attached,
+      ...(oversized
+        ? {
+            note: `Delivered, but at ${input.content.length} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`,
+          }
+        : {}),
+    },
+    { message_id: row.id },
+  );
 }

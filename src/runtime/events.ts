@@ -3,7 +3,8 @@
  * A listener that throws is logged and skipped, so a broken subscriber cannot take down a lane run.
  */
 
-import type { AttachmentSummary, Lane, MessageKind } from "../types/domain.js";
+import type { WakeCounts } from "../db/wakes.js";
+import type { AttachmentSummary, Lane, MessageKind, WakeReasonKind } from "../types/domain.js";
 import type { RuntimeLog } from "./engine.js";
 
 export type RuntimeEvent =
@@ -30,6 +31,18 @@ export type RuntimeEvent =
       message: string;
       at: string;
     }
+  /** A wake began; `reason` is why, as stored on its `wakes` row. */
+  | {
+      type: "wake_started";
+      agent_id: string;
+      wake_id: string;
+      reason: { kind: WakeReasonKind; ref: string | null };
+      at: string;
+    }
+  /** A wake ended; `outcome` is `waiting` (the work lane watches a task or agent), `yielded`, or `failed`. */
+  | { type: "wake_ended"; agent_id: string; wake_id: string; outcome: "waiting" | "yielded" | "failed"; at: string }
+  /** A running wake did more; sent at most once a second per wake, with its current counts. */
+  | { type: "wake_activity"; agent_id: string; wake_id: string; counts: WakeCounts }
   /** A router run began; `run_id` ties it to its `router_finished` or `router_failed`, and runs can overlap. */
   | { type: "router_started"; run_id: string; at: string }
   | { type: "router_finished"; run_id: string; at: string }

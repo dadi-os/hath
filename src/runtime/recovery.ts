@@ -18,18 +18,26 @@
  * from its own helper is not a runtime report: its wake may still be running.
  */
 
+import { randomUUID } from "node:crypto";
 import { formatISO } from "date-fns";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { agentsWithPendingOutbox } from "../db/outbox.js";
 import { currentRequester } from "../db/messages.js";
 import { agentLogs } from "../db/schema.js";
-import type { DwarResponseBlock } from "../types/domain.js";
+import { closeInterruptedWakes, insertWake } from "../db/wakes.js";
+import type { DwarResponseBlock, WakeOrigin } from "../types/domain.js";
 import {
   deliverAgentMessage,
   type DeliverDeps,
 } from "./deliver.js";
 import type { RuntimeLog } from "./engine.js";
+
+/** Why a wake the restart cut short ended, as its row records it. */
+const RESTART_ERROR = "interrupted by a hath restart";
+
+/** What a wake started or reported by boot recovery is recorded as. */
+const RECOVERY_ORIGIN: WakeOrigin = { kind: "recovery", ref: null, openedByMessageId: null };
 
 /** One active agent whose audit log shows a wake that never finished. */
 type InterruptedWake = {
@@ -53,11 +61,10 @@ type InterruptedWake = {
 async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
   const rows = await db.execute<InterruptedWake>(sql`
     with reported as (
-      select agent_id, max(created_at) as at
-      from agent_logs
-      where event = 'message' and payload->>'direction' = 'send' and payload->>'kind' = 'notice'
-        and coalesce(payload->>'notice', '') not in ('helper', 'tool', 'wait')
-      group by agent_id
+      select from_agent_id as agent_id, max(created_at) as at
+      from messages
+      where kind = 'notice' and from_agent_id is not null and to_agent_id is distinct from from_agent_id
+      group by from_agent_id
     ),
     recent as (
       select l.*
@@ -66,13 +73,34 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
       left join reported r on r.agent_id = l.agent_id
       where r.at is null or l.created_at > r.at
     ),
-    summary as (
+    touches as (
+      select from_agent_id as agent_id, created_at, false as received
+      from messages
+      where from_agent_id is not null and kind <> 'utterance'
+      union all
+      select to_agent_id, created_at, kind = 'message'
+      from messages
+      where to_agent_id is not null and kind <> 'utterance'
+    ),
+    recent_touches as (
+      select t.*
+      from touches t
+      join agents a on a.id = t.agent_id and a.active
+      left join reported r on r.agent_id = t.agent_id
+      where r.at is null or t.created_at > r.at
+    ),
+    touch_summary as (
       select
         agent_id,
         max(created_at) as last_at,
-        max(created_at) filter (
-          where event = 'message' and payload->>'direction' = 'receive' and payload->>'kind' is distinct from 'notice'
-        ) as received_at,
+        max(created_at) filter (where received) as received_at
+      from recent_touches
+      group by agent_id
+    ),
+    log_summary as (
+      select
+        agent_id,
+        max(created_at) as last_at,
         max(created_at) filter (where lane = 'process' and event = 'response') as conversed_at,
         max(created_at) filter (where lane = 'process' and event in ('response', 'tool_result')) as process_at,
         max(created_at) filter (where lane = 'process' and event = 'tool_result' and payload->>'name' = 'yield') as process_yield_at,
@@ -87,6 +115,20 @@ async function findInterruptedWakes(db: Db): Promise<InterruptedWake[]> {
         ) as steered_at
       from recent
       group by agent_id
+    ),
+    summary as (
+      select
+        coalesce(l.agent_id, t.agent_id) as agent_id,
+        greatest(l.last_at, t.last_at) as last_at,
+        t.received_at,
+        l.conversed_at,
+        l.process_at,
+        l.process_yield_at,
+        l.work_at,
+        l.work_end_at,
+        l.steered_at
+      from log_summary l
+      full join touch_summary t on t.agent_id = l.agent_id
     ),
     flags as (
       select
@@ -135,21 +177,25 @@ async function lastWorkStep(db: Db, agentId: string): Promise<string> {
 /**
  * recoverInterruptedWakes runs once at boot, before anything else wakes an
  * agent: it wakes agents that only had a message waiting and has every agent
- * caught mid-wake report to its current requester.
+ * caught mid-wake report to its current requester. Wakes the restart left open are
+ * closed with an error first, and each report gets a `recovery` wake row carrying what
+ * was cut.
  */
 export async function recoverInterruptedWakes(
   deps: DeliverDeps & { log: RuntimeLog; recoveryWindowMinutes: number },
 ): Promise<void> {
+  const closed = await closeInterruptedWakes(deps.db, RESTART_ERROR);
+  deps.log.info({ code: "wakes_closed", wakes: closed }, "closed the wakes a restart left open");
   for (const agentId of await agentsWithPendingOutbox(deps.db)) {
     deps.log.info({ code: "outbox_resumed", agent_id: agentId }, "restart left work-lane messages unsent; waking the agent's process lane");
-    deps.enqueueProcess(agentId);
+    deps.enqueueProcess(agentId, undefined, RECOVERY_ORIGIN);
   }
   const cutoff = Date.now() - deps.recoveryWindowMinutes * 60_000;
   for (const wake of await findInterruptedWakes(deps.db)) {
     const midFlight = wake.work_cut || wake.process_cut || wake.steer_lost;
     if (!midFlight) {
       deps.log.info({ code: "wake_resumed", agent_id: wake.agent_id }, "restart left a message unhandled; waking the agent");
-      deps.enqueueProcess(wake.agent_id);
+      deps.enqueueProcess(wake.agent_id, undefined, RECOVERY_ORIGIN);
       continue;
     }
     if (new Date(wake.last_at).getTime() < cutoff) {
@@ -172,6 +218,15 @@ export async function recoverInterruptedWakes(
     if (wake.unhandled) {
       details.push("A message it received was never handled.");
     }
+    const now = new Date();
+    await insertWake(deps.db, {
+      id: randomUUID(),
+      agentId: wake.agent_id,
+      origin: RECOVERY_ORIGIN,
+      startedAt: now,
+      endedAt: now,
+      error: details.join(" "),
+    });
     const requester = await currentRequester(deps.db, wake.agent_id);
     deps.log.warn(
       { code: "wake_interrupted", agent_id: wake.agent_id, report_to: requester },

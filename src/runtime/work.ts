@@ -1,4 +1,4 @@
-import type { DwarResponseBlock } from "../types/domain.js";
+import type { DwarChatRequest, DwarChatResponse, DwarResponseBlock } from "../types/domain.js";
 import { QUEUE_MESSAGE } from "../types/domain.js";
 import type { SteerQueue } from "./steer.js";
 import { formatSteerTurn } from "./steer.js";
@@ -25,7 +25,7 @@ export type WorkLoopDeps = StepDeps & {
  * without a model call, as when a worker's report queues a run behind one that
  * already read it. Steers join the wake as the work lane-only turns where they happened. When
  * the process lane sets terminate, this wake stops in its tracks: no further tool
- * calls run (in-flight model output is logged, then its calls are refused).
+ * calls run (the in-flight model call is aborted and its output discarded).
  * A yield in a turn that wrote a message's worth of text and queued no message is answered
  * once with UNSENT_REPORT_TURN, since that text is a report nobody would otherwise get; a
  * yield that leaves the requester's latest message unanswered, with nothing pending to wake
@@ -69,7 +69,12 @@ export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
       woke = true;
       await deps.woke();
     }
-    const response = await callLane(deps, laneRequest(deps, assembled));
+    const response = await callUnlessTerminated(deps, laneRequest(deps, assembled));
+    if (response === null) {
+      exit();
+      deps.steer.drain(deps.agentId);
+      return;
+    }
     turnsSinceReport = reports(response.content) ? 0 : turnsSinceReport + 1;
 
     if (await runStep(deps, response, stop)) {
@@ -96,6 +101,27 @@ export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
   }
 }
 
+/**
+ * callUnlessTerminated makes the work lane's model call and returns null as soon as the
+ * process lane requests terminate, without waiting for the response. The abort signal is
+ * passed to the call so the request is cancelled where the client supports it; an error
+ * from a call abandoned this way is dropped because the wake it belonged to is over.
+ */
+async function callUnlessTerminated(
+  deps: WorkLoopDeps,
+  request: DwarChatRequest,
+): Promise<DwarChatResponse | null> {
+  const signal = deps.steer.signalFor(deps.agentId);
+  if (signal.aborted) {
+    return null;
+  }
+  const call = callLane(deps, request, signal);
+  const terminated = new Promise<null>((resolve) => {
+    signal.addEventListener("abort", () => resolve(null), { once: true });
+  });
+  call.catch(() => undefined);
+  return await Promise.race([call, terminated]);
+}
 
 export const TURNS_BEFORE_NUDGE = 60;
 

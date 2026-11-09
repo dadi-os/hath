@@ -45,7 +45,7 @@ export function deliverDeps(ctx: ToolContext): DeliverDeps {
     events: ctx.events,
     enqueueProcess: ctx.enqueueProcess,
     enqueueWork: ctx.enqueueWork,
-    wakeOf: ctx.wakeOf,
+    ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
   };
 }
 

@@ -87,22 +87,37 @@ export const patchScheduleBody = z
   .strict()
   .refine((body) => Object.keys(body).length > 0, { message: "nothing to change" });
 
+/** An agent's or every agent's logs: the newest `limit` rows, optionally of one event. */
 export const logsQuery = z
   .object({
-    event: z.enum(["response", "tool_result", "message"]).optional(),
+    event: z.enum(["response", "tool_result"]).optional(),
     limit: z.coerce.number().int().positive().max(200).optional(),
   })
   .strict();
 
-/**
- * An agent's logs: the newest `limit` rows, or with `wakes` every row of its newest
- * that many wakes (see agentWakeLogs), which `limit` then does not cap.
- */
-export const agentLogsQuery = logsQuery
-  .extend({
-    wakes: z.coerce.number().int().positive().max(50).optional(),
-  })
+/** Path params for one of an agent's wakes. */
+export const wakeParam = z.object({ id: agentIdSchema, wake_id: z.string().uuid() }).strict();
+
+/** Path params for one of an agent's log rows. */
+export const logParam = z.object({ id: agentIdSchema, log_id: z.string().uuid() }).strict();
+
+/** The `task/<kind>/<id>` address of a helper task, as `GET /agents` lists it. */
+export const sessionParam = z
+  .object({ id: agentIdSchema, task_id: z.string().regex(/^task\/(browser|terminal)\/[^/]+$/, "expected task/<browser|terminal>/<id>") })
   .strict();
+
+/** Query of `GET /agents/:id/wakes`: a page size and the keyset cursor `(before_started_at, before_id)`, given together. */
+export const wakesQuery = z
+  .object({
+    limit: z.coerce.number().int().positive().max(100).default(20),
+    before_started_at: z.string().datetime({ offset: true }).optional(),
+    before_id: z.string().uuid().optional(),
+  })
+  .strict()
+  .refine((query) => (query.before_started_at === undefined) === (query.before_id === undefined), {
+    message: "before_started_at and before_id go together",
+    path: ["before_id"],
+  });
 
 export const agentMessagesQuery = z
   .object({

@@ -9,7 +9,7 @@ import { ok, fail, requireAgent } from "../shared.js";
 const input = z
   .object({
     agent_id: agentIdSchema.optional(),
-    event: z.enum(["response", "tool_result", "message"]).optional(),
+    event: z.enum(["response", "tool_result"]).optional(),
     limit: z.number().int().min(1).max(200).optional(),
     search: z.string().min(2).optional(),
     before: z.string().datetime({ offset: true }).optional(),
@@ -55,7 +55,7 @@ function clipStrings(value: unknown): unknown {
 export const getLogs = defineTool({
   name: "get_logs",
   description:
-    "Read the audit log for yourself or a direct child, newest first: response rows are whole model turns (thinking, text, tool calls), tool_result rows each tool's name and outcome, message rows every message sent or received. It is how you find what was said or done after it left your transcript (a plan, a list, an approval, a result). search keeps rows containing that text; before (an ISO time, such as a result's next_before) pages back. Long text is clipped and next_before is set when older rows remain. As the router, name the agent.",
+    "Read the audit log for yourself or a direct child, newest first: response rows are whole model turns (thinking, text, tool calls), tool_result rows each tool's name and outcome. It is how you find what was said or done after it left your transcript (a plan, a list, an approval, a result). search keeps rows containing that text; before (an ISO time, such as a result's next_before) pages back. Long text is clipped and next_before is set when older rows remain. As the router, name the agent.",
   input,
   inputSchema: {
     type: "object",
@@ -66,7 +66,7 @@ export const getLogs = defineTool({
       },
       event: {
         type: "string",
-        enum: ["response", "tool_result", "message"],
+        enum: ["response", "tool_result"],
       },
       limit: { type: "integer", minimum: 1, maximum: 200 },
       search: { type: "string", description: "Keep rows whose content contains this text, case-insensitive" },

@@ -4,7 +4,8 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
-import type { Lane } from "../types/domain.js";
+import type { Lane, WakeOrigin } from "../types/domain.js";
+import type { WakeActivity } from "../runtime/wake-activity.js";
 import type { EventBus } from "../runtime/events.js";
 import type { LaneLocks } from "../runtime/locks.js";
 import type { SteerQueue } from "../runtime/steer.js";
@@ -57,10 +58,10 @@ export type ToolContext = {
   /** Keeps `work` running, and counted by waitUntilIdle, after the tool call that started it has returned. A failure is logged. */
   background: (work: Promise<void>) => void;
   toolDebounce: ToolDebounce;
-  enqueueProcess: (agentId: string, reason?: string) => string;
-  enqueueWork: (agentId: string, reason?: string) => string;
-  /** The id of an agent's current wake, or null when it has none. */
-  wakeOf: (agentId: string) => string | null;
+  enqueueProcess: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  /** Told of each message that opens or joins a wake (see runtime/wake-activity.ts). */
+  wakeActivity?: WakeActivity;
 };
 
 /**

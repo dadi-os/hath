@@ -3,16 +3,16 @@ export type Lane = "work" | "process" | "router";
 /**
  * response: one model call's full output, blocks in provider order (thinking,
  * text, tool_use), logged before its tools run. tool_result: one tool's outcome,
- * with the tool name and audit fields. message: a delivered message.
+ * with the tool name and audit fields. Messages live in `messages`, not the log.
  */
-export type LogEvent = "response" | "tool_result" | "message";
+export type LogEvent = "response" | "tool_result";
 
 /** One browser or terminal task in Nas that an agent owns or last steered. */
 export type AgentSession = {
   /** The task's address, such as `task/browser/3`. */
   id: string;
   kind: "browser" | "terminal";
-  status: "working" | "paused" | "idle" | "asking" | "asleep";
+  status: "working" | "paused" | "idle" | "asking" | "asleep" | "stopped";
   purpose: string;
   /** The page a browser is on, or the directory and files a terminal has touched. */
   current: string;
@@ -223,9 +223,90 @@ export type MessageStatus = (typeof MESSAGE_STATUSES)[number];
 /** Where a job stands: open, waiting on the requester's answer, or closed one of three ways. */
 export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop";
 
-/** A message someone wrote, or hath's notice that an agent's work stopped (see deliver.ts). */
-export type MessageKind = "message" | "notice";
+/**
+ * A message someone wrote, hath's notice that an agent's work stopped (see deliver.ts), or
+ * an utterance: what Ankur said to the router, which is no conversation's message.
+ */
+export type MessageKind = "message" | "notice" | "utterance";
 
+/** Why a wake began (see `wakes` in db/schema.ts). */
+export type WakeReasonKind = "message" | "schedule" | "recovery" | "steer" | "manual";
+
+/** The structured reason a wake is created with; `ref` is the sender agent id for `message`, the schedule id for `schedule`. */
+export type WakeOrigin = {
+  kind: WakeReasonKind;
+  ref: string | null;
+  /** The message that opened the wake, when one did. */
+  openedByMessageId: string | null;
+};
+
+
+/** A message as the wake routes return it: speech with its attachments (see `messages` in db/schema.ts). */
+export type MessageRecord = {
+  id: string;
+  seq: number;
+  kind: MessageKind;
+  status: MessageStatus | null;
+  from_agent_id: string | null;
+  to_agent_id: string | null;
+  content: string;
+  created_at: string;
+  attachments: AttachmentSummary[];
+};
+
+/** Where a wake stands, derived and never stored (see `wakeOutcome` in serialize.ts). */
+export type WakeOutcome = "running" | "waiting" | "yielded" | "failed";
+
+/** Model usage summed over a wake's `response` rows; `calls` is how many rows. */
+export type WakeUsage = {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_write: number;
+  cache_read: number;
+};
+
+/** One wake as `GET /agents/:id/wakes` lists it and `GET /agents/:id/wakes/:wake_id` opens it. */
+export type WakeRecord = {
+  id: string;
+  agent_id: string;
+  reason: { kind: WakeReasonKind; ref: string | null };
+  opened_by: MessageRecord | null;
+  started_at: string;
+  ended_at: string | null;
+  outcome: WakeOutcome;
+  error: string | null;
+  usage: WakeUsage;
+  counts: { tool_calls: number; messages_sent: number; messages_received: number };
+  /** True when the wake ended with no activity rows and the agent's oldest activity row is newer than it: the activity aged out. */
+  activity_trimmed: boolean;
+};
+
+/** A tool call's outcome inside a wake; `content` is cut to the server cap when `truncated`, and `chars` is the full length. */
+export type WakeToolResult = { content: string; is_error: boolean; truncated: boolean; chars: number };
+
+/** One tool call of a turn, paired with its result by `tool_use_id`; `log_id` and `result` are null until the result is logged. */
+export type WakeToolCall = {
+  id: string;
+  name: string;
+  input: unknown;
+  log_id: string | null;
+  result: WakeToolResult | null;
+};
+
+/** One entry of a wake's timeline: a message the agent received or sent, or one model turn. */
+export type WakeEntry =
+  | { ord: number; at: string; type: "message"; direction: "sent" | "received"; message: MessageRecord }
+  | {
+      ord: number;
+      at: string;
+      type: "turn";
+      lane: "work" | "process";
+      usage: { input_tokens: number; output_tokens: number; cache_write: number; cache_read: number };
+      thinking: string | null;
+      text: string | null;
+      calls: WakeToolCall[];
+    };
 
 /** Where an outbox row stands: waiting for the process lane, sent, declined (rows from before the lane overhaul), or lost with its lane. */
 export type HandoffState = "pending" | "sent" | "declined" | "failed";

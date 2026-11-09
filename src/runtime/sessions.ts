@@ -5,7 +5,19 @@
  */
 
 import type { HelperTask, NasClient } from "../nas/client.js";
-import type { AgentSessions } from "../types/domain.js";
+import type { AgentSession, AgentSessions } from "../types/domain.js";
+
+/** toAgentSession is a Nas task as the API shows it in `sessions`. */
+export function toAgentSession(task: HelperTask): AgentSession {
+  return {
+    id: task.task,
+    kind: task.kind,
+    status: task.status,
+    purpose: task.purpose,
+    current: task.state,
+    last_activity: task.last_activity,
+  };
+}
 
 /** HostSessions reads the helper tasks Nas holds. */
 export class HostSessions {
@@ -21,14 +33,7 @@ export class HostSessions {
     return {
       tasks: snapshot
         .filter((task) => task.owner === agentId || task.steered_by === agentId)
-        .map((task) => ({
-          id: task.task,
-          kind: task.kind,
-          status: task.status,
-          purpose: task.purpose,
-          current: task.state,
-          last_activity: task.last_activity,
-        })),
+        .map(toAgentSession),
     };
   }
 }

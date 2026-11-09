@@ -75,6 +75,7 @@ export async function buildApp(
       events: runtime.events,
       enqueueProcess: runtime.enqueueProcess,
       enqueueWork: runtime.enqueueWork,
+      wakeActivity: runtime.wakeActivity,
       log: app.log,
       recoveryWindowMinutes: config.runtime.recovery_window_minutes,
     });
@@ -84,7 +85,7 @@ export async function buildApp(
       events: runtime.events,
       enqueueProcess: runtime.enqueueProcess,
       enqueueWork: runtime.enqueueWork,
-      wakeOf: runtime.wakeOf,
+      wakeActivity: runtime.wakeActivity,
     });
   }
   app.decorate("config", config);

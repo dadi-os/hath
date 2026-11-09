@@ -18,7 +18,7 @@ import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, agents, jobs, messages, scheduledMessages } from "../src/db/schema.js";
+import { agentLogs, agents, jobs, messages, scheduledMessages, wakes } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import {
   endTurn,
@@ -648,6 +648,7 @@ test("process-lane tools are the fixed front-desk list, with no grants or async 
     "read_file",
     "find_files",
     "get_logs",
+    "get_messages",
     "web_search",
     "web_fetch",
     "get_agent",
@@ -703,6 +704,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "control_device",
       "get_agent",
       "get_logs",
+      "get_messages",
       "web_search",
       "web_fetch",
       "schedule_message",
@@ -1104,6 +1106,7 @@ test("list_agents is in both lanes", async () => {
     "control_device",
     "get_agent",
     "get_logs",
+    "get_messages",
     "web_search",
     "web_fetch",
     "schedule_message",
@@ -1337,7 +1340,7 @@ test("get_logs searches, clips long strings, and pages back with next_before", a
   await writeAgentLog(handle.db, {
     agentId,
     lane: "process",
-    event: "message",
+    event: "response",
     payload: { content: "Here is the revised Batch 2 (Thursday, Oct 8): Zehua Li, Sandra Kue" },
   });
   for (let i = 0; i < 30; i += 1) {
@@ -1412,33 +1415,6 @@ test("every agent's system lists the standing agents with their directory entrie
   const own = await assembleContext({ windows: wideWindows, db: handle.db, serviceRoot: config.serviceRoot, agentId: browserId, lane: "work", transcript: new TranscriptStore() });
   assert.match(own.system, /Your directory entry, which every agent sees:\nOwns: Every browser\./);
   void childId;
-});
-
-test("a wakes read returns whole stamped wakes, then older unstamped rows back to the message that opened them", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertAgent(handle.db, { id: "wake-log-reader", systemPrompt: "reads" });
-  const log = (event: "message" | "tool_result", payload: Record<string, unknown>, wakeId: string | null = null) =>
-    writeAgentLog(handle.db, { agentId, lane: "process", event, payload, wakeId });
-  await log("message", { direction: "receive", content: "old opener" });
-  for (let i = 0; i < 205; i += 1) {
-    await log("tool_result", { name: "terminal_read_file", content: `old ${i}` });
-  }
-  const wakeId = randomUUID();
-  await log("message", { direction: "receive", content: "new opener" }, wakeId);
-  await log("tool_result", { name: "terminal_read_file", content: "new step" }, wakeId);
-  // A runtime of the test's own, so boot recovery does not wake the agent over the unanswered openers.
-  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas: mockNas(), config, log: silentLog });
-  const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas: mockNas(), runtime });
-  try {
-    const res = await app.inject({ method: "GET", url: `/agents/${agentId}/logs?wakes=10` });
-    assert.equal(res.statusCode, 200, res.body);
-    const logs = (res.json() as { logs: Array<{ wake_id: string | null; payload: { content: string } }> }).logs;
-    assert.deepEqual(logs.slice(0, 2).map((row) => [row.wake_id, row.payload.content]), [[wakeId, "new step"], [wakeId, "new opener"]]);
-    assert.equal(logs.at(-1)?.payload.content, "old opener", "the oldest unstamped wake starts at its opening message");
-    assert.equal(logs.length, 2 + 206);
-  } finally {
-    await app.close();
-  }
 });
 
 test("get_logs defaults to caller and allows direct children only", async () => {
@@ -1801,4 +1777,45 @@ test("a lane logs each model turn whole before its tools run, and each result wi
   assert.equal(result.tool_use_id, "la-1");
   assert.equal(result.name, LIST_AGENTS);
   assert.equal(result.is_error, false);
+});
+
+test("a wake gets a row when created, ended_at when its lanes release, and the error of a lane that failed", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const okId = await insertAgent(handle.db, { id: "wake-row-ok", systemPrompt: "ok" });
+  const failId = await insertAgent(handle.db, { id: "wake-row-fail", systemPrompt: "fail" });
+  let failing = false;
+  const dwar = mockDwar({
+    work: async () => {
+      if (failing) {
+        throw new Error("dwar exploded");
+      }
+      return yieldTurn("wake-row-yield");
+    },
+  });
+  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
+  const seen: string[] = [];
+  runtime.events.subscribe((event) => {
+    if (event.type === "wake_started" || event.type === "wake_ended") {
+      seen.push(`${event.type}:${event.agent_id}`);
+    }
+  });
+  const okWake = runtime.enqueueWork(okId, undefined, { kind: "steer", ref: null, openedByMessageId: null });
+  await runtime.waitUntilIdle();
+  failing = true;
+  const failWake = runtime.enqueueWork(failId);
+  await runtime.waitUntilIdle();
+
+  const [okRow] = await handle.db.select().from(wakes).where(eq(wakes.id, okWake));
+  assert.equal(okRow?.agentId, okId);
+  assert.equal(okRow?.reasonKind, "steer");
+  assert.ok(okRow?.endedAt);
+  assert.equal(okRow?.error, null);
+  const [failRow] = await handle.db.select().from(wakes).where(eq(wakes.id, failWake));
+  assert.equal(failRow?.reasonKind, "manual");
+  assert.ok(failRow?.endedAt);
+  assert.match(failRow?.error ?? "", /^work lane failed: dwar exploded/);
+  assert.deepEqual(
+    seen.sort(),
+    [`wake_ended:${failId}`, `wake_ended:${okId}`, `wake_started:${failId}`, `wake_started:${okId}`].sort(),
+  );
 });

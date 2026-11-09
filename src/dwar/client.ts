@@ -63,7 +63,7 @@ export type DwarDescribeImageResponse = {
  * inference log attributes each call's tokens to whoever spent them.
  */
 export type DwarClient = {
-  work: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
+  work: (request: DwarChatRequest, caller: string, signal?: AbortSignal) => Promise<DwarChatResponse>;
   process: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
   complete: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
   describeImage: (
@@ -123,9 +123,10 @@ export function createDwarClient(config: Config): DwarClient {
     path: string,
     request: DwarChatRequest,
     caller: string,
+    signal?: AbortSignal,
   ): Promise<DwarChatResponse> {
     const data = await withRetry(config, () =>
-      http.post(path, request, { headers: { "x-dadi-caller": caller } }).then((res) => res.data),
+      http.post(path, request, { headers: { "x-dadi-caller": caller }, ...(signal === undefined ? {} : { signal }) }).then((res) => res.data),
     );
     const parsed = chatResponseSchema.safeParse(data);
     if (!parsed.success) {
@@ -168,7 +169,7 @@ export function createDwarClient(config: Config): DwarClient {
   return {
     webSearch: (request, caller) => postWeb("/web/search", request, caller, webSearchResponseSchema),
     webFetch: (request, caller) => postWeb("/web/fetch", request, caller, webFetchResponseSchema),
-    work: (request, caller) => postChat("/chat/work", request, caller),
+    work: (request, caller, signal) => postChat("/chat/work", request, caller, signal),
     process: (request, caller) => postChat("/chat/process", request, caller),
     complete: (request, caller) => postChat("/chat/complete", request, caller),
     describeImage,
@@ -197,6 +198,9 @@ async function withRetry(config: Config, fn: () => Promise<unknown>): Promise<un
 }
 
 function isRetryable(err: unknown): boolean {
+  if (axios.isCancel(err)) {
+    return false;
+  }
   if (!axios.isAxiosError(err)) {
     return false;
   }

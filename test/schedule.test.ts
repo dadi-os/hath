@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { TZDate } from "@date-fns/tz";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, agents, scheduledMessages } from "../src/db/schema.js";
+import { agents, messages, scheduledMessages, wakes } from "../src/db/schema.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
 import { advanceRunAt } from "../src/runtime/scheduler.js";
@@ -118,12 +118,14 @@ test("due one-shot delivers once and deletes the row", async () => {
   assert.equal(transcript[0]?.content, "do it");
   assert.equal(seen.length, 1);
 
-  const logs = await handle.db
-    .select()
-    .from(agentLogs)
-    .where(and(eq(agentLogs.event, "message"), eq(agentLogs.lane, "process")));
-  const withSchedule = logs.filter((row) => row.payload.schedule_id === scheduleId);
-  assert.equal(withSchedule.length, 2);
+  const [delivered] = await handle.db.select().from(messages).where(eq(messages.toAgentId, toId));
+  assert.ok(delivered?.wakeId);
+  const [wake] = await handle.db.select().from(wakes).where(eq(wakes.id, delivered.wakeId));
+  assert.equal(wake?.agentId, toId);
+  assert.equal(wake?.reasonKind, "schedule");
+  assert.equal(wake?.reasonRef, scheduleId);
+  assert.equal(wake?.openedByMessageId, delivered.id);
+  assert.ok(wake?.endedAt, "the wake is closed when its lanes finish");
 
   const remaining = await handle.db
     .select()
@@ -366,11 +368,7 @@ test("retired target skips delivery and logs schedule_target_unavailable", async
   await runtime.waitUntilIdle();
 
   assert.equal(runtime.transcript.transcriptFor(toId).length, 0);
-  const messageLogs = await handle.db
-    .select()
-    .from(agentLogs)
-    .where(eq(agentLogs.event, "message"));
-  assert.equal(messageLogs.length, 0);
+  assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, toId))).length, 0);
 
   const unavailable = errors.find((entry) => entry.code === "schedule_target_unavailable");
   assert.ok(unavailable);

@@ -25,6 +25,7 @@ export async function registerMessages(app: FastifyInstance): Promise<void> {
         events: app.runtime.events,
         enqueueProcess: app.runtime.enqueueProcess,
         enqueueWork: app.runtime.enqueueWork,
+        wakeActivity: app.runtime.wakeActivity,
       },
       body.to_agent_id,
       body.content.trim(),

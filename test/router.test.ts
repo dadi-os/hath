@@ -101,7 +101,7 @@ test("POST /router spawns a root, sends as Ankur, and returns what it sent", asy
   assert.match(delivered[0]?.content ?? "", /book it/);
 
   const stored = await handle.db.select().from(messages).where(and(isNull(messages.fromAgentId), isNull(messages.toAgentId)));
-  assert.equal(stored.length, 0);
+  assert.deepEqual(stored.map((row) => [row.kind, row.content]), [["utterance", "can I afford the escape room tomorrow? if so book it"]]);
 
   const started = seen.find((event) => event.type === "router_started");
   const finished = seen.find((event) => event.type === "router_finished");
@@ -139,6 +139,7 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
     "forward_attachment",
     "get_agent",
     "get_logs",
+    "get_messages",
     "list_agents",
     "read_file",
     "recall_memory",
@@ -210,9 +211,13 @@ test("POST /router logs its turns on the router lane with a null agent_id", asyn
   const logs = await handle.db.select().from(agentLogs).where(isNull(agentLogs.agentId));
   assert.ok(logs.every((row) => row.lane === "router"));
   const events = logs.map((row) => `${row.event}:${String(row.payload.direction ?? row.payload.name ?? "")}`);
-  assert.ok(events.includes("message:receive"), events.join(","));
-  assert.ok(events.includes("message:send"), events.join(","));
   assert.ok(events.includes("tool_result:send_message"), events.join(","));
+  assert.ok(!events.some((entry) => entry.startsWith("message:")), events.join(","));
+  const [utterance] = await handle.db.select().from(messages).where(eq(messages.kind, "utterance"));
+  assert.equal(utterance?.content, "budget");
+  const sent = logs.find((row) => row.event === "tool_result" && row.payload.name === "send_message");
+  const [delivered] = await handle.db.select().from(messages).where(eq(messages.toAgentId, "finance-specialist"));
+  assert.equal(sent?.payload.message_id, delivered?.id);
   assert.equal(logs.filter((row) => row.event === "response").length, 2);
 
   await runtime.waitUntilIdle();

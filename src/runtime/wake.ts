@@ -176,6 +176,10 @@ export type WakeTurn = {
 export class Wake {
   /** Stamped on every log row of this wake, so the activity feed groups by wake instead of guessing. */
   readonly id = randomUUID();
+  /** Settles when the wake's `wakes` row is written (see engine.ts); the row is closed after it. */
+  recorded: Promise<void> = Promise.resolve();
+  /** The first lane failure of the wake, stored on its row when it ends; null while none has failed. */
+  error: string | null = null;
   private frozenSystem: string | null = null;
   private transcripts: Partial<Record<Lane, DwarMessage[]>> | null = null;
   private seenThrough = 0;
@@ -227,6 +231,11 @@ export class Wake {
   /** The wake's first line, "Woken by: <reasons>", or null when no run said why. */
   get wokenBy(): string | null {
     return this.reasons.length === 0 ? null : `Woken by: ${this.reasons.join("; ")}`;
+  }
+
+  /** noteError records a lane failure for the wake's row; the first one stays. */
+  noteError(message: string): void {
+    this.error ??= message;
   }
 
   /** False until the wake's first lane call freezes the system and transcript. */

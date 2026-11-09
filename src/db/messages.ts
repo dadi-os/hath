@@ -1,7 +1,7 @@
 /** Durable message inserts, thread queries, and transcript hydrate helpers. */
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   attachmentsByMessage,
   attachToMessage,
@@ -9,7 +9,8 @@ import {
   type AttachmentMeta,
   type NewAttachment,
 } from "./attachments.js";
-import type { AttachmentSummary, MessageKind, MessageStatus } from "../types/domain.js";
+import type { AttachmentSummary, MessageKind, MessageRecord, MessageStatus } from "../types/domain.js";
+import { toMessageRecord } from "../serialize.js";
 import { HathError } from "../errors.js";
 import type { Db } from "./client.js";
 import { agents, messages, threadReads, type MessageRow } from "./schema.js";
@@ -101,6 +102,19 @@ export async function insertMessage(
   });
 }
 
+/**
+ * Store what Ankur said to the router as a `utterance` message (from and to null). It is
+ * kept apart from every conversation: never in the transcript, a thread, or a job.
+ */
+export async function insertUtterance(db: Db, content: string): Promise<void> {
+  await db.insert(messages).values({ id: randomUUID(), fromAgentId: null, toAgentId: null, content, kind: "utterance" });
+}
+
+/** Record the recipient wake message `id` opened or joined. */
+export async function stampMessageWake(db: Db, id: string, wakeId: string): Promise<void> {
+  await db.update(messages).set({ wakeId }).where(eq(messages.id, id));
+}
+
 /** Map a DB message row and its attachments into a transcript entry. */
 export function messageToTranscriptEntry(
   row: MessageRow,
@@ -119,9 +133,9 @@ export function messageToTranscriptEntry(
   };
 }
 
-/** Load all durable messages and their attachment metadata into the in-process transcript cache (startup resume). */
+/** Load all durable messages (not utterances) and their attachment metadata into the in-process transcript cache (startup resume). */
 export async function hydrateTranscript(db: Db, transcript: TranscriptStore): Promise<number> {
-  const rows = await db.select().from(messages).orderBy(asc(messages.seq));
+  const rows = await db.select().from(messages).where(ne(messages.kind, "utterance")).orderBy(asc(messages.seq));
   const attached = await attachmentsByMessage(db);
   for (const row of rows) {
     transcript.ingest(messageToTranscriptEntry(row, attached.get(row.id) ?? []));
@@ -305,4 +319,62 @@ export async function listHumanMessages(
     kind: row.kind,
     created_at: row.createdAt.toISOString(),
   }));
+}
+
+/** Map message rows to API records with their attachments, keeping the rows' order. */
+export async function loadMessageRecords(db: Db, rows: MessageRow[]): Promise<MessageRecord[]> {
+  const attached = await attachmentsByMessage(
+    db,
+    rows.map((row) => row.id),
+  );
+  return rows.map((row) => toMessageRecord(row, attached.get(row.id) ?? []));
+}
+
+/** What {@link searchMessages} narrows by; every field but `agentId` is optional. */
+export type MessageSearch = {
+  /** Whose history: messages this agent sent or received. */
+  agentId: string;
+  /** The other party: an agent id, or null for Ankur. Omit for every party. */
+  party?: string | null;
+  /** Case-insensitive text the content contains. */
+  text?: string;
+  since?: Date;
+  before?: Date;
+  /** Add the router's utterances (from and to null), which belong to no agent. */
+  includeUtterances?: boolean;
+  limit: number;
+};
+
+/**
+ * searchMessages reads message history newest first (by seq). Utterances stay out unless
+ * `includeUtterances` is set; `since` is exclusive and `before` exclusive.
+ */
+export async function searchMessages(db: Db, opts: MessageSearch): Promise<MessageRow[]> {
+  const mine = or(eq(messages.fromAgentId, opts.agentId), eq(messages.toAgentId, opts.agentId));
+  const withParty =
+    opts.party === undefined
+      ? mine
+      : opts.party === null
+        ? or(
+            and(eq(messages.fromAgentId, opts.agentId), isNull(messages.toAgentId)),
+            and(isNull(messages.fromAgentId), eq(messages.toAgentId, opts.agentId)),
+          )
+        : or(
+            and(eq(messages.fromAgentId, opts.agentId), eq(messages.toAgentId, opts.party)),
+            and(eq(messages.fromAgentId, opts.party), eq(messages.toAgentId, opts.agentId)),
+          );
+  const scope = opts.includeUtterances === true ? or(withParty, eq(messages.kind, "utterance")) : and(withParty, ne(messages.kind, "utterance"));
+  return db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        scope,
+        opts.text !== undefined ? sql`${messages.content} ILIKE ${`%${opts.text}%`}` : undefined,
+        opts.since !== undefined ? gt(messages.createdAt, opts.since) : undefined,
+        opts.before !== undefined ? lt(messages.createdAt, opts.before) : undefined,
+      ),
+    )
+    .orderBy(desc(messages.seq))
+    .limit(opts.limit);
 }

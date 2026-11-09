@@ -28,7 +28,9 @@ const taskSchema = z
     owner: z.string(),
     steered_by: z.string(),
     purpose: z.string(),
-    status: z.enum(["working", "paused", "idle", "asking", "asleep"]),
+    status: z.enum(["working", "paused", "idle", "asking", "asleep", "stopped"]),
+    /** What the task holds open (a shell, a browser); absent when it holds none. */
+    resource: z.string().optional(),
     state: z.string(),
     created_at: z.string(),
     last_activity: z.string(),
@@ -137,6 +139,12 @@ export type NasClient = {
   listTasks: () => Promise<HelperTask[]>;
   getTask: (kind: TaskKind, id: string) => Promise<HelperTask>;
   /**
+   * Halt a task for good: it ends `stopped`, its resource is killed, and every later steer
+   * is refused `409 task_stopped`. Halting a stopped task changes nothing. Throws `not_found`
+   * for an unknown task.
+   */
+  haltTask: (kind: TaskKind, id: string) => Promise<HelperTask>;
+  /**
    * Open Nas's event stream and resolve once it is connected, with every helper report
    * and task-list change that follows. The stream has no replay and ends, by throwing,
    * when the connection drops.
@@ -203,6 +211,7 @@ export function createNasClient(config: Config): NasClient {
       post(`/tasks/${kind}/${encodeURIComponent(id)}/steer`, body, taskSchema, { timeout: TASK_TIMEOUT_MS }),
     listTasks: () => get("/tasks", z.array(taskSchema)),
     getTask: (kind, id) => get(`/tasks/${kind}/${encodeURIComponent(id)}`, taskSchema),
+    haltTask: (kind, id) => post(`/tasks/${kind}/${encodeURIComponent(id)}/halt`, {}, taskSchema),
     openReports: (signal) => openReportStream(signal),
     createTerminal: (cwd) => post("/terminals", omitUndefined({ cwd }), terminalSchema),
     closeTerminal: (id) => del(`/terminals/${encodeURIComponent(id)}`),
@@ -340,6 +349,7 @@ const PASSTHROUGH_TYPES = new Set([
   "upstream_unreachable",
   "conflict",
   "stale_ref",
+  "task_stopped",
   "internal_error",
 ]);
 

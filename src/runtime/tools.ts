@@ -31,6 +31,7 @@ import {
   type ToolContext,
   type ToolExecResult,
 } from "../tools/shared.js";
+import type { HelperTask } from "../nas/client.js";
 import { deliverDeps, runInBackground, toolIsAsync } from "./async.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { ACTION_TOOLS } from "./record.js";
@@ -58,7 +59,7 @@ export const steerWorkInputSchema: Record<string, unknown> = {
     terminate: {
       type: "boolean",
       description:
-        "When true, stop the work lane in its tracks: the next tool call does not run. Use for stop/kill. Can combine with instruction.",
+        "When true, stop the work lane in its tracks: its in-flight model call is aborted and no further tool call runs. Use for stop/kill. Can combine with instruction.",
     },
   },
   additionalProperties: false,
@@ -85,11 +86,16 @@ export const listAgentsInputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/** Queue an instruction for the caller's work lane. */
+/**
+ * Queue an instruction for the caller's work lane and/or halt it. The result says whether
+ * the lane was running and whether the halt was applied (`terminated`); terminate on an
+ * idle lane has nothing to halt and reports `terminated: false`. A halt that was applied
+ * also halts the agent's running helper tasks in Nas (`stopped_tasks`, `halt_failed`).
+ */
 export const steerWorkTool: DwarTool = {
   name: STEER_WORK,
   description:
-    "Direct your work lane. You manage it from the process lane: pass instruction for what it should do next (domain tools run there), and/or terminate true to halt it immediately so the next tool call does not run. Starts a work-lane wake if that lane is idle. Use terminate for stop/kill.",
+    "Direct your work lane. You manage it from the process lane: pass instruction for what it should do next (domain tools run there), and/or terminate true to halt it: the in-flight model call is aborted and no further tool call runs. Starts a work-lane wake if that lane is idle. The result's `terminated` is true only when a running lane was halted; a halt also stops your running browser and terminal helper tasks, listed in `stopped_tasks` (any that could not be stopped are in `halt_failed`). Say a stop is done only when it is. Use terminate for stop/kill.",
   input_schema: steerWorkInputSchema,
 };
 
@@ -278,7 +284,6 @@ async function noteProcessAction(ctx: ToolContext, call: DwarToolUseBlock, resul
     content: `Your process lane ran ${call.name} ${shortArg(call.input)}: ${result.content.slice(0, ACTION_NOTE_RESULT_CHARS)}`,
     notice: "tool",
     wake: false,
-    lane: "process",
   });
 }
 
@@ -287,19 +292,60 @@ async function runSteerWork(ctx: ToolContext, raw: unknown): Promise<ToolExecRes
     return failWithoutAgentIdentity();
   }
   const input = steerInput.parse(raw ?? {});
+  const running = ctx.locks.isBusy(ctx.callerId, "work");
+  const terminated = input.terminate === true && running;
   if (input.instruction !== undefined) {
     ctx.steer.append(ctx.callerId, input.instruction);
   }
-  if (input.terminate === true) {
+  if (terminated) {
     ctx.steer.requestTerminate(ctx.callerId);
   }
-  if (!ctx.locks.isBusy(ctx.callerId, "work")) {
-    ctx.enqueueWork(ctx.callerId);
+  if (!running) {
+    ctx.enqueueWork(ctx.callerId, undefined, { kind: "steer", ref: null, openedByMessageId: null });
   }
+  const halted = terminated ? await haltHelperTasks(ctx, ctx.callerId) : null;
   return ok({
-    queued: true,
-    terminate: input.terminate === true,
+    queued: input.instruction !== undefined,
+    running,
+    terminated,
+    ...(halted === null ? {} : { stopped_tasks: halted.stopped, ...(halted.failed.length > 0 ? { halt_failed: halted.failed } : {}) }),
   });
+}
+
+/**
+ * haltHelperTasks halts, in Nas, the helper tasks `agentId` owns or last steered that are
+ * still going: working, paused, asking, or idle with a resource held. A task that cannot be
+ * listed or halted is reported in `failed`, never skipped.
+ */
+async function haltHelperTasks(
+  ctx: ToolContext,
+  agentId: string,
+): Promise<{ stopped: string[]; failed: { task: string | null; error: string }[] }> {
+  let running: HelperTask[];
+  try {
+    running = (await ctx.sessions.snapshot()).filter(
+      (task) =>
+        (task.owner === agentId || task.steered_by === agentId) &&
+        (task.status === "working" ||
+          task.status === "paused" ||
+          task.status === "asking" ||
+          (task.status === "idle" && (task.resource ?? "") !== "")),
+    );
+  } catch (err) {
+    return { stopped: [], failed: [{ task: null, error: err instanceof Error ? err.message : String(err) }] };
+  }
+  const results = await Promise.allSettled(running.map((task) => ctx.nas.haltTask(task.kind, task.id)));
+  const stopped: string[] = [];
+  const failed: { task: string | null; error: string }[] = [];
+  results.forEach((result, index) => {
+    const task = running[index]!.task;
+    if (result.status === "fulfilled") {
+      stopped.push(task);
+    } else {
+      failed.push({ task, error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
+    }
+  });
+  return { stopped, failed };
 }
 
 /** runListAgents returns id/name/parent/retired for matching agents (global visibility). */

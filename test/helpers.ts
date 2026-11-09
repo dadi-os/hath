@@ -305,6 +305,7 @@ export function mockNas(opts: {
   tasks: Map<string, HelperTask>;
   startTaskCalls: Array<{ kind: TaskKind; body: TaskRequest }>;
   steerTaskCalls: Array<{ kind: TaskKind; id: string; body: TaskRequest }>;
+  haltTaskCalls: Array<{ kind: TaskKind; id: string }>;
   execCalls: Array<{ id: string; body: ExecRequest }>;
   terminalsCreated: string[];
   terminalsClosed: string[];
@@ -326,6 +327,7 @@ export function mockNas(opts: {
   const tasks = new Map<string, HelperTask>();
   const startTaskCalls: Array<{ kind: TaskKind; body: TaskRequest }> = [];
   const steerTaskCalls: Array<{ kind: TaskKind; id: string; body: TaskRequest }> = [];
+  const haltTaskCalls: Array<{ kind: TaskKind; id: string }> = [];
   const execCalls: Array<{ id: string; body: ExecRequest }> = [];
   const terminalsCreated: string[] = [];
   const terminalsClosed: string[] = [];
@@ -361,6 +363,7 @@ export function mockNas(opts: {
     tasks,
     startTaskCalls,
     steerTaskCalls,
+    haltTaskCalls,
     execCalls,
     terminalsCreated,
     terminalsClosed,
@@ -387,6 +390,16 @@ export function mockNas(opts: {
         throw new HathError(404, "not_found", `no task ${kind}/${id}`);
       }
       const task: HelperTask = { ...existing, steered_by: body.agent_id, status: "working" };
+      tasks.set(task.task, task);
+      return task;
+    },
+    async haltTask(kind, id) {
+      haltTaskCalls.push({ kind, id });
+      const existing = tasks.get(`task/${kind}/${id}`);
+      if (!existing) {
+        throw new HathError(404, "not_found", `no task ${kind}/${id}`);
+      }
+      const task: HelperTask = { ...existing, status: "stopped" };
       tasks.set(task.task, task);
       return task;
     },

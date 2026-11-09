@@ -18,6 +18,7 @@ const PROCESS_REGISTRY_TOOLS = [
   READ_FILE,
   FIND_FILES,
   "get_logs",
+  "get_messages",
   "web_search",
   "web_fetch",
   GET_AGENT,
@@ -27,7 +28,7 @@ const PROCESS_REGISTRY_TOOLS = [
 ] as const;
 
 /** The registry tools the router lane holds. */
-const ROUTER_REGISTRY_TOOLS = [READ_FILE, GET_AGENT, "get_logs", SPAWN_AGENT] as const;
+const ROUTER_REGISTRY_TOOLS = [READ_FILE, GET_AGENT, "get_logs", "get_messages", SPAWN_AGENT] as const;
 
 /** The registry tools a lane holds besides its own: all of them for work, a named few otherwise. */
 function registryToolsFor(lane: Lane): ToolDefinition[] {

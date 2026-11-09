@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { agentLogs } from "../src/db/schema.js";
+import { agentLogs, messages } from "../src/db/schema.js";
 import { HathError } from "../src/errors.js";
 import { deliverAgentMessage } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { EventBus, type RuntimeEvent } from "../src/runtime/events.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { SEND_MESSAGE } from "../src/types/domain.js";
+import { SEND_MESSAGE, type WakeOrigin } from "../src/types/domain.js";
 import {
   insertAgent,
   mockDwar,
@@ -200,7 +200,7 @@ test("send emits message with agent_id set to the recipient", async () => {
   await runtime.waitUntilIdle();
 });
 
-test("deliverAgentMessage merges extraPayload into both message log rows", async () => {
+test("deliverAgentMessage with a schedule id opens a schedule wake and stamps the message", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const fromId = await insertAgent(handle.db, {
     name: "from",
@@ -218,44 +218,36 @@ test("deliverAgentMessage merges extraPayload into both message log rows", async
       seen.push(event);
     }
   });
-  const enqueued: string[] = [];
+  const enqueued: Array<{ agentId: string; origin: WakeOrigin | undefined }> = [];
+  const wakeId = randomUUID();
 
   const beforeLen = transcript.transcriptFor(toId).length;
-  await deliverAgentMessage(
+  const row = await deliverAgentMessage(
     {
       db: handle.db,
       transcript,
       events,
-      enqueueProcess: (agentId) => {
-        enqueued.push(agentId);
-     return randomUUID();
- },
+      enqueueProcess: (agentId, _reason, origin) => {
+        enqueued.push({ agentId, origin });
+        return wakeId;
+      },
       enqueueWork: () => randomUUID(),
     },
     {
       fromAgentId: fromId,
       toAgentId: toId,
       content: "scheduled ping",
-      extraPayload: { schedule_id: "x" },
+      scheduleId: "x",
     },
   );
 
   assert.equal(transcript.transcriptFor(toId).length, beforeLen + 1);
   assert.equal(seen.length, 1);
-  assert.deepEqual(enqueued, [toId]);
-
-  const logs = await handle.db
-    .select()
-    .from(agentLogs)
-    .where(and(eq(agentLogs.event, "message"), eq(agentLogs.lane, "process")));
-  const messageLogs = logs.filter(
-    (row) =>
-      row.payload.schedule_id === "x" &&
-      (row.agentId === fromId || row.agentId === toId),
-  );
-  assert.equal(messageLogs.length, 2);
-  const directions = new Set(messageLogs.map((row) => row.payload.direction));
-  assert.deepEqual(directions, new Set(["send", "receive"]));
+  assert.deepEqual(enqueued, [{ agentId: toId, origin: { kind: "schedule", ref: "x", openedByMessageId: row.id } }]);
+  const [stored] = await handle.db.select().from(messages).where(eq(messages.id, row.id!));
+  assert.equal(stored?.wakeId, wakeId);
+  const logs = await handle.db.select().from(agentLogs);
+  assert.equal(logs.length, 0);
 });
 
 test("lane_finished is emitted even when the lane run throws", async () => {
@@ -476,7 +468,7 @@ test("GET /logs returns across agents; event filters; limit above cap is 422", a
   await writeAgentLog(handle.db, {
     agentId: workerId,
     lane: "process",
-    event: "message",
+    event: "tool_result",
     payload: { note: "from-worker" },
   });
   await writeAgentLog(handle.db, {
@@ -488,8 +480,8 @@ test("GET /logs returns across agents; event filters; limit above cap is 422", a
   await writeAgentLog(handle.db, {
     agentId: otherId,
     lane: "process",
-    event: "message",
-    payload: { note: "other-message" },
+    event: "tool_result",
+    payload: { note: "other-result" },
   });
 
   const runtime = createRuntime({
@@ -516,11 +508,11 @@ test("GET /logs returns across agents; event filters; limit above cap is 422", a
   assert.ok(agentIds.has(workerId));
   assert.ok(agentIds.has(otherId));
 
-  const filtered = await app.inject({ method: "GET", url: "/logs?event=message" });
+  const filtered = await app.inject({ method: "GET", url: "/logs?event=tool_result" });
   assert.equal(filtered.statusCode, 200);
   const filteredBody = filtered.json() as { logs: Array<{ event: string }> };
   assert.ok(filteredBody.logs.length >= 2);
-  assert.ok(filteredBody.logs.every((log) => log.event === "message"));
+  assert.ok(filteredBody.logs.every((log) => log.event === "tool_result"));
 
   const capped = await app.inject({ method: "GET", url: "/logs?limit=201" });
   assert.equal(capped.statusCode, 422);

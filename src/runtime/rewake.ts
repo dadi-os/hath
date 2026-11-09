@@ -37,6 +37,5 @@ function rewake(deps: DeliverDeps, agentId: string, args: RewakeArgs, lane: "pro
     notice: args.notice,
     wakeWork: lane === "work",
     wokenBy: args.wokenBy,
-    lane,
   });
 }

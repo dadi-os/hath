@@ -9,6 +9,8 @@ import { executeTool } from "../src/runtime/tools.js";
 import { HostSessions } from "../src/runtime/sessions.js";
 import { ToolDebounce } from "../src/runtime/tool-debounce.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
+import { HathError } from "../src/errors.js";
+import type { HelperTask } from "../src/nas/client.js";
 import { STEER_WORK } from "../src/types/domain.js";
 import { Wake } from "../src/runtime/wake.js";
 import { mockNas, roomyWakeLimits, workLoopHooks } from "./helpers.js";
@@ -242,6 +244,7 @@ test("steer_work accepts terminate without instruction", async () => {
   const locks = new LaneLocks();
   const steer = new SteerQueue();
   const agentId = "00000000-0000-4000-8000-0000000000ff";
+  const release = await locks.acquire(agentId, "work", 1000);
   const result = await executeTool(
     {
       db: {} as never,
@@ -263,7 +266,172 @@ test("steer_work accepts terminate without instruction", async () => {
       input: { terminate: true },
     },
   );
+  release();
   assert.equal(result.isError, false);
   assert.equal(steer.isTerminate(agentId), true);
   assert.equal(steer.hasItems(agentId), false);
+});
+
+function steerCtx(agentId: string, steer: SteerQueue, locks: LaneLocks, started: string[], nas = mockNas()) {
+  return {
+    db: {} as never,
+    callerId: agentId,
+    callerKind: "agent",
+    lane: "process",
+    steer,
+    locks,
+    transcript: new TranscriptStore(),
+    nas,
+    sessions: new HostSessions(nas),
+    toolDebounce: noDebounce,
+    enqueueProcess: () => randomUUID(),
+    enqueueWork: (id: string) => {
+      started.push(id);
+      return randomUUID();
+    },
+  } as never;
+}
+
+test("steer_work terminate on a running lane reports terminated and aborts its signal", async () => {
+  const locks = new LaneLocks();
+  const steer = new SteerQueue();
+  const agentId = "00000000-0000-4000-8000-0000000000f1";
+  const release = await locks.acquire(agentId, "work", 1000);
+  const signal = steer.signalFor(agentId);
+  const result = await executeTool(steerCtx(agentId, steer, locks, []), {
+    type: "tool_use",
+    id: "t1",
+    name: STEER_WORK,
+    input: { terminate: true },
+  });
+  release();
+  assert.deepEqual(JSON.parse(result.content), { queued: false, running: true, terminated: true, stopped_tasks: [] });
+  assert.equal(steer.isTerminate(agentId), true);
+  assert.equal(signal.aborted, true);
+});
+
+test("steer_work terminate halts the agent's running helper tasks and reports each outcome", async () => {
+  const locks = new LaneLocks();
+  const agentId = "helper-owner";
+  const nas = mockNas();
+  const task = (id: string, owner: string, status: HelperTask["status"], resource?: string): HelperTask => ({
+    task: `task/browser/${id}`,
+    kind: "browser",
+    id,
+    owner,
+    steered_by: owner,
+    purpose: "p",
+    status,
+    ...(resource !== undefined ? { resource } : {}),
+    state: "",
+    created_at: new Date().toISOString(),
+    last_activity: new Date().toISOString(),
+  });
+  for (const row of [
+    task("1", agentId, "working"),
+    task("2", agentId, "asleep"),
+    task("3", "someone-else", "working"),
+    task("4", agentId, "idle", "chromium"),
+    task("5", agentId, "idle"),
+    task("6", agentId, "paused"),
+  ]) {
+    nas.tasks.set(row.task, row);
+  }
+  const haltTask = nas.haltTask.bind(nas);
+  nas.haltTask = async (kind, id) => {
+    if (id === "6") {
+      throw new HathError(500, "internal_error", "kill failed");
+    }
+    return haltTask(kind, id);
+  };
+  const release = await locks.acquire(agentId, "work", 1000);
+  const result = await executeTool(steerCtx(agentId, new SteerQueue(), locks, [], nas), {
+    type: "tool_use",
+    id: "t3",
+    name: STEER_WORK,
+    input: { terminate: true },
+  });
+  release();
+  assert.deepEqual(JSON.parse(result.content), {
+    queued: false,
+    running: true,
+    terminated: true,
+    stopped_tasks: ["task/browser/1", "task/browser/4"],
+    halt_failed: [{ task: "task/browser/6", error: "kill failed" }],
+  });
+  assert.deepEqual(nas.haltTaskCalls.map((call) => call.id).sort(), ["1", "4"]);
+});
+
+test("steer_work terminate on an idle lane halts no helper task", async () => {
+  const nas = mockNas();
+  nas.tasks.set("task/browser/1", {
+    task: "task/browser/1",
+    kind: "browser",
+    id: "1",
+    owner: "idle-owner",
+    steered_by: "idle-owner",
+    purpose: "p",
+    status: "working",
+    state: "",
+    created_at: new Date().toISOString(),
+    last_activity: new Date().toISOString(),
+  });
+  await executeTool(steerCtx("idle-owner", new SteerQueue(), new LaneLocks(), [], nas), {
+    type: "tool_use",
+    id: "t4",
+    name: STEER_WORK,
+    input: { terminate: true },
+  });
+  assert.deepEqual(nas.haltTaskCalls, []);
+});
+
+test("steer_work terminate on an idle lane halts nothing and leaves no stale flag", async () => {
+  const steer = new SteerQueue();
+  const started: string[] = [];
+  const agentId = "00000000-0000-4000-8000-0000000000f2";
+  const result = await executeTool(steerCtx(agentId, steer, new LaneLocks(), started), {
+    type: "tool_use",
+    id: "t2",
+    name: STEER_WORK,
+    input: { terminate: true },
+  });
+  assert.deepEqual(JSON.parse(result.content), { queued: false, running: false, terminated: false });
+  assert.equal(steer.isTerminate(agentId), false);
+});
+
+test("terminate abandons an in-flight model call without waiting for its response", async () => {
+  const steer = new SteerQueue();
+  const agentId = "agent-abort-inflight";
+  const executed: string[] = [];
+  let release: (() => void) | undefined;
+  const slow = new Promise<DwarChatResponse>((resolve) => {
+    release = () => resolve(toolUse("get_device", {}));
+  });
+  let signalSeen: AbortSignal | undefined;
+
+  const loop = runWorkLoop({
+    ...workLoopHooks,
+    agentId,
+    lane: "work",
+    wake: new Wake(roomyWakeLimits),
+    assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+    call: async (_request, signal) => {
+      signalSeen = signal;
+      setTimeout(() => steer.requestTerminate(agentId), 5);
+      return await slow;
+    },
+    executeTool: async (call) => {
+      executed.push(call.name);
+      return { content: "{}", isError: false, audit: {} };
+    },
+    steer,
+    logResponse: async () => {},
+    logToolResult: async () => {},
+  });
+  await loop;
+  release?.();
+  assert.equal(signalSeen?.aborted, true);
+  assert.deepEqual(executed, []);
+  assert.equal(steer.isTerminate(agentId), false);
 });

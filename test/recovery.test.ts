@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, agents, messages } from "../src/db/schema.js";
-import { NOTICE } from "../src/runtime/deliver.js";
+import { agentLogs, agents, messages, wakes } from "../src/db/schema.js";
 import { EventBus } from "../src/runtime/events.js";
 import { recoverInterruptedWakes } from "../src/runtime/recovery.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
@@ -40,6 +39,17 @@ async function seedLog(
   });
 }
 
+/** seedMessage stores a message `secondsAgo` before now; a null sender is Ankur. */
+async function seedMessage(from: string | null, to: string, content: string, secondsAgo: number): Promise<void> {
+  await handle.db.insert(messages).values({
+    id: randomUUID(),
+    fromAgentId: from,
+    toAgentId: to,
+    content,
+    createdAt: new Date(Date.now() - secondsAgo * 1000),
+  });
+}
+
 test("boot recovery reports a recent wake cut mid-tool once without waking its requester, wakes a waiting message, and leaves stale, finished and retired agents alone", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "recovery-parent", systemPrompt: "parent" });
@@ -50,7 +60,7 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
   const staleId = await insertAgent(handle.db, { id: "recovery-stale", systemPrompt: "stale", parentAgentId: parentId });
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retiredId));
 
-  await seedLog(cutId, "process", "message", { direction: "receive", content: "click it" }, 60);
+  await seedMessage(parentId, cutId, "click it", 60);
   await seedLog(cutId, "process", "response", { content: [] }, 59);
   await seedLog(cutId, "process", "tool_result", { name: "steer_work", is_error: false, content: '{"queued":true,"terminate":false}' }, 58);
   await seedLog(cutId, "process", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 57);
@@ -62,7 +72,7 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
     56,
   );
 
-  await seedLog(staleId, "process", "message", { direction: "receive", content: "read it" }, 3_600);
+  await seedMessage(parentId, staleId, "read it", 3_600);
   await seedLog(
     staleId,
     "work",
@@ -71,13 +81,13 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
     3_590,
   );
 
-  await seedLog(waitingId, "process", "message", { direction: "receive", content: "hello?" }, 30);
+  await seedMessage(null, waitingId, "hello?", 30);
 
-  await seedLog(doneId, "process", "message", { direction: "receive", content: "hi" }, 20);
+  await seedMessage(null, doneId, "hi", 20);
   await seedLog(doneId, "process", "response", { content: [] }, 19);
   await seedLog(doneId, "process", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 18);
 
-  await seedLog(retiredId, "process", "message", { direction: "receive", content: "too late" }, 10);
+  await seedMessage(null, retiredId, "too late", 10);
 
   const woken: string[] = [];
   const deps = {
@@ -100,13 +110,13 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
   assert.equal(reports[0]?.kind, "notice");
   assert.match(reports[0]!.content, /^Hath restarted while recovery-cut was working/);
   assert.match(reports[0]!.content, /started browser_click .* may or may not have run/);
-  const [sendLog] = await handle.db
+  const recoveryWakes = await handle.db
     .select()
-    .from(agentLogs)
-    .where(eq(agentLogs.agentId, cutId))
-    .then((rows) => rows.filter((row) => row.event === "message" && row.payload.direction === "send"));
-  assert.equal(sendLog?.payload[NOTICE], "wake_interrupted");
-  assert.equal(sendLog?.payload.kind, "notice");
+    .from(wakes)
+    .where(and(eq(wakes.agentId, cutId), eq(wakes.reasonKind, "recovery")));
+  assert.equal(recoveryWakes.length, 1);
+  assert.match(recoveryWakes[0]!.error ?? "", /started browser_click .* may or may not have run/);
+  assert.ok(recoveryWakes[0]!.endedAt !== null);
   assert.doesNotMatch(reports[0]!.content, /wake me/);
   assert.deepEqual(woken, [waitingId]);
   const staleReports = await handle.db.select().from(messages).where(eq(messages.fromAgentId, staleId));
