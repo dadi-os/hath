@@ -6,7 +6,7 @@
  */
 
 import { isUtf8 } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, extname } from "node:path";
 import { eq, isNull } from "drizzle-orm";
 import {
@@ -136,7 +136,15 @@ async function storeFile(
   const id = randomUUID();
   const path = attachmentPath(files.dir, id, filename);
   await writeBytes(files, path, bytes);
-  return { id, filename, mediaType, sizeBytes: bytes.length, path, description };
+  return {
+    id,
+    filename,
+    mediaType,
+    sizeBytes: bytes.length,
+    path,
+    contentSha256: createHash("sha256").update(bytes).digest("hex"),
+    description,
+  };
 }
 
 /** textAttachment stores `content` as a text file named `filename` and returns its row. */

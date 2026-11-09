@@ -320,7 +320,7 @@ async function waitFor(condition: () => boolean, ms = 2_000): Promise<void> {
   }
 }
 
-test("GET /router lists every run in flight, and a finished run leaves the other listed", async () => {
+test("POST /router refuses a second run with 409 router_busy while one is in flight, and accepts one after it finishes", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const gates: Array<() => void> = [];
   const dwar = mockDwar({
@@ -336,30 +336,51 @@ test("GET /router lists every run in flight, and a finished run leaves the other
   });
 
   const first = app.inject({ method: "POST", url: "/router", payload: { content: "one" } });
+  const simultaneous = app.inject({ method: "POST", url: "/router", payload: { content: "two" } });
+  const refused = await simultaneous;
   await waitFor(() => gates.length === 1);
-  const second = app.inject({ method: "POST", url: "/router", payload: { content: "two" } });
-  await waitFor(() => seen.filter((event) => event.type === "router_started").length === 2);
-
-  const listed = (await app.inject({ method: "GET", url: "/router" })).json() as { running: Array<{ run_id: string; at: string }> };
   const started = seen.flatMap((event) => (event.type === "router_started" ? [event] : []));
-  assert.deepEqual(
-    listed.running.map((run) => run.run_id).sort(),
-    started.map((event) => event.run_id).sort(),
-  );
-  assert.notEqual(started[0]?.run_id, started[1]?.run_id);
-  assert.deepEqual(listed.running.map((run) => run.at).sort(), started.map((event) => event.at).sort());
+  assert.equal(started.length, 1);
+  assert.equal(refused.statusCode, 409, refused.body);
+  assert.deepEqual(refused.json(), {
+    error: { type: "router_busy", message: "Dadi is busy with another request", run_id: started[0]?.run_id, at: started[0]?.at },
+  });
+  const listed = (await app.inject({ method: "GET", url: "/router" })).json() as { running: Array<{ run_id: string; at: string }> };
+  assert.deepEqual(listed.running, [{ run_id: started[0]?.run_id, at: started[0]?.at }]);
+  assert.equal(gates.length, 1);
 
   gates[0]?.();
   assert.equal((await first).statusCode, 201);
-  const afterFirst = (await app.inject({ method: "GET", url: "/router" })).json() as { running: Array<{ run_id: string }> };
-  assert.deepEqual(afterFirst.running.map((run) => run.run_id), [started[1]?.run_id]);
+  assert.deepEqual((await app.inject({ method: "GET", url: "/router" })).json(), { running: [] });
 
+  const next = app.inject({ method: "POST", url: "/router", payload: { content: "three" } });
   await waitFor(() => gates.length === 2);
   gates[1]?.();
-  assert.equal((await second).statusCode, 201);
-  assert.deepEqual((await app.inject({ method: "GET", url: "/router" })).json(), { running: [] });
-  const finishedIds = seen.flatMap((event) => (event.type === "router_finished" ? [event.run_id] : []));
-  assert.deepEqual(finishedIds.sort(), started.map((event) => event.run_id).sort());
+  assert.equal((await next).statusCode, 201);
+  assert.equal(seen.filter((event) => event.type === "router_started").length, 2);
+
+  await runtime.waitUntilIdle();
+  await app.close();
+});
+
+test("a failed router run releases the router so the next request is accepted", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  let failing = true;
+  const dwar = mockDwar({
+    complete: () => {
+      if (failing) {
+        throw new Error("dwar unreachable");
+      }
+      return Promise.resolve(yieldTurn("ok"));
+    },
+  });
+  const { app, runtime } = await appWith(dwar);
+
+  const failed = await app.inject({ method: "POST", url: "/router", payload: { content: "one" } });
+  assert.ok(failed.statusCode >= 500, failed.body);
+  failing = false;
+  const next = await app.inject({ method: "POST", url: "/router", payload: { content: "two" } });
+  assert.equal(next.statusCode, 201, next.body);
 
   await runtime.waitUntilIdle();
   await app.close();

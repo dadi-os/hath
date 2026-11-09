@@ -218,6 +218,44 @@ test("send copies a host file path as it is now, and the send binds that same ro
   assert.notEqual(row?.messageId, null);
 });
 
+test("a file queued by the work lane and sent by the process lane, by path or by id, reaches the message once", async (t) => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const nas = mockNas({});
+  nas.files.set("/var/home/dadi/answer.md", Buffer.from("the answer\n"));
+  nas.files.set("/var/home/dadi/other.md", Buffer.from("another file\n"));
+  const workerId = await insertAgent(handle.db, { name: "writer", systemPrompt: "writes" });
+  const { app, runtime } = await harness(nas);
+  t.after(async () => {
+    await runtime.waitUntilIdle();
+    await app.close();
+  });
+
+  const queued = await executeTool(runtime.toolContext(workerId, "work"), {
+    type: "tool_use",
+    id: "q1",
+    name: QUEUE_MESSAGE,
+    input: { to: "ankur", content: "the answer", attachments: ["/var/home/dadi/answer.md"] },
+  });
+  assert.equal(queued.isError, false, queued.content);
+  const [queuedRow] = await handle.db.select().from(attachments).where(eq(attachments.filename, "answer.md"));
+
+  const sent = await executeTool(runtime.toolContext(workerId, "process"), {
+    type: "tool_use",
+    id: "s1",
+    name: SEND_MESSAGE,
+    input: {
+      to: "ankur",
+      content: "the answer",
+      attachments: ["/var/home/dadi/answer.md", queuedRow!.id, "/var/home/dadi/other.md"],
+    },
+  });
+  assert.equal(sent.isError, false, sent.content);
+  const bound = (await handle.db.select().from(attachments)).filter((row) => row.messageId !== null);
+  assert.deepEqual(bound.map((row) => row.filename).sort(), ["answer.md", "other.md"]);
+  const [answer] = bound.filter((row) => row.filename === "answer.md");
+  assert.equal(nas.files.get(answer!.path!)?.toString(), "the answer\n");
+});
+
 test("send gives a Word document and an unlisted binary their media types and keeps their bytes", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const zipBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0xfe]);

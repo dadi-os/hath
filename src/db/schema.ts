@@ -228,6 +228,8 @@ export const attachments = pgTable(
     mediaType: text("media_type").notNull(),
     sizeBytes: integer("size_bytes").notNull(),
     path: text("path"),
+    /** SHA-256 of the file's bytes, hex; null on rows from before it was kept. */
+    contentSha256: text("content_sha256"),
     textContent: text("text_content"),
     data: bytea("data"),
     description: text("description"),

@@ -18,6 +18,8 @@ export type NewAttachment = {
   sizeBytes: number;
   /** Where the file is on the box. */
   path: string;
+  /** SHA-256 of the file's bytes, hex. */
+  contentSha256: string;
   /** image.describe text for images. */
   description: string | null;
 };
@@ -73,10 +75,33 @@ export async function stageAttachments(
   return orderedMeta(db, files.map((file) => file.id));
 }
 
+/** The identity of a file across rows: its content hash, or its place on the box for a row made before hashes were kept. */
+export function fileKey(file: { contentSha256: string | null; path: string | null }): string {
+  return file.contentSha256 !== null ? `sha256:${file.contentSha256}` : `path:${file.path}`;
+}
+
+/**
+ * firstOfEachFile keeps the first entry of each file (see fileKey), so a message carries
+ * a file once however many rows name it; files that share only a name stay.
+ */
+export function firstOfEachFile<T extends { contentSha256: string | null; path: string | null }>(files: T[]): T[] {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const key = fileKey(file);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 /**
  * Attach files to a just-inserted message, in order: `uploads` are inserted
  * bound to it, then each `forward` id is bound when no message carries it yet
- * and copied when one does. An unknown id is a 404.
+ * and copied when one does. A file already on the message (see firstOfEachFile) is
+ * not attached again, and an unbound row skipped as that repeat is deleted. An
+ * unknown id is a 404.
  */
 export async function attachToMessage(
   tx: Tx,
@@ -84,34 +109,51 @@ export async function attachToMessage(
   createdByAgentId: string | null,
   args: { uploads: NewAttachment[]; forward: string[] },
 ): Promise<AttachmentMeta[]> {
-  let position = 0;
-  for (const file of args.uploads) {
-    await tx.insert(attachments).values({
-      messageId,
-      createdByAgentId,
-      position: position++,
-      ...file,
-    });
-  }
   const found = await requireAttachments(tx, args.forward);
-  for (const id of args.forward) {
-    if (found.get(id) === null) {
-      await tx
-        .update(attachments)
-        .set({ messageId, position: position++ })
-        .where(eq(attachments.id, id));
+  const forwarded =
+    args.forward.length === 0
+      ? []
+      : await tx
+          .select({ id: attachments.id, path: attachments.path, contentSha256: attachments.contentSha256 })
+          .from(attachments)
+          .where(inArray(attachments.id, args.forward));
+  const forwardedById = new Map(forwarded.map((row) => [row.id, row]));
+  const entries = [
+    ...args.uploads.map((file) => ({ kind: "upload" as const, file, contentSha256: file.contentSha256, path: file.path })),
+    ...[...new Set(args.forward)].map((id) => {
+      const row = forwardedById.get(id)!;
+      return { kind: "forward" as const, id, contentSha256: row.contentSha256, path: row.path };
+    }),
+  ];
+  const kept = new Set(firstOfEachFile(entries));
+  let position = 0;
+  const redundant: string[] = [];
+  for (const entry of entries) {
+    if (!kept.has(entry)) {
+      if (entry.kind === "forward" && found.get(entry.id) === null) {
+        redundant.push(entry.id);
+      }
       continue;
     }
-    await tx.execute(sql`
-      INSERT INTO ${attachments} (
-        "id", "message_id", "created_by_agent_id", "position", "filename", "media_type",
-        "size_bytes", "path", "description"
-      )
-      SELECT ${randomUUID()}, ${messageId}, "created_by_agent_id", ${position++}, "filename",
-        "media_type", "size_bytes", "path", "description"
-      FROM ${attachments}
-      WHERE "id" = ${id}
-    `);
+    if (entry.kind === "upload") {
+      await tx.insert(attachments).values({ messageId, createdByAgentId, position: position++, ...entry.file });
+    } else if (found.get(entry.id) === null) {
+      await tx.update(attachments).set({ messageId, position: position++ }).where(eq(attachments.id, entry.id));
+    } else {
+      await tx.execute(sql`
+        INSERT INTO ${attachments} (
+          "id", "message_id", "created_by_agent_id", "position", "filename", "media_type",
+          "size_bytes", "path", "content_sha256", "description"
+        )
+        SELECT ${randomUUID()}, ${messageId}, "created_by_agent_id", ${position++}, "filename",
+          "media_type", "size_bytes", "path", "content_sha256", "description"
+        FROM ${attachments}
+        WHERE "id" = ${entry.id}
+      `);
+    }
+  }
+  if (redundant.length > 0) {
+    await tx.delete(attachments).where(and(inArray(attachments.id, redundant), isNull(attachments.messageId)));
   }
   const rows = await tx
     .select(metaColumns)

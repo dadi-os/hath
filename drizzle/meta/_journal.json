@@ -190,6 +190,13 @@
       "when": 1792699200000,
       "tag": "0026_wakes",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1792785600000,
+      "tag": "0027_attachment_content_hash",
+      "breakpoints": true
     }
   ]
 }
