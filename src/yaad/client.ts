@@ -6,7 +6,7 @@ import type { Config } from "../config.js";
 import { YAAD_BASE_URL } from "../constants.js";
 import { HathError } from "../errors.js";
 
-const nodeKind = z.enum(["person", "memory", "plan", "place"]);
+const nodeKind = z.enum(["person", "memory", "plan", "place", "task"]);
 
 const recallNodeSchema = z
   .object({
@@ -55,11 +55,14 @@ export type RecallRequest = {
   query?: string | undefined;
   from?: string[] | undefined;
   hops?: number | undefined;
-  kind?: "person" | "memory" | "plan" | "place" | undefined;
+  kind?: "person" | "memory" | "plan" | "place" | "task" | undefined;
   name?: string | undefined;
   occurred_from?: string | undefined;
   occurred_to?: string | undefined;
-  status?: "idea" | "tentative" | "confirmed" | undefined;
+  /** A plan's status; only with `kind` plan or no kind. */
+  status?: "tentative" | "confirmed" | "cancelled" | undefined;
+  /** A local date (YYYY-MM-DD): the tasks not done whose window has opened by then; only with `kind` task or no kind. */
+  relevant_on?: string | undefined;
   limit?: number | undefined;
 };
 

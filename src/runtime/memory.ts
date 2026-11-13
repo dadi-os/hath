@@ -9,8 +9,8 @@ import { failWithoutAgentIdentity, type ToolContext, type ToolExecResult } from 
 import type { DwarTool } from "../types/domain.js";
 import { INGEST_MEMORY, RECALL_MEMORY } from "../types/domain.js";
 
-const nodeKind = z.enum(["person", "memory", "plan", "place"]);
-const planStatus = z.enum(["idea", "tentative", "confirmed"]);
+const nodeKind = z.enum(["person", "memory", "plan", "place", "task"]);
+const planStatus = z.enum(["tentative", "confirmed", "cancelled"]);
 
 const recallMemoryInput = z
   .object({
@@ -22,6 +22,7 @@ const recallMemoryInput = z
     occurred_from: z.string().datetime({ offset: true }).optional(),
     occurred_to: z.string().datetime({ offset: true }).optional(),
     status: planStatus.optional(),
+    relevant_on: z.string().date().optional(),
     limit: z.number().int().positive().optional(),
   })
   .strict();
@@ -39,11 +40,11 @@ const ingestMemoryInput = z
  */
 export const INGEST_MEMORY_ASYNC = true;
 
-/** Read memory by meaning, from known nodes, or by exact filters, walking `hops` links out. */
+/** Read memory by meaning, from known nodes, or by exact filters (including the tasks relevant on a day), walking `hops` links out. */
 export const recallMemoryTool: DwarTool = {
   name: RECALL_MEMORY,
   description:
-    'Look things up in Ankur\'s memory: people, places, plans, events, and facts. Start one of three ways. `query` searches by meaning ("what do I know about Sparsh"). `from` starts at node ids you already have. Filters match exactly: `kind`, `name` (exact title or alias), `occurred_from`/`occurred_to` (a date window, e.g. "what\'s on Tuesday"), `status` (plans). Filters narrow a query; `from` cannot be combined with filters. `hops` walks that many links out from where you started — `{ from: [id], hops: 1 }` is a node and everything linked to it. Returned edges carry their properties. With a query, check `sufficient`: false means memory did not have enough, so say so rather than filling the gap. What memory returns is true: act on it, and do not send a worker to re-check it.',
+    'Look things up in Ankur\'s memory: people, places, events (plans), tasks, and facts. Start one of three ways. `query` searches by meaning ("what do I know about Sparsh"). `from` starts at node ids you already have. Filters match exactly: `kind`, `name` (exact title or alias), `occurred_from`/`occurred_to` (an event window: "what\'s on Tuesday" is `kind: "plan"` with that day; a course\'s class sessions are found this way, never by meaning), `status` (events: tentative, confirmed, cancelled), and `relevant_on`. `relevant_on` is a local date (YYYY-MM-DD) and returns every task not done whose window has opened by that day, still open or past due: it is the exact answer to "what is due" or "what is open today", so use it instead of a query for that, with `kind: "task"` or no kind. Each task\'s `detail` has `opens_on`, `closes_at` (when it is due) and `done_at`; a plan\'s has its end, `status`, and `rsvp` (whether Ankur is going). Filters narrow a query; `from` cannot be combined with filters. `hops` walks that many links out from where you started — `{ from: [id], hops: 1 }` is a node and everything linked to it. Returned edges carry their properties. With a query, check `sufficient`: false means memory did not have enough, so say so rather than filling the gap. What memory returns is true: act on it, and do not send a worker to re-check it.',
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -59,21 +60,25 @@ export const recallMemoryTool: DwarTool = {
         minimum: 0,
         description: "Links to walk out from the start; omit to let a query decide, 0 for just the matches",
       },
-      kind: { type: "string", enum: ["person", "memory", "plan", "place"] },
+      kind: { type: "string", enum: ["person", "memory", "plan", "place", "task"] },
       name: { type: "string", description: "Exact title, or a person's alias" },
       occurred_from: { type: "string", description: "ISO-8601 window start, with offset" },
       occurred_to: { type: "string", description: "ISO-8601 window end, with offset" },
-      status: { type: "string", enum: ["idea", "tentative", "confirmed"] },
+      status: { type: "string", enum: ["tentative", "confirmed", "cancelled"], description: "Events only" },
+      relevant_on: {
+        type: "string",
+        description: "Local date YYYY-MM-DD: the tasks not done whose window has opened by then (open or past due)",
+      },
       limit: { type: "integer", minimum: 1, description: "Max nodes to return" },
     },
   },
 };
 
-/** Store a fact, event, deadline, or calendar change (scheduling, a session moved, an outcome); Yaad extracts and reconciles it. */
+/** Store a fact, event, task, or change (a deadline, a class schedule, a session moved, an RSVP, something done); Yaad extracts and reconciles it. */
 export const ingestMemoryTool: DwarTool = {
   name: INGEST_MEMORY,
   description:
-    "Store something you learned about Ankur's world — a fact, a preference, an event, a scheduled meeting, a deadline, time set aside on his calendar, a change — in memory yourself, as you learn it; no other agent does this for you. Write it in plain language the way you would tell a person. Yaad extracts the people, places, plans, and links and reconciles them with what is already stored, but send only what is new or changed since you last stored it: re-sending a whole report can still duplicate what is there, so recall_memory first when unsure. Keep each call to one topic and a handful of facts. Give every deadline and event its exact date, time, and time zone, and say \"time not stated\" when the source gives none rather than guessing one. To correct something stored earlier, say so outright: \"Correction: <old claim> is wrong; <new claim>.\" A fact you simply leave out is not removed. Do not store progress or status that is about to change — what you checked, what is not posted yet, what is still to do — and label a snapshot you do store (a gradebook) \"as of <date>\". Ankur's calendar is memory too: there are no planner tools. Schedule time for him (a gym session, a study block for an exam, a meal) by saying what, when it starts and ends, and what it is for; a task keeps its deadline when you give it a time (\"Ankur will take the IBM assessment Sat Oct 31, 2:20-3:50 PM; the link still expires Oct 31 at 11:59 PM\"). Change one session the same way, naming the item and its date: moved (\"Thursday's CSE 431 lecture moves to 3:00-4:20 PM\"), cancelled, done, or missed (\"Ankur missed today's gym session\"), plus what it covered or why, which becomes that session's note. Give a place its full street address and the room (\"Engineering Building room 1345, 428 S Shaw Ln, East Lansing, MI 48824\"), and say when Ankur will not attend something so it stays off his planner. Say an outcome on the item it is about (\"Ankur submitted CSE 431 HW3 on Oct 14\"), and never store that something does not exist (\"no quiz this week\"). Do not store how you did a task, how a site, login, tool, or repo behaves, rules for how agents should work (those belong in the owning agent's charter), approvals or relays, or anything about agents and workers: those stay in your transcript and fade. Never store a password, code, or other secret. Pass participant_ids when you already have the people's node ids from recall_memory.",
+    "Store something you learned about Ankur's world — a fact, a preference, an event, a deadline, a change — in memory yourself, as you learn it; no other agent does this for you. Write it in plain language the way you would tell a person. Yaad extracts the people, places, events, tasks, and links and reconciles them with what is already stored, but send only what is new or changed since you last stored it: re-sending a whole report can still duplicate what is there, so recall_memory first when unsure. Keep each call to one topic and a handful of facts. Memory keeps two kinds of dated things. An event has a clock time Ankur is at (an interview, an appointment, an exam at its hour): give its date, start, end, and time zone. A task is something to get done with no time to be at (homework, a form, an application): give when it is due, with the time and zone, and when it becomes relevant, which is its release or open date or the lead the source states (\"posted today\", \"released one week before it is due\", \"start in January\"). Yaad decides each task's window from your text alone and nothing fills one in later, so tell it the dates it needs. Say \"time not stated\" when the source gives none rather than guessing one. Where something is handed in (\"on Gradescope\") is where, not whether: say an item was submitted, paid, or done only when Ankur did it, on that item (\"Ankur submitted CSE 431 HW3 on Oct 14 at 10:05 PM\"). A class that meets on a schedule: give the days, times, building and room, first and last day, and days off, and Yaad stores one session per meeting; change sessions by naming the course and the dates (\"Thursday Nov 19's CSE 380 lecture is cancelled\", \"from Dec 1 CSE 380 meets 10:30-11:50\", \"Ankur missed today's CSE 431 lecture\"). Say whether Ankur is going to something only when he said so (\"Ankur is not going to the talk\"); a declined event stays on his timeline. Say an event is cancelled only when it was called off. Time set aside is stored only when Ankur chose it (\"Ankur will take the IBM assessment Sat Oct 31, 2:20-3:50 PM; the link still expires Oct 31 at 11:59 PM\"); do not lay out his day with meals, study blocks, or routines. To correct something stored earlier, say so outright: \"Correction: <old claim> is wrong; <new claim>.\" A fact you simply leave out is not removed. Do not store progress or status that is about to change — what you checked, what is not posted yet, what is still to do — and label a snapshot you do store (a gradebook) \"as of <date>\"; never store that something does not exist (\"no quiz this week\"), a score on one item, or a submit time on its own. Give a place its full street address and the room (\"Engineering Building room 1345, 428 S Shaw Ln, East Lansing, MI 48824\"). Do not store how you did a task, how a site, login, tool, or repo behaves, rules for how agents should work (those belong in the owning agent's charter), approvals or relays, or anything about agents and workers: those stay in your transcript and fade. Never store a password, code, or other secret. Pass participant_ids when you already have the people's node ids from recall_memory.",
   input_schema: {
     type: "object",
     additionalProperties: false,
