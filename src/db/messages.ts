@@ -13,7 +13,7 @@ import type { AttachmentSummary, MessageKind, MessageRecord, MessageStatus } fro
 import { toMessageRecord } from "../serialize.js";
 import { HathError } from "../errors.js";
 import type { Db } from "./client.js";
-import { agents, messages, scheduledMessages, threadReads, wakes, type MessageRow } from "./schema.js";
+import { agents, messages, threadReads, wakes, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
 
 
@@ -87,6 +87,10 @@ export async function insertMessage(
     status?: MessageStatus;
     /** notice for hath's word that an agent's work stopped; message when left out. */
     kind?: MessageKind;
+    /** The job the message belongs to, when known before it is written (see runtime/job-of.ts). */
+    jobId?: string;
+    /** `hath` for a message hath sends for the agent. */
+    sentBy?: "hath";
   },
 ): Promise<TranscriptEntry> {
   return db.transaction(async (tx) => {
@@ -99,6 +103,8 @@ export async function insertMessage(
         content: args.content,
         status: args.status ?? null,
         kind: args.kind ?? "message",
+        jobId: args.jobId ?? null,
+        sentBy: args.sentBy ?? null,
       })
       .returning();
     if (!row) {
@@ -115,6 +121,11 @@ export async function insertMessage(
  */
 export async function insertUtterance(db: Db, content: string): Promise<void> {
   await db.insert(messages).values({ id: randomUUID(), fromAgentId: null, toAgentId: null, content, kind: "utterance" });
+}
+
+/** Record the job message `id` belongs to. */
+export async function stampMessageJob(db: Db, id: string, jobId: string): Promise<void> {
+  await db.update(messages).set({ jobId }).where(eq(messages.id, id));
 }
 
 /** Record the recipient wake message `id` opened or joined. */
@@ -136,32 +147,20 @@ export function messageToTranscriptEntry(
     attachments,
     status: row.status,
     kind: row.kind,
+    ...(row.sentBy !== null ? { sentBy: row.sentBy } : {}),
     createdAt: row.createdAt,
   };
 }
 
 /**
  * Load all durable messages (not utterances) and their attachment metadata into the in-process
- * transcript cache (startup resume). A message that opened a wake for a schedule that still
- * repeats is marked as that routine's trigger (see TranscriptEntry.routine); a trigger whose
- * schedule was since cancelled, or that joined a wake already running, loads as a plain message.
+ * transcript cache (startup resume).
  */
 export async function hydrateTranscript(db: Db, transcript: TranscriptStore): Promise<number> {
   const rows = await db.select().from(messages).where(ne(messages.kind, "utterance")).orderBy(asc(messages.seq));
   const attached = await attachmentsByMessage(db);
-  const triggers = await db.execute<{ message_id: string; schedule_id: string }>(sql`
-    select w.opened_by_message_id as message_id, w.reason_ref as schedule_id
-    from ${wakes} w
-    join ${scheduledMessages} s on s.id::text = w.reason_ref
-    where w.reason_kind = 'schedule' and w.opened_by_message_id is not null and s.interval_minutes is not null
-  `);
-  const routineOf = new Map(triggers.map((row) => [row.message_id, row.schedule_id]));
   for (const row of rows) {
     const entry = messageToTranscriptEntry(row, attached.get(row.id) ?? []);
-    const routine = routineOf.get(row.id);
-    if (routine !== undefined) {
-      entry.routine = routine;
-    }
     transcript.ingest(entry);
   }
   transcript.markHydrated();

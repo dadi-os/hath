@@ -22,7 +22,6 @@ import { randomUUID } from "node:crypto";
 import { formatISO } from "date-fns";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agentsWithPendingOutbox } from "../db/outbox.js";
 import { currentRequester } from "../db/messages.js";
 import { agentLogs } from "../db/schema.js";
 import { closeInterruptedWakes, insertWake } from "../db/wakes.js";
@@ -186,10 +185,6 @@ export async function recoverInterruptedWakes(
 ): Promise<void> {
   const closed = await closeInterruptedWakes(deps.db, RESTART_ERROR);
   deps.log.info({ code: "wakes_closed", wakes: closed }, "closed the wakes a restart left open");
-  for (const agentId of await agentsWithPendingOutbox(deps.db)) {
-    deps.log.info({ code: "outbox_resumed", agent_id: agentId }, "restart left work-lane messages unsent; waking the agent's process lane");
-    deps.enqueueProcess(agentId, undefined, RECOVERY_ORIGIN);
-  }
   const cutoff = Date.now() - deps.recoveryWindowMinutes * 60_000;
   for (const wake of await findInterruptedWakes(deps.db)) {
     const midFlight = wake.work_cut || wake.process_cut || wake.steer_lost;

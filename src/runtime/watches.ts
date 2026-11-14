@@ -112,11 +112,11 @@ async function questionDeadline(db: Db, agentId: string, minutes: number, byJob:
 
 /**
  * answerCap is `requested` minutes of waiting, cut to the caller's question deadline (at least
- * a minute from now) when its job is Ankur's question. A routine has no deadline, and under
- * `runtime.job_requester` neither has a job whose deadline passed before this wait began.
+ * a minute from now) when its job is Ankur's question. Under
+ * `runtime.job_requester` a job whose deadline passed before this wait began has none.
  */
 export async function answerCap(ctx: ToolContext, requested: number): Promise<number> {
-  if (ctx.callerId === null || (ctx.jobRequester && ctx.routineSince !== null)) {
+  if (ctx.callerId === null) {
     return requested;
   }
   const deadline = await questionDeadline(ctx.db, ctx.callerId, ctx.questionAnswerMinutes, ctx.jobRequester);
@@ -145,7 +145,7 @@ export async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecR
     }
   }
   const minutes = await answerCap(ctx, input.timeout_minutes);
-  const dueAt = await recordWatch(ctx.db, ctx.callerId, targets, minutes);
+  const dueAt = await recordWatch(ctx.db, ctx.callerId, ctx.jobId, targets, minutes);
   return ok({
     waiting_on: targets,
     wakes_by: dueAt.toISOString(),
@@ -153,13 +153,13 @@ export async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   });
 }
 
-/** recordWatch records that `agentId`'s work lane waits on `targets` for `minutes`, replacing any wait it had, and returns when it falls due. */
-export async function recordWatch(db: Db, agentId: string, targets: string[], minutes: number): Promise<Date> {
+/** recordWatch records that `agentId`'s work lane waits on `targets` for `minutes` in job `jobId` (null for none), replacing any wait it had, and returns when it falls due. */
+export async function recordWatch(db: Db, agentId: string, jobId: string | null, targets: string[], minutes: number): Promise<Date> {
   const dueAt = new Date(Date.now() + minutes * 60_000);
   await db
     .insert(watches)
-    .values({ agentId, targets, dueAt })
-    .onConflictDoUpdate({ target: watches.agentId, set: { targets, since: new Date(), dueAt } });
+    .values({ agentId, targets, dueAt, jobId })
+    .onConflictDoUpdate({ target: watches.agentId, set: { targets, since: new Date(), dueAt, jobId } });
   return dueAt;
 }
 
@@ -214,6 +214,7 @@ export async function checkDueWatches(deps: WatchDeps, now = new Date()): Promis
       content: `Your wait timed out after ${minutesBetween(watch.since, now)} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}${forAnkur ? "\nAnswer Ankur now with what you have; name what is missing in one clause." : ""}`,
       notice: "wait",
       wokenBy: "wait timeout",
+      jobId: watch.jobId,
     });
   }
 }

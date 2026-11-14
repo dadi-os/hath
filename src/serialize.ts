@@ -1,16 +1,18 @@
-/** Map Drizzle agent/log/scheduled-message rows to API snake_case records. */
+/** Map Drizzle agent/log/routine rows to API snake_case records. */
 
 import { z } from "zod";
 import type { AttachmentMeta } from "./db/attachments.js";
 import { toAttachmentSummary } from "./db/attachments.js";
-import type { AgentLogRow, AgentRow, MessageRow, ScheduledMessageRow } from "./db/schema.js";
+import type { AgentLogRow, AgentRow, MessageRow, ReminderRow, RoutineRow } from "./db/schema.js";
 import type {
   AgentRecord,
   LogEvent,
   LogRecord,
   Lane,
   MessageRecord,
-  ScheduledMessageRecord,
+  ReminderRecord,
+  RoutineRecord,
+  Weekday,
   WakeEntry,
   WakeOutcome,
   WakeToolCall,
@@ -59,16 +61,24 @@ export function toLogRecord(row: AgentLogRow): LogRecord {
   };
 }
 
-export function toScheduledMessageRecord(row: ScheduledMessageRow): ScheduledMessageRecord {
+export function toRoutineRecord(row: RoutineRow): RoutineRecord {
   return {
     id: row.id,
-    from_agent_id: row.fromAgentId,
-    to_agent_id: row.toAgentId,
-    content: row.content,
-    run_at: row.runAt.toISOString(),
-    interval_minutes: row.intervalMinutes,
+    agent_id: row.agentId,
+    title: row.title,
+    procedure: row.procedure,
+    at: row.atLocal,
+    days: row.days as Weekday[] | null,
+    next_run_at: row.nextRunAt.toISOString(),
+    last_run_at: row.lastRunAt?.toISOString() ?? null,
+    last_job_id: row.lastJobId,
+    active: row.active,
     created_at: row.createdAt.toISOString(),
   };
+}
+
+export function toReminderRecord(row: ReminderRow): ReminderRecord {
+  return { id: row.id, agent_id: row.agentId, job_id: row.jobId, note: row.note, run_at: row.runAt.toISOString() };
 }
 
 /** The most characters of one tool result a wake detail carries; the whole row is `GET /agents/:id/logs/:log_id`. */

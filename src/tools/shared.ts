@@ -62,24 +62,10 @@ export type ToolContext = {
   enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
   /** Told of each message that opens or joins a wake (see runtime/wake-activity.ts). */
   wakeActivity?: WakeActivity;
-  /**
-   * While the caller's wake is a routine and `runtime.routine_silence` is on, the seq of the
-   * trigger that opened it (see runtime/wake.ts Wake.routine); null otherwise. A routine sends
-   * nothing to agents and at most one message to Ankur (see runtime/send.ts routineRefusal).
-   */
-  routineSince: number | null;
-  /** `runtime.direct_agent_messages`: the work lane's `queue_message` to an agent is delivered at once (see runtime/outbox.ts). */
-  directAgentMessages: boolean;
   /** `runtime.ingest_result_wakes`: a successful ingest_memory result wakes the lane that saved it (see runtime/async.ts). */
   ingestResultWakes: boolean;
-  /** `runtime.direct_ankur_messages`: the work lane's `queue_message` to Ankur is delivered at once (see runtime/outbox.ts). */
-  directAnkurMessages: boolean;
-  /** `runtime.hath_pickups`: a message with status running is refused, since hath sends the pickup (see runtime/send.ts runningRefusal). */
-  hathPickups: boolean;
   /** `runtime.question_answer_minutes`: how long after Ankur's question a wait may last (see runtime/watches.ts). */
   questionAnswerMinutes: number;
-  /** `runtime.weekday_guard`: a date in a message to Ankur needs its weekday (see runtime/send.ts weekdayRefusal). */
-  weekdayGuard: boolean;
   /** The id of the caller's current wake, or null for the router. */
   wakeId: string | null;
   /** `runtime.job_requester`: Ankur's question is the open job he opened under `questionAnswerMinutes` ago (see runtime/watches.ts). */
@@ -90,8 +76,15 @@ export type ToolContext = {
   toolHygiene: boolean;
   /** `runtime.sync_ingest`: ingest_memory runs in the call and returns what Yaad stored (see runtime/tools.ts). */
   syncIngest: boolean;
-  /** `runtime.ingest_source_text`: ingest_memory sends Yaad the text of Ankur's message that opened the open job (see runtime/memory.ts). */
-  ingestSourceText: boolean;
+  /** The job the caller's wake is on (see runtime/job-of.ts), or null when the wake is no job's. */
+  jobId: string | null;
+  /** The box's IANA time zone, for weekdays in a message to Ankur. */
+  timeZone: string;
+  /** `runtime.answer_by_minutes`. */
+  answerByMinutes: number;
+  /** `runtime.prompt_ceiling_tokens` and `runtime.activity_ceiling_share`: the room an activity list may take. */
+  promptCeilingTokens: number;
+  activityCeilingShare: number;
 };
 
 /**

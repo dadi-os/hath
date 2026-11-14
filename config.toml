@@ -49,46 +49,25 @@ recovery_window_minutes = 10
 # prefix holds until the next trim.
 prompt_ceiling_tokens = 96000
 prompt_trim_tokens = 16000
-# Job-shape switches (cycle-4 change). Each turns one runtime behaviour on; false keeps
-# the behaviour from before it.
-# routine_silence: a wake opened by a recurring schedule's trigger is a routine. It sends
-# nothing to agents and at most one message to Ankur, with status blocked or needs_input,
-# until someone else's message joins the wake.
-routine_silence = true
-# direct_agent_messages: the work lane's queue_message to an agent is delivered at once,
-# with no process-lane send; the process lane messages an agent only to reply to it.
-direct_agent_messages = true
 # hath_pickups: when Ankur's latest message to an agent is 180 s old, the agent's work
 # lane has acted since it, and the agent has sent him nothing since, hath sends him
-# "Working on it." for the agent, once. The lanes send no pickup lines of their own.
+# "Working on it." for the agent, once. Agents send no pickup lines of their own: there is no
+# progress status.
 hath_pickups = true
 # implicit_yield: a process turn of only successful send_message/steer_work calls, and a
-# work turn of only successful queue_message calls, ends the run without another model
+# work turn of only successful send_message calls, ends the run without another model
 # call to yield.
 implicit_yield = true
-# status_job_ledger: the process lane's status block lists the open job's opening
-# message, the asks this agent sent in it and who answered, and what it told the requester.
-status_job_ledger = true
 # ingest_result_wakes: false lets a successful ingest_memory result join the thread without
 # waking the lane that saved it (a wake with nothing left to do re-reads and re-reports the
 # finished work); a failure always wakes. true wakes the lane on every result.
 ingest_result_wakes = false
-# direct_ankur_messages: the work lane's queue_message to Ankur is delivered at once, as one to
-# an agent is under direct_agent_messages, with its status; the process lane relays nothing.
-direct_ankur_messages = true
 # pickup_delay_s: how long Ankur's message waits for an answer before hath_pickups sends the
-# pickup. With hath_pickups on, a message with status running is refused from both lanes.
+# pickup, a message marked sent_by hath with no status.
 pickup_delay_s = 180
 # question_answer_minutes: a work lane whose job is Ankur's question may wait on others only
 # until this many minutes after his message; the timeout tells it to answer with what it has.
 question_answer_minutes = 5
-# weekday_guard: a message to Ankur that gives a month and day with no weekday beside it
-# (nor today, tonight, tomorrow or yesterday) is refused.
-weekday_guard = true
-# routine_follow_up: a wake the agent's own notice opens (a helper report, a wait timeout)
-# after a routine, with no message from anyone else in between, is still that routine: its
-# message limits hold and nobody is its requester.
-routine_follow_up = true
 # job_requester: the work lane's job is Ankur's question only while its open job is his and
 # his opening message is under question_answer_minutes old; history no longer decides it, and
 # a routine has no deadline and no "Answer Ankur now".
@@ -104,16 +83,24 @@ tool_hygiene = true
 # sync_ingest: ingest_memory runs in the work lane's call and returns what Yaad stored,
 # instead of returning {pending} and a later message.
 sync_ingest = true
-# ingest_source_text: ingest_memory sends Yaad `source_text`, the text of Ankur's message
-# that opened the work lane's open job, when that job is his.
-ingest_source_text = true
 # job_did_carry: a wake the agent's own notice opens inside a job (or routine) starts with a
 # [Did in this job] block of the job's earlier tool calls, so the lane does not redo them.
 job_did_carry = true
 # implicit_steer_end: a work turn of only successful steer_browser, steer_terminal,
-# queue_message, ingest_memory, schedule_message (and file saves) calls ends the run; each
+# send_message, ingest_memory, set_routine, end_routine, remind_me (and file saves) calls ends the run; each
 # steered task gets a watch of implicit_wait_minutes in code (30), as an awaited agent does.
 implicit_steer_end = true
+
+# answer_by_minutes: a job Ankur opens is due this many minutes after his message (jobs.answer_by).
+# The wake header shows the time. Five minutes is Ankur's policy for his questions; it depends on
+# the requester, never on the agent.
+answer_by_minutes = 5
+# activity_hours: the wake header's [Your recent activity] lists what the agent did this many
+# hours back, newest first (see runtime/activity.ts).
+activity_hours = 24
+# activity_ceiling_share: the most of the prompt ceiling that list (and a my_activity result) may
+# take, as a fraction of prompt_ceiling_tokens: a window is a share of the ceiling.
+activity_ceiling_share = 0.05
 
 [dwar]
 timeout_ms = 330000

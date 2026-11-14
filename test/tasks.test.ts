@@ -6,14 +6,17 @@ import { mockNas } from "./helpers.js";
 
 function ctxFor(nas: ReturnType<typeof mockNas>, callerId: string | null = "networking-specialist") {
   const emitted: unknown[] = [];
-  const ctx = { nas, callerId, events: { emit: (event: unknown) => emitted.push(event) } } as unknown as ToolContext;
-  return { ctx, emitted };
+  const noted: unknown[] = [];
+  const db = { insert: () => ({ values: (row: unknown) => ({ onConflictDoUpdate: async () => void noted.push(row) }) }) };
+  const ctx = { nas, db, jobId: "00000000-0000-4000-8000-000000000001", callerId, events: { emit: (event: unknown) => emitted.push(event) } } as unknown as ToolContext;
+  return { ctx, emitted, noted };
 }
 
 test("steer_browser with no id starts a task and returns its address at once", async () => {
   const nas = mockNas();
-  const { ctx, emitted } = ctxFor(nas);
+  const { ctx, emitted, noted } = ctxFor(nas);
   const result = await steerBrowser.handler(ctx, { message: "sign in to LinkedIn and read my inbox" });
+  assert.deepEqual(noted, [{ task: "task/browser/1", agentId: "networking-specialist", jobId: "00000000-0000-4000-8000-000000000001", message: "sign in to LinkedIn and read my inbox" }], "the steer is remembered with its job, so the report joins it");
   assert.equal(result.isError, false);
   assert.deepEqual(JSON.parse(result.content), { id: "task/browser/1" });
   assert.deepEqual(nas.startTaskCalls, [

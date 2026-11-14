@@ -54,6 +54,7 @@ function responseRow(payload: Record<string, unknown>, lane = "work"): AgentLogR
     event: "response",
     payload,
     wakeId: "0b6f7d5e-6a0c-4b1e-9a43-2f1d7c3a1001",
+    jobId: null,
     createdAt: at("2026-11-08T10:00:01.000Z"),
   };
 }

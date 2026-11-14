@@ -7,7 +7,7 @@ import {
   agentLogs,
   agents,
   messages,
-  scheduledMessages,
+  reminders,
 } from "../src/db/schema.js";
 import { insertAgent, openTestDb, resetRuntime, testConfig } from "./helpers.js";
 
@@ -49,14 +49,7 @@ test("deleting an agent deletes its subtree and every row naming it", async () =
     { id: randomUUID(), fromAgentId: grandchild, toAgentId: null, content: "to Ankur" },
     { id: randomUUID(), fromAgentId: null, toAgentId: bystander, content: "kept" },
   ]);
-  await handle.db.insert(scheduledMessages).values({
-    id: randomUUID(),
-    fromAgentId: bystander,
-    toAgentId: grandchild,
-    content: "later",
-    runAt: new Date(),
-    intervalMinutes: null,
-  });
+  await handle.db.insert(reminders).values({ id: randomUUID(), agentId: grandchild, authorId: bystander, note: "later", runAt: new Date() });
 
   await handle.db.delete(agents).where(eq(agents.id, manager));
 
@@ -75,7 +68,7 @@ test("deleting an agent deletes its subtree and every row naming it", async () =
     ).length,
     0,
   );
-  assert.equal((await handle.db.select().from(scheduledMessages)).length, 0);
+  assert.equal((await handle.db.select().from(reminders)).length, 0);
   assert.deepEqual(
     (await handle.db.select({ content: messages.content }).from(messages)).map((row) => row.content),
     ["kept"],

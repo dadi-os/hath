@@ -1,52 +1,44 @@
 /**
- * Jobs: the tracking behind the UI and the yield reminder. A job is the open work on one
- * line: a requester (null for Ankur) that messaged the agent before the agent ever
- * messaged it. A message back on that line may carry a status, which records the job's
- * progress; nothing refuses a send for its status or its absence.
+ * Job state: which job is open on a line, how a job closes, and the cleanup of jobs a wake
+ * touched but did nothing on. Which job a message belongs to is job-of.ts; what a job has done
+ * is ledger.ts.
  */
 
-import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { jobs, messages, type JobRow } from "../db/schema.js";
+import { jobs, type JobRow } from "../db/schema.js";
+import type { MessageStatus } from "../types/domain.js";
 import type { TranscriptEntry } from "./transcript.js";
 
 /** Job states in which the work is still the agent's. */
-const OPEN_STATES = ["open", "needs_input"] as const;
+export const OPEN_STATES = ["open", "needs_input"] as const;
 
 /** requesterIs matches `jobs.requester_id` to `requester`, null being Ankur. */
 function requesterIs(requester: string | null) {
   return requester === null ? isNull(jobs.requesterId) : eq(jobs.requesterId, requester);
 }
 
-/**
- * opensLine is true when `requester` opened the line to `agent`: its first message to
- * the agent came before the agent's first to it. Hath's notices never count,
- * as in currentRequester.
- */
-export async function opensLine(db: Db, requester: string | null, agent: string): Promise<boolean> {
-  const [row] = await db.execute<{ first_in: string | null; first_out: string | null }>(sql`
-    select
-      (select min(seq) from ${messages}
-        where from_agent_id is not distinct from ${requester} and to_agent_id = ${agent}
-          and kind = 'message') as first_in,
-      (select min(seq) from ${messages}
-        where from_agent_id = ${agent} and to_agent_id is not distinct from ${requester}
-          and kind = 'message') as first_out
-  `);
-  if (!row) {
-    throw new Error("line query returned no row");
-  }
-  return row.first_in !== null && (row.first_out === null || Number(row.first_in) < Number(row.first_out));
-}
-
-/** openJob is the job still open on `requester`'s line to `agent`, if there is one. */
+/** openJob is the job still open on `requester`'s line to `agent`, if there is one. A requester is never the agent itself. */
 export async function openJob(db: Db, requester: string | null, agent: string): Promise<JobRow | undefined> {
   const [row] = await db
     .select()
     .from(jobs)
     .where(and(requesterIs(requester), eq(jobs.agentId, agent), inArray(jobs.state, [...OPEN_STATES])));
   return row;
+}
+
+/** jobById is the job `id` names; throws when there is none, since every id comes from a stamped row. */
+export async function jobById(db: Db, id: string): Promise<JobRow> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.id, id));
+  if (row === undefined) {
+    throw new Error(`job ${id} does not exist`);
+  }
+  return row;
+}
+
+/** hasRequester is true when someone other than the agent itself gave the job: Ankur or another agent. */
+export function hasRequester(job: Pick<JobRow, "requesterId" | "agentId">): boolean {
+  return job.requesterId !== job.agentId;
 }
 
 /**
@@ -62,41 +54,22 @@ export async function blockOpenJob(db: Db, requester: string | null, agent: stri
 }
 
 /**
- * recordDelivery keeps jobs in step with one delivered message. A requester's message on
- * its line opens a job, or joins the open one and answers the agent's open question.
- * An agent's status on a message to whoever gave it a job records its progress update,
- * its question, or the job's close. Hath's notices, an agent's notes to
- * itself, and scheduled triggers (a routine's clock, not a request) never touch a job.
+ * recordStatus applies the status of an agent's message `seq` to job `job` when the message is
+ * to the job's requester: done or blocked closes the job, needs_input parks it on that question.
+ * A message to anyone else, or with no status, leaves the job as it is.
  */
-export async function recordDelivery(db: Db, row: TranscriptEntry, scheduled: boolean): Promise<void> {
-  if (scheduled || row.fromAgentId === row.toAgentId || row.kind === "notice") {
-    return;
-  }
-  if (row.toAgentId !== null && (await opensLine(db, row.fromAgentId, row.toAgentId))) {
-    const job = await openJob(db, row.fromAgentId, row.toAgentId);
-    if (job === undefined) {
-      await db
-        .insert(jobs)
-        .values({ id: randomUUID(), requesterId: row.fromAgentId, agentId: row.toAgentId, state: "open", openedSeq: row.seq })
-        .onConflictDoNothing();
-    } else if (job.state === "needs_input") {
-      await db.update(jobs).set({ state: "open", questionSeq: null, updatedAt: new Date() }).where(eq(jobs.id, job.id));
-    }
-    return;
-  }
-  if (row.fromAgentId === null || row.status === null) {
-    return;
-  }
-  const job = await openJob(db, row.toAgentId, row.fromAgentId);
-  if (job === undefined) {
+export async function recordStatus(
+  db: Db,
+  job: JobRow,
+  message: { seq: number; toAgentId: string | null; status: MessageStatus | null },
+): Promise<void> {
+  if (message.status === null || message.toAgentId !== job.requesterId || !(OPEN_STATES as readonly string[]).includes(job.state)) {
     return;
   }
   const change =
-    row.status === "running"
-      ? { progressSeq: row.seq }
-      : row.status === "needs_input"
-        ? { state: "needs_input" as const, questionSeq: row.seq }
-        : { state: row.status, closedSeq: row.seq };
+    message.status === "needs_input"
+      ? { state: "needs_input" as const, questionSeq: message.seq }
+      : { state: message.status, closedSeq: message.seq };
   await db.update(jobs).set({ ...change, updatedAt: new Date() }).where(eq(jobs.id, job.id));
 }
 
@@ -115,7 +88,7 @@ export async function settleWakeJobs(db: Db, lines: TranscriptEntry[], agentId: 
     return;
   }
   const open = await db.select().from(jobs).where(and(eq(jobs.agentId, agentId), eq(jobs.state, "open")));
-  for (const job of open.filter((row) => row.openedSeq >= firstSeq)) {
+  for (const job of open.filter((row) => row.openedSeq >= firstSeq && hasRequester(row))) {
     const onLine = lines.filter(
       (row) =>
         row.kind !== "notice" &&

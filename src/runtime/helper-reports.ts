@@ -13,10 +13,12 @@
 
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agents, deliveredReports } from "../db/schema.js";
+import { agents, deliveredReports, helperSteers } from "../db/schema.js";
 import type { HelperReport, NasClient } from "../nas/client.js";
 import { attachHostFile, type HostFileDeps } from "./attachments.js";
 import type { DeliverDeps } from "./deliver.js";
+import { recordActivity, siteReadRow } from "./activity.js";
+import { jobOfTask } from "./job-of.js";
 import { rewakeWork } from "./rewake.js";
 import { takeWatch } from "./watches.js";
 
@@ -142,7 +144,13 @@ export class HelperReports {
         notes.push(`${path} could not be attached: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    const jobId = await jobOfTask(db, report.task);
+    if (report.task.startsWith("task/browser/")) {
+      const [steer] = await db.select({ message: helperSteers.message }).from(helperSteers).where(eq(helperSteers.task, report.task));
+      await recordActivity(db, { agentId: report.agent_id, jobId, ...siteReadRow(report, steer?.message ?? "") });
+    }
     await rewakeWork(this.deps.deliver, report.agent_id, {
+      jobId,
       content: [`${HEADLINES[report.state]}${stoppedBy(report)} (${report.task}):`, report.text, ...notes].join("\n"),
       notice: "helper",
       wokenBy: `helper result from ${report.task}`,

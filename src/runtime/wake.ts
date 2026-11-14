@@ -181,12 +181,12 @@ export class Wake {
   /** The first lane failure of the wake, stored on its row when it ends; null while none has failed. */
   error: string | null = null;
   /**
-   * While this wake is a routine, the seq of the repeating schedule's trigger that opened it;
-   * null once a message from anyone else joins it (engine.ts enqueue), and for every other wake.
+   * The job the wake is on (see job-of.ts): the one its first reason belongs to, or the first
+   * job a later arrival brings when the wake began with none; null for a wake that is no job's.
    */
-  routine: number | null = null;
-  /** True when the agent's own notice (a helper report, a wait timeout) created this wake, so it may continue a job (see carry.ts). */
-  ownNotice = false;
+  jobId: string | null = null;
+  /** True when the wake's reason opened its job. */
+  jobIsNew = false;
   private frozenSystem: string | null = null;
   private transcripts: Partial<Record<Lane, DwarMessage[]>> | null = null;
   private seenThrough = 0;
@@ -197,8 +197,6 @@ export class Wake {
   private clearedThrough = 0;
   /** Why the agent woke, in the order the reasons arrived (see noteReason). */
   private readonly reasons: string[] = [];
-  /** The ids of the work lane's messages already shown to the process lane in this wake. */
-  readonly outboxShown = new Set<number>();
   /** The status block the process lane's next call ends on (see setStatus). */
   private statusBlock: string | null = null;
   /** How many turns each lane could see when it last yielded. */
@@ -235,9 +233,9 @@ export class Wake {
     }
   }
 
-  /** The wake's first line, "Woken by: <reasons>", or null when no run said why. */
-  get wokenBy(): string | null {
-    return this.reasons.length === 0 ? null : `Woken by: ${this.reasons.join("; ")}`;
+  /** Why the agent woke, in the order the reasons arrived: the header's first line (see header.ts). */
+  get reasonList(): string[] {
+    return [...this.reasons];
   }
 
   /** noteError records a lane failure for the wake's row; the first one stays. */

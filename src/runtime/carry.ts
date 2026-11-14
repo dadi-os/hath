@@ -5,12 +5,11 @@
  * such a wake a block listing the job's earlier tool calls.
  */
 
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agentLogs, jobs, messages } from "../db/schema.js";
+import { agentLogs } from "../db/schema.js";
 import { WAIT, YIELD } from "../types/domain.js";
 import { resultPath, savesResult } from "./files.js";
-import type { TranscriptStore } from "./transcript.js";
 import { KEEP_WHOLE_CHARS } from "./wake.js";
 
 /** The block's size: the newest calls that fit are kept. */
@@ -35,28 +34,6 @@ type LogRow = {
   uses: Array<{ id: string; name: string; input: string }> | null;
 };
 
-/**
- * jobStart is when the work `agentId`'s current wake continues began: its routine's trigger
- * when the wake is a routine (`routineSeq`), else the opening message of its newest open job,
- * whoever gave it. Null when it has neither.
- */
-async function jobStart(db: Db, transcript: TranscriptStore, agentId: string, routineSeq: number | null): Promise<Date | null> {
-  if (routineSeq !== null) {
-    return transcript.transcriptFor(agentId).find((row) => row.seq === routineSeq)?.createdAt ?? null;
-  }
-  const [job] = await db
-    .select({ openedSeq: jobs.openedSeq })
-    .from(jobs)
-    .where(and(eq(jobs.agentId, agentId), inArray(jobs.state, ["open", "needs_input"])))
-    .orderBy(desc(jobs.openedSeq))
-    .limit(1);
-  if (job === undefined) {
-    return null;
-  }
-  const [opening] = await db.select({ at: messages.createdAt }).from(messages).where(eq(messages.seq, job.openedSeq));
-  return opening?.at ?? null;
-}
-
 /** oneLine is `text` on one line, cut to `max` characters. */
 function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -67,17 +44,12 @@ function oneLine(text: string, max: number): string {
  * carriedWork is the [Did in this job] block for `agentId`'s wake `wakeId`: one line per tool
  * call its work lane made in the job's earlier wakes (name, the start of its input, and its
  * result's start, with the file holding a long result whole), oldest first, within
- * DID_MAX_CHARS. Null when the agent has no job or routine to carry, or made no call in it.
+ * DID_MAX_CHARS. Null when it made no call in the job.
  */
 export async function carriedWork(
   db: Db,
-  transcript: TranscriptStore,
-  args: { agentId: string; wakeId: string; routineSeq: number | null; filesDir: string },
+  args: { agentId: string; wakeId: string; jobId: string; filesDir: string },
 ): Promise<string | null> {
-  const since = await jobStart(db, transcript, args.agentId, args.routineSeq);
-  if (since === null) {
-    return null;
-  }
   const rows = await db.execute<LogRow>(sql`
     select event,
       payload->>'tool_use_id' as tool_use_id,
@@ -92,7 +64,7 @@ export async function carriedWork(
       ) end as uses
     from ${agentLogs}
     where agent_id = ${args.agentId} and lane = 'work' and event in ('response', 'tool_result')
-      and created_at >= ${since.toISOString()}::timestamptz
+      and job_id = ${args.jobId}::uuid
       and wake_id is distinct from ${args.wakeId}::uuid
     order by created_at, id
   `);

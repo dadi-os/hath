@@ -1,9 +1,11 @@
 import type { ToolDefinition } from "./types.js";
 import { spawnAgent } from "./hath/spawn-agent.js";
 import { getAgent } from "./hath/get-agent.js";
-import { scheduleMessage } from "./hath/schedule-message.js";
-import { listSchedules } from "./hath/list-schedules.js";
-import { cancelSchedule } from "./hath/cancel-schedule.js";
+import { setRoutine } from "./hath/set-routine.js";
+import { endRoutine } from "./hath/end-routine.js";
+import { listRoutines } from "./hath/list-routines.js";
+import { remindMe } from "./hath/remind-me.js";
+import { myActivity } from "./hath/my-activity.js";
 import { getLogs as hathGetLogs } from "./hath/get-logs.js";
 import { getMessages } from "./hath/get-messages.js";
 import { webFetch, webSearch } from "./web/web.js";
@@ -15,7 +17,7 @@ import { editFile, findFiles, readFile, writeFile } from "./files/files.js";
 /**
  * Every tool defined by a zod schema and a handler, in the order agents see them. Which
  * lane may call which is declared in runtime/lanes.ts, together with the lane tools
- * (send_message, queue_message, steer_work, yield, memory, list_agents, wait, manage_agent,
+ * (send_message, steer_work, yield, memory, list_agents, wait, manage_agent,
  * modify_agent_prompt) that have no definition here.
  */
 const definitions = [
@@ -27,9 +29,11 @@ const definitions = [
   getMessages,
   webSearch,
   webFetch,
-  scheduleMessage,
-  listSchedules,
-  cancelSchedule,
+  setRoutine,
+  endRoutine,
+  listRoutines,
+  remindMe,
+  myActivity,
   steerBrowser,
   steerTerminal,
   listBrowsers,

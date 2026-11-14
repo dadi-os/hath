@@ -8,9 +8,9 @@ import type {
   Lane,
 } from "../src/types/domain.js";
 import type { Db } from "../src/db/client.js";
-import { NOT_A_REPLY, runProcessLoop, UNSENT_TEXT_TURN } from "../src/runtime/process.js";
+import { runProcessLoop } from "../src/runtime/process.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { IMPLICIT_WAIT_MINUTES, LONG_SILENCE_TURN, runWorkLoop, TURNS_BEFORE_NUDGE, UNSENT_REPORT_TURN } from "../src/runtime/work.js";
+import { IMPLICIT_WAIT_MINUTES, LONG_SILENCE_TURN, runWorkLoop, TURNS_BEFORE_NUDGE } from "../src/runtime/work.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { CAPPED_TURN, CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
@@ -316,61 +316,33 @@ test("the process lane's view leaves out the work lane's turns and ends on the s
   assert.ok(!workBlob.includes('"lane":"process"'));
 });
 
-test("a send to someone already messaged since this one was written is refused with what went out", async () => {
-  const transcript = new TranscriptStore();
-  transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "is HW3 in?" });
+test("a turn of text and no tool call is the lane's answer when it is taken, and only thought when it is not", async () => {
+  const taken: string[] = [];
   const requests: DwarChatRequest[] = [];
-  let n = 0;
-  await runProcessLoop({
-    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
-      n += 1;
-      if (n === 1) {
-        transcript.append({ fromAgentId: "agent-1", toAgentId: null, content: "HW3 is submitted." });
-        return turn("gemini", [
-          { type: "tool_use", id: "d1", name: "send_message", input: { to: "ankur", content: "Checking HW3 now." } },
-          call("yield", "y1"),
-        ]);
-      }
-      return turn("gemini", [call("yield", `y${n}`)]);
-    }, requests),
-    ...processGateDeps(),
-    transcript,
+  await runWorkLoop({
+    ...workLoopHooks,
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [{ type: "text", text: "HW3 is due Wed Nov 11." }]), requests),
+    replyWithText: async (text) => {
+      taken.push(text);
+      return true;
+    },
+    steer: new SteerQueue(),
   });
-  assert.equal(requests.length, 2);
-  assert.match(JSON.stringify(requests[1]!.messages), /already sent Ankur a message after you wrote this one: \\"HW3 is submitted\.\\"/);
-});
+  assert.deepEqual(taken, ["HW3 is due Wed Nov 11."]);
+  assert.equal(requests.length, 1, "a taken answer ends the run");
 
-test("a yield after a message written as text and never sent gets one reminder, and the second yield stands", async () => {
-  const requests: DwarChatRequest[] = [];
+  const thoughts: DwarChatRequest[] = [];
   let n = 0;
-  const list = "Here is your week, ranked: ".padEnd(600, "x");
-
-  await runProcessLoop({
-    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
-      n += 1;
-      return turn("anthropic", [{ type: "text", text: list }, call("yield", `c${n}`)]);
-    }, requests),
-    ...processGateDeps(),
-  });
-
-  assert.equal(requests.length, 2);
-  assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_TEXT_TURN));
-});
-
-test("a work-lane yield after a report written as text and never sent gets one reminder, and the second yield stands", async () => {
-  const requests: DwarChatRequest[] = [];
-  let n = 0;
-  const report = "HW3 is submitted and graded: ".padEnd(600, "x");
   await runWorkLoop({
     ...workLoopHooks,
     ...stepDeps("work", new Wake(roomyWakeLimits), () => {
       n += 1;
-      return turn("anthropic", [{ type: "text", text: report }, call("yield", `y${n}`)]);
-    }, requests),
+      return n === 1 ? turn("anthropic", [{ type: "text", text: "thinking aloud" }]) : turn("anthropic", [call("yield", "y1")]);
+    }, thoughts),
+    replyWithText: async () => false,
     steer: new SteerQueue(),
   });
-  assert.equal(requests.length, 2);
-  assert.ok(JSON.stringify(requests[1]!.messages).includes(UNSENT_REPORT_TURN));
+  assert.equal(thoughts.length, 2, "text that is only thought continues the lane");
 });
 
 test("a work lane that reports nothing for TURNS_BEFORE_NUDGE turns is asked what it has once, then keeps working", async () => {
@@ -448,7 +420,6 @@ function processGateDeps() {
     db: { select: () => noRows } as unknown as Db,
     transcript: new TranscriptStore(),
     status: async () => "[Status] test block",
-    directAgentMessages: false,
     implicitYield: false,
   };
 }
@@ -724,26 +695,26 @@ test("lastHold is true only while exactly one run holds the wake", () => {
   assert.equal(wakes.lastHold("agent-1"), false);
 });
 
-test("the wake's first line says what woke the agent, and a reason that arrives later is not added", async () => {
+test("the wake's reasons keep the order they arrived in, and a reason that arrives later is not added", () => {
   const wake = new Wake(roomyWakeLimits);
   wake.noteReason("helper result from task/browser/3");
   wake.noteReason("message from ankur");
   wake.noteReason("message from ankur");
-  const requests: DwarChatRequest[] = [];
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", wake, () => turn("anthropic", [call("yield", "y1")]), requests),
-    steer: new SteerQueue(),
-  });
-  assert.equal(requests.length, 1);
-  const texts = requests[0]!.messages.map((message) => (typeof message.content === "string" ? message.content : ""));
-  assert.equal(texts.at(-1), "Woken by: helper result from task/browser/3; message from ankur");
-  wake.noteReason("scheduled message from x");
-  assert.equal(wake.wokenBy, "Woken by: helper result from task/browser/3; message from ankur");
+  assert.deepEqual(wake.reasonList, ["helper result from task/browser/3", "message from ankur"]);
 });
 
-test("a wake nobody gave a reason has no Woken by line", () => {
-  assert.equal(new Wake(roomyWakeLimits).wokenBy, null);
+test("the wake header is the first turn after the transcript, and a wake with none has no first line", async () => {
+  const requests: DwarChatRequest[] = [];
+  const deps = stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", "y1")]), requests);
+  await runWorkLoop({
+    ...workLoopHooks,
+    ...deps,
+    assemble: async () => ({ ...(await deps.assemble()), header: "[Wake] message from Ankur · job #7 (new)" }),
+    steer: new SteerQueue(),
+  });
+  const texts = requests[0]!.messages.map((message) => (typeof message.content === "string" ? message.content : ""));
+  assert.equal(texts.at(-1), "[Wake] message from Ankur · job #7 (new)");
+  assert.equal(new Wake(roomyWakeLimits).reasonList.length, 0);
 });
 
 test("a yield that leaves a request unanswered with nothing to wake the agent gets the reminder once", async () => {
@@ -823,48 +794,20 @@ test("an implicit process yield waits for the next call when a message arrived w
   assert.equal(requests.length, 2);
 });
 
-test("under direct_agent_messages the process lane may only reply to an agent; a new ask to one is refused and not run", async () => {
-  const transcript = new TranscriptStore();
-  transcript.append({ fromAgentId: "cse-300", toAgentId: "agent-1", content: "is Module 8 still open?" });
-  const ran: string[] = [];
-  const requests: DwarChatRequest[] = [];
-  let n = 0;
-  await runProcessLoop({
-    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
-      n += 1;
-      return n === 1
-        ? turn("anthropic", [
-            use("send_message", "reply", { to: "cse-300", content: "Yes, until 11:59 PM." }),
-            use("send_message", "ask", { to: "cse-335", content: "What is due tonight?" }),
-          ])
-        : turn("anthropic", [call("yield", `y${n}`)]);
-    }, requests),
-    executeTool: async (block) => {
-      ran.push(block.id);
-      return { content: "{}", isError: false, audit: {} };
-    },
-    ...processGateDeps(),
-    transcript,
-    directAgentMessages: true,
-  });
-  assert.deepEqual(ran, ["reply", "y2"]);
-  assert.ok(JSON.stringify(requests[1]!.messages).includes(NOT_A_REPLY));
-});
-
-test("under implicit_yield a work turn of only queue_message ends the run, waiting on the agents whose reply it expects", async () => {
+test("under implicit_yield a work turn of only send_message ends the run, waiting on the agents it asked", async () => {
   const waits: Array<{ targets: string[]; minutes: number }> = [];
   const requests: DwarChatRequest[] = [];
   await runWorkLoop({
     ...workLoopHooks,
     ...stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [
-      use("queue_message", "q1", { to: "cse-300", content: "due tonight?", expects_reply: true }),
-      use("queue_message", "q2", { to: "cse-335", content: "due tonight?", expects_reply: true }),
-      use("queue_message", "q3", { to: "ankur", content: "asking the classes" }),
+      use("send_message", "q1", { to: "cse-300", content: "due tonight?" }),
+      use("send_message", "q2", { to: "cse-335", content: "due tonight?" }),
+      use("send_message", "q3", { to: "ankur", content: "asking the classes" }),
     ]), requests),
     executeTool: async (block) => {
-      const input = block.input as { to: string; expects_reply?: boolean };
+      const input = block.input as { to: string };
       const to = input.to === "ankur" ? null : input.to;
-      return { content: JSON.stringify({ sent: 1, to_agent_id: to, expects_reply: input.expects_reply === true && to !== null }), isError: false, audit: {} };
+      return { content: JSON.stringify({ sent: 1, to_agent_id: to, ask: to !== null && to !== "ankur" }), isError: false, audit: {} };
     },
     steer: new SteerQueue(),
     implicitYield: true,
@@ -876,7 +819,7 @@ test("under implicit_yield a work turn of only queue_message ends the run, waiti
   assert.deepEqual(waits, [{ targets: ["cse-300", "cse-335"], minutes: IMPLICIT_WAIT_MINUTES }]);
 });
 
-test("a work turn of only queue_message keeps the run going after a helper task was started in the wake, or with implicit_yield off", async () => {
+test("a work turn of only send_message keeps the run going after a helper task was started in the wake, or with implicit_yield off", async () => {
   for (const [implicitYield, steered] of [[true, true], [false, false]] as const) {
     const requests: DwarChatRequest[] = [];
     let n = 0;
@@ -888,10 +831,10 @@ test("a work turn of only queue_message keeps the run going after a helper task 
           return turn("anthropic", [use("steer_browser", "b1", { message: "read D2L" })]);
         }
         return n <= (steered ? 2 : 1)
-          ? turn("anthropic", [use("queue_message", `q${n}`, { to: "ankur", content: "reading D2L" })])
+          ? turn("anthropic", [use("send_message", `q${n}`, { to: "ankur", content: "reading D2L" })])
           : turn("anthropic", [call("yield", `y${n}`)]);
       }, requests),
-      executeTool: async (block) => ({ content: JSON.stringify({ queued: 1, to_agent_id: null, expects_reply: false, id: block.id }), isError: false, audit: {} }),
+      executeTool: async (block) => ({ content: JSON.stringify({ seq: 1, to_agent_id: null, ask: false, id: block.id }), isError: false, audit: {} }),
       steer: new SteerQueue(),
       implicitYield,
     });
@@ -899,13 +842,12 @@ test("a work turn of only queue_message keeps the run going after a helper task 
   }
 });
 
-test("under implicit_yield a result message with the saves that record it ends the run; a progress line or a failed save does not", async () => {
+test("under implicit_yield a result message with the saves that record it ends the run; a failed save does not", async () => {
   const cases: Array<{ name: string; calls: Array<[string, unknown]>; failing?: string; ends: boolean }> = [
-    { name: "result and saves", calls: [["write_file", {}], ["ingest_memory", {}], ["schedule_message", {}], ["queue_message", { to: "ankur", content: "Done.", status: "done" }]], ends: true },
-    { name: "progress line", calls: [["queue_message", { to: "ankur", content: "Reading.", status: "running" }]], ends: false },
-    { name: "failed save", calls: [["edit_file", {}], ["queue_message", { to: "ankur", content: "Done." }]], failing: "edit_file", ends: false },
+    { name: "result and saves", calls: [["write_file", {}], ["ingest_memory", {}], ["set_routine", {}], ["send_message", { to: "ankur", content: "Done.", status: "done" }]], ends: true },
+    { name: "failed save", calls: [["edit_file", {}], ["send_message", { to: "ankur", content: "Done." }]], failing: "edit_file", ends: false },
     { name: "saves alone", calls: [["write_file", {}]], ends: false },
-    { name: "a read beside the message", calls: [["read_file", {}], ["queue_message", { to: "ankur", content: "Done." }]], ends: false },
+    { name: "a read beside the message", calls: [["read_file", {}], ["send_message", { to: "ankur", content: "Done." }]], ends: false },
   ];
   for (const { name, calls, failing, ends } of cases) {
     const requests: DwarChatRequest[] = [];
@@ -917,7 +859,7 @@ test("under implicit_yield a result message with the saves that record it ends t
         return n === 1 ? turn("anthropic", calls.map(([tool, input], i) => use(tool, `c${i}`, input))) : turn("anthropic", [call("yield", `y${n}`)]);
       }, requests),
       executeTool: async (block) => ({
-        content: JSON.stringify({ sent: 1, to_agent_id: null, expects_reply: false }),
+        content: JSON.stringify({ seq: 1, to_agent_id: null, ask: false }),
         isError: block.name === failing,
         audit: {},
       }),
@@ -931,11 +873,10 @@ test("under implicit_yield a result message with the saves that record it ends t
 test("under implicit_steer_end a work turn of steers, messages and ingests ends the run, waiting on the tasks it steered; a read beside them, a failed call, or the flag off does not end it", async () => {
   const cases: Array<{ name: string; calls: Array<[string, unknown]>; failing?: string; implicitSteerEnd?: boolean; ends: boolean; waits: string[] }> = [
     { name: "a steer", calls: [["steer_browser", { message: "read D2L" }]], ends: true, waits: ["task/browser/3"] },
-    { name: "two steers and a message", calls: [["steer_browser", { message: "a" }], ["steer_terminal", { message: "b" }], ["queue_message", { to: "ankur", content: "Reading." }]], ends: true, waits: ["task/browser/3"] },
+    { name: "two steers and a message", calls: [["steer_browser", { message: "a" }], ["steer_terminal", { message: "b" }], ["send_message", { to: "ankur", content: "Reading." }]], ends: true, waits: ["task/browser/3"] },
     { name: "an ingest alone", calls: [["ingest_memory", { text: "x" }]], ends: true, waits: [] },
     { name: "a read beside a steer", calls: [["read_file", {}], ["steer_browser", { message: "read D2L" }]], ends: false, waits: [] },
     { name: "a failed steer", calls: [["steer_browser", { message: "read D2L" }]], failing: "steer_browser", ends: false, waits: [] },
-    { name: "a progress line", calls: [["steer_browser", { message: "a" }], ["queue_message", { to: "ankur", content: "Reading.", status: "running" }]], ends: false, waits: [] },
     { name: "flag off", calls: [["steer_browser", { message: "read D2L" }]], implicitSteerEnd: false, ends: false, waits: [] },
   ];
   for (const { name, calls, failing, implicitSteerEnd = true, ends, waits: expected } of cases) {
@@ -949,7 +890,7 @@ test("under implicit_steer_end a work turn of steers, messages and ingests ends 
         return n === 1 ? turn("anthropic", calls.map(([tool, input], i) => use(tool, `c${i}`, input))) : turn("anthropic", [call("yield", `y${n}`)]);
       }, requests),
       executeTool: async (block) => ({
-        content: JSON.stringify({ id: "task/browser/3", to_agent_id: null, expects_reply: false }),
+        content: JSON.stringify({ id: "task/browser/3", to_agent_id: null, ask: false }),
         isError: block.name === failing,
         audit: {},
       }),

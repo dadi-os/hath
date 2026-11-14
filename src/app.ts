@@ -70,23 +70,11 @@ export async function buildApp(
     await moveLegacyAttachments(deps.db, runtime.files);
     await hydrateTranscript(deps.db, runtime.transcript);
     await recoverInterruptedWakes({
-      db: deps.db,
-      transcript: runtime.transcript,
-      events: runtime.events,
-      enqueueProcess: runtime.enqueueProcess,
-      enqueueWork: runtime.enqueueWork,
-      wakeActivity: runtime.wakeActivity,
+      ...runtime.deliver,
       log: app.log,
       recoveryWindowMinutes: config.runtime.recovery_window_minutes,
     });
-    await reportLostAsync({
-      db: deps.db,
-      transcript: runtime.transcript,
-      events: runtime.events,
-      enqueueProcess: runtime.enqueueProcess,
-      enqueueWork: runtime.enqueueWork,
-      wakeActivity: runtime.wakeActivity,
-    });
+    await reportLostAsync(runtime.deliver);
   }
   app.decorate("config", config);
   app.decorate("db", deps.db);

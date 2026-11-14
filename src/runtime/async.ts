@@ -46,6 +46,7 @@ export function deliverDeps(ctx: ToolContext): DeliverDeps {
     events: ctx.events,
     enqueueProcess: ctx.enqueueProcess,
     enqueueWork: ctx.enqueueWork,
+    answerByMinutes: ctx.answerByMinutes,
     ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
   };
 }
@@ -79,9 +80,9 @@ export async function runInBackground(
       const result = await run();
       const content = await resultMessage(ctx, call, result);
       if (quiet && !result.isError) {
-        await deliverAgentMessage(deliverDeps(ctx), { fromAgentId: agentId, toAgentId: agentId, content, notice: "tool", wake: false });
+        await deliverAgentMessage(deliverDeps(ctx), { fromAgentId: agentId, toAgentId: agentId, content, notice: "tool", wake: false, jobId: ctx.jobId });
       } else {
-        await wakeLane(lane)(deliverDeps(ctx), agentId, { content, notice: "tool", wokenBy: `async tool result (${call.name} ${call.id})` });
+        await wakeLane(lane)(deliverDeps(ctx), agentId, { content, notice: "tool", wokenBy: `async tool result (${call.name} ${call.id})`, jobId: ctx.jobId });
       }
       await ctx.db.delete(pendingAsync).where(eq(pendingAsync.id, call.id));
     })(),

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, pendingAsync, scheduledMessages, watches } from "../src/db/schema.js";
+import { agentLogs, pendingAsync, reminders, watches } from "../src/db/schema.js";
 import { reportLostAsync } from "../src/runtime/async.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
@@ -99,7 +99,7 @@ test("with ingest_result_wakes on, a successful ingest_memory result wakes the w
   await runtime.waitUntilIdle();
 
   assert.equal(dwar.workCalls.length, 1, "the lane woke for the result");
-  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /Woken by: async tool result \(ingest_memory ing-w\)/);
+  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /\[Wake\] async tool result \(ingest_memory ing-w\)/);
 });
 
 test("an async tool's failure arrives as the message too", async () => {
@@ -128,6 +128,7 @@ test("a call a restart cut short is reported lost at boot, and the agent's work 
     db: handle.db,
     transcript: runtime.transcript,
     events: runtime.events,
+    answerByMinutes: 5,
     enqueueProcess: runtime.enqueueProcess,
     enqueueWork: runtime.enqueueWork,
     wakeActivity: runtime.wakeActivity,
@@ -216,7 +217,7 @@ test("a due watch wakes the work lane with facts about a task and an agent, and 
   assert.match(notice.content, /- task\/browser\/1 is working; it last did anything 12 minutes ago\./);
   assert.match(notice.content, /- other: it has never acted; you have not messaged it\./);
   assert.equal(dwar.workCalls.length, 1);
-  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /Woken by: wait timeout/);
+  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /\[Wake\] wait timeout/);
 });
 
 test("a watch survives a runtime restart and still falls due", async () => {
@@ -242,14 +243,14 @@ test("a message from the agent waited on wakes the work lane and drops the watch
 
   const { deliverAgentMessage } = await import("../src/runtime/deliver.js");
   await deliverAgentMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: runtime.enqueueProcess, enqueueWork: runtime.enqueueWork, wakeActivity: runtime.wakeActivity },
+    runtime.deliver,
     { fromAgentId: "other", toAgentId: "waiter", content: "here is the answer" },
   );
   await runtime.waitUntilIdle();
 
   assert.equal(dwar.workCalls.length, 2, "the answer wakes the work lane, whose yield then gets the one reminder");
   assert.equal(dwar.processCalls.length, 0);
-  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /Woken by: message from other/);
+  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /\[Wake\] message from other/);
   assert.equal((await handle.db.select().from(watches)).length, 0);
 });
 
@@ -282,7 +283,7 @@ test("the yield reminder fires for an unanswered request with nothing pending, a
   const { runtime, nas } = harness();
   const deps = { db: handle.db, nas, transcript: runtime.transcript };
   await deliverUserMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
+    { ...runtime.deliver, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
     "asked",
     "when is my exam?",
   );
@@ -303,12 +304,9 @@ test("the yield reminder fires for an unanswered request with nothing pending, a
   assert.equal(await yieldReminder(deps, "asked"), null, "an async call wakes it");
   await handle.db.delete(pendingAsync);
 
-  const row = { fromAgentId: "asked", toAgentId: "asked", content: "later", runAt: new Date(Date.now() + 3_600_000) };
-  await handle.db.insert(scheduledMessages).values({ id: "00000000-0000-4000-8000-0000000000e1", ...row, intervalMinutes: 1440 });
-  assert.notEqual(await yieldReminder(deps, "asked"), null, "a recurring routine does not");
-  await handle.db.insert(scheduledMessages).values({ id: "00000000-0000-4000-8000-0000000000e2", ...row });
-  assert.equal(await yieldReminder(deps, "asked"), null, "a one-shot scheduled message wakes it");
-  await handle.db.delete(scheduledMessages);
+  await handle.db.insert(reminders).values({ id: "00000000-0000-4000-8000-0000000000e2", agentId: "asked", authorId: "asked", note: "later", runAt: new Date(Date.now() + 3_600_000) });
+  assert.equal(await yieldReminder(deps, "asked"), null, "a reminder of its own wakes it");
+  await handle.db.delete(reminders);
 
   runtime.transcript.append({ fromAgentId: "asked", toAgentId: null, content: "Thursday." });
   assert.equal(await yieldReminder(deps, "asked"), null, "answered");
@@ -325,7 +323,7 @@ test("the work lane yields once more after the reminder, and a second yield stan
     },
   });
   await deliverUserMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
+    { ...runtime.deliver, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
     "asked",
     "when is my exam?",
   );

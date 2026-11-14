@@ -74,7 +74,7 @@ test("a helper report reaches the owning agent as a notice and wakes its work la
   assert.equal(dwar.workCalls.length, 1, "the work lane ran for it");
   assert.equal(dwar.processCalls.length, 0, "the process lane did not");
   const first = JSON.stringify(dwar.workCalls[0]!.messages);
-  assert.match(first, /Woken by: helper result from task\/browser\/1/);
+  assert.match(first, /\[Wake\] helper result from task\/browser\/1/);
   assert.match(first, /Applied to 3 roles\./);
 });
 

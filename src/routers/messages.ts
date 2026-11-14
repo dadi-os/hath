@@ -19,14 +19,7 @@ export async function registerMessages(app: FastifyInstance): Promise<void> {
     await requireActiveAgent(app.db, body.to_agent_id);
     const uploads = await prepareUploads({ dwar: app.dwar, files: app.runtime.files }, body.attachments ?? []);
     const row = await deliverUserMessage(
-      {
-        db: app.db,
-        transcript: app.runtime.transcript,
-        events: app.runtime.events,
-        enqueueProcess: app.runtime.enqueueProcess,
-        enqueueWork: app.runtime.enqueueWork,
-        wakeActivity: app.runtime.wakeActivity,
-      },
+      app.runtime.deliver,
       body.to_agent_id,
       body.content.trim(),
       { uploads, forward: [] },

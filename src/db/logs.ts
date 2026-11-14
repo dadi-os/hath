@@ -16,6 +16,8 @@ export async function writeAgentLog(
     payload: Record<string, unknown>;
     /** The wake the row belongs to; null (or left out) outside any wake. */
     wakeId?: string | null | undefined;
+    /** The job the wake was on; null (or left out) when it was on none. */
+    jobId?: string | null | undefined;
   },
 ): Promise<void> {
   await db.insert(agentLogs).values({
@@ -25,5 +27,6 @@ export async function writeAgentLog(
     event: args.event,
     payload: args.payload,
     wakeId: args.wakeId ?? null,
+    jobId: args.jobId ?? null,
   });
 }

@@ -10,7 +10,6 @@ import { assembleContext } from "../src/runtime/context.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import {
-  QUEUE_MESSAGE,
   READ_FILE,
   SEND_MESSAGE,
 } from "../src/types/domain.js";
@@ -199,7 +198,7 @@ test("send copies a host file path as it is now, and the send binds that same ro
   const unknown = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "s0",
-    name: QUEUE_MESSAGE,
+    name: SEND_MESSAGE,
     input: { to: "ankur", content: "send it", attachments: ["00000000-0000-4000-8000-000000000000"] },
   });
   assert.equal(unknown.isError, true);
@@ -220,7 +219,7 @@ test("send copies a host file path as it is now, and the send binds that same ro
   assert.notEqual(row?.messageId, null);
 });
 
-test("a file queued by the work lane and sent by the process lane, by path or by id, reaches the message once", async (t) => {
+test("a file the work lane sends, by path, reaches the message once", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const nas = mockNas({});
   nas.files.set("/var/home/dadi/answer.md", Buffer.from("the answer\n"));
@@ -232,23 +231,14 @@ test("a file queued by the work lane and sent by the process lane, by path or by
     await app.close();
   });
 
-  const queued = await executeTool(runtime.toolContext(workerId, "work"), {
-    type: "tool_use",
-    id: "q1",
-    name: QUEUE_MESSAGE,
-    input: { to: "ankur", content: "the answer", attachments: ["/var/home/dadi/answer.md"] },
-  });
-  assert.equal(queued.isError, false, queued.content);
-  const [queuedRow] = await handle.db.select().from(attachments).where(eq(attachments.filename, "answer.md"));
-
-  const sent = await executeTool(runtime.toolContext(workerId, "process"), {
+  const sent = await executeTool(runtime.toolContext(workerId, "work"), {
     type: "tool_use",
     id: "s1",
     name: SEND_MESSAGE,
     input: {
       to: "ankur",
       content: "the answer",
-      attachments: ["/var/home/dadi/answer.md", queuedRow!.id, "/var/home/dadi/other.md"],
+      attachments: ["/var/home/dadi/answer.md", "/var/home/dadi/other.md"],
     },
   });
   assert.equal(sent.isError, false, sent.content);

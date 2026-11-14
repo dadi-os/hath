@@ -51,6 +51,7 @@ function deliverDeps(transcript: TranscriptStore) {
     db: handle.db,
     transcript,
     events: new EventBus(silentLog),
+    answerByMinutes: 5,
     enqueueProcess: () => randomUUID(),
     enqueueWork: () => randomUUID(),
   };
@@ -68,6 +69,7 @@ test("deliverUserMessage persists a messages row stamped with the wake it opened
   const row = await deliverUserMessage(
     {
       ...deliverDeps(transcript),
+      answerByMinutes: 5,
       enqueueProcess: (_agentId, _reason, given) => {
         origin = given;
         return wakeId;
@@ -332,6 +334,7 @@ test("GET /threads and GET /agents/:id/messages return human-thread history", as
       db: handle.db,
       transcript: runtime.transcript,
       events: runtime.events,
+      answerByMinutes: 5,
       enqueueProcess: runtime.enqueueProcess,
       enqueueWork: runtime.enqueueWork,
     },
@@ -487,7 +490,7 @@ test("child may still message and send to the user", async () => {
   const send = await executeTool(runtime.toolContext(childId, "work"), {
     type: "tool_use",
     id: "child-send-user",
-    name: "queue_message",
+    name: "send_message",
     input: { to: "ankur", content: "status for Ankur" },
   });
   assert.equal(send.isError, false);
@@ -511,7 +514,7 @@ test("child may still message and send to the user", async () => {
   const rootSend = await executeTool(runtime.toolContext(parentId, "work"), {
     type: "tool_use",
     id: "root-send-user",
-    name: "queue_message",
+    name: "send_message",
     input: { to: "ankur", content: "report to Ankur" },
   });
   assert.equal(rootSend.isError, false);
@@ -594,7 +597,7 @@ test("messaging a retired agent is a retired error on every path and stores noth
   const send = await executeTool(runtime.toolContext(senderId, "work"), {
     type: "tool_use",
     id: "send-retired",
-    name: "queue_message",
+    name: "send_message",
     input: { to: retiredId, content: "ask it something" },
   });
   assert.equal(send.isError, true);
@@ -641,6 +644,7 @@ test("POST /agents/:id/read marks a thread read across devices and /threads coun
     db: handle.db,
     transcript: runtime.transcript,
     events: runtime.events,
+    answerByMinutes: 5,
     enqueueProcess: runtime.enqueueProcess,
     enqueueWork: runtime.enqueueWork,
   };

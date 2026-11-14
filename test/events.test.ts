@@ -229,6 +229,7 @@ test("deliverAgentMessage with a schedule id opens a schedule wake and stamps th
       db: handle.db,
       transcript,
       events,
+      answerByMinutes: 5,
       enqueueProcess: (agentId, _reason, origin) => {
         enqueued.push({ agentId, origin });
         return wakeId;
@@ -245,7 +246,7 @@ test("deliverAgentMessage with a schedule id opens a schedule wake and stamps th
 
   assert.equal(transcript.transcriptFor(toId).length, beforeLen + 1);
   assert.equal(seen.length, 1);
-  assert.deepEqual(enqueued, [{ agentId: toId, origin: { kind: "schedule", ref: "x", openedByMessageId: row.id } }]);
+  assert.deepEqual(enqueued.map((entry) => [entry.agentId, entry.origin?.kind, entry.origin?.ref, entry.origin?.openedByMessageId, entry.origin?.jobIsNew]), [[toId, "schedule", "x", row.id, true]]);
   const [stored] = await handle.db.select().from(messages).where(eq(messages.id, row.id!));
   assert.equal(stored?.wakeId, wakeId);
   const logs = await handle.db.select().from(agentLogs);

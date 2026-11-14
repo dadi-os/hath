@@ -14,7 +14,6 @@ import {
   INGEST_MEMORY,
   LIST_AGENTS,
   MANAGE_AGENT,
-  QUEUE_MESSAGE,
   MODIFY_AGENT_PROMPT,
   RECALL_MEMORY,
   SEND_MESSAGE,
@@ -39,8 +38,8 @@ import { shortArg } from "./status.js";
 import { KEEP_WHOLE_CHARS } from "./wake.js";
 import { resultPath, savesResult, writeBytes } from "./files.js";
 import { runWait } from "./watches.js";
-import { runMessage } from "./outbox.js";
 import { runIngestMemory, runRecallMemory } from "./memory.js";
+import { recallDigestRow, recordActivity, storeRow } from "./activity.js";
 import { runManageAgent, runModifyAgentPrompt } from "./modify.js";
 import { runRouterTool } from "./router.js";
 import { runSend } from "./send.js";
@@ -165,18 +164,42 @@ export async function executeTool(
     }
   };
   let result: ToolExecResult;
+  let whole: string;
   if (ctx.lane === "work" && ctx.callerId !== null && call.name !== YIELD && call.name !== WAIT && toolIsAsync(call.name) && !(call.name === INGEST_MEMORY && ctx.syncIngest)) {
     result = await runInBackground(ctx, ctx.callerId, call, run);
+    whole = result.content;
   } else {
     result = await saveLargeResult(ctx, call, await run());
+    whole = result.content;
     if (call.name === INGEST_MEMORY && ctx.syncIngest) {
       result = cutLong(ctx, call, result);
     }
   }
   if (ctx.callerId !== null) {
     ctx.toolDebounce.record(ctx.callerId, result.isError);
+    if (!result.isError && ctx.lane !== "router") {
+      await recordToolActivity(ctx, call, whole);
+    }
   }
   return result;
+}
+
+/**
+ * recordToolActivity writes the activity row a successful call earns, from its whole result: what an
+ * ingest stored, and the tasks a recall by date returned. Sends, routines and reminders record
+ * themselves; a helper's read is recorded when its report arrives (see helper-reports.ts).
+ */
+async function recordToolActivity(ctx: ToolContext, call: DwarToolUseBlock, whole: string): Promise<void> {
+  const callerId = ctx.callerId!;
+  const row =
+    call.name === INGEST_MEMORY
+      ? storeRow(whole)
+      : call.name === RECALL_MEMORY
+        ? recallDigestRow(call.input as { relevant_on?: string }, whole)
+        : null;
+  if (row !== null) {
+    await recordActivity(ctx.db, { agentId: callerId, jobId: ctx.jobId, ...row });
+  }
 }
 
 /**
@@ -214,8 +237,8 @@ async function dispatchTool(
       return await runRouterTool(ctx, call);
     }
     if (ctx.lane === "work") {
-      if (call.name === QUEUE_MESSAGE) {
-        return await runMessage(ctx, call.input);
+      if (call.name === SEND_MESSAGE) {
+        return await runSend(ctx, call.input);
       }
       if (call.name === WAIT) {
         return await runWait(ctx, call.input);
@@ -287,6 +310,7 @@ async function noteProcessAction(ctx: ToolContext, call: DwarToolUseBlock, resul
     content: `Your process lane ran ${call.name} ${shortArg(call.input)}: ${result.content.slice(0, ACTION_NOTE_RESULT_CHARS)}`,
     notice: "tool",
     wake: false,
+    jobId: ctx.jobId,
   });
 }
 

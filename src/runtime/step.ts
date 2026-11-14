@@ -12,7 +12,6 @@ import type {
 import { WAIT, YIELD } from "../types/domain.js";
 import type { Arrivals, AssembledContext } from "./context.js";
 import type { ToolExecResult } from "./tools.js";
-import type { TranscriptStore } from "./transcript.js";
 import { CAPPED_TURN, CAPPED_TURNS_MAX, CONTINUE_TURN, type Wake } from "./wake.js";
 
 const TERMINATED = "terminated by process lane";
@@ -33,6 +32,11 @@ export type StepDeps = {
   logResponse: (response: DwarChatResponse) => Promise<void>;
   /** Writes the `tool_result` log row with the tool's name. */
   logToolResult: (call: DwarToolUseBlock, result: ToolExecResult) => Promise<void>;
+  /**
+   * What happens to a turn of text and no tool call (see send.ts replyWithText): true when the
+   * text was taken as the lane's answer, which ends the run. Absent for a lane whose text is thought.
+   */
+  replyWithText?: (text: string) => Promise<boolean>;
 };
 
 /**
@@ -43,9 +47,8 @@ export type StepDeps = {
 export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
   if (!deps.wake.started) {
     deps.wake.begin(assembled.system, assembled.transcripts, assembled.throughSeq);
-    const wokenBy = deps.wake.wokenBy;
-    if (wokenBy !== null) {
-      deps.wake.push({ message: { role: "user", content: wokenBy } });
+    if (assembled.header !== undefined) {
+      deps.wake.push({ message: { role: "user", content: assembled.header } });
     }
     if (assembled.carried !== undefined) {
       deps.wake.push({ message: { role: "user", content: assembled.carried }, only: "work" });
@@ -80,38 +83,6 @@ export function laneRequest(deps: StepDeps, assembled: AssembledContext): DwarCh
     tools: assembled.tools,
     tool_choice: deps.lane === "router" ? "any" : "auto",
   };
-}
-
-/** How much of an already-sent message a refusal quotes. */
-const SENT_QUOTE_CHARS = 300;
-
-/**
- * alreadySentRefusal is why `agentId`'s message to `to`, composed when its wake had read
- * the transcript through `composedThrough`, must not go out: a message this agent sent
- * `to` after that point, which the composing turn never saw: a second send to one recipient
- * in the same turn, or one a concurrent run made. The refusal quotes what went out, so the
- * lane sends only what it adds. A pickup hath sent for the agent (see pickups.ts) does not
- * count: it says only that the job is in hand. Null when nothing was sent `to` since.
- */
-export function alreadySentRefusal(
-  transcript: TranscriptStore,
-  agentId: string,
-  to: string | null,
-  composedThrough: number,
-): string | null {
-  const sent = transcript
-    .transcriptFor(agentId)
-    .filter(
-      (row) =>
-        row.seq > composedThrough && row.fromAgentId === agentId && row.toAgentId === to && row.fromAgentId !== row.toAgentId && row.sentBy !== "hath",
-    )
-    .at(-1);
-  if (sent === undefined) {
-    return null;
-  }
-  const who = to ?? "Ankur";
-  const quote = sent.content.length > SENT_QUOTE_CHARS ? `${sent.content.slice(0, SENT_QUOTE_CHARS)}…` : sent.content;
-  return `Not sent: this agent already sent ${who} a message after you wrote this one: "${quote}" Send ${who} only what that message does not already say, or nothing if it covers this.`;
 }
 
 /** How many times a lane asks again after its model returned an empty turn. */
@@ -182,6 +153,12 @@ export async function runStep(
         return true;
       }
       throw new HathError(502, "dwar", `${deps.lane} model returned an empty turn`);
+    }
+    const text = response.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n").trim();
+    if (text !== "" && deps.replyWithText !== undefined && (await deps.replyWithText(text))) {
+      deps.wake.push({ message: assistant, outputTokens, ...privateTo });
+      deps.wake.markYield(deps.lane);
+      return true;
     }
     deps.wake.push(
       { message: assistant, outputTokens, ...privateTo },

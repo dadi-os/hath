@@ -8,12 +8,12 @@
 import { formatISO } from "date-fns";
 import type { Db } from "../db/client.js";
 import { currentRequester } from "../db/messages.js";
-import { pendingOutbox } from "../db/outbox.js";
 import type { NasClient } from "../nas/client.js";
-import type { AgentStatus, JobLedger } from "../types/domain.js";
-import { openJob } from "./jobs.js";
+import type { AgentStatus } from "../types/domain.js";
+import { jobById } from "./jobs.js";
+import { jobLedger } from "./ledger.js";
 import type { LaneLocks } from "./locks.js";
-import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
+import type { TranscriptStore } from "./transcript.js";
 import type { Wake } from "./wake.js";
 import { watchOf } from "./watches.js";
 
@@ -26,7 +26,6 @@ export const STATUS_RECENT_CALLS = 5;
 /** How much of a message, an argument or a pending message the block quotes. */
 const JOB_CHARS = 300;
 const ARG_CHARS = 80;
-const PENDING_CHARS = 120;
 
 /** The input keys a call's short argument is taken from, first one present. */
 const ARG_KEYS = ["path", "url", "query", "command", "request", "id", "message", "to", "name", "pattern", "text", "content", "on"];
@@ -62,51 +61,11 @@ export type StatusDeps = {
   transcript: TranscriptStore;
   /** The agent's current wake, or undefined when it has none (the work lane's steps are then unknown). */
   wake: Wake | undefined;
-  /** `runtime.status_job_ledger`: the block carries the open job's ledger (see jobLedger). */
-  ledger: boolean;
 };
-
-/** How much of the job's opening message, and of each message to the requester, the ledger quotes. */
-const OPENED_CHARS = 200;
-const TOLD_CHARS = 80;
-
-/** How many of the job's newest asks, and of its newest messages to the requester, the ledger lists. */
-const LEDGER_ASKS = 12;
-const LEDGER_TOLD = 6;
-
-/**
- * jobLedger is what `agentId` has done on the job `requester` opened at `openedSeq`, read from
- * its thread: the opening message, every agent it asked since (a routine's trigger and hath's
- * notices are not asks) with the first message back from each, and what it already sent the
- * requester. A coordinator whose window no longer shows its own asks reads them here instead
- * of asking again. Throws when the opening message is not in the thread.
- */
-export function jobLedger(thread: TranscriptEntry[], agentId: string, requester: string | null, openedSeq: number): JobLedger {
-  const opening = thread.find((row) => row.seq === openedSeq);
-  if (opening === undefined) {
-    throw new Error(`job opening message #${openedSeq} is not in ${agentId}'s thread`);
-  }
-  const since = thread.filter((row) => row.seq > openedSeq && row.kind !== "notice" && row.routine === undefined);
-  const asks = since
-    .filter((row) => row.fromAgentId === agentId && row.toAgentId !== null && row.toAgentId !== agentId && row.toAgentId !== requester)
-    .map((ask) => ({
-      to: ask.toAgentId!,
-      seq: ask.seq,
-      answered_seq: since.find((row) => row.seq > ask.seq && row.fromAgentId === ask.toAgentId && row.toAgentId === agentId)?.seq ?? null,
-    }));
-  const told = since
-    .filter((row) => row.fromAgentId === agentId && row.toAgentId === requester)
-    .map((row) => ({ seq: row.seq, preview: clip(row.content, TOLD_CHARS) }));
-  return {
-    opened: { seq: opening.seq, at: formatISO(opening.createdAt), content: clip(opening.content, OPENED_CHARS) },
-    asks: asks.slice(-LEDGER_ASKS),
-    told: told.slice(-LEDGER_TOLD),
-  };
-}
 
 /**
  * gatherStatus reads `agentId`'s status from the live wake, the lane locks, the watches,
- * Nas and the outbox. A Nas that cannot be read is reported in `tasks_unreadable` and the
+ * and Nas. A Nas that cannot be read is reported in `tasks_unreadable` and the
  * block says so, instead of guessing that nothing is in flight.
  */
 export async function gatherStatus(deps: StatusDeps, agentId: string): Promise<AgentStatus> {
@@ -129,7 +88,7 @@ export async function gatherStatus(deps: StatusDeps, agentId: string): Promise<A
     unreadable = err instanceof Error ? err.message : String(err);
   }
   const lastStep = deps.wake?.lastWorkAt ?? null;
-  const open = deps.ledger ? await openJob(deps.db, requester, agentId) : undefined;
+  const jobId = deps.wake?.jobId ?? null;
   return {
     job: asked === undefined ? null : { from: requester, at: formatISO(asked.createdAt), content: clip(asked.content, JOB_CHARS) },
     work: running
@@ -141,13 +100,7 @@ export async function gatherStatus(deps: StatusDeps, agentId: string): Promise<A
     recent: calls.map((call) => ({ name: call.name, arg: shortArg(call.input), ok: call.failed === null ? null : !call.failed })),
     tasks,
     tasks_unreadable: unreadable,
-    pending: (await pendingOutbox(deps.db, agentId)).map((row) => ({
-      id: row.id,
-      to: row.toAgentId,
-      expects_reply: row.expectsReply,
-      preview: clip(row.content, PENDING_CHARS),
-    })),
-    ledger: open === undefined ? null : jobLedger(deps.transcript.transcriptFor(agentId), agentId, requester, open.openedSeq),
+    ledger: jobId === null ? null : await jobLedger(deps.db, await jobById(deps.db, jobId)),
   };
 }
 
@@ -186,8 +139,8 @@ export function renderStatus(status: AgentStatus): string {
   }
   if (status.ledger !== null) {
     const ledger = status.ledger;
-    const requester = status.job?.from ?? "Ankur";
-    lines.push(`This job, opened by #${ledger.opened.seq} at ${ledger.opened.at}: ${ledger.opened.content}`);
+    const requester = ledger.requester ?? "Ankur";
+    lines.push(`This job (#${ledger.job}), opened by ${requester} at ${ledger.opened.at}: ${ledger.opened.content}`);
     lines.push(ledger.asks.length === 0 ? "- Asked no agent in this job." : "- Asked in this job:");
     for (const ask of ledger.asks) {
       lines.push(`  - ${ask.to} (#${ask.seq}): ${ask.answered_seq === null ? "no answer yet" : `answered in #${ask.answered_seq}`}`);
@@ -195,14 +148,6 @@ export function renderStatus(status: AgentStatus): string {
     lines.push(ledger.told.length === 0 ? `- Told ${requester} nothing yet in this job.` : `- Already told ${requester}:`);
     for (const told of ledger.told) {
       lines.push(`  - #${told.seq}: ${told.preview}`);
-    }
-  }
-  if (status.pending.length === 0) {
-    lines.push("Messages from work waiting to be sent: none.");
-  } else {
-    lines.push("Messages from work waiting to be sent:");
-    for (const row of status.pending) {
-      lines.push(`- #${row.id} to ${row.to ?? "Ankur"}${row.expects_reply ? " (expects a reply)" : ""}: ${row.preview}`);
     }
   }
   return lines.join("\n");

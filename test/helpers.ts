@@ -95,15 +95,6 @@ export function yieldTurn(id = "yield-1"): DwarChatResponse {
   return toolUse("yield", {}, id);
 }
 
-/** The id of the newest work-lane message to `to` that a process-lane request shows in a [Messages from work] turn. */
-export function waitingMessageId(request: DwarChatRequest, to = "Ankur"): number {
-  const found = [...JSON.stringify(request.messages).matchAll(new RegExp(`#(\\d+) · to ${to}(?: ·|\\\\n)`, "g"))].at(-1);
-  if (found === undefined) {
-    throw new Error(`no message from work to ${to} is waiting in the request`);
-  }
-  return Number(found[1]);
-}
-
 export function mockDwar(opts: {
   work?: (
     request: DwarChatRequest,
@@ -554,7 +545,7 @@ export async function openTestDb(): Promise<{ db: Db; sql: Sql; close: () => Pro
 }
 
 export async function resetRuntime(sql: Sql, db: Db, _config: Config): Promise<void> {
-  await sql`TRUNCATE delivered_reports, scheduled_messages, messages, agent_logs, agents CASCADE`;
+  await sql`TRUNCATE delivered_reports, routines, reminders, helper_steers, agent_activity, messages, agent_logs, agents CASCADE`;
 }
 
 /** insertAgent creates an agent row; `id` is kebab-case (`name` accepted as alias). */
@@ -605,23 +596,16 @@ export function withRuntime(config: Config, runtime: Partial<Config["runtime"]>)
   return { ...config, runtime: { ...config.runtime, ...runtime } };
 }
 
-/** Every job-shape flag off: the runtime as it was before the cycle-4 change. */
+/** Every remaining job-shape flag off. */
 export const FLAGS_OFF = {
-  routine_silence: false,
-  direct_agent_messages: false,
   hath_pickups: false,
   implicit_yield: false,
-  status_job_ledger: false,
   ingest_result_wakes: false,
-  direct_ankur_messages: false,
-  weekday_guard: false,
-  routine_follow_up: false,
   job_requester: false,
   wait_target_guard: false,
   pickup_live_work: false,
   tool_hygiene: false,
   sync_ingest: false,
-  ingest_source_text: false,
   job_did_carry: false,
   implicit_steer_end: false,
 } satisfies Partial<Config["runtime"]>;

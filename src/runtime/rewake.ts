@@ -16,6 +16,8 @@ type RewakeArgs = {
   /** Why it wakes, for the wake's first line, such as "helper result from task/browser/3". */
   wokenBy: string;
   attachmentIds?: string[];
+  /** The job the news belongs to (see job-of.ts): a report's is its steer's, a result's the call's, a timeout's the wait's; absent for none. */
+  jobId?: string | null;
 };
 
 /** rewakeWork records `content` for `agentId`, with `attachmentIds` as its files, and wakes its work lane. */
@@ -37,5 +39,6 @@ function rewake(deps: DeliverDeps, agentId: string, args: RewakeArgs, lane: "pro
     notice: args.notice,
     wakeWork: lane === "work",
     wokenBy: args.wokenBy,
+    ...(args.jobId !== undefined ? { jobId: args.jobId } : {}),
   });
 }

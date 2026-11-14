@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { arrivalsSince } from "../src/runtime/context.js";
-import { jobLedger, renderStatus, shortArg, STATUS_LABEL } from "../src/runtime/status.js";
+import { renderStatus, shortArg, STATUS_LABEL } from "../src/runtime/status.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { Wake } from "../src/runtime/wake.js";
 import type { AgentStatus } from "../src/types/domain.js";
@@ -17,11 +17,10 @@ const status: AgentStatus = {
   ],
   tasks: [{ id: "task/browser/3", status: "working", current: "on the registrar page" }],
   tasks_unreadable: null,
-  pending: [{ id: 12, to: null, expects_reply: true, preview: "which semester?" }],
   ledger: null,
 };
 
-test("the status block names the job, the work lane, its step and recent calls, tasks and pending messages", () => {
+test("the status block names the job, the work lane, its step and recent calls, tasks and ledger", () => {
   const text = renderStatus(status);
   assert.ok(text.startsWith(STATUS_LABEL));
   assert.match(text, /Current job: from Ankur at 2026-10-29T10:00:00-04:00: find my exam times/);
@@ -30,7 +29,6 @@ test("the status block names the job, the work lane, its step and recent calls, 
   assert.match(text, /- recall_memory exam times · ok/);
   assert.match(text, /- web_fetch https:\/\/registrar\.example\/exams · running/);
   assert.match(text, /- task\/browser\/3 · working · on the registrar page/);
-  assert.match(text, /- #12 to Ankur \(expects a reply\): which semester\?/);
 });
 
 test("the status block says plainly when nothing is running, waiting, in flight or unreadable", () => {
@@ -42,13 +40,11 @@ test("the status block says plainly when nothing is running, waiting, in flight 
     recent: [],
     tasks: [],
     tasks_unreadable: null,
-    pending: [],
   });
   assert.match(idle, /Current job: none open/);
   assert.match(idle, /Work lane: waiting on task\/browser\/3 since 2026-10-29T10:07:00-04:00/);
   assert.match(idle, /Current step: none/);
   assert.match(idle, /Helper tasks in flight: none/);
-  assert.match(idle, /Messages from work waiting to be sent: none/);
   assert.match(renderStatus({ ...status, tasks_unreadable: "nas down" }), /Helper tasks: could not be read \(nas down\)/);
 });
 
@@ -116,36 +112,27 @@ test("a message the work lane sent directly reaches only the process lane, and h
   assert.match(String(arrived.turn?.content), /Working on it\./);
 });
 
-test("a routine's trigger reads as [Routine] to its recipient, and its author's copy is no news mid-wake", () => {
-  const transcript = new TranscriptStore();
-  const trigger = transcript.append({ fromAgentId: "education-specialist", toAgentId: "cse-300-specialist", content: "Morning check." });
-  trigger.routine = "sched-1";
-  const toRecipient = arrivalsSince(transcript, "cse-300-specialist", 0);
-  assert.match(String(toRecipient.turn?.content), /\[Routine · sched-1 · /);
-  assert.doesNotMatch(String(toRecipient.turn?.content), /\[From: education-specialist/);
-  const toAuthor = arrivalsSince(transcript, "education-specialist", 0);
-  assert.equal(toAuthor.turn, null);
-  assert.equal(toAuthor.sent, null);
-  assert.equal(toAuthor.throughSeq, trigger.seq);
-});
-
-test("the job ledger lists each ask with who answered, skips routine triggers, and what the requester was told", () => {
-  const transcript = new TranscriptStore();
-  const opened = transcript.append({ fromAgentId: null, toAgentId: "edu", content: "what is due tonight?" });
-  const toA = transcript.append({ fromAgentId: "edu", toAgentId: "cse-300", content: "due tonight?" });
-  const toB = transcript.append({ fromAgentId: "edu", toAgentId: "cse-335", content: "due tonight?" });
-  const answer = transcript.append({ fromAgentId: "cse-300", toAgentId: "edu", content: "Module 8 quiz" });
-  const routine = transcript.append({ fromAgentId: "edu", toAgentId: "cse-431", content: "Morning check." });
-  routine.routine = "sched-2";
-  const told = transcript.append({ fromAgentId: "edu", toAgentId: null, content: "CSE 300: Module 8 quiz at 11:59 PM" });
-  const ledger = jobLedger(transcript.transcriptFor("edu"), "edu", null, opened.seq);
-  assert.equal(ledger.opened.seq, opened.seq);
-  assert.deepEqual(ledger.asks, [
-    { to: "cse-300", seq: toA.seq, answered_seq: answer.seq },
-    { to: "cse-335", seq: toB.seq, answered_seq: null },
-  ]);
-  assert.deepEqual(ledger.told.map((row) => row.seq), [told.seq]);
-  const block = renderStatus({ ...status, ledger });
-  assert.match(block, /cse-335 \(#\d+\): no answer yet/);
-  assert.throws(() => jobLedger(transcript.transcriptFor("edu"), "edu", null, 9_999), /not in edu's thread/);
+test("the status block renders the job ledger: each ask with who answered, and what the requester was told", () => {
+  const block = renderStatus({
+    ...status,
+    ledger: {
+      job: 812,
+      requester: null,
+      opened: { seq: 812, at: "2026-10-29T10:00:00-04:00", content: "what is due tonight?" },
+      answer_by: "2026-10-29T10:05:00-04:00",
+      asks: [
+        { to: "cse-300", seq: 813, answered_seq: 815 },
+        { to: "cse-335", seq: 814, answered_seq: null },
+      ],
+      helpers: [],
+      stored: [],
+      told: [{ seq: 816, preview: "CSE 300: Module 8 quiz" }],
+      reminders: [],
+      stopped: null,
+    },
+  });
+  assert.match(block, /This job \(#812\), opened by Ankur/);
+  assert.match(block, /cse-300 \(#813\): answered in #815/);
+  assert.match(block, /cse-335 \(#814\): no answer yet/);
+  assert.match(block, /Already told Ankur:\n {2}- #816: CSE 300: Module 8 quiz/);
 });

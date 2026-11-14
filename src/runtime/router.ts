@@ -124,6 +124,7 @@ async function deliverAsAnkur(
       events: ctx.events,
       enqueueProcess: ctx.enqueueProcess,
       enqueueWork: ctx.enqueueWork,
+      answerByMinutes: ctx.answerByMinutes,
       ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
     },
     target.id,

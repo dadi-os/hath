@@ -53,20 +53,32 @@ export type AgentStatus = {
   tasks: { id: string; status: string; current: string }[];
   /** Why the tasks could not be read from Nas, or null. */
   tasks_unreadable: string | null;
-  /** Messages the work lane queued that the process lane has not sent. */
-  pending: { id: number; to: string | null; expects_reply: boolean; preview: string }[];
-  /** The open job as this agent has worked it so far (`runtime.status_job_ledger`); null when that is off or no job is open. */
+  /** The open job as this agent has worked it so far (see runtime/ledger.ts); null when no job is open. */
   ledger: JobLedger | null;
 };
 
-/** One open job's record, from the agent's messages since the job opened (see runtime/status.ts jobLedger). */
+/** One job's record, read from the rows stamped with its id (see runtime/ledger.ts). */
 export type JobLedger = {
-  /** The requester's message that opened the job, clipped. */
+  /** The job's number (its opening message's seq). */
+  job: number;
+  /** Who asked: an agent id, or null for Ankur; the agent's own id for a routine run. */
+  requester: string | null;
+  /** The opening message, clipped, and when it was written. */
   opened: { seq: number; at: string; content: string };
-  /** Each agent this agent asked something since, oldest first, with the seq of that agent's first message back (null while none). */
+  /** When the answer is due, for Ankur's jobs. */
+  answer_by: string | null;
+  /** Each agent this agent asked in the job, oldest first, with the seq of that agent's first message back (null while none). */
   asks: { to: string; seq: number; answered_seq: number | null }[];
-  /** What this agent already sent the requester since, oldest first, clipped. */
+  /** The helper tasks steered in the job. */
+  helpers: string[];
+  /** What was stored in memory in the job: the titles. */
+  stored: string[];
+  /** What this agent already sent the requester in the job, oldest first, clipped. */
   told: { seq: number; preview: string }[];
+  /** The job's reminders, soonest first (ISO). */
+  reminders: string[];
+  /** When and by whom the job was stopped; null while it was not. */
+  stopped: { at: string; by: string } | null;
 };
 
 export type AgentRecord = {
@@ -124,17 +136,30 @@ export type LogRecord = {
   created_at: string;
 };
 
-/** API shape for a scheduled_messages row. Presence of the row is the state. */
-export type ScheduledMessageRecord = {
+/** API shape for a routines row: an agent's own standing duty. */
+export type RoutineRecord = {
   id: string;
-  from_agent_id: string;
-  to_agent_id: string;
-  content: string;
-  /** Next fire time (ISO). Ticker cursor — advanced after each fire. */
-  run_at: string;
-  /** null = one-shot; >= 1 = recurring interval in minutes. */
-  interval_minutes: number | null;
+  agent_id: string;
+  title: string;
+  procedure: string;
+  /** Local time of day, HH:MM, in the box's zone. */
+  at: string;
+  /** Weekdays it runs on (mon..sun); null is every day. */
+  days: Weekday[] | null;
+  next_run_at: string;
+  last_run_at: string | null;
+  last_job_id: string | null;
+  active: boolean;
   created_at: string;
+};
+
+/** API shape for a reminders row: a later step of a job. */
+export type ReminderRecord = {
+  id: string;
+  agent_id: string;
+  job_id: string | null;
+  note: string;
+  run_at: string;
 };
 
 export type DwarProvider = "anthropic" | "gemini";
@@ -226,14 +251,22 @@ export type DwarUsage = {
 };
 
 /**
- * What an agent's message to whoever gave it a job says about that job: its one
- * progress update, a question only the requester can answer, a wall, or the result.
+ * What an agent's message to whoever gave it a job says about that job: the result, a wall,
+ * or a question only the requester can answer. A progress line is not a status.
  */
-export const MESSAGE_STATUSES = ["running", "needs_input", "blocked", "done"] as const;
+export const MESSAGE_STATUSES = ["done", "blocked", "needs_input"] as const;
 export type MessageStatus = (typeof MESSAGE_STATUSES)[number];
 
-/** Where a job stands: open, waiting on the requester's answer, or closed one of three ways. */
-export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop";
+/** Where a job stands: open, waiting on the requester's answer, or closed one of four ways. */
+export type JobState = "open" | "needs_input" | "done" | "blocked" | "noop" | "stopped";
+
+/** The weekdays a routine runs on. */
+export const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+export type Weekday = (typeof WEEKDAYS)[number];
+
+/** What an agent_activity row records (see runtime/activity.ts). */
+export const ACTIVITY_KINDS = ["site_read", "store", "recall_digest", "send", "routine", "reminder", "stop"] as const;
+export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 
 /**
  * A message someone wrote, hath's notice that an agent's work stopped (see deliver.ts), or
@@ -244,12 +277,19 @@ export type MessageKind = "message" | "notice" | "utterance";
 /** Why a wake began (see `wakes` in db/schema.ts). */
 export type WakeReasonKind = "message" | "schedule" | "recovery" | "steer" | "manual";
 
-/** The structured reason a wake is created with; `ref` is the sender agent id for `message`, the schedule id for `schedule`. */
+/**
+ * The structured reason a wake is created with; `ref` is the sender agent id for `message`, the
+ * routine or reminder id for `schedule`.
+ */
 export type WakeOrigin = {
   kind: WakeReasonKind;
   ref: string | null;
   /** The message that opened the wake, when one did. */
   openedByMessageId: string | null;
+  /** The job the wake belongs to (see runtime/job-of.ts); absent when the reason is no job's. */
+  jobId?: string;
+  /** True when the wake's reason opened that job. */
+  jobIsNew?: boolean;
 };
 
 
@@ -320,14 +360,9 @@ export type WakeEntry =
       calls: WakeToolCall[];
     };
 
-/** Where an outbox row stands: waiting for the process lane, sent, declined (rows from before the lane overhaul), or lost with its lane. */
-export type HandoffState = "pending" | "sent" | "declined" | "failed";
-
-/** The tool that sends a message: the router's and the process lane's voice. */
+/** The tool that sends a message: every lane's voice, and the router's. */
 export const SEND_MESSAGE = "send_message";
 export const FORWARD_ATTACHMENT = "forward_attachment";
-/** The work lane's way to give its process lane something to say. */
-export const QUEUE_MESSAGE = "queue_message";
 export const STEER_WORK = "steer_work";
 export const YIELD = "yield";
 export const WAIT = "wait";

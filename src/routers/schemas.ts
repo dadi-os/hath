@@ -71,21 +71,11 @@ export const idParam = z.object({ id: agentIdSchema }).strict();
 /** Body of `POST /agents/:id/read`: the last message Ankur has read in that thread. */
 export const threadReadBody = z.object({ seq: z.number().int().positive() }).strict();
 
-/** Path params for one scheduled message, addressed by its uuid. */
+/** Path params for one routine or reminder, addressed by its uuid. */
 export const scheduleIdParam = z.object({ id: z.string().uuid() }).strict();
 
 /** Path params for one attachment, addressed by its uuid. */
 export const attachmentIdParam = z.object({ id: z.string().uuid() }).strict();
-
-/** A hand edit to a schedule: any of its time, repeat (null makes it one-shot), or message. */
-export const patchScheduleBody = z
-  .object({
-    run_at: z.string().datetime({ offset: true }).optional(),
-    interval_minutes: z.number().int().min(1).nullable().optional(),
-    content: z.string().trim().min(1).optional(),
-  })
-  .strict()
-  .refine((body) => Object.keys(body).length > 0, { message: "nothing to change" });
 
 /** An agent's or every agent's logs: the newest `limit` rows, optionally of one event. */
 export const logsQuery = z

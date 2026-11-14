@@ -1,12 +1,19 @@
-/** Scheduled-message ticker: advance due rows, then deliver at-most-once. */
+/**
+ * The ticker: wakes the agents whose waits are due, fires due routines and reminders, sends
+ * hath's pickups and sweeps the file caches. A routine firing opens a job of its own with no
+ * requester; a reminder fires into its job.
+ */
 
-import { addDays, addMinutes } from "date-fns";
-import { asc, eq, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import type { WakeOrigin } from "../types/domain.js";
-import { agents, scheduledMessages, type ScheduledMessageRow } from "../db/schema.js";
-import { deliverAgentMessage } from "./deliver.js";
+import { agents, jobs, reminders, routines, type ReminderRow, type RoutineRow } from "../db/schema.js";
+import type { Weekday, WakeOrigin } from "../types/domain.js";
+import { recordActivity } from "./activity.js";
+import { deliverAgentMessage, type DeliverDeps } from "./deliver.js";
 import type { EventBus } from "./events.js";
+import { openJob, OPEN_STATES } from "./jobs.js";
+import { openRunJob } from "./job-of.js";
+import { nextRunAt, routineBlock } from "./routines.js";
 import type { WakeActivity } from "./wake-activity.js";
 import { SWEEP_INTERVAL_MS } from "./retention.js";
 import type { TranscriptStore } from "./transcript.js";
@@ -25,18 +32,13 @@ export type Scheduler = {
   tick(now?: Date): Promise<void>;
 };
 
-/** Advance `runAt` by `intervalMinutes`, preserving the box's wall time (`TZ`) across DST for day multiples. */
-export function advanceRunAt(runAt: Date, intervalMinutes: number): Date {
-  if (intervalMinutes % 1440 === 0) {
-    const days = intervalMinutes / 1440;
-    return addDays(runAt, days);
-  }
-  return addMinutes(runAt, intervalMinutes);
-}
+type FiredRoutine = { row: RoutineRow; firedAt: Date };
 
-type FiredRow = ScheduledMessageRow & { firedAt: Date };
-
-/** Polls every `tickSeconds`: sweeps the file caches once a day, wakes the work lane of each agent whose wait is due, delivers due scheduled messages into transcripts, waking each recipient's process lane, and sends hath's pickups when they are on. */
+/**
+ * Polls every `tickSeconds`: sweeps the file caches once a day, wakes the work lane of each
+ * agent whose wait is due, fires due routines and reminders into their owners' jobs, and sends
+ * hath's pickups when they are on.
+ */
 export function createScheduler(opts: {
   db: Db;
   transcript: TranscriptStore;
@@ -45,6 +47,8 @@ export function createScheduler(opts: {
   enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
   /** Told of each message a firing delivers, so the woken wake reports its count. */
   wakeActivity: WakeActivity;
+  /** `runtime.answer_by_minutes`. */
+  answerByMinutes: number;
   log: SchedulerLog;
   tickSeconds: number;
   /** What a due wait needs (see watches.ts). */
@@ -57,102 +61,138 @@ export function createScheduler(opts: {
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking = false;
   let lastSweep: Date | undefined;
+  const deliver: DeliverDeps = {
+    db: opts.db,
+    transcript: opts.transcript,
+    events: opts.events,
+    enqueueProcess: opts.enqueueProcess,
+    enqueueWork: opts.enqueueWork,
+    wakeActivity: opts.wakeActivity,
+    answerByMinutes: opts.answerByMinutes,
+  };
 
-  async function advanceDue(now: Date): Promise<FiredRow[]> {
+  /** advanceDueRoutines moves every due routine to its next run and returns the ones that fired. A routine missed while hath was down fires once. */
+  async function advanceDueRoutines(now: Date): Promise<FiredRoutine[]> {
     return opts.db.transaction(async (tx) => {
       const due = await tx
         .select()
-        .from(scheduledMessages)
-        .where(lte(scheduledMessages.runAt, now))
-        .orderBy(asc(scheduledMessages.runAt))
+        .from(routines)
+        .where(and(eq(routines.active, true), lte(routines.nextRunAt, now)))
+        .orderBy(asc(routines.nextRunAt))
         .for("update");
-
-      const fired: FiredRow[] = [];
+      const fired: FiredRoutine[] = [];
       for (const row of due) {
-        const firedAt = row.runAt;
-        if (row.intervalMinutes === null) {
-          await tx.delete(scheduledMessages).where(eq(scheduledMessages.id, row.id));
-          fired.push({ ...row, firedAt });
-          continue;
-        }
-
-        let next = row.runAt;
-        let advances = 0;
-        while (next.getTime() <= now.getTime()) {
-          next = advanceRunAt(next, row.intervalMinutes);
-          advances += 1;
-        }
-        await tx
-          .update(scheduledMessages)
-          .set({ runAt: next })
-          .where(eq(scheduledMessages.id, row.id));
-
-        const latenessMs = now.getTime() - firedAt.getTime();
-        if (advances > 1 || latenessMs > opts.tickSeconds * 2 * 1000) {
+        const next = nextRunAt(row.atLocal, row.days as Weekday[] | null, now);
+        await tx.update(routines).set({ nextRunAt: next, lastRunAt: row.nextRunAt }).where(eq(routines.id, row.id));
+        const latenessMs = now.getTime() - row.nextRunAt.getTime();
+        if (latenessMs > opts.tickSeconds * 2 * 1000) {
           opts.log.warn(
-            {
-              code: "schedule_late",
-              schedule_id: row.id,
-              fired_at: firedAt.toISOString(),
-              lateness_ms: latenessMs,
-              skipped: advances - 1,
-            },
-            "scheduled message caught up late",
+            { code: "schedule_late", routine_id: row.id, fired_at: row.nextRunAt.toISOString(), lateness_ms: latenessMs },
+            "routine caught up late",
           );
         }
-        fired.push({ ...row, runAt: next, firedAt });
+        fired.push({ row, firedAt: row.nextRunAt });
       }
       return fired;
     });
   }
 
-  async function deliverFired(row: FiredRow): Promise<void> {
-    const targets = await opts.db.select().from(agents).where(eq(agents.id, row.toAgentId));
-    const target = targets[0];
-    if (!target) {
-      opts.log.error(
-        {
-          code: "schedule_target_unavailable",
-          schedule_id: row.id,
-          to_agent_id: row.toAgentId,
-          from_agent_id: row.fromAgentId,
-          reason: "missing",
-        },
-        "scheduled message target missing",
-      );
+  /** agentIsActive is true when `agentId` exists and is not retired; a firing for any other is logged and dropped. */
+  async function agentIsActive(agentId: string, what: Record<string, string>): Promise<boolean> {
+    const [target] = await opts.db.select().from(agents).where(eq(agents.id, agentId));
+    if (target === undefined || !target.active) {
+      opts.log.error({ code: "schedule_target_unavailable", agent_id: agentId, reason: target === undefined ? "missing" : "retired", ...what }, "schedule target unavailable");
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * fireRoutine opens a job for one firing of `row`: its previous run's job is done, the firing
+   * is a notice of the agent to itself that wakes its work lane, and the job has no requester.
+   * A routine set up for its owner by another agent says so the first time, then clears that.
+   */
+  async function fireRoutine({ row, firedAt }: FiredRoutine): Promise<void> {
+    if (!(await agentIsActive(row.agentId, { routine_id: row.id }))) {
       return;
     }
-    if (!target.active) {
-      opts.log.error(
-        {
-          code: "schedule_target_unavailable",
-          schedule_id: row.id,
-          to_agent_id: row.toAgentId,
-          from_agent_id: row.fromAgentId,
-          reason: "retired",
-        },
-        "scheduled message target retired",
-      );
+    if (row.lastJobId !== null) {
+      await opts.db
+        .update(jobs)
+        .set({ state: "done", updatedAt: new Date() })
+        .where(and(eq(jobs.id, row.lastJobId), inArray(jobs.state, [...OPEN_STATES])));
+    }
+    const setUp =
+      row.setUpBy === null || row.setUpBy === row.agentId
+        ? ""
+        : `\nThis routine was set up for you by ${row.setUpBy}; change it with set_routine if it should be different.`;
+    let jobId = "";
+    await deliverAgentMessage(deliver, {
+      fromAgentId: row.agentId,
+      toAgentId: row.agentId,
+      content: `Your routine "${row.title}" fired at ${firedAt.toISOString()}.${setUp}`,
+      notice: "routine",
+      wakeWork: true,
+      wokenBy: `your routine "${row.title}"`,
+      scheduleId: row.id,
+      opens: async (message) => {
+        jobId = (await openRunJob(opts.db, { agentId: row.agentId, seq: message.seq, routineId: row.id, requesterId: row.agentId })).id;
+        return jobId;
+      },
+    });
+    await opts.db.update(routines).set({ lastJobId: jobId, setUpBy: null }).where(eq(routines.id, row.id));
+    await recordActivity(opts.db, { agentId: row.agentId, jobId, kind: "routine", subject: row.title, digest: "ran" });
+  }
+
+  /** fireDueReminders fires and deletes every due reminder, at most once. */
+  async function fireDueReminders(now: Date): Promise<ReminderRow[]> {
+    return opts.db.transaction(async (tx) => {
+      const due = await tx.select().from(reminders).where(lte(reminders.runAt, now)).orderBy(asc(reminders.runAt)).for("update");
+      if (due.length > 0) {
+        await tx.delete(reminders).where(inArray(reminders.id, due.map((row) => row.id)));
+      }
+      return due;
+    });
+  }
+
+  /**
+   * fireReminder wakes the agent in the reminder's job, which a done or blocked job returns to
+   * open, with the note it left. A stopped job's reminder is dropped. A reminder with no job (made
+   * from a one-shot scheduled message) opens one whose requester is its author, or no one when
+   * the agent set it itself; an author with a job open on the agent has the reminder join it.
+   */
+  async function fireReminder(row: ReminderRow): Promise<void> {
+    if (!(await agentIsActive(row.agentId, { reminder_id: row.id }))) {
       return;
     }
-    await deliverAgentMessage(
-      {
-        db: opts.db,
-        transcript: opts.transcript,
-        events: opts.events,
-        enqueueProcess: opts.enqueueProcess,
-        enqueueWork: opts.enqueueWork,
-        wakeActivity: opts.wakeActivity,
-      },
-      {
-        fromAgentId: row.fromAgentId,
-        toAgentId: row.toAgentId,
-        content: row.content,
-        scheduleId: row.id,
-        ...(row.intervalMinutes !== null ? { routine: row.id } : {}),
-        scheduled: true,
-      },
-    );
+    let target = row.jobId === null ? undefined : (await opts.db.select().from(jobs).where(eq(jobs.id, row.jobId)))[0];
+    if (target?.state === "stopped") {
+      opts.log.info({ code: "reminder_job_stopped", reminder_id: row.id, job_id: target.id }, "reminder dropped: its job was stopped");
+      return;
+    }
+    if (target !== undefined && !(OPEN_STATES as readonly string[]).includes(target.state)) {
+      await opts.db.update(jobs).set({ state: "open", closedSeq: null, updatedAt: new Date() }).where(eq(jobs.id, target.id));
+    }
+    const requester = row.authorId ?? row.agentId;
+    if (target === undefined && row.authorId !== null && row.authorId !== row.agentId) {
+      target = await openJob(opts.db, row.authorId, row.agentId);
+    }
+    await deliverAgentMessage(deliver, {
+      fromAgentId: row.agentId,
+      toAgentId: row.agentId,
+      content: `[Reminder] ${row.note}`,
+      notice: "reminder",
+      wakeWork: true,
+      wokenBy: "your reminder",
+      scheduleId: row.id,
+      ...(target !== undefined
+        ? { jobId: target.id }
+        : {
+            opens: async (message) =>
+              (await openRunJob(opts.db, { agentId: row.agentId, seq: message.seq, routineId: null, requesterId: requester })).id,
+          }),
+    });
+    await recordActivity(opts.db, { agentId: row.agentId, jobId: target?.id ?? null, kind: "reminder", subject: row.id, digest: `fired: ${row.note}` });
   }
 
   async function tick(now = new Date()): Promise<void> {
@@ -162,12 +202,16 @@ export function createScheduler(opts: {
     ticking = true;
     try {
       await checkDueWatches(opts.watches, now);
-      const fired = await advanceDue(now);
-      if (fired.length > 0) {
+      const firedRoutines = await advanceDueRoutines(now);
+      const firedReminders = await fireDueReminders(now);
+      if (firedRoutines.length + firedReminders.length > 0) {
         opts.events.emit({ type: "schedules_changed", at: new Date().toISOString() });
       }
-      for (const row of fired) {
-        await deliverFired(row);
+      for (const fired of firedRoutines) {
+        await fireRoutine(fired);
+      }
+      for (const row of firedReminders) {
+        await fireReminder(row);
       }
     } catch (err) {
       opts.log.error({ code: "schedule_tick_failed", err }, "schedule tick failed");

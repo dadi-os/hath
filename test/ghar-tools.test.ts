@@ -153,7 +153,7 @@ test("a slow control run returns pending, then its answer wakes the lane that as
   assert.match(runtime.transcript.transcriptFor(agentId).at(-1)!.content, /^Result of control_device \(cd3\), done:\n.*Garage door is closed\./);
   assert.equal(dwar.workCalls.length, 0, "the work lane did not wake");
   assert.equal(dwar.processCalls.length, 1, "the process lane woke for the answer");
-  assert.match(JSON.stringify(dwar.processCalls[0]!.messages), /Woken by: async tool result \(control_device cd3\)/);
+  assert.match(JSON.stringify(dwar.processCalls[0]!.messages), /\[Wake\] async tool result \(control_device cd3\)/);
 });
 
 test("a device change the process lane made reaches the work lane as a note, and a read does not", async () => {

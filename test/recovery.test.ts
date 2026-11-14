@@ -94,6 +94,7 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
     db: handle.db,
     transcript: new TranscriptStore(),
     events: new EventBus(silentLog),
+    answerByMinutes: 5,
     enqueueProcess: (agentId: string) => {
       woken.push(agentId);
    return randomUUID();

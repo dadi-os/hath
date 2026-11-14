@@ -6,7 +6,6 @@ import {
   GET_AGENT,
   LIST_AGENTS,
   MANAGE_AGENT,
-  QUEUE_MESSAGE,
   MODIFY_AGENT_PROMPT,
   SEND_MESSAGE,
 } from "../src/types/domain.js";
@@ -18,7 +17,7 @@ import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, agents, jobs, messages, scheduledMessages, wakes } from "../src/db/schema.js";
+import { agentLogs, agents, jobs, messages, routines, wakes } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import {
   endTurn,
@@ -394,7 +393,7 @@ test("manage_agent retires without touching the prompt", async () => {
   );
 });
 
-test("work-lane context has queue_message, list_agents, and no send_message, hand_off or create_attachment", async () => {
+test("work-lane context has send_message and list_agents, and no hand_off or create_attachment", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
@@ -409,10 +408,10 @@ test("work-lane context has queue_message, list_agents, and no send_message, han
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  assert.ok(names.includes(QUEUE_MESSAGE));
+  assert.ok(names.includes(SEND_MESSAGE));
   assert.ok(names.includes(LIST_AGENTS));
   assert.ok(names.includes("yield"));
-  for (const gone of [SEND_MESSAGE, "hand_off", "dispatch_message", "decline_handoff", "forward_attachment", "create_attachment"]) {
+  for (const gone of ["queue_message", "hand_off", "dispatch_message", "decline_handoff", "forward_attachment", "create_attachment"]) {
     assert.equal(names.includes(gone), false, gone);
   }
 });
@@ -513,46 +512,7 @@ test("work-lane exit without a message does not wake the process lane", async ()
   assert.equal(dwar.processCalls.length, 0);
 });
 
-test("the work lane never sends itself: its message is queued, and the process lane sends it", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const callerId = await insertAgent(handle.db, { name: "direct-sender", systemPrompt: "send via the front desk" });
-  const childId = await insertAgent(handle.db, { id: "direct-child", systemPrompt: "child", parentAgentId: callerId });
-  let reasonTurn = 0;
-  let sentByProcess = false;
-  const dwar = mockDwar({
-    work: async () => {
-      reasonTurn += 1;
-      return reasonTurn === 1 ? toolUse(QUEUE_MESSAGE, { to: childId, content: "say hi" }, "sm-1") : yieldTurn("r-yield");
-    },
-    process: async (request) => {
-      if (!sentByProcess && JSON.stringify(request.messages).includes("[Messages from work]")) {
-        sentByProcess = true;
-        return toolUse(SEND_MESSAGE, { to: childId, content: "say hi" }, "sm-send");
-      }
-      return yieldTurn("c-yield");
-    },
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar,
-    ghar: mockGhar(),
-    nas: mockNas(),
-    yaad: mockYaad(),
-    config,
-    log: silentLog,
-  });
-  await executeTool(runtime.toolContext(callerId, "process"), {
-    type: "tool_use",
-    id: "s-direct",
-    name: "steer_work",
-    input: { instruction: "compose a hello" },
-  });
-  await runtime.waitUntilIdle();
-  const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
-  assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[childId, "say hi"]]);
-});
-
-test("send_message is not a work-lane tool, and queue_message refuses itself as a recipient", async () => {
+test("send_message refuses itself as a recipient, and an unknown work-lane tool is an error", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, { id: "refused-sender", systemPrompt: "sender" });
   const peerId = await insertAgent(handle.db, { id: "refused-peer", systemPrompt: "peer" });
@@ -568,65 +528,20 @@ test("send_message is not a work-lane tool, and queue_message refuses itself as 
   const legacy = await executeTool(runtime.toolContext(callerId, "work"), {
     type: "tool_use",
     id: "sm-peer",
-    name: "send_message",
-    input: { to_agent_id: peerId, content: "hello" },
+    name: "queue_message",
+    input: { to: peerId, content: "hello" },
   });
   assert.equal(legacy.isError, true);
   assert.match(legacy.content, /unknown work-lane tool/);
   const toSelf = await executeTool(runtime.toolContext(callerId, "work"), {
     type: "tool_use",
     id: "sm-self",
-    name: QUEUE_MESSAGE,
+    name: SEND_MESSAGE,
     input: { to: callerId, content: "hello" },
   });
   assert.equal(toSelf.isError, true);
   assert.equal((await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId))).length, 0);
   await runtime.waitUntilIdle();
-});
-
-test("an agent that retires itself still gets its queued message sent, and does nothing after", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const callerId = await insertAgent(handle.db, { name: "retiring-worker", systemPrompt: "report and retire" });
-  let reasonTurn = 0;
-  let dispatched = false;
-  const dwar = mockDwar({
-    work: async () => {
-      reasonTurn += 1;
-      return {
-        provider: "anthropic",
-        content: [
-          { type: "tool_use", id: "rt-retire", name: MANAGE_AGENT, input: { agent_id: callerId, retired: true } },
-          { type: "tool_use", id: "rt-report", name: QUEUE_MESSAGE, input: { to: "ankur", content: "Browser 13 is not running." } },
-          { type: "tool_use", id: "rt-yield", name: "yield", input: {} },
-        ],
-        stop_reason: "tool_use",
-        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-      };
-    },
-    process: async (request) => {
-      if (!dispatched && JSON.stringify(request.messages).includes("[Messages from work]")) {
-        dispatched = true;
-        return toolUse(SEND_MESSAGE, { to: "ankur", content: "Browser 13 is not running." }, "rt-dispatch");
-      }
-      return yieldTurn("rt-c-yield");
-    },
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar,
-    ghar: mockGhar(),
-    nas: mockNas(),
-    yaad: mockYaad(),
-    config,
-    log: silentLog,
-  });
-  runtime.enqueueWork(callerId);
-  await runtime.waitUntilIdle();
-
-  assert.equal(reasonTurn, 1, "a retired agent's the work lane does not run again");
-  assert.ok(dispatched, "the retired agent's process lane still ran to send the message");
-  const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, callerId));
-  assert.deepEqual(sent.map((row) => [row.toAgentId, row.content]), [[null, "Browser 13 is not running."]]);
 });
 
 test("process-lane tools are the fixed front-desk list, with no grants or async tools", async () => {
@@ -654,7 +569,8 @@ test("process-lane tools are the fixed front-desk list, with no grants or async 
     "web_search",
     "web_fetch",
     "get_agent",
-    "list_schedules",
+    "list_routines",
+    "my_activity",
     "get_device",
     "control_device",
     "recall_memory",
@@ -709,9 +625,11 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "get_messages",
       "web_search",
       "web_fetch",
-      "schedule_message",
-      "list_schedules",
-      "cancel_schedule",
+      "set_routine",
+      "end_routine",
+      "list_routines",
+      "remind_me",
+      "my_activity",
       "steer_browser",
       "steer_terminal",
       "list_browsers",
@@ -720,7 +638,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "find_files",
       "write_file",
       "edit_file",
-      QUEUE_MESSAGE,
+      SEND_MESSAGE,
       LIST_AGENTS,
       "wait",
       "recall_memory",
@@ -1010,7 +928,7 @@ test("an edit built from get_agent's prompt changes only the edited text", async
   assert.equal(row?.systemPrompt, edited);
 });
 
-test("as Dadi, schedule_message fails without writing a row", async () => {
+test("as Dadi, set_routine fails without writing a row", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const targetId = await insertAgent(handle.db, {
     name: "sched-target",
@@ -1025,20 +943,16 @@ test("as Dadi, schedule_message fails without writing a row", async () => {
     config,
     log: silentLog,
   });
-  const before = await handle.db.select().from(scheduledMessages);
+  const before = await handle.db.select().from(routines);
   const result = await executeTool(runtime.toolContext(null, "work"), {
     type: "tool_use",
     id: "dadi-sched",
-    name: "schedule_message",
-    input: {
-      to_agent_id: targetId,
-      content: "later",
-      run_at: new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, "+00:00"),
-    },
+    name: "set_routine",
+    input: { title: "later", procedure: `check on ${targetId}`, at: "07:00" },
   });
   assert.equal(result.isError, true);
   assert.match(result.content, /agent identity/);
-  const after = await handle.db.select().from(scheduledMessages);
+  const after = await handle.db.select().from(routines);
   assert.equal(after.length, before.length);
 });
 
@@ -1062,7 +976,7 @@ test("as Dadi, message and send fail and deliver nothing", async () => {
   const send = await executeTool(runtime.toolContext(null, "work"), {
     type: "tool_use",
     id: "dadi-send",
-    name: QUEUE_MESSAGE,
+    name: SEND_MESSAGE,
     input: { to: targetId, content: "say hi" },
   });
   assert.equal(send.isError, true);
@@ -1111,9 +1025,11 @@ test("list_agents is in both lanes", async () => {
     "get_messages",
     "web_search",
     "web_fetch",
-    "schedule_message",
-    "list_schedules",
-    "cancel_schedule",
+    "set_routine",
+    "end_routine",
+    "list_routines",
+    "remind_me",
+    "my_activity",
     "steer_browser",
     "steer_terminal",
     "list_browsers",
@@ -1122,7 +1038,7 @@ test("list_agents is in both lanes", async () => {
     "find_files",
     "write_file",
     "edit_file",
-    QUEUE_MESSAGE,
+    SEND_MESSAGE,
     LIST_AGENTS,
     "wait",
     "recall_memory",
@@ -1622,7 +1538,7 @@ test("a lane that fails on Ankur's job sends him nothing: hath logs its own fail
   });
 
   await deliverUserMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: runtime.enqueueProcess, enqueueWork: runtime.enqueueWork },
+    runtime.deliver,
     childId,
     "status?",
   );
@@ -1664,7 +1580,7 @@ test("a work lane that fails on Ankur's job sends him nothing and leaves the job
   });
 
   await deliverUserMessage(
-    { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: runtime.enqueueProcess, enqueueWork: runtime.enqueueWork },
+    runtime.deliver,
     childId,
     "fix my resume",
   );
@@ -1704,7 +1620,7 @@ test("the same lane failure on every wake is reported once to a waiting agent un
     config,
     log: silentLog,
   });
-  const deps = { db: handle.db, transcript: runtime.transcript, events: runtime.events, enqueueProcess: runtime.enqueueProcess, enqueueWork: runtime.enqueueWork };
+  const deps = runtime.deliver;
   const reports = async () =>
     (await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId))).filter((m) => m.kind === "notice").length;
 

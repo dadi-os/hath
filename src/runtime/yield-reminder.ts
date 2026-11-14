@@ -5,12 +5,11 @@
  * first such yield is answered once with a note naming the unanswered message (see work.ts).
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { formatISO } from "date-fns";
 import type { Db } from "../db/client.js";
-import { pendingOutbox } from "../db/outbox.js";
 import { currentRequester } from "../db/messages.js";
-import { scheduledMessages } from "../db/schema.js";
+import { reminders } from "../db/schema.js";
 import type { NasClient } from "../nas/client.js";
 import { hasPendingAsync } from "./async.js";
 import type { TranscriptStore } from "./transcript.js";
@@ -28,9 +27,8 @@ export type YieldReminderDeps = {
 /**
  * yieldReminder is the note for `agentId`'s yield, or null when it needs none: its requester's
  * latest message was answered, or something is pending that wakes the agent, which is a
- * helper task of its still working, a wait, a one-shot scheduled message to it, an async
- * tool call still running, or a message its process lane has yet to send. Recurring
- * schedules do not count, since a routine does not answer anyone. A failed read of Nas's
+ * helper task of its still working, a wait, a reminder of its own, or an async
+ * tool call still running. Routines do not count, since a routine does not answer anyone. A failed read of Nas's
  * tasks counts as pending: the reminder is advisory, and a wrong one costs a model call.
  */
 export async function yieldReminder(deps: YieldReminderDeps, agentId: string): Promise<string | null> {
@@ -54,15 +52,8 @@ async function somethingWillWake(deps: YieldReminderDeps, agentId: string): Prom
   if ((await watchOf(deps.db, agentId)) !== undefined || (await hasPendingAsync(deps.db, agentId))) {
     return true;
   }
-  if ((await pendingOutbox(deps.db, agentId)).length > 0) {
-    return true;
-  }
-  const scheduled = await deps.db
-    .select({ id: scheduledMessages.id })
-    .from(scheduledMessages)
-    .where(and(eq(scheduledMessages.toAgentId, agentId), isNull(scheduledMessages.intervalMinutes)))
-    .limit(1);
-  if (scheduled.length > 0) {
+  const later = await deps.db.select({ id: reminders.id }).from(reminders).where(eq(reminders.agentId, agentId)).limit(1);
+  if (later.length > 0) {
     return true;
   }
   try {

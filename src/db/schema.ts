@@ -16,7 +16,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { HandoffState, JobState, MessageStatus, MessageKind, WakeReasonKind } from "../types/domain.js";
+import type { ActivityKind, JobState, MessageStatus, MessageKind, WakeReasonKind } from "../types/domain.js";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -65,11 +65,14 @@ export const agentLogs = pgTable(
      * and runtime reports written outside any wake (boot recovery).
      */
     wakeId: uuid("wake_id"),
+    /** The job the wake was on when the row was written (see jobs); null for the router and for rows from before jobs were stamped. */
+    jobId: uuid("job_id"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     index("agent_logs_agent_id_created_at_idx").on(table.agentId, table.createdAt),
     index("agent_logs_wake_id_idx").on(table.wakeId),
+    index("agent_logs_job_id_idx").on(table.jobId),
     index("agent_logs_tool_use_id_idx")
       .on(sql`(${table.payload}->>'tool_use_id')`)
       .where(sql`${table.event} = 'tool_result'`),
@@ -104,10 +107,20 @@ export const messages = pgTable(
     kind: text("kind").$type<MessageKind>().notNull().default("message"),
     /** The recipient wake this message opened or joined (see `wakes`); null when it woke no one. */
     wakeId: uuid("wake_id"),
+    /**
+     * The job the message belongs to (see runtime/job-of.ts): stamped on every delivered inbound
+     * message and on every message an agent sends; null on rows from before jobs were stamped
+     * and on messages that belong to no job.
+     */
+    jobId: uuid("job_id"),
+    /** `hath` on a message hath sent for the agent (a pickup, an answer-by notice); null on every other. */
+    sentBy: text("sent_by").$type<"hath">(),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("messages_seq_idx").on(table.seq),
+    index("messages_job_id_idx").on(table.jobId),
+    check("messages_sent_by_check", sql`${table.sentBy} IS NULL OR ${table.sentBy} = 'hath'`),
     check("messages_kind_check", sql`${table.kind} IN ('message', 'notice', 'utterance')`),
     index("messages_wake_id_idx").on(table.wakeId),
     index("messages_to_agent_id_seq_idx").on(table.toAgentId, table.seq),
@@ -115,7 +128,7 @@ export const messages = pgTable(
     index("messages_created_at_idx").on(table.createdAt),
     check(
       "messages_status_check",
-      sql`${table.status} IS NULL OR ${table.status} IN ('running', 'needs_input', 'blocked', 'done')`,
+      sql`${table.status} IS NULL OR ${table.status} IN ('needs_input', 'blocked', 'done')`,
     ),
   ],
 );
@@ -163,15 +176,18 @@ export const threadReads = pgTable("thread_reads", {
 });
 
 /**
- * The work open on one line: a requester (null for Ankur) that messaged the agent
- * before the agent ever messaged it. The requester's first message opens a job and
- * its later ones join it, until the agent reports done or blocked, or hath closes it
- * when the agent's wake ends (see jobs.ts).
+ * A job: the work an agent does for one requester, or for itself. The requester's first
+ * message opens a job and its later ones join it, until the agent reports done or blocked,
+ * hath closes it when the agent's wake ends, or Ankur stops it (see runtime/job-of.ts).
  *
- * - `state`: `open`, `needs_input` while the agent's question waits on the requester,
- *   then `done`, `blocked`, or `noop` for a message that needed no work.
- * - `progress_seq`: the agent's one `running` message on the job.
+ * - `requester_id`: null is Ankur; the agent's own id is no one: a routine run, or a reminder
+ *   that outlived its job.
+ * - `state`: `open`, `needs_input` while the agent's question waits on the requester, then
+ *   `done`, `blocked`, `stopped`, or `noop` for a message that needed no work.
+ * - `routine_id`: the routine whose firing opened the job; null on every other.
+ * - `answer_by`: when Ankur's answer is due; null on every job that is not his.
  * - `question_seq`: the agent's open `needs_input` message, cleared by the requester's next message.
+ * - `opened_seq` is also the job's number in the wake header.
  */
 export const jobs = pgTable(
   "jobs",
@@ -183,21 +199,28 @@ export const jobs = pgTable(
       .references(() => agents.id, { onDelete: "cascade" }),
     state: text("state").$type<JobState>().notNull(),
     openedSeq: bigint("opened_seq", { mode: "number" }).notNull(),
-    progressSeq: bigint("progress_seq", { mode: "number" }),
     questionSeq: bigint("question_seq", { mode: "number" }),
     closedSeq: bigint("closed_seq", { mode: "number" }),
+    routineId: uuid("routine_id"),
+    answerBy: timestamptz("answer_by"),
+    stoppedAt: timestamptz("stopped_at"),
+    stoppedBy: text("stopped_by"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("jobs_open_line_idx")
       .on(table.requesterId, table.agentId)
-      .where(sql`${table.state} IN ('open', 'needs_input')`),
+      .where(sql`${table.state} IN ('open', 'needs_input') AND ${table.requesterId} IS DISTINCT FROM ${table.agentId}`),
     index("jobs_agent_id_idx").on(table.agentId),
     index("jobs_requester_id_idx").on(table.requesterId),
     check(
       "jobs_state_check",
-      sql`${table.state} IN ('open', 'needs_input', 'done', 'blocked', 'noop')`,
+      sql`${table.state} IN ('open', 'needs_input', 'done', 'blocked', 'noop', 'stopped')`,
+    ),
+    check(
+      "jobs_stopped_check",
+      sql`(${table.state} = 'stopped') = (${table.stoppedAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -241,74 +264,107 @@ export const attachments = pgTable(
 );
 
 /**
- * Deferred send that survives restart. Presence of the row is the
- * state — no status/active/last_fired columns.
- *
- * - `run_at` is the next fire time (ticker cursor), never a "created for" time.
- * - `interval_minutes` null = one-shot (delete on fire); non-null = recurring
- *   (`run_at` advances by the interval after each fire).
- * - `from_agent_id` is always set; scheduled messages are never from the human.
+ * An agent's own standing duty (see runtime/routines.ts). `at_local` is the wall-clock time
+ * of day in the box's zone and `days` the weekdays it runs on (null is every day);
+ * `next_run_at` is the ticker's cursor. A routine has an owner and no recipient: nobody sends
+ * it. `set_up_by` names the agent that set up a routine for its owner before routines were
+ * owned (the data migration); the first firing says so, then clears it.
  */
-export const scheduledMessages = pgTable(
-  "scheduled_messages",
+export const routines = pgTable(
+  "routines",
   {
     id: uuid("id").primaryKey(),
-    fromAgentId: text("from_agent_id")
+    agentId: text("agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    toAgentId: text("to_agent_id")
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
-    content: text("content").notNull(),
-    runAt: timestamptz("run_at").notNull(),
-    intervalMinutes: integer("interval_minutes"),
+    title: text("title").notNull(),
+    procedure: text("procedure").notNull(),
+    atLocal: text("at_local").notNull(),
+    days: text("days").array(),
+    nextRunAt: timestamptz("next_run_at").notNull(),
+    lastRunAt: timestamptz("last_run_at"),
+    lastJobId: uuid("last_job_id"),
+    active: boolean("active").notNull(),
+    setUpBy: text("set_up_by").references(() => agents.id, { onDelete: "set null" }),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
-    index("scheduled_messages_run_at_idx").on(table.runAt),
+    uniqueIndex("routines_agent_title_idx").on(table.agentId, table.title),
+    index("routines_next_run_at_idx").on(table.nextRunAt),
+    check("routines_at_local_check", sql`${table.atLocal} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`),
     check(
-      "scheduled_messages_interval_minutes_check",
-      sql`${table.intervalMinutes} IS NULL OR ${table.intervalMinutes} >= 1`,
+      "routines_days_check",
+      sql`${table.days} IS NULL OR (cardinality(${table.days}) >= 1 AND ${table.days} <@ ARRAY['mon','tue','wed','thu','fri','sat','sun']::text[])`,
     ),
   ],
 );
 
 /**
- * What an agent's work lane has asked its process lane to say (the work lane's `queue_message`
- * tool). The process lane sends it, alone or merged with others to the same recipient;
- * each row is `sent` once a message to its recipient went out, and `failed` when the lane
- * failed first. `expects_reply` holds from the send until the recipient's next message,
- * which wakes the work lane directly. The SQL table keeps its pre-overhaul name
- * "handoffs", so its rows (kind and declined state included) stay as they were.
+ * A later step of a job: a one-shot that fires into its job at `run_at`. The row is deleted
+ * when it fires. `job_id` is null only on a row the data migration made from a one-shot
+ * scheduled message, which had no job: its firing opens one, with `author_id` as requester.
  */
-export const outbox = pgTable(
-  "handoffs",
+export const reminders = pgTable(
+  "reminders",
   {
-    id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+    id: uuid("id").primaryKey(),
     agentId: text("agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
-    /** Null is Ankur. */
-    toAgentId: text("to_agent_id").references(() => agents.id, { onDelete: "cascade" }),
-    /** Set only on rows from before the lane overhaul: result, blocker, question, progress, note or request. */
-    kind: text("kind"),
-    content: text("content").notNull(),
-    attachmentIds: uuid("attachment_ids").array().notNull().default(sql`'{}'::uuid[]`),
-    state: text("state").$type<HandoffState>().notNull().default("pending"),
-    /** The message a sent row became. */
-    messageId: uuid("message_id").references(() => messages.id, { onDelete: "set null" }),
-    /** Why a row was declined (before the overhaul) or failed. */
-    reason: text("reason"),
-    expectsReply: boolean("expects_reply").notNull().default(false),
-    createdAt: timestamptz("created_at").notNull().defaultNow(),
-    resolvedAt: timestamptz("resolved_at"),
+    jobId: uuid("job_id").references(() => jobs.id, { onDelete: "cascade" }),
+    authorId: text("author_id").references(() => agents.id, { onDelete: "cascade" }),
+    note: text("note").notNull(),
+    runAt: timestamptz("run_at").notNull(),
   },
   (table) => [
-    index("handoffs_agent_state_idx").on(table.agentId, table.state),
-    check("handoffs_kind_check", sql`${table.kind} IN ('result', 'blocker', 'question', 'progress', 'note', 'request')`),
-    check("handoffs_state_check", sql`${table.state} IN ('pending', 'sent', 'declined', 'failed')`),
+    index("reminders_run_at_idx").on(table.runAt),
+    index("reminders_job_id_idx").on(table.jobId),
+    check("reminders_job_or_author_check", sql`${table.jobId} IS NOT NULL OR ${table.authorId} IS NOT NULL`),
   ],
 );
+
+/**
+ * What an agent did, written by hath from tool results and never by the agent (see
+ * runtime/activity.ts). `subject` is what it was done to (hosts, node titles, a recipient, a
+ * routine's title) and `digest` the short account of the outcome.
+ */
+export const agentActivity = pgTable(
+  "agent_activity",
+  {
+    id: uuid("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id"),
+    at: timestamptz("at").notNull().defaultNow(),
+    kind: text("kind").$type<ActivityKind>().notNull(),
+    subject: text("subject").notNull(),
+    digest: text("digest").notNull(),
+  },
+  (table) => [
+    index("agent_activity_agent_id_at_idx").on(table.agentId, table.at),
+    index("agent_activity_job_id_idx").on(table.jobId),
+    check(
+      "agent_activity_kind_check",
+      sql`${table.kind} IN ('site_read', 'store', 'recall_digest', 'send', 'routine', 'reminder', 'stop')`,
+    ),
+  ],
+);
+
+/**
+ * The job each helper task was last steered in, so the task's report joins that job (see
+ * runtime/job-of.ts). One row per task; a steer replaces it. `message` is the steer's text.
+ */
+export const helperSteers = pgTable("helper_steers", {
+  /** The task's address, such as `task/browser/3`. */
+  task: text("task").primaryKey(),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id"),
+  message: text("message").notNull(),
+  steeredAt: timestamptz("steered_at").notNull().defaultNow(),
+});
 
 /**
  * The newest report of each helper task already delivered to its agent, by the report's
@@ -352,14 +408,17 @@ export const watches = pgTable("watches", {
   targets: text("targets").array().notNull(),
   since: timestamptz("since").notNull().defaultNow(),
   dueAt: timestamptz("due_at").notNull(),
+  /** The job the wait was made in: a timeout joins it (see runtime/job-of.ts). */
+  jobId: uuid("job_id"),
 });
 
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentLogRow = typeof agentLogs.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type AttachmentRow = typeof attachments.$inferSelect;
-export type ScheduledMessageRow = typeof scheduledMessages.$inferSelect;
+export type RoutineRow = typeof routines.$inferSelect;
+export type ReminderRow = typeof reminders.$inferSelect;
+export type ActivityRow = typeof agentActivity.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type WatchRow = typeof watches.$inferSelect;
-export type OutboxRow = typeof outbox.$inferSelect;
 export type WakeRow = typeof wakes.$inferSelect;

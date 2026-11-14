@@ -7,6 +7,7 @@
 import { z } from "zod";
 import type { HelperTask, TaskKind } from "../../nas/client.js";
 import { defineTool } from "../types.js";
+import { noteSteer } from "../../runtime/job-of.js";
 import { fail, failWithoutAgentIdentity, ok, type ToolContext } from "../shared.js";
 
 /** parseTaskAddress is the kind and id in `task/<kind>/<id>`, or null when `address` is not one. */
@@ -109,6 +110,7 @@ async function steer(
     }
     task = await ctx.nas.steerTask(kind, bare, body);
   }
+  await noteSteer(ctx.db, task.task, body.agent_id, ctx.jobId, body.message);
   ctx.events.emit({ type: "sessions_changed", at: new Date().toISOString() });
   return ok({ id: task.task }, { task: task.task });
 }

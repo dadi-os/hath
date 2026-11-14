@@ -16,7 +16,7 @@ const PICKUP_HORIZON_MS = 15 * 60_000;
 export const PICKUP_TEXT = "Working on it.";
 
 /**
- * sendPickups sends PICKUP_TEXT to Ankur, as the agent with status running, for each active
+ * sendPickups sends PICKUP_TEXT to Ankur, as the agent, for each active
  * agent whose latest message from him is between `afterMs` (`runtime.pickup_delay_s`) and PICKUP_HORIZON_MS old
  * at `now`, whose work lane has taken a step since it (so it is a job being worked, not a
  * message that needed none), and that has sent him nothing since it. When `live` is given
@@ -55,7 +55,7 @@ export async function sendPickups(
     if (live !== null && !(await live(agentId))) {
       continue;
     }
-    await deliverAgentMessage(deps, { fromAgentId: agentId, toAgentId: null, content: PICKUP_TEXT, status: "running", sentBy: "hath" });
+    await deliverAgentMessage(deps, { fromAgentId: agentId, toAgentId: null, content: PICKUP_TEXT, sentBy: "hath" });
     sent += 1;
   }
   return sent;

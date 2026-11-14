@@ -56,6 +56,8 @@ function lineageBlock(agentId: string | null, parentAgentId: string | null): str
 export type AssembledContext = Omit<DwarChatRequest, "tool_choice" | "messages"> & {
   transcripts: Partial<Record<Lane, DwarMessage[]>>;
   throughSeq: number;
+  /** The wake header (see header.ts), rendered when the wake begins. */
+  header?: string;
   /** The work lane's [Did in this job] block, when the wake continues a job (see carry.ts). */
   carried?: string;
 };
@@ -245,8 +247,7 @@ export type Arrivals = {
  * did not send them: a lane already holds the call that sent each, and folding them in again
  * woke it to read its own words back. So the process lane's sends reach the work lane as
  * `sent`, the work lane's direct sends reach the process lane as `sentByWork`, and hath's
- * pickups for the agent reach both inside `turn`. A routine trigger the agent scheduled for
- * someone else is not news to either lane and is left out. Each is null when there is none.
+ * pickups for the agent reach both inside `turn`. Each is null when there is none.
  */
 export function arrivalsSince(transcript: TranscriptStore, agentId: string, afterSeq: number): Arrivals {
   const fresh = transcript.transcriptFor(agentId).filter((row) => row.seq > afterSeq);
@@ -255,7 +256,7 @@ export function arrivalsSince(transcript: TranscriptStore, agentId: string, afte
   }
   const throughSeq = fresh.at(-1)!.seq;
   const arrived = fresh.filter((row) => row.fromAgentId !== agentId || row.toAgentId === agentId);
-  const own = fresh.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId && row.routine === undefined);
+  const own = fresh.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId);
   const text = (label: string, rows: TranscriptEntry[]): string[] =>
     rows.length === 0 ? [] : [label, ...rows.map((row) => transcriptText(row, agentId))];
   const fold = (parts: string[]): DwarMessage | null => (parts.length === 0 ? null : { role: "user", content: parts.join("\n\n") });
@@ -274,9 +275,7 @@ export function arrivalsSince(transcript: TranscriptStore, agentId: string, afte
  * labelEntry gives a transcript row its turn role and `[From:]`/`[To:]`/`[Thought]`/`[Notice from hath]`
  * label from this agent's point of view, stamped with when the row was written (ISO 8601
  * in the box's `TZ` with its offset, `2026-10-02T13:14:48-04:00`) so the agent knows the
- * date and time it is acting at. A report's job status follows the time. A repeating
- * schedule's trigger reads `[Routine · <schedule id>]` to its recipient, never as a message
- * from the schedule's author, and `[Routine to: <recipient>]` to its author.
+ * date and time it is acting at. A report's job status follows the time.
  */
 function labelEntry(
   row: TranscriptEntry,
@@ -285,11 +284,6 @@ function labelEntry(
   const at = row.status === null ? formatISO(row.createdAt) : `${formatISO(row.createdAt)} · ${row.status}`;
   if (row.kind === "notice") {
     return { role: "user", label: `[Notice from hath · ${at}]` };
-  }
-  if (row.routine !== undefined) {
-    return row.toAgentId === agentId
-      ? { role: "user", label: `[Routine · ${row.routine} · ${at}]` }
-      : { role: "assistant", label: `[Routine to: ${row.toAgentId ?? "Ankur"} · ${row.routine} · ${at}]` };
   }
   if (row.fromAgentId === agentId && row.toAgentId === agentId) {
     return { role: "assistant", label: `[Thought · ${at}]` };
