@@ -356,7 +356,7 @@ test("under direct_ankur_messages the work lane's message to Ankur goes out at o
   const rows = await handle.db.select().from(messages).where(eq(messages.fromAgentId, agentId));
   assert.deepEqual(rows.map((row) => [row.toAgentId, row.status, row.content]), [[null, "done", "Due Wed Nov 18."]]);
   assert.equal(runtime.transcript.transcriptFor(agentId).at(-1)?.sentBy, "work");
-  assert.equal(dwar.processCalls.length, 1, "the process lane saw it as a send by the work lane, and relayed nothing");
+  assert.equal(dwar.processCalls.length, 0, "a direct send wakes no lane: the process lane relays nothing");
 });
 
 test("a wait on a job from Ankur ends no later than question_answer_minutes after his message, and its timeout says to answer now", async () => {
