@@ -11,6 +11,7 @@ import type { RuntimeEvent } from "../src/runtime/events.js";
 import { advanceRunAt } from "../src/runtime/scheduler.js";
 import { executeTool } from "../src/runtime/tools.js";
 import {
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -19,9 +20,10 @@ import {
   openTestDb,
   resetRuntime,
   testConfig,
+  withRuntime,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 type LogObj = Record<string, unknown>;

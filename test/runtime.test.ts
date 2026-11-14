@@ -22,6 +22,7 @@ import { agentLogs, agents, jobs, messages, scheduledMessages, wakes } from "../
 import { writeAgentLog } from "../src/db/logs.js";
 import {
   endTurn,
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -32,11 +33,12 @@ import {
   silentLog,
   testConfig,
   toolUse,
-  yieldTurn,
   wideWindows,
+  withRuntime,
+  yieldTurn,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

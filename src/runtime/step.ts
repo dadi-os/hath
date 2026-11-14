@@ -10,7 +10,7 @@ import type {
   Lane,
 } from "../types/domain.js";
 import { WAIT, YIELD } from "../types/domain.js";
-import type { AssembledContext } from "./context.js";
+import type { Arrivals, AssembledContext } from "./context.js";
 import type { ToolExecResult } from "./tools.js";
 import type { TranscriptStore } from "./transcript.js";
 import { CAPPED_TURN, CAPPED_TURNS_MAX, CONTINUE_TURN, type Wake } from "./wake.js";
@@ -24,11 +24,8 @@ export type StepDeps = {
   wake: Wake;
   /** This lane's system prompt and tools, plus each lane's windowed transcript. */
   assemble: () => Promise<AssembledContext>;
-  /**
-   * Transcript entries newer than `afterSeq`: what arrived, folded into one user turn for
-   * both lanes, and what the agent's process lane sent, folded into one for the work lane.
-   */
-  arrivalsSince: (afterSeq: number) => { turn: DwarMessage | null; sent: DwarMessage | null; throughSeq: number };
+  /** Transcript entries newer than `afterSeq`, folded into the turns each lane is shown (see context.ts arrivalsSince). */
+  arrivalsSince: (afterSeq: number) => Arrivals;
   /** This lane's Dwar chat endpoint; the signal aborts the request in flight. */
   call: (request: DwarChatRequest, signal?: AbortSignal) => Promise<DwarChatResponse>;
   executeTool: (call: DwarToolUseBlock) => Promise<ToolExecResult>;
@@ -59,6 +56,9 @@ export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
   if (arrived.sent !== null) {
     deps.wake.push({ message: arrived.sent, only: "work" });
   }
+  if (arrived.sentByWork !== null) {
+    deps.wake.push({ message: arrived.sentByWork, only: "process" });
+  }
   deps.wake.advance(arrived.throughSeq);
 }
 
@@ -87,7 +87,8 @@ const SENT_QUOTE_CHARS = 300;
  * the transcript through `composedThrough`, must not go out: a message this agent sent
  * `to` after that point, which the composing turn never saw: a second send to one recipient
  * in the same turn, or one a concurrent run made. The refusal quotes what went out, so the
- * lane sends only what it adds. Null when nothing was sent `to` since.
+ * lane sends only what it adds. A pickup hath sent for the agent (see pickups.ts) does not
+ * count: it says only that the job is in hand. Null when nothing was sent `to` since.
  */
 export function alreadySentRefusal(
   transcript: TranscriptStore,
@@ -97,7 +98,10 @@ export function alreadySentRefusal(
 ): string | null {
   const sent = transcript
     .transcriptFor(agentId)
-    .filter((row) => row.seq > composedThrough && row.fromAgentId === agentId && row.toAgentId === to && row.fromAgentId !== row.toAgentId)
+    .filter(
+      (row) =>
+        row.seq > composedThrough && row.fromAgentId === agentId && row.toAgentId === to && row.fromAgentId !== row.toAgentId && row.sentBy !== "hath",
+    )
     .at(-1);
   if (sent === undefined) {
     return null;

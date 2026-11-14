@@ -62,6 +62,24 @@ export type ToolContext = {
   enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
   /** Told of each message that opens or joins a wake (see runtime/wake-activity.ts). */
   wakeActivity?: WakeActivity;
+  /**
+   * While the caller's wake is a routine and `runtime.routine_silence` is on, the seq of the
+   * trigger that opened it (see runtime/wake.ts Wake.routine); null otherwise. A routine sends
+   * nothing to agents and at most one message to Ankur (see runtime/send.ts routineRefusal).
+   */
+  routineSince: number | null;
+  /** `runtime.direct_agent_messages`: the work lane's `queue_message` to an agent is delivered at once (see runtime/outbox.ts). */
+  directAgentMessages: boolean;
+  /** `runtime.ingest_result_wakes`: a successful ingest_memory result wakes the lane that saved it (see runtime/async.ts). */
+  ingestResultWakes: boolean;
+  /** `runtime.direct_ankur_messages`: the work lane's `queue_message` to Ankur is delivered at once (see runtime/outbox.ts). */
+  directAnkurMessages: boolean;
+  /** `runtime.hath_pickups`: a message with status running is refused, since hath sends the pickup (see runtime/send.ts runningRefusal). */
+  hathPickups: boolean;
+  /** `runtime.question_answer_minutes`: how long after Ankur's question a wait may last (see runtime/watches.ts). */
+  questionAnswerMinutes: number;
+  /** `runtime.weekday_guard`: a date in a message to Ankur needs its weekday (see runtime/send.ts weekdayRefusal). */
+  weekdayGuard: boolean;
 };
 
 /**

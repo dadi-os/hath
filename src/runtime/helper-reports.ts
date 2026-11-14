@@ -143,7 +143,7 @@ export class HelperReports {
       }
     }
     await rewakeWork(this.deps.deliver, report.agent_id, {
-      content: [`${HEADLINES[report.state]} (${report.task}):`, report.text, ...notes].join("\n"),
+      content: [`${HEADLINES[report.state]}${stoppedBy(report)} (${report.task}):`, report.text, ...notes].join("\n"),
       notice: "helper",
       wokenBy: `helper result from ${report.task}`,
       attachmentIds,
@@ -158,5 +158,10 @@ const HEADLINES: Record<HelperReport["state"], string> = {
   done: "Helper finished",
   needs_input: "Helper needs something from you",
   failed: "Helper failed",
-  stopped: "Helper stopped by Ankur",
+  stopped: "Helper stopped",
 };
+
+/** The stopper a report names, as " (by X)", or nothing when Nas names none: hath never assumes it was Ankur. */
+function stoppedBy(report: HelperReport): string {
+  return report.state === "stopped" && report.stopped_by !== undefined ? ` (by ${report.stopped_by === "ankur" ? "Ankur" : report.stopped_by})` : "";
+}

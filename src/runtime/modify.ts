@@ -168,10 +168,14 @@ export async function runManageAgent(ctx: ToolContext, raw: unknown): Promise<To
   return ok({ agent_id: target.id, retired: parsed.retired });
 }
 
+/** A clock time such as "7:00 AM" or "9pm". */
+const CLOCK_TIME = /\b\d{1,2}(?::\d{2})?\s?(?:am|pm)\b/gi;
+
 /**
  * runModifyAgentPrompt applies exact-match edits to an active agent's prompt for
  * an agent caller, limited to itself and its direct children. Every edit must
- * match exactly once or nothing is saved.
+ * match exactly once or nothing is saved, and the edits may not add a clock time:
+ * times of events live in schedules, not prompts.
  */
 export async function runModifyAgentPrompt(
   ctx: ToolContext,
@@ -202,6 +206,9 @@ export async function runModifyAgentPrompt(
   }
   if (newPrompt.trim() === "") {
     return fail("edits would leave the system prompt empty; nothing was saved");
+  }
+  if ((newPrompt.match(CLOCK_TIME)?.length ?? 0) > (oldPrompt.match(CLOCK_TIME)?.length ?? 0)) {
+    return fail("Not changed: times live in schedules, not prompts.");
   }
   const now = new Date();
   await ctx.db

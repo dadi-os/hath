@@ -13,7 +13,7 @@ import type { AttachmentSummary, MessageKind, MessageRecord, MessageStatus } fro
 import { toMessageRecord } from "../serialize.js";
 import { HathError } from "../errors.js";
 import type { Db } from "./client.js";
-import { agents, messages, threadReads, type MessageRow } from "./schema.js";
+import { agents, messages, scheduledMessages, threadReads, wakes, type MessageRow } from "./schema.js";
 import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js";
 
 
@@ -22,7 +22,10 @@ import type { TranscriptEntry, TranscriptStore } from "../runtime/transcript.js"
  * who opened a line to it (messaged it before it ever messaged them), the one
  * who wrote to it most recently, with null for Ankur. Agents it brought in
  * itself, such as a worker reporting back, are downstream and never count, and
- * hath's notices are skipped in both directions. An agent no one has opened a line to
+ * hath's notices are skipped in both directions. A scheduled message that opened its
+ * recipient's wake is a trigger, not a request, so it makes no one a requester, as it opens
+ * no job (see jobs.ts recordDelivery); one that joined a wake already running is not
+ * recorded as a trigger and still counts. An agent no one has opened a line to
  * answers to its parent. Throws when the agent does not exist.
  */
 export async function currentRequester(db: Db, agentId: string): Promise<string | null> {
@@ -33,6 +36,10 @@ export async function currentRequester(db: Db, agentId: string): Promise<string 
       where to_agent_id = ${agentId}
         and from_agent_id is distinct from ${agentId}
         and kind = 'message'
+        and id not in (
+          select opened_by_message_id from ${wakes}
+          where reason_kind = 'schedule' and opened_by_message_id is not null
+        )
       group by from_agent_id
     ),
     outbound as (
@@ -133,12 +140,29 @@ export function messageToTranscriptEntry(
   };
 }
 
-/** Load all durable messages (not utterances) and their attachment metadata into the in-process transcript cache (startup resume). */
+/**
+ * Load all durable messages (not utterances) and their attachment metadata into the in-process
+ * transcript cache (startup resume). A message that opened a wake for a schedule that still
+ * repeats is marked as that routine's trigger (see TranscriptEntry.routine); a trigger whose
+ * schedule was since cancelled, or that joined a wake already running, loads as a plain message.
+ */
 export async function hydrateTranscript(db: Db, transcript: TranscriptStore): Promise<number> {
   const rows = await db.select().from(messages).where(ne(messages.kind, "utterance")).orderBy(asc(messages.seq));
   const attached = await attachmentsByMessage(db);
+  const triggers = await db.execute<{ message_id: string; schedule_id: string }>(sql`
+    select w.opened_by_message_id as message_id, w.reason_ref as schedule_id
+    from ${wakes} w
+    join ${scheduledMessages} s on s.id::text = w.reason_ref
+    where w.reason_kind = 'schedule' and w.opened_by_message_id is not null and s.interval_minutes is not null
+  `);
+  const routineOf = new Map(triggers.map((row) => [row.message_id, row.schedule_id]));
   for (const row of rows) {
-    transcript.ingest(messageToTranscriptEntry(row, attached.get(row.id) ?? []));
+    const entry = messageToTranscriptEntry(row, attached.get(row.id) ?? []);
+    const routine = routineOf.get(row.id);
+    if (routine !== undefined) {
+      entry.routine = routine;
+    }
+    transcript.ingest(entry);
   }
   transcript.markHydrated();
   return rows.length;

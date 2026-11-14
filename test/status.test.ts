@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { arrivalsSince } from "../src/runtime/context.js";
-import { renderStatus, shortArg, STATUS_LABEL } from "../src/runtime/status.js";
+import { jobLedger, renderStatus, shortArg, STATUS_LABEL } from "../src/runtime/status.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { Wake } from "../src/runtime/wake.js";
 import type { AgentStatus } from "../src/types/domain.js";
@@ -18,6 +18,7 @@ const status: AgentStatus = {
   tasks: [{ id: "task/browser/3", status: "working", current: "on the registrar page" }],
   tasks_unreadable: null,
   pending: [{ id: 12, to: null, expects_reply: true, preview: "which semester?" }],
+  ledger: null,
 };
 
 test("the status block names the job, the work lane, its step and recent calls, tasks and pending messages", () => {
@@ -100,4 +101,51 @@ test("what the process lane sent reaches the work lane as its own turn, and arri
   assert.doesNotMatch(String(arrived.turn?.content), /Wed 1 PM/);
   assert.match(String(arrived.sent?.content), /^\[Sent by your process lane\]/);
   assert.match(String(arrived.sent?.content), /Wed 1 PM/);
+});
+
+test("a message the work lane sent directly reaches only the process lane, and hath's pickup reaches both", () => {
+  const transcript = new TranscriptStore();
+  const ask = transcript.append({ fromAgentId: "agent-1", toAgentId: "cse-335-specialist", content: "what is due tonight?" });
+  ask.sentBy = "work";
+  const pickup = transcript.append({ fromAgentId: "agent-1", toAgentId: null, content: "Working on it." });
+  pickup.sentBy = "hath";
+  const arrived = arrivalsSince(transcript, "agent-1", 0);
+  assert.equal(arrived.sent, null, "the work lane is not told it sent its own message");
+  assert.match(String(arrived.sentByWork?.content), /what is due tonight\?/);
+  assert.doesNotMatch(String(arrived.sentByWork?.content), /Working on it/);
+  assert.match(String(arrived.turn?.content), /Working on it\./);
+});
+
+test("a routine's trigger reads as [Routine] to its recipient, and its author's copy is no news mid-wake", () => {
+  const transcript = new TranscriptStore();
+  const trigger = transcript.append({ fromAgentId: "education-specialist", toAgentId: "cse-300-specialist", content: "Morning check." });
+  trigger.routine = "sched-1";
+  const toRecipient = arrivalsSince(transcript, "cse-300-specialist", 0);
+  assert.match(String(toRecipient.turn?.content), /\[Routine · sched-1 · /);
+  assert.doesNotMatch(String(toRecipient.turn?.content), /\[From: education-specialist/);
+  const toAuthor = arrivalsSince(transcript, "education-specialist", 0);
+  assert.equal(toAuthor.turn, null);
+  assert.equal(toAuthor.sent, null);
+  assert.equal(toAuthor.throughSeq, trigger.seq);
+});
+
+test("the job ledger lists each ask with who answered, skips routine triggers, and what the requester was told", () => {
+  const transcript = new TranscriptStore();
+  const opened = transcript.append({ fromAgentId: null, toAgentId: "edu", content: "what is due tonight?" });
+  const toA = transcript.append({ fromAgentId: "edu", toAgentId: "cse-300", content: "due tonight?" });
+  const toB = transcript.append({ fromAgentId: "edu", toAgentId: "cse-335", content: "due tonight?" });
+  const answer = transcript.append({ fromAgentId: "cse-300", toAgentId: "edu", content: "Module 8 quiz" });
+  const routine = transcript.append({ fromAgentId: "edu", toAgentId: "cse-431", content: "Morning check." });
+  routine.routine = "sched-2";
+  const told = transcript.append({ fromAgentId: "edu", toAgentId: null, content: "CSE 300: Module 8 quiz at 11:59 PM" });
+  const ledger = jobLedger(transcript.transcriptFor("edu"), "edu", null, opened.seq);
+  assert.equal(ledger.opened.seq, opened.seq);
+  assert.deepEqual(ledger.asks, [
+    { to: "cse-300", seq: toA.seq, answered_seq: answer.seq },
+    { to: "cse-335", seq: toB.seq, answered_seq: null },
+  ]);
+  assert.deepEqual(ledger.told.map((row) => row.seq), [told.seq]);
+  const block = renderStatus({ ...status, ledger });
+  assert.match(block, /cse-335 \(#\d+\): no answer yet/);
+  assert.throws(() => jobLedger(transcript.transcriptFor("edu"), "edu", null, 9_999), /not in edu's thread/);
 });

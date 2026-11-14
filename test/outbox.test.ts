@@ -11,6 +11,7 @@ import { recoverInterruptedWakes } from "../src/runtime/recovery.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { QUEUE_MESSAGE, SEND_MESSAGE } from "../src/types/domain.js";
 import {
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -22,10 +23,11 @@ import {
   testConfig,
   toolUse,
   waitingMessageId,
+  withRuntime,
   yieldTurn,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

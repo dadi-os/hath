@@ -10,9 +10,8 @@ import { executeTool } from "../src/runtime/tools.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { LIST_AGENTS, SEND_MESSAGE, STEER_WORK, type DwarChatResponse, type MessageStatus } from "../src/types/domain.js";
 import {
+  FLAGS_OFF,
   insertAgent,
-  toolUse,
-  yieldTurn,
   mockDwar,
   mockGhar,
   mockNas,
@@ -21,9 +20,12 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
+  toolUse,
+  withRuntime,
+  yieldTurn,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {
@@ -182,7 +184,7 @@ test("a wake that works a job and stops without reporting leaves it open and tel
   assert.equal((await handle.db.select().from(messages).where(eq(messages.toAgentId, managerId))).length, 0);
 });
 
-test("every message wakes the recipient's process lane, a spawned agent's report included", async () => {
+test("every message wakes the recipient's process lane, a spawned agent's report included, and a progress line wakes no one", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "route-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "route-worker", systemPrompt: "worker", parentAgentId: managerId });
@@ -205,6 +207,8 @@ test("every message wakes the recipient's process lane, a spawned agent's report
   await deliverUserMessage(spy, managerId, "book the room");
   await deliverAgentMessage(spy, { fromAgentId: managerId, toAgentId: workerId, content: "open the booking page" });
   await deliverAgentMessage(spy, { fromAgentId: workerId, toAgentId: managerId, content: "page open", status: "running" });
+  assert.deepEqual(woke, ["route-manager:process", "route-worker:process"], "the progress line woke no one");
+  await deliverAgentMessage(spy, { fromAgentId: workerId, toAgentId: managerId, content: "booked for 3 PM", status: "done" });
   assert.deepEqual(woke, ["route-manager:process", "route-worker:process", "route-manager:process"]);
 });
 

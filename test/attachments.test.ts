@@ -15,6 +15,7 @@ import {
   SEND_MESSAGE,
 } from "../src/types/domain.js";
 import {
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -25,9 +26,10 @@ import {
   silentLog,
   testConfig,
   wideWindows,
+  withRuntime,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

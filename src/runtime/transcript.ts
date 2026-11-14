@@ -20,6 +20,17 @@ export type TranscriptEntry = {
   status: MessageStatus | null;
   /** A notice is hath's word that an agent's work stopped, never chat; absent means message. */
   kind?: MessageKind;
+  /**
+   * Set on a repeating schedule's trigger: that schedule's id. Its recipient reads it as
+   * `[Routine]`, never as a request from the schedule's author (see context.ts labelEntry).
+   */
+  routine?: string;
+  /**
+   * Who sent an agent's message for it when its process lane did not: its work lane
+   * (`queue_message` to an agent goes out directly) or hath (a pickup line, see pickups.ts).
+   * Absent for every other message; not kept across a restart.
+   */
+  sentBy?: "work" | "hath";
   createdAt: Date;
 };
 

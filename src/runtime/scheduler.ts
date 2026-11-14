@@ -36,7 +36,7 @@ export function advanceRunAt(runAt: Date, intervalMinutes: number): Date {
 
 type FiredRow = ScheduledMessageRow & { firedAt: Date };
 
-/** Polls every `tickSeconds`: sweeps the file caches once a day, wakes the work lane of each agent whose wait is due, and delivers due scheduled messages into transcripts, waking each recipient's process lane. */
+/** Polls every `tickSeconds`: sweeps the file caches once a day, wakes the work lane of each agent whose wait is due, delivers due scheduled messages into transcripts, waking each recipient's process lane, and sends hath's pickups when they are on. */
 export function createScheduler(opts: {
   db: Db;
   transcript: TranscriptStore;
@@ -51,6 +51,8 @@ export function createScheduler(opts: {
   watches: WatchDeps;
   /** The cache retention sweep (see retention.ts), run on the first tick and then daily. */
   sweep: (now: Date) => Promise<void>;
+  /** hath's pickups for Ankur's overdue jobs (see pickups.ts), run every tick; null when `runtime.hath_pickups` is off. */
+  pickups: ((now: Date) => Promise<void>) | null;
 }): Scheduler {
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking = false;
@@ -147,6 +149,7 @@ export function createScheduler(opts: {
         toAgentId: row.toAgentId,
         content: row.content,
         scheduleId: row.id,
+        ...(row.intervalMinutes !== null ? { routine: row.id } : {}),
         scheduled: true,
       },
     );
@@ -168,6 +171,13 @@ export function createScheduler(opts: {
       }
     } catch (err) {
       opts.log.error({ code: "schedule_tick_failed", err }, "schedule tick failed");
+    }
+    if (opts.pickups !== null) {
+      try {
+        await opts.pickups(now);
+      } catch (err) {
+        opts.log.error({ code: "pickups_failed", err }, "pickup pass failed");
+      }
     }
     try {
       if (lastSweep === undefined || now.getTime() - lastSweep.getTime() >= SWEEP_INTERVAL_MS) {

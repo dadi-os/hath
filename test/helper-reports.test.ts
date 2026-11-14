@@ -5,9 +5,9 @@ import { migrate } from "../src/db/migrate.js";
 import { attachments, deliveredReports, watches } from "../src/db/schema.js";
 import type { HelperReport } from "../src/nas/client.js";
 import { createRuntime } from "../src/runtime/engine.js";
-import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, yieldTurn } from "./helpers.js";
+import { FLAGS_OFF, insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, withRuntime, yieldTurn } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {
@@ -162,17 +162,19 @@ test("a needs_input report and a failure say so, and a report for a missing agen
   assert.equal(marked.length, 1);
 });
 
-test("a stopped report tells the agent Ankur stopped its helper", async () => {
+test("a stopped report names who stopped the helper only when Nas says, and never assumes Ankur", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
   const { runtime } = harness();
 
-  await runtime.helperReports.handle(report({ state: "stopped", text: "Ankur stopped this task while he was driving it." }));
+  await runtime.helperReports.handle(report({ state: "stopped", text: "Stopped.", at: "2026-10-29T14:01:00.000000000Z" }));
+  await runtime.helperReports.handle(report({ state: "stopped", stopped_by: "ankur", text: "Stopped.", at: "2026-10-29T14:02:00.000000000Z" }));
+  await runtime.helperReports.handle(report({ state: "stopped", stopped_by: "hath", text: "Stopped.", at: "2026-10-29T14:03:00.000000000Z" }));
   await runtime.waitUntilIdle();
 
   assert.deepEqual(
     notices(runtime).map((row) => row.content),
-    ["Helper stopped by Ankur (task/browser/1):\nAnkur stopped this task while he was driving it."],
+    ["Helper stopped (task/browser/1):\nStopped.", "Helper stopped (by Ankur) (task/browser/1):\nStopped.", "Helper stopped (by hath) (task/browser/1):\nStopped."],
   );
 });
 

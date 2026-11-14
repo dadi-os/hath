@@ -8,9 +8,9 @@ import { EventBus } from "../src/runtime/events.js";
 import { recoverInterruptedWakes } from "../src/runtime/recovery.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import type { Lane, LogEvent } from "../src/types/domain.js";
-import { insertAgent, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
+import { FLAGS_OFF, insertAgent, openTestDb, resetRuntime, silentLog, testConfig, withRuntime } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

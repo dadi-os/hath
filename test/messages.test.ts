@@ -18,6 +18,7 @@ import { TranscriptStore } from "../src/runtime/transcript.js";
 import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "../src/runtime/wake.js";
 import {
   endTurn,
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -29,10 +30,11 @@ import {
   silentLog,
   testConfig,
   wideWindows,
+  withRuntime,
   workLoopHooks,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {
@@ -159,7 +161,7 @@ test("assembleContext cuts each lane its own rolling window of the thread", asyn
   assert.equal(thread.length, 6);
   assert.equal(whole.transcripts.process!.length, 6, "no job note follows the thread on either lane");
 
-  const narrow = await assemble({ chars: 500, stepChars: 200, budgetTokens: 10_000_000 });
+  const narrow = await assemble({ chars: 500, stepChars: 200, budgetTokens: 10_000_000, minChars: 0 });
   const sizes = thread.map((m) => String(m.content).length);
   const start = windowStart(sizes, { chars: 500, stepChars: 125 });
   assert.ok(start > 0);

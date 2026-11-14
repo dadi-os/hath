@@ -180,6 +180,11 @@ export class Wake {
   recorded: Promise<void> = Promise.resolve();
   /** The first lane failure of the wake, stored on its row when it ends; null while none has failed. */
   error: string | null = null;
+  /**
+   * While this wake is a routine, the seq of the repeating schedule's trigger that opened it;
+   * null once a message from anyone else joins it (engine.ts enqueue), and for every other wake.
+   */
+  routine: number | null = null;
   private frozenSystem: string | null = null;
   private transcripts: Partial<Record<Lane, DwarMessage[]>> | null = null;
   private seenThrough = 0;

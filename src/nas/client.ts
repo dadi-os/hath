@@ -18,6 +18,8 @@ const reportSchema = z
     text: z.string(),
     files: z.array(z.string()),
     at: z.string().min(1),
+    /** Who stopped the task, on a `stopped` report: "ankur" from the takeover UI, else an agent id or "hath". */
+    stopped_by: z.string().min(1).optional(),
   })
   .passthrough();
 

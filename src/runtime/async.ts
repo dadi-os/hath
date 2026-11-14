@@ -19,7 +19,7 @@ import { INGEST_MEMORY_ASYNC } from "./memory.js";
 import { ok, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarToolUseBlock } from "../types/domain.js";
 import { INGEST_MEMORY } from "../types/domain.js";
-import type { DeliverDeps } from "./deliver.js";
+import { deliverAgentMessage, type DeliverDeps } from "./deliver.js";
 import { resultPath, savesResult, writeBytes } from "./files.js";
 import { rewakeProcess, rewakeWork } from "./rewake.js";
 
@@ -57,7 +57,9 @@ function wakeLane(lane: "process" | "work") {
 /**
  * runInBackground starts `run` for the caller's call and returns `{ pending: id }` at once;
  * the call's result reaches the caller as a message that wakes the lane that made the call
- * (`ctx.lane`) when `run` settles. `run` must return its outcome, never throw.
+ * (`ctx.lane`) when `run` settles. Unless `runtime.ingest_result_wakes` is on, a successful
+ * `ingest_memory` is the exception: it only joins the thread, since a wake with nothing left to
+ * do re-investigates and re-reports the work the earlier wake finished; its failure still wakes. `run` must return its outcome, never throw.
  */
 export async function runInBackground(
   ctx: ToolContext,
@@ -70,20 +72,24 @@ export async function runInBackground(
   }
   const lane = ctx.lane;
   await ctx.db.insert(pendingAsync).values({ id: call.id, agentId, toolName: call.name, lane });
+  const quiet = call.name === INGEST_MEMORY && !ctx.ingestResultWakes;
   ctx.background(
     (async () => {
       const result = await run();
-      await wakeLane(lane)(deliverDeps(ctx), agentId, {
-        content: await resultMessage(ctx, call, result),
-        notice: "tool",
-        wokenBy: `async tool result (${call.name} ${call.id})`,
-      });
+      const content = await resultMessage(ctx, call, result);
+      if (quiet && !result.isError) {
+        await deliverAgentMessage(deliverDeps(ctx), { fromAgentId: agentId, toAgentId: agentId, content, notice: "tool", wake: false });
+      } else {
+        await wakeLane(lane)(deliverDeps(ctx), agentId, { content, notice: "tool", wokenBy: `async tool result (${call.name} ${call.id})` });
+      }
       await ctx.db.delete(pendingAsync).where(eq(pendingAsync.id, call.id));
     })(),
   );
   return ok({
     pending: call.id,
-    note: `${call.name} is running in the background. Its result will arrive as a message that wakes you, so carry on or yield.`,
+    note: quiet
+      ? `${call.name} is running in the background. It is saving in the background; you are told only if it fails. Carry on or yield.`
+      : `${call.name} is running in the background. Its result will arrive as a message that wakes you, so carry on or yield.`,
   });
 }
 

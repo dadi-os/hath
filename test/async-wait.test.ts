@@ -11,6 +11,7 @@ import { yieldReminder } from "../src/runtime/yield-reminder.js";
 import type { DwarChatRequest } from "../src/types/domain.js";
 import { deliverUserMessage } from "../src/runtime/deliver.js";
 import {
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -21,10 +22,11 @@ import {
   silentLog,
   testConfig,
   toolUse,
+  withRuntime,
   yieldTurn,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {
@@ -53,7 +55,7 @@ function harness(opts: { work?: (request: DwarChatRequest) => ReturnType<typeof 
 
 const call = (id: string, name: string, input: unknown) => ({ type: "tool_use" as const, id, name, input });
 
-test("an async tool returns pending at once, and its result wakes the work lane as a message", async () => {
+test("an async tool returns pending at once, and a successful ingest_memory result joins the thread without waking the work lane", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
   const { runtime, yaad, gate, dwar } = harness();
@@ -72,8 +74,32 @@ test("an async tool returns pending at once, and its result wakes the work lane 
   const notice = runtime.transcript.transcriptFor("remember").at(-1)!;
   assert.equal(notice.kind, "notice");
   assert.match(notice.content, /^Result of ingest_memory \(ing-1\), done:\n/);
-  assert.equal(dwar.workCalls.length, 1, "the work lane woke for the result");
-  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /Woken by: async tool result \(ingest_memory ing-1\)/);
+  assert.equal(dwar.workCalls.length, 0, "a saved memory wakes no lane");
+});
+
+test("with ingest_result_wakes on, a successful ingest_memory result wakes the work lane", async () => {
+  const waking = withRuntime(config, { ingest_result_wakes: true });
+  await resetRuntime(handle.sql, handle.db, waking);
+  await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
+  const nas = mockNas({});
+  const gate: { release: () => void } = { release: () => {} };
+  const yaad = mockYaad({
+    ingest: async () => {
+      await new Promise<void>((resolve) => {
+        gate.release = resolve;
+      });
+      return { counts: { create_node: 1, update_node: 0, close_node: 0, create_edge: 0, close_edge: 0, noop: 0 }, operations: [] };
+    },
+  });
+  const dwar = mockDwar({ work: () => yieldTurn() });
+  const runtime = createRuntime({ db: handle.db, dwar, yaad, ghar: mockGhar(), nas, config: waking, log: silentLog });
+
+  await executeTool(runtime.toolContext("remember", "work"), call("ing-w", "ingest_memory", { text: "Ankur likes tea." }));
+  gate.release();
+  await runtime.waitUntilIdle();
+
+  assert.equal(dwar.workCalls.length, 1, "the lane woke for the result");
+  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /Woken by: async tool result \(ingest_memory ing-w\)/);
 });
 
 test("an async tool's failure arrives as the message too", async () => {

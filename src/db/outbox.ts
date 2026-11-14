@@ -1,4 +1,8 @@
-/** The work lane's `queue_message` rows, waiting for the process lane to send them (see the `outbox` table). */
+/**
+ * The work lane's `queue_message` rows (see the `outbox` table): waiting for the process lane to
+ * send them, or, for a message to an agent under `runtime.direct_agent_messages`, recorded as
+ * delivered by the work lane itself.
+ */
 
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "./client.js";
@@ -28,6 +32,42 @@ export async function queueOutbox(
     throw new Error("outbox insert returned no row");
   }
   return row;
+}
+
+/**
+ * insertDeliveredOutbox records a work-lane message that goes out at once, with no process-lane
+ * send (`runtime.direct_agent_messages`, `runtime.direct_ankur_messages`). The row is `sent` before the message is
+ * delivered, so a reply it expects wakes the work lane however fast it comes; settleDeliveredOutbox
+ * then stamps the message it became, or records the delivery's failure.
+ */
+export async function insertDeliveredOutbox(
+  db: Db,
+  args: { agentId: string; to: string | null; content: string; attachmentIds: string[]; expectsReply: boolean },
+): Promise<OutboxRow> {
+  const [row] = await db
+    .insert(outbox)
+    .values({
+      agentId: args.agentId,
+      toAgentId: args.to,
+      content: args.content,
+      attachmentIds: args.attachmentIds,
+      expectsReply: args.expectsReply,
+      state: "sent",
+      resolvedAt: new Date(),
+    })
+    .returning();
+  if (!row) {
+    throw new Error("outbox insert returned no row");
+  }
+  return row;
+}
+
+/** settleDeliveredOutbox stamps row `id` with the message it became, or marks it failed with why. */
+export async function settleDeliveredOutbox(db: Db, id: number, outcome: { messageId: string } | { failed: string }): Promise<void> {
+  await db
+    .update(outbox)
+    .set("messageId" in outcome ? { messageId: outcome.messageId } : { state: "failed", reason: outcome.failed, expectsReply: false })
+    .where(eq(outbox.id, id));
 }
 
 /** pendingOutbox are `agentId`'s rows still waiting for its process lane, oldest first. */

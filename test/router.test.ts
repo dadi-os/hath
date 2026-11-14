@@ -10,6 +10,7 @@ import { createRuntime } from "../src/runtime/engine.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
 import type { DwarChatResponse } from "../src/types/domain.js";
 import {
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -20,10 +21,11 @@ import {
   silentLog,
   testConfig,
   toolUse,
+  withRuntime,
   yieldTurn,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

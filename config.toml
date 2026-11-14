@@ -16,6 +16,9 @@ lane_queue_timeout_ms = 30000
 # A window's start moves in jumps of step chars instead of sliding with every message,
 # so the provider cache survives everything but the jump.
 process_context_tokens = 30000
+# The process lane's window never drops below this many chars, however long the charter:
+# a coordinator whose budget left it a few thousand chars lost track of its own asks.
+process_window_min_chars = 8000
 work_transcript_window_chars = 100000
 transcript_window_step_chars = 30000
 # Backoff after a failed tool call before the agent's next call; doubles per
@@ -46,6 +49,42 @@ recovery_window_minutes = 10
 # prefix holds until the next trim.
 prompt_ceiling_tokens = 96000
 prompt_trim_tokens = 16000
+# Job-shape switches (cycle-4 change). Each turns one runtime behaviour on; false keeps
+# the behaviour from before it.
+# routine_silence: a wake opened by a recurring schedule's trigger is a routine. It sends
+# nothing to agents and at most one message to Ankur, with status blocked or needs_input,
+# until someone else's message joins the wake.
+routine_silence = true
+# direct_agent_messages: the work lane's queue_message to an agent is delivered at once,
+# with no process-lane send; the process lane messages an agent only to reply to it.
+direct_agent_messages = true
+# hath_pickups: when Ankur's latest message to an agent is 180 s old, the agent's work
+# lane has acted since it, and the agent has sent him nothing since, hath sends him
+# "Working on it." for the agent, once. The lanes send no pickup lines of their own.
+hath_pickups = true
+# implicit_yield: a process turn of only successful send_message/steer_work calls, and a
+# work turn of only successful queue_message calls, ends the run without another model
+# call to yield.
+implicit_yield = true
+# status_job_ledger: the process lane's status block lists the open job's opening
+# message, the asks this agent sent in it and who answered, and what it told the requester.
+status_job_ledger = true
+# ingest_result_wakes: false lets a successful ingest_memory result join the thread without
+# waking the lane that saved it (a wake with nothing left to do re-reads and re-reports the
+# finished work); a failure always wakes. true wakes the lane on every result.
+ingest_result_wakes = false
+# direct_ankur_messages: the work lane's queue_message to Ankur is delivered at once, as one to
+# an agent is under direct_agent_messages, with its status; the process lane relays nothing.
+direct_ankur_messages = true
+# pickup_delay_s: how long Ankur's message waits for an answer before hath_pickups sends the
+# pickup. With hath_pickups on, a message with status running is refused from both lanes.
+pickup_delay_s = 150
+# question_answer_minutes: a work lane whose job is Ankur's question may wait on others only
+# until this many minutes after his message; the timeout tells it to answer with what it has.
+question_answer_minutes = 5
+# weekday_guard: a message to Ankur that gives a month and day with no weekday beside it
+# (nor today, tonight, tomorrow or yesterday) is refused.
+weekday_guard = true
 
 [dwar]
 timeout_ms = 330000

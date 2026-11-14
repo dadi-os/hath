@@ -123,6 +123,11 @@ export type TranscriptWindow = {
    * call never starts over the prompt ceiling.
    */
   budgetTokens: number;
+  /**
+   * The window never holds fewer than about this many characters, whatever the budget
+   * leaves (0 for none): a coordinator with a long charter must still see its own asks.
+   */
+  minChars: number;
 };
 
 /** Each agent lane's transcript window. */
@@ -138,7 +143,7 @@ export type TranscriptWindows = Record<Exclude<Lane, "router">, TranscriptWindow
  * outgrows the window by another step, which keeps the provider's cached
  * prefix byte-stable between jumps. The newest entry is always shown.
  */
-export function windowStart(sizes: number[], window: Omit<TranscriptWindow, "budgetTokens">): number {
+export function windowStart(sizes: number[], window: Pick<TranscriptWindow, "chars" | "stepChars">): number {
   const total = sizes.reduce((sum, size) => sum + size, 0);
   if (total <= window.chars) {
     return 0;
@@ -157,7 +162,7 @@ export function windowStart(sizes: number[], window: Omit<TranscriptWindow, "bud
 /**
  * An agent lane's request: its system, then each lane's rolling window of its
  * history (see historyFor, windowStart), no wider than the room the window's budget leaves
- * after the system and that lane's tools. The process lane's budget is the small
+ * after the system and that lane's tools, and no narrower than its floor. The process lane's budget is the small
  * `process_context_tokens`, since it is the front desk and reads detail on demand;
  * the work lane's is the prompt ceiling less its trim. Messages that left a window are
  * reached through get_logs and memory. Dwar appends lane doctrine as a cached block.
@@ -185,7 +190,7 @@ export async function assembleContext(opts: {
       Math.ceil(JSON.stringify(laneTools[lane]).length / DATA_CHARS_PER_TOKEN);
     const chars = Math.min(
       window.chars,
-      Math.floor(Math.max(0, window.budgetTokens - fixedTokens) * PROSE_CHARS_PER_TOKEN),
+      Math.max(window.minChars, Math.floor(Math.max(0, window.budgetTokens - fixedTokens) * PROSE_CHARS_PER_TOKEN)),
     );
     return messages.slice(windowStart(sizes, { chars, stepChars: Math.max(1, Math.min(window.stepChars, Math.floor(chars / 4))) }));
   };
@@ -219,38 +224,57 @@ export async function assembleRouterContext(opts: {
   };
 }
 
+/** What arrived in an agent's thread since a seq, folded into the turns each lane is shown (see arrivalsSince). */
+export type Arrivals = {
+  /** Messages to the agent, its own notes, and what hath sent for it; shown to both lanes. */
+  turn: DwarMessage | null;
+  /** What its process lane sent; shown to the work lane only. */
+  sent: DwarMessage | null;
+  /** What its work lane sent directly; shown to the process lane only. */
+  sentByWork: DwarMessage | null;
+  /** The newest seq seen, own messages included. */
+  throughSeq: number;
+};
+
 /**
  * arrivalsSince folds transcript entries newer than `afterSeq` into user turns, so
  * messages that land mid-wake join the scratchpad at the point they arrived instead of
- * rewriting the history above it. `turn` is what arrived (messages to the agent, and its
- * own notes to itself) and is shown to both lanes. The agent's messages to others are not
- * arrivals: the process lane already holds the call that sent each, and folding them in
- * again woke it to read its own words back. The work lane never sees process's calls, so
- * `sent` carries those messages to it, as what its process lane sent. Each is null when
- * there is none; `throughSeq` is the newest seq seen, own messages included.
+ * rewriting the history above it. The agent's messages to others reach only the lane that
+ * did not send them: a lane already holds the call that sent each, and folding them in again
+ * woke it to read its own words back. So the process lane's sends reach the work lane as
+ * `sent`, the work lane's direct sends reach the process lane as `sentByWork`, and hath's
+ * pickups for the agent reach both inside `turn`. A routine trigger the agent scheduled for
+ * someone else is not news to either lane and is left out. Each is null when there is none.
  */
-export function arrivalsSince(
-  transcript: TranscriptStore,
-  agentId: string,
-  afterSeq: number,
-): { turn: DwarMessage | null; sent: DwarMessage | null; throughSeq: number } {
+export function arrivalsSince(transcript: TranscriptStore, agentId: string, afterSeq: number): Arrivals {
   const fresh = transcript.transcriptFor(agentId).filter((row) => row.seq > afterSeq);
   if (fresh.length === 0) {
-    return { turn: null, sent: null, throughSeq: afterSeq };
+    return { turn: null, sent: null, sentByWork: null, throughSeq: afterSeq };
   }
   const throughSeq = fresh.at(-1)!.seq;
   const arrived = fresh.filter((row) => row.fromAgentId !== agentId || row.toAgentId === agentId);
-  const sent = fresh.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId);
-  const fold = (label: string, rows: TranscriptEntry[]): DwarMessage | null =>
-    rows.length === 0 ? null : { role: "user", content: [label, ...rows.map((row) => transcriptText(row, agentId))].join("\n\n") };
-  return { turn: fold("[Arrived during this wake]", arrived), sent: fold("[Sent by your process lane]", sent), throughSeq };
+  const own = fresh.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId && row.routine === undefined);
+  const text = (label: string, rows: TranscriptEntry[]): string[] =>
+    rows.length === 0 ? [] : [label, ...rows.map((row) => transcriptText(row, agentId))];
+  const fold = (parts: string[]): DwarMessage | null => (parts.length === 0 ? null : { role: "user", content: parts.join("\n\n") });
+  return {
+    turn: fold([
+      ...text("[Arrived during this wake]", arrived),
+      ...text("[Sent for you by hath]", own.filter((row) => row.sentBy === "hath")),
+    ]),
+    sent: fold(text("[Sent by your process lane]", own.filter((row) => row.sentBy === undefined))),
+    sentByWork: fold(text("[Sent by your work lane]", own.filter((row) => row.sentBy === "work"))),
+    throughSeq,
+  };
 }
 
 /**
  * labelEntry gives a transcript row its turn role and `[From:]`/`[To:]`/`[Thought]`/`[Notice from hath]`
  * label from this agent's point of view, stamped with when the row was written (ISO 8601
  * in the box's `TZ` with its offset, `2026-10-02T13:14:48-04:00`) so the agent knows the
- * date and time it is acting at. A report's job status follows the time.
+ * date and time it is acting at. A report's job status follows the time. A repeating
+ * schedule's trigger reads `[Routine · <schedule id>]` to its recipient, never as a message
+ * from the schedule's author, and `[Routine to: <recipient>]` to its author.
  */
 function labelEntry(
   row: TranscriptEntry,
@@ -259,6 +283,11 @@ function labelEntry(
   const at = row.status === null ? formatISO(row.createdAt) : `${formatISO(row.createdAt)} · ${row.status}`;
   if (row.kind === "notice") {
     return { role: "user", label: `[Notice from hath · ${at}]` };
+  }
+  if (row.routine !== undefined) {
+    return row.toAgentId === agentId
+      ? { role: "user", label: `[Routine · ${row.routine} · ${at}]` }
+      : { role: "assistant", label: `[Routine to: ${row.toAgentId ?? "Ankur"} · ${row.routine} · ${at}]` };
   }
   if (row.fromAgentId === agentId && row.toAgentId === agentId) {
     return { role: "assistant", label: `[Thought · ${at}]` };

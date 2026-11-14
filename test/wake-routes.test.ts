@@ -14,9 +14,9 @@ import { executeTool } from "../src/runtime/tools.js";
 import { WAKE_RESULT_MAX_CHARS } from "../src/serialize.js";
 import type { NasClient } from "../src/nas/client.js";
 import type { HelperLogEntry, WakeEntry, WakeRecord } from "../src/types/domain.js";
-import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
+import { FLAGS_OFF, insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, withRuntime } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

@@ -14,6 +14,7 @@ import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { SEND_MESSAGE, type WakeOrigin } from "../src/types/domain.js";
 import {
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -23,9 +24,10 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
+  withRuntime,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

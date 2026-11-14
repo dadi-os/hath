@@ -39,7 +39,7 @@ import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
 import { HelperReports } from "./helper-reports.js";
 import type { FileStore } from "./files.js";
-import { clearWatch, watchOf } from "./watches.js";
+import { clearWatch, recordWatch, watchOf } from "./watches.js";
 import { yieldReminder } from "./yield-reminder.js";
 import { ToolDebounce } from "./tool-debounce.js";
 import { blockOpenJob, settleWakeJobs } from "./jobs.js";
@@ -52,6 +52,7 @@ import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import { FORWARD_ATTACHMENT, SEND_MESSAGE, type AgentStatus, type WakeOrigin } from "../types/domain.js";
 import { sweepCaches } from "./retention.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
+import { sendPickups } from "./pickups.js";
 import { WakeActivity } from "./wake-activity.js";
 
 export type RuntimeLog = {
@@ -171,16 +172,41 @@ export function createRuntime(opts: {
     return enqueue(agentId, "work", reason, origin);
   }
 
+  /**
+   * enqueue queues a lane run on the agent's wake, creating the wake when it has none. A wake
+   * a repeating schedule's trigger creates is a routine (see Wake.routine) until a message
+   * from anyone but the agent itself joins it: then someone is asking, and it is a job.
+   */
   function enqueue(agentId: string, lane: Lane, reason: string | undefined, origin: WakeOrigin | undefined): string {
     const created = wakes.peek(agentId) === undefined;
+    const routine = created && origin !== undefined ? routineTrigger(agentId, origin) : null;
     const release = wakes.hold(agentId);
     const wake = wakes.get(agentId);
     wake.noteReason(reason);
     if (created) {
       beginWake(agentId, wake, origin ?? MANUAL_ORIGIN);
+      wake.routine = routine;
+    } else if (origin?.kind === "message" && origin.ref !== agentId) {
+      wake.routine = null;
     }
     track(runLane(agentId, lane, release));
     return wake.id;
+  }
+
+  /**
+   * routineTrigger is the seq of the message that opened a wake with `origin` when it is a
+   * repeating schedule's trigger, else null. The trigger is in the transcript already: delivery
+   * ingests a message before it queues the run.
+   */
+  function routineTrigger(agentId: string, origin: WakeOrigin): number | null {
+    if (origin.kind !== "schedule" || origin.openedByMessageId === null) {
+      return null;
+    }
+    const trigger = transcript.transcriptFor(agentId).find((row) => row.id === origin.openedByMessageId);
+    if (trigger === undefined) {
+      throw new Error(`scheduled message ${origin.openedByMessageId} that woke ${agentId} is not in its transcript`);
+    }
+    return trigger.routine === undefined ? null : trigger.seq;
   }
 
   /**
@@ -230,7 +256,10 @@ export function createRuntime(opts: {
   }
 
   function statusOf(agentId: string): Promise<AgentStatus> {
-    return gatherStatus({ db: opts.db, nas: opts.nas, locks, transcript, wake: wakes.peek(agentId) }, agentId);
+    return gatherStatus(
+      { db: opts.db, nas: opts.nas, locks, transcript, wake: wakes.peek(agentId), ledger: opts.config.runtime.status_job_ledger },
+      agentId,
+    );
   }
 
   const deliverDeps = { db: opts.db, transcript, events, enqueueProcess, enqueueWork, wakeActivity };
@@ -248,6 +277,14 @@ export function createRuntime(opts: {
       const swept = await sweepCaches(files, opts.config.files.cache_retention_days, now);
       opts.log.info({ code: "cache_swept", files: swept }, "cache sweep done");
     },
+    pickups: opts.config.runtime.hath_pickups
+      ? async (now) => {
+          const sent = await sendPickups(deliverDeps, now, opts.config.runtime.pickup_delay_s * 1000);
+          if (sent > 0) {
+            opts.log.info({ code: "pickups_sent", count: sent }, "hath sent pickups for overdue jobs");
+          }
+        }
+      : null,
   });
 
   const helperReports = new HelperReports({
@@ -304,6 +341,13 @@ export function createRuntime(opts: {
       enqueueProcess,
       enqueueWork,
       wakeActivity,
+      routineSince: opts.config.runtime.routine_silence && callerId !== null ? (wakes.peek(callerId)?.routine ?? null) : null,
+      directAgentMessages: opts.config.runtime.direct_agent_messages,
+      ingestResultWakes: opts.config.runtime.ingest_result_wakes,
+      directAnkurMessages: opts.config.runtime.direct_ankur_messages,
+      hathPickups: opts.config.runtime.hath_pickups,
+      questionAnswerMinutes: opts.config.runtime.question_answer_minutes,
+      weekdayGuard: opts.config.runtime.weekday_guard,
     };
   }
 
@@ -498,11 +542,13 @@ export function createRuntime(opts: {
               chars: Number.MAX_SAFE_INTEGER,
               stepChars: opts.config.runtime.transcript_window_step_chars,
               budgetTokens: opts.config.runtime.process_context_tokens,
+              minChars: opts.config.runtime.process_window_min_chars,
             },
             work: {
               chars: opts.config.runtime.work_transcript_window_chars,
               stepChars: opts.config.runtime.transcript_window_step_chars,
               budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
+              minChars: 0,
             },
           },
         }),
@@ -537,7 +583,7 @@ export function createRuntime(opts: {
             serviceRoot: opts.config.serviceRoot,
             utterance: content,
           }),
-        arrivalsSince: (afterSeq: number) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+        arrivalsSince: (afterSeq: number) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
         call: (request: DwarChatRequest) => opts.dwar.complete(request, "hath/router"),
         executeTool: async (call: DwarToolUseBlock) => {
           const result = await helpers.exec(call);
@@ -571,6 +617,10 @@ export function createRuntime(opts: {
       steer,
       woke: () => clearWatch(opts.db, agentId),
       yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas, transcript }, agentId),
+      implicitYield: opts.config.runtime.implicit_yield,
+      wait: async (targets: string[], minutes: number) => {
+        await recordWatch(opts.db, agentId, targets, minutes);
+      },
     };
   }
 
@@ -581,6 +631,8 @@ export function createRuntime(opts: {
       db: opts.db,
       transcript,
       status: async () => renderStatus(await statusOf(agentId)),
+      directAgentMessages: opts.config.runtime.direct_agent_messages,
+      implicitYield: opts.config.runtime.implicit_yield,
     };
   }
 

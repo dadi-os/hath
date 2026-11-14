@@ -1,5 +1,9 @@
-import type { DwarChatRequest, DwarChatResponse, DwarResponseBlock } from "../types/domain.js";
-import { QUEUE_MESSAGE } from "../types/domain.js";
+import type { DwarChatRequest, DwarChatResponse, DwarResponseBlock, DwarToolUseBlock } from "../types/domain.js";
+import { INGEST_MEMORY, QUEUE_MESSAGE } from "../types/domain.js";
+import { editFile, writeFile } from "../tools/files/files.js";
+import { scheduleMessage } from "../tools/hath/schedule-message.js";
+import type { ToolExecResult } from "../tools/shared.js";
+import { steerBrowser, steerTerminal } from "../tools/helper/tasks.js";
 import type { SteerQueue } from "./steer.js";
 import { formatSteerTurn } from "./steer.js";
 import { textChars } from "./process.js";
@@ -12,7 +16,14 @@ export type WorkLoopDeps = StepDeps & {
   woke: () => Promise<void>;
   /** The note a yield is answered with once, or null when the agent has left nothing unanswered (see yield-reminder.ts). */
   yieldReminder: () => Promise<string | null>;
+  /** `runtime.implicit_yield`: a turn of a queue_message and the saves that go with it ends the run (see endsOnItsOwn). */
+  implicitYield: boolean;
+  /** Records that the lane waits on `targets` for `minutes`, as the wait tool does (see watches.ts recordWatch). */
+  wait: (targets: string[], minutes: number) => Promise<void>;
 };
+
+/** How long a run that ended on its own after asking agents waits on their replies before it is woken with facts. */
+export const IMPLICIT_WAIT_MINUTES = 30;
 
 /**
  * Work-lane loop over the agent's wake. Each call sees the model's own thinking, text and
@@ -30,7 +41,8 @@ export type WorkLoopDeps = StepDeps & {
  * once with UNSENT_REPORT_TURN, since that text is a report nobody would otherwise get; a
  * yield that leaves the requester's latest message unanswered, with nothing pending to wake
  * the agent, is answered once with the reminder yieldReminder gives.
- * The wait tool ends the run like yield, after recording what it waits on.
+ * The wait tool ends the run like yield, after recording what it waits on; so does a turn of
+ * only queue_message calls under `implicitYield` (see endsOnItsOwn).
  * This lane never messages anyone itself; everything it has to say goes to the process
  * lane with `queue_message`, which sends it.
  */
@@ -77,7 +89,13 @@ export async function runWorkLoop(deps: WorkLoopDeps): Promise<void> {
     }
     turnsSinceReport = reports(response.content) ? 0 : turnsSinceReport + 1;
 
-    if (await runStep(deps, response, stop)) {
+    const outcomes: { call: DwarToolUseBlock; result: ToolExecResult }[] = [];
+    const tracked = async (call: DwarToolUseBlock): Promise<ToolExecResult> => {
+      const result = await deps.executeTool(call);
+      outcomes.push({ call, result });
+      return result;
+    };
+    if ((await runStep({ ...deps, executeTool: tracked }, response, stop)) || (!stop() && (await endsOnItsOwn(deps, outcomes)))) {
       if (!stop() && !reminded && unsentReport(response.content)) {
         reminded = true;
         deps.wake.push({ message: { role: "user", content: UNSENT_REPORT_TURN }, only: "work" });
@@ -132,6 +150,46 @@ export const TURNS_BEFORE_NUDGE = 60;
  */
 export const LONG_SILENCE_TURN =
   "[continue] Many turns have passed since you last sent your process lane a message. If you are reading a large file or log to answer one question, search it for just that and stop paging through it; if you already have an answer worth giving, call queue_message now; if you are partway through ordinary steps, carry on.";
+
+/**
+ * endsOnItsOwn is true when, under `implicitYield`, a turn ends the run without a model call to
+ * yield or wait: it has a queue_message, no call in it failed, every call in it was a
+ * queue_message or one of the saves that follow a result (SAVES), no queue_message was a progress
+ * line (status running), and no browser or terminal task was started or steered in this wake
+ * (its result may still need the lane's next step).
+ * When any of those messages expects an agent's reply, the lane waits on those agents for
+ * IMPLICIT_WAIT_MINUTES, as a wait call would; otherwise it yields. The run is marked yielded
+ * either way, so the yield's reminders still apply.
+ */
+async function endsOnItsOwn(deps: WorkLoopDeps, outcomes: { call: DwarToolUseBlock; result: ToolExecResult }[]): Promise<boolean> {
+  const messages = outcomes.filter(({ call }) => call.name === QUEUE_MESSAGE);
+  if (
+    !deps.implicitYield ||
+    messages.length === 0 ||
+    !outcomes.every(({ call, result }) => (call.name === QUEUE_MESSAGE || SAVES.has(call.name)) && !result.isError) ||
+    messages.some(({ call }) => (call.input as { status?: string }).status === "running")
+  ) {
+    return false;
+  }
+  if (deps.wake.workCalls(Number.MAX_SAFE_INTEGER).some((call) => HELPER_STEERS.has(call.name) && call.failed === false)) {
+    return false;
+  }
+  const awaited = messages.flatMap(({ result }) => {
+    const queued = JSON.parse(result.content) as { to_agent_id: string | null; expects_reply: boolean };
+    return queued.expects_reply && queued.to_agent_id !== null ? [queued.to_agent_id] : [];
+  });
+  if (awaited.length > 0) {
+    await deps.wait([...new Set(awaited)], IMPLICIT_WAIT_MINUTES);
+  }
+  deps.wake.markYield(deps.lane);
+  return true;
+}
+
+/** The tools a turn may call beside its queue_message and still end the run: they record what the message reports. */
+const SAVES = new Set<string>([INGEST_MEMORY, writeFile.name, editFile.name, scheduleMessage.name]);
+
+/** The tools that start or steer a helper task, whose result wakes the lane for its next step. */
+const HELPER_STEERS = new Set([steerBrowser.name, steerTerminal.name]);
 
 /** reports is true when a turn called message. */
 function reports(content: DwarResponseBlock[]): boolean {

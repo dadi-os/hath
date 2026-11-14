@@ -55,6 +55,18 @@ export type AgentStatus = {
   tasks_unreadable: string | null;
   /** Messages the work lane queued that the process lane has not sent. */
   pending: { id: number; to: string | null; expects_reply: boolean; preview: string }[];
+  /** The open job as this agent has worked it so far (`runtime.status_job_ledger`); null when that is off or no job is open. */
+  ledger: JobLedger | null;
+};
+
+/** One open job's record, from the agent's messages since the job opened (see runtime/status.ts jobLedger). */
+export type JobLedger = {
+  /** The requester's message that opened the job, clipped. */
+  opened: { seq: number; at: string; content: string };
+  /** Each agent this agent asked something since, oldest first, with the seq of that agent's first message back (null while none). */
+  asks: { to: string; seq: number; answered_seq: number | null }[];
+  /** What this agent already sent the requester since, oldest first, clipped. */
+  told: { seq: number; preview: string }[];
 };
 
 export type AgentRecord = {

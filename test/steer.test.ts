@@ -38,7 +38,7 @@ test("a steer arriving mid-loop is applied on the next iteration", async () => {
     lane: "work",
     wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(request);
       turn += 1;
@@ -75,7 +75,7 @@ test("a steer stays in view for the rest of the wake, not just the next call", a
     lane: "work",
     wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
     call: async (request) => {
       calls.push(structuredClone(request));
       turn += 1;
@@ -182,7 +182,7 @@ test("steer_work with terminate stops the next tool call from running", async ()
     lane: "work",
     wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
     call: async () => {
       turn += 1;
       if (turn === 1) {
@@ -216,7 +216,7 @@ test("steer_work terminate mid-batch blocks remaining domain tools", async () =>
     lane: "work",
     wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
     call: async () => ({
       provider: "anthropic",
       content: [
@@ -415,7 +415,7 @@ test("terminate abandons an in-flight model call without waiting for its respons
     lane: "work",
     wake: new Wake(roomyWakeLimits),
     assemble: async () => ({ system: "sys", tools: [], transcripts: { work: [], process: [] }, throughSeq: 0 }),
-    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
     call: async (_request, signal) => {
       signalSeen = signal;
       setTimeout(() => steer.requestTerminate(agentId), 5);

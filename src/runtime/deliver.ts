@@ -81,7 +81,9 @@ export async function deliverUserMessage(
  * and hath's notices. Caller checks agent existence/active before calling. A reply the
  * recipient's work lane is waiting on (it queued a message marked expects_reply to the
  * sender), a wait that names the sender, or a caller that says `wakeWork` wakes the
- * recipient's work lane; any other message wakes its process lane.
+ * recipient's work lane; any other message wakes its process lane. A progress line (status
+ * `running`) wakes no one and leaves the recipient's wait and awaited reply standing: it
+ * carries nothing to act on, and the result that follows it is what the recipient waits for.
  */
 export async function deliverAgentMessage(
   deps: DeliverDeps,
@@ -95,6 +97,10 @@ export async function deliverAgentMessage(
     uploads?: NewAttachment[];
     /** The schedule that fired it, when a schedule did; its id is the wake's reason. */
     scheduleId?: string;
+    /** The schedule's id again when that schedule repeats: its trigger opens a routine (see TranscriptEntry.routine). */
+    routine?: string;
+    /** Set when the agent's work lane or hath sent it instead of its process lane (see TranscriptEntry.sentBy). */
+    sentBy?: "work" | "hath";
     /** False delivers without waking the recipient; it reads the message on its next wake. */
     wake?: boolean;
     /** The job status of an agent's report to whoever gave it the job (see jobs.ts). */
@@ -117,13 +123,19 @@ export async function deliverAgentMessage(
     ...(args.status !== undefined ? { status: args.status } : {}),
     ...(args.notice !== undefined ? { kind: "notice" as const } : {}),
   });
+  if (args.routine !== undefined) {
+    row.routine = args.routine;
+  }
+  if (args.sentBy !== undefined) {
+    row.sentBy = args.sentBy;
+  }
   deps.transcript.ingest(row);
   await recordDelivery(deps.db, row, args.scheduled === true);
   const attached = row.attachments.map(toAttachmentSummary);
   if (row.id === undefined) {
     throw new Error("durable message missing id");
   }
-  if (row.toAgentId !== null && args.wake !== false) {
+  if (row.toAgentId !== null && args.wake !== false && args.status !== "running") {
     const awaited = (await awaitingReply(deps.db, row.toAgentId, args.fromAgentId)) || (await takeWatch(deps.db, row.toAgentId, args.fromAgentId));
     const reason = args.wokenBy ?? `${args.scheduled === true ? "scheduled message" : "message"} from ${args.fromAgentId}`;
     const origin: WakeOrigin =

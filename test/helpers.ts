@@ -44,8 +44,8 @@ export function testConfig(): Config {
 
 /** Transcript windows wide enough that tests see the whole thread on both lanes. */
 export const wideWindows = {
-  process: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
-  work: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 },
+  process: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000, minChars: 0 },
+  work: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000, minChars: 0 },
 };
 
 /** Wake limits no test wake reaches, for tests that are not about clearing tool results. */
@@ -585,8 +585,33 @@ export async function insertAgent(
   return id;
 }
 
-/** The work loop's wake hooks, doing nothing: a lane with no watch and no requester waiting. */
+/**
+ * The work loop's wake hooks, doing nothing: a lane with no watch and no requester waiting,
+ * with `runtime.implicit_yield` off (a test of it sets it on).
+ */
 export const workLoopHooks = {
   woke: async () => {},
   yieldReminder: async () => null,
+  implicitYield: false,
+  wait: async () => {},
 };
+
+/**
+ * withRuntime is `config` with the given `[runtime]` keys replaced, so a test states each
+ * job-shape flag it depends on instead of inheriting config.toml's value.
+ */
+export function withRuntime(config: Config, runtime: Partial<Config["runtime"]>): Config {
+  return { ...config, runtime: { ...config.runtime, ...runtime } };
+}
+
+/** Every job-shape flag off: the runtime as it was before the cycle-4 change. */
+export const FLAGS_OFF = {
+  routine_silence: false,
+  direct_agent_messages: false,
+  hath_pickups: false,
+  implicit_yield: false,
+  status_job_ledger: false,
+  ingest_result_wakes: false,
+  direct_ankur_messages: false,
+  weekday_guard: false,
+} satisfies Partial<Config["runtime"]>;

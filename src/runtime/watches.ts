@@ -5,9 +5,10 @@
  * is dropped when the lane next runs, since a lane that woke for any reason is not waiting.
  */
 
-import { and, desc, eq, lte, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
+import { currentRequester } from "../db/messages.js";
 import { agentLogs, agents, messages, watches, type WatchRow } from "../db/schema.js";
 import type { NasClient } from "../nas/client.js";
 import { parseTaskAddress } from "../tools/helper/tasks.js";
@@ -78,8 +79,27 @@ export async function takeWatch(db: Db, agentId: string, target: string): Promis
 }
 
 /**
+ * questionDeadline is when the agent must answer Ankur's question: `minutes` after his latest
+ * message to it, or null when its current requester is not him or he has written nothing.
+ */
+async function questionDeadline(db: Db, agentId: string, minutes: number): Promise<Date | null> {
+  if ((await currentRequester(db, agentId)) !== null) {
+    return null;
+  }
+  const [latest] = await db
+    .select({ at: messages.createdAt })
+    .from(messages)
+    .where(and(isNull(messages.fromAgentId), eq(messages.toAgentId, agentId), eq(messages.kind, "message")))
+    .orderBy(desc(messages.seq))
+    .limit(1);
+  return latest === undefined ? null : new Date(latest.at.getTime() + minutes * 60_000);
+}
+
+/**
  * runWait records what the caller waits on, after checking that every target exists, and
- * returns the result the lane loop ends the run on (see step.ts).
+ * returns the result the lane loop ends the run on (see step.ts). When the job is Ankur's
+ * question the wait ends no later than `runtime.question_answer_minutes` after his message
+ * (at least a minute from now), so the answer goes out with what has come back.
  */
 export async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
@@ -93,12 +113,25 @@ export async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecR
       return fail(problem);
     }
   }
-  const dueAt = new Date(Date.now() + input.timeout_minutes * 60_000);
-  await ctx.db
+  const deadline = await questionDeadline(ctx.db, ctx.callerId, ctx.questionAnswerMinutes);
+  const untilDeadline = deadline === null ? Infinity : Math.max(1, Math.ceil((deadline.getTime() - Date.now()) / 60_000));
+  const minutes = Math.min(input.timeout_minutes, untilDeadline);
+  const dueAt = await recordWatch(ctx.db, ctx.callerId, targets, minutes);
+  return ok({
+    waiting_on: targets,
+    wakes_by: dueAt.toISOString(),
+    ...(minutes < input.timeout_minutes ? { note: `Shortened to ${minutes} minutes: Ankur's question is answered within ${ctx.questionAnswerMinutes} minutes of his message, with what has come back.` } : {}),
+  });
+}
+
+/** recordWatch records that `agentId`'s work lane waits on `targets` for `minutes`, replacing any wait it had, and returns when it falls due. */
+export async function recordWatch(db: Db, agentId: string, targets: string[], minutes: number): Promise<Date> {
+  const dueAt = new Date(Date.now() + minutes * 60_000);
+  await db
     .insert(watches)
-    .values({ agentId: ctx.callerId, targets, dueAt })
+    .values({ agentId, targets, dueAt })
     .onConflictDoUpdate({ target: watches.agentId, set: { targets, since: new Date(), dueAt } });
-  return ok({ waiting_on: targets, wakes_by: dueAt.toISOString() });
+  return dueAt;
 }
 
 /** targetProblem is why `target` cannot be waited on, or null when it can. */
@@ -133,8 +166,9 @@ export async function checkDueWatches(deps: WatchDeps, now = new Date()): Promis
   for (const watch of due) {
     const facts = await Promise.all(watch.targets.map((target) => factsAbout(deps, watch, target, now)));
     await clearWatch(deps.deliver.db, watch.agentId);
+    const forAnkur = (await currentRequester(deps.deliver.db, watch.agentId)) === null;
     await rewakeWork(deps.deliver, watch.agentId, {
-      content: `Your wait timed out after ${minutesBetween(watch.since, now)} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}`,
+      content: `Your wait timed out after ${minutesBetween(watch.since, now)} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}${forAnkur ? "\nAnswer Ankur now with what you have; name what is missing in one clause." : ""}`,
       notice: "wait",
       wokenBy: "wait timeout",
     });

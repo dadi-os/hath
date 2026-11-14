@@ -3,7 +3,7 @@ import { pendingOutbox } from "../db/outbox.js";
 import { HathError } from "../errors.js";
 import { fail, type ToolExecResult } from "../tools/shared.js";
 import type { DwarResponseBlock, DwarToolUseBlock } from "../types/domain.js";
-import { SEND_MESSAGE } from "../types/domain.js";
+import { SEND_MESSAGE, STEER_WORK } from "../types/domain.js";
 import { outboxTurn, unresolvedOutboxTurn } from "./outbox.js";
 import { alreadySentRefusal, callLane, laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
 import type { TranscriptStore } from "./transcript.js";
@@ -14,6 +14,10 @@ export type ProcessLoopDeps = StepDeps & {
   transcript: TranscriptStore;
   /** The status block for the next call (see status.ts). */
   status: () => Promise<string>;
+  /** `runtime.direct_agent_messages`: the lane messages an agent only to reply to it (see replyOnlyRefusal). */
+  directAgentMessages: boolean;
+  /** `runtime.implicit_yield`: a turn of only successful sends and steers ends the run (see endsOnItsOwn). */
+  implicitYield: boolean;
 };
 
 /**
@@ -30,12 +34,16 @@ export type ProcessLoopDeps = StepDeps & {
  * joined the wake since it last yielded, as when several wake-ups queue behind one run
  * that already handled them. A yield in a turn that wrote a message's worth of text and
  * sent nothing is answered once, since text reaches no one.
- * The only refusals on a send are race-safety checks (see sendRefusal and
- * alreadySentRefusal): a message from the recipient the lane has not read yet, and one
- * already sent to the recipient since the lane composed this. A turn whose send was
- * refused does not end on its yield: the lane gets a turn saying so and sends again, up
- * to REFUSED_SEND_RETRIES times a run, since a refused message that ends the run is a
- * message nobody sent.
+ * The refusals on a send are race-safety checks (see sendRefusal and alreadySentRefusal):
+ * a message from the recipient the lane has not read yet, and one already sent to the
+ * recipient since the lane composed this; under `directAgentMessages`, a message to an agent
+ * that is not a reply (see replyOnlyRefusal); and a routine's limits (see send.ts
+ * routineRefusal). A turn whose send was refused does not end on its yield: the lane gets a
+ * turn saying so and sends again, up to REFUSED_SEND_RETRIES times a run, since a refused
+ * message that ends the run is a message nobody sent.
+ * Under `implicitYield`, a turn whose calls were all successful sends and steers ends the run
+ * as a yield would, without a model call to yield, when nothing arrived and no message from
+ * work waits (see endsOnItsOwn).
  */
 export async function runProcessLoop(deps: ProcessLoopDeps): Promise<void> {
   let textReminded = false;
@@ -58,22 +66,26 @@ export async function runProcessLoop(deps: ProcessLoopDeps): Promise<void> {
 
     const sent = sends(response.content);
     let refused = false;
+    let failed = false;
     const gated = async (call: DwarToolUseBlock): Promise<ToolExecResult> => {
-      if (call.name !== SEND_MESSAGE) {
-        return deps.executeTool(call);
-      }
-      const to = recipientOf(call);
-      if (to === undefined) {
-        return deps.executeTool(call);
-      }
-      const refusal = sendRefusal(deps, to) ?? alreadySentRefusal(deps.transcript, deps.agentId, to, composedThrough);
+      const to = call.name === SEND_MESSAGE ? recipientOf(call) : undefined;
+      const refusal =
+        to === undefined
+          ? null
+          : (sendRefusal(deps, to) ?? alreadySentRefusal(deps.transcript, deps.agentId, to, composedThrough) ?? (await replyOnlyRefusal(deps, to)));
       const result = refusal === null ? await deps.executeTool(call) : fail(refusal);
       if (result.isError) {
-        refused = true;
+        failed = true;
+        refused ||= to !== undefined;
       }
       return result;
     };
-    if (await runStep({ ...deps, executeTool: gated }, response, () => false)) {
+    const yielded = await runStep({ ...deps, executeTool: gated }, response, () => false);
+    if (!yielded && !failed && (await endsOnItsOwn(deps, response.content, composedThrough))) {
+      deps.wake.markYield(deps.lane);
+      return;
+    }
+    if (yielded) {
       if (refused && refusedRetries < REFUSED_SEND_RETRIES) {
         refusedRetries += 1;
         deps.wake.push({ message: { role: "user", content: REFUSED_SEND_TURN }, only: "process" });
@@ -144,6 +156,47 @@ function sendRefusal(deps: ProcessLoopDeps, to: string | null): string | null {
     .transcriptFor(deps.agentId)
     .some((row) => row.seq > deps.wake.throughSeq && row.fromAgentId === to && row.toAgentId === deps.agentId);
   return unread ? `Not sent: ${to ?? "Ankur"} wrote to you after you composed this. Read the new message first, then send what still holds.` : null;
+}
+
+/** The refusal a process-lane message to an agent gets when it is not a reply. */
+export const NOT_A_REPLY =
+  "Not sent: asks to other agents go through your work lane (steer_work); you reply to agents that wrote to you.";
+
+/**
+ * replyOnlyRefusal is why the lane's message to agent `to` must not go out under
+ * `directAgentMessages`, or null when it may: it may answer `to`'s latest message when this
+ * agent has not messaged `to` since, or carry a message from work still waiting for `to`.
+ * Every new ask to an agent is the work lane's, so one ask never has two authors. A routine's
+ * trigger is not a message to answer.
+ */
+async function replyOnlyRefusal(deps: ProcessLoopDeps, to: string | null): Promise<string | null> {
+  if (!deps.directAgentMessages || to === null) {
+    return null;
+  }
+  if ((await pendingOutbox(deps.db, deps.agentId)).some((row) => row.toAgentId === to)) {
+    return null;
+  }
+  const line = deps.transcript
+    .transcriptFor(deps.agentId)
+    .filter((row) => row.kind !== "notice" && row.routine === undefined && (row.fromAgentId === to ? row.toAgentId === deps.agentId : row.fromAgentId === deps.agentId && row.toAgentId === to));
+  return line.at(-1)?.fromAgentId === to ? null : NOT_A_REPLY;
+}
+
+/**
+ * endsOnItsOwn is true when, under `implicitYield`, a turn ends the run without a model call
+ * to yield: every call in it was send_message or steer_work (each succeeded, which the caller
+ * checks), nothing addressed to the agent arrived after the turn was composed through
+ * `composedThrough`, and no message from work waits to be sent.
+ */
+async function endsOnItsOwn(deps: ProcessLoopDeps, content: DwarResponseBlock[], composedThrough: number): Promise<boolean> {
+  const calls = content.filter((block): block is DwarToolUseBlock => block.type === "tool_use");
+  if (!deps.implicitYield || calls.length === 0 || !calls.every((call) => call.name === SEND_MESSAGE || call.name === STEER_WORK)) {
+    return false;
+  }
+  if (deps.transcript.transcriptFor(deps.agentId).some((row) => row.seq > composedThrough && row.toAgentId === deps.agentId)) {
+    return false;
+  }
+  return (await pendingOutbox(deps.db, deps.agentId)).length === 0;
 }
 
 /** How many times a run answers a yield after a refused send before the yield stands. */

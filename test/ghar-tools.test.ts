@@ -11,6 +11,7 @@ import { findTool } from "../src/tools/registry.js";
 import { HathError } from "../src/errors.js";
 import type { GharDevice } from "../src/ghar/client.js";
 import {
+  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -20,10 +21,11 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
+  withRuntime,
   yieldTurn,
 } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 before(async () => {

@@ -8,9 +8,9 @@ import type {
   Lane,
 } from "../src/types/domain.js";
 import type { Db } from "../src/db/client.js";
-import { runProcessLoop, UNSENT_TEXT_TURN } from "../src/runtime/process.js";
+import { NOT_A_REPLY, runProcessLoop, UNSENT_TEXT_TURN } from "../src/runtime/process.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { LONG_SILENCE_TURN, runWorkLoop, TURNS_BEFORE_NUDGE, UNSENT_REPORT_TURN } from "../src/runtime/work.js";
+import { IMPLICIT_WAIT_MINUTES, LONG_SILENCE_TURN, runWorkLoop, TURNS_BEFORE_NUDGE, UNSENT_REPORT_TURN } from "../src/runtime/work.js";
 import type { StepDeps } from "../src/runtime/step.js";
 import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { CAPPED_TURN, CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
@@ -49,7 +49,7 @@ function stepDeps(
       transcripts: { work: [ASK], process: [ASK] },
       throughSeq: 1,
     }),
-    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, throughSeq: afterSeq }),
+    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
     call: async (request) => {
       requests.push(structuredClone(request));
       return model(request);
@@ -416,7 +416,7 @@ test("a queued process-lane run makes no model call until something it can see j
     arrivalsSince: (afterSeq: number) => {
       const next = arrival;
       arrival = null;
-      return next === null ? { turn: null, sent: null, throughSeq: afterSeq } : { turn: next, sent: null, throughSeq: afterSeq + 1 };
+      return next === null ? { turn: null, sent: null, sentByWork: null, throughSeq: afterSeq } : { turn: next, sent: null, sentByWork: null, throughSeq: afterSeq + 1 };
     },
     ...processGateDeps(),
   };
@@ -444,7 +444,13 @@ const noRows: unknown = {
 
 /** What the process lane reads: a db with no queued work-lane messages and nothing else a test send reaches, a status block, and an empty transcript. */
 function processGateDeps() {
-  return { db: { select: () => noRows } as unknown as Db, transcript: new TranscriptStore(), status: async () => "[Status] test block" };
+  return {
+    db: { select: () => noRows } as unknown as Db,
+    transcript: new TranscriptStore(),
+    status: async () => "[Status] test block",
+    directAgentMessages: false,
+    implicitYield: false,
+  };
 }
 
 /** Both lanes' transcripts frozen as one user message of `content`. */
@@ -771,4 +777,178 @@ test("a wait with a target ends the run like a yield, and a refused wait does no
     });
     assert.equal(requests.length, calls);
   }
+});
+
+/** A tool_use block with `input`. */
+function use(name: string, id: string, input: unknown): DwarResponseBlock {
+  return { type: "tool_use", id, name, input };
+}
+
+test("under implicit_yield a process turn of only sends and steers ends the run with no model call to yield; off, it takes one", async () => {
+  for (const implicitYield of [true, false]) {
+    const requests: DwarChatRequest[] = [];
+    let n = 0;
+    await runProcessLoop({
+      ...stepDeps("process", new Wake(roomyWakeLimits), () => {
+        n += 1;
+        return n === 1
+          ? turn("anthropic", [use("send_message", "s1", { to: "ankur", content: "CSE 300: quiz at 11:59 PM" }), use("steer_work", "w1", { instruction: "update due.md" })])
+          : turn("anthropic", [call("yield", `y${n}`)]);
+      }, requests),
+      ...processGateDeps(),
+      implicitYield,
+    });
+    assert.equal(requests.length, implicitYield ? 1 : 2, `implicitYield ${implicitYield}`);
+  }
+});
+
+test("an implicit process yield waits for the next call when a message arrived while the turn was composed", async () => {
+  const transcript = new TranscriptStore();
+  transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "what is due?" });
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runProcessLoop({
+    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      if (n === 1) {
+        transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "and tomorrow?" });
+        return turn("anthropic", [use("steer_work", "w1", { instruction: "Ankur asks what is due" })]);
+      }
+      return turn("anthropic", [call("yield", `y${n}`)]);
+    }, requests),
+    ...processGateDeps(),
+    transcript,
+    implicitYield: true,
+  });
+  assert.equal(requests.length, 2);
+});
+
+test("under direct_agent_messages the process lane may only reply to an agent; a new ask to one is refused and not run", async () => {
+  const transcript = new TranscriptStore();
+  transcript.append({ fromAgentId: "cse-300", toAgentId: "agent-1", content: "is Module 8 still open?" });
+  const ran: string[] = [];
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runProcessLoop({
+    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return n === 1
+        ? turn("anthropic", [
+            use("send_message", "reply", { to: "cse-300", content: "Yes, until 11:59 PM." }),
+            use("send_message", "ask", { to: "cse-335", content: "What is due tonight?" }),
+          ])
+        : turn("anthropic", [call("yield", `y${n}`)]);
+    }, requests),
+    executeTool: async (block) => {
+      ran.push(block.id);
+      return { content: "{}", isError: false, audit: {} };
+    },
+    ...processGateDeps(),
+    transcript,
+    directAgentMessages: true,
+  });
+  assert.deepEqual(ran, ["reply", "y2"]);
+  assert.ok(JSON.stringify(requests[1]!.messages).includes(NOT_A_REPLY));
+});
+
+test("under implicit_yield a work turn of only queue_message ends the run, waiting on the agents whose reply it expects", async () => {
+  const waits: Array<{ targets: string[]; minutes: number }> = [];
+  const requests: DwarChatRequest[] = [];
+  await runWorkLoop({
+    ...workLoopHooks,
+    ...stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [
+      use("queue_message", "q1", { to: "cse-300", content: "due tonight?", expects_reply: true }),
+      use("queue_message", "q2", { to: "cse-335", content: "due tonight?", expects_reply: true }),
+      use("queue_message", "q3", { to: "ankur", content: "asking the classes" }),
+    ]), requests),
+    executeTool: async (block) => {
+      const input = block.input as { to: string; expects_reply?: boolean };
+      const to = input.to === "ankur" ? null : input.to;
+      return { content: JSON.stringify({ sent: 1, to_agent_id: to, expects_reply: input.expects_reply === true && to !== null }), isError: false, audit: {} };
+    },
+    steer: new SteerQueue(),
+    implicitYield: true,
+    wait: async (targets, minutes) => {
+      waits.push({ targets, minutes });
+    },
+  });
+  assert.equal(requests.length, 1);
+  assert.deepEqual(waits, [{ targets: ["cse-300", "cse-335"], minutes: IMPLICIT_WAIT_MINUTES }]);
+});
+
+test("a work turn of only queue_message keeps the run going after a helper task was started in the wake, or with implicit_yield off", async () => {
+  for (const [implicitYield, steered] of [[true, true], [false, false]] as const) {
+    const requests: DwarChatRequest[] = [];
+    let n = 0;
+    await runWorkLoop({
+      ...workLoopHooks,
+      ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+        n += 1;
+        if (steered && n === 1) {
+          return turn("anthropic", [use("steer_browser", "b1", { message: "read D2L" })]);
+        }
+        return n <= (steered ? 2 : 1)
+          ? turn("anthropic", [use("queue_message", `q${n}`, { to: "ankur", content: "reading D2L" })])
+          : turn("anthropic", [call("yield", `y${n}`)]);
+      }, requests),
+      executeTool: async (block) => ({ content: JSON.stringify({ queued: 1, to_agent_id: null, expects_reply: false, id: block.id }), isError: false, audit: {} }),
+      steer: new SteerQueue(),
+      implicitYield,
+    });
+    assert.equal(requests.length, steered ? 3 : 2, `implicitYield ${implicitYield}`);
+  }
+});
+
+test("under implicit_yield a result message with the saves that record it ends the run; a progress line or a failed save does not", async () => {
+  const cases: Array<{ name: string; calls: Array<[string, unknown]>; failing?: string; ends: boolean }> = [
+    { name: "result and saves", calls: [["write_file", {}], ["ingest_memory", {}], ["schedule_message", {}], ["queue_message", { to: "ankur", content: "Done.", status: "done" }]], ends: true },
+    { name: "progress line", calls: [["queue_message", { to: "ankur", content: "Reading.", status: "running" }]], ends: false },
+    { name: "failed save", calls: [["edit_file", {}], ["queue_message", { to: "ankur", content: "Done." }]], failing: "edit_file", ends: false },
+    { name: "saves alone", calls: [["write_file", {}]], ends: false },
+    { name: "a read beside the message", calls: [["read_file", {}], ["queue_message", { to: "ankur", content: "Done." }]], ends: false },
+  ];
+  for (const { name, calls, failing, ends } of cases) {
+    const requests: DwarChatRequest[] = [];
+    let n = 0;
+    await runWorkLoop({
+      ...workLoopHooks,
+      ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+        n += 1;
+        return n === 1 ? turn("anthropic", calls.map(([tool, input], i) => use(tool, `c${i}`, input))) : turn("anthropic", [call("yield", `y${n}`)]);
+      }, requests),
+      executeTool: async (block) => ({
+        content: JSON.stringify({ sent: 1, to_agent_id: null, expects_reply: false }),
+        isError: block.name === failing,
+        audit: {},
+      }),
+      steer: new SteerQueue(),
+      implicitYield: true,
+    });
+    assert.equal(requests.length, ends ? 1 : 2, name);
+  }
+});
+
+test("a pickup hath sent for the agent while a send was composed does not hold that send back", async () => {
+  const transcript = new TranscriptStore();
+  transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "what is due tonight?" });
+  const ran: string[] = [];
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runProcessLoop({
+    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
+      n += 1;
+      if (n === 1) {
+        transcript.append({ fromAgentId: "agent-1", toAgentId: null, content: "Working on it." }).sentBy = "hath";
+        return turn("anthropic", [use("send_message", "answer", { to: "ankur", content: "CSE 300: four items at 11:59 PM." })]);
+      }
+      return turn("anthropic", [call("yield", `y${n}`)]);
+    }, requests),
+    executeTool: async (block) => {
+      ran.push(block.id);
+      return { content: "{}", isError: false, audit: {} };
+    },
+    ...processGateDeps(),
+    transcript,
+  });
+  assert.deepEqual(ran, ["answer", "y2"]);
 });

@@ -1,20 +1,22 @@
 /**
- * The outbox: how the work lane gets something said. The work lane never messages anyone
- * itself; it calls `queue_message`, which queues the content for its process lane. The process
- * lane sends it with `send_message`, merging messages to one recipient and keeping them consistent
- * with what was already said, and may reword one for Ankur, but never drops one: every row
- * ends in a recorded state (see db/outbox.ts), so none is lost silently.
+ * The outbox: how the work lane gets something said, with `queue_message`. A message to an agent
+ * goes out at once under `runtime.direct_agent_messages`, and one to Ankur under
+ * `runtime.direct_ankur_messages` (see runMessage). Every other is queued
+ * for the process lane, which sends it with `send_message`, merging messages to one recipient and
+ * keeping them consistent with what was already said, and may reword one for Ankur, but never
+ * drops one: every row ends in a recorded state (see db/outbox.ts), so none is lost silently.
  */
 
 import { z } from "zod";
 import { AGENT_ID_PATTERN, agentIdSchema } from "../agent-id.js";
-import { queueOutbox } from "../db/outbox.js";
+import { insertDeliveredOutbox, queueOutbox, settleDeliveredOutbox } from "../db/outbox.js";
 import { currentRequester } from "../db/messages.js";
 import type { OutboxRow } from "../db/schema.js";
 import { fail, failWithoutAgentIdentity, ok, requireActiveAgent, type ToolContext, type ToolExecResult } from "../tools/shared.js";
-import type { DwarTool } from "../types/domain.js";
-import { QUEUE_MESSAGE } from "../types/domain.js";
+import type { DwarTool, MessageStatus } from "../types/domain.js";
+import { MESSAGE_STATUSES, QUEUE_MESSAGE } from "../types/domain.js";
 import { MAX_ATTACHMENTS, resolveAttachments } from "./attachments.js";
+import { deliverFrom, oversizedNote, routineRefusal, runningRefusal, weekdayRefusal } from "./send.js";
 
 const messageInput = z
   .object({
@@ -22,6 +24,7 @@ const messageInput = z
     content: z.string().min(1),
     attachments: z.array(z.string().min(1)).max(MAX_ATTACHMENTS).optional(),
     expects_reply: z.boolean().optional(),
+    status: z.enum(MESSAGE_STATUSES).optional(),
   })
   .strict();
 
@@ -32,7 +35,7 @@ export const OUTBOX_LABEL = "[Messages from work]";
 export const messageTool: DwarTool = {
   name: QUEUE_MESSAGE,
   description:
-    'Give your process lane something to say: a result, a question, an update, or a request for another agent (to: "ankur", "requester" for whoever gave you this job, or an agent id). You never message anyone yourself; your process lane sends it, may merge it with other messages to the same recipient and keep it consistent with what was already said, and may reword it for Ankur, but it never drops one. The call returns at once and you keep working. attachments are file paths on the box (copied as they are now) or attachment ids. Set expects_reply when you need the recipient\'s answer: their reply wakes you, not your process lane. After sending a question or request, yield or wait; the reply wakes you.',
+    'Say something to Ankur, to whoever gave you this job, or to another agent (to: "ankur", "requester", or an agent id): a result, a wall, a question, or a request. It goes out at once, as you wrote it, in the voice of this agent (to Ankur too, unless hath relays it through your process lane, which may merge and reword it but never drops it). Send one message per recipient with everything in it. status records the job (running, needs_input, blocked or done); with pickups on, running is refused. The call returns at once. attachments are file paths on the box (copied as they are now) or attachment ids. Set expects_reply on a message to an agent when you need its answer: the reply wakes you, not your process lane; it does nothing on a message to Ankur, whose next message always reaches your process lane. A turn of nothing but queue_message calls can end your run (a reply you expect still wakes you), so make every other call you need before it or in the same turn.',
   input_schema: {
     type: "object",
     properties: {
@@ -43,7 +46,8 @@ export const messageTool: DwarTool = {
         items: { type: "string" },
         description: `Absolute file paths or attachment ids to send with it (at most ${MAX_ATTACHMENTS})`,
       },
-      expects_reply: { type: "boolean", description: "True when you need the recipient's answer to continue; their reply wakes you" },
+      expects_reply: { type: "boolean", description: "True when you need an agent's answer to continue; its reply wakes you. Ignored for Ankur" },
+      status: { type: "string", enum: [...MESSAGE_STATUSES], description: "Optional job status this message records" },
     },
     required: ["to", "content"],
     additionalProperties: false,
@@ -65,7 +69,15 @@ async function recipientOf(ctx: ToolContext, caller: string, to: string): Promis
   return agentIdSchema.parse(name);
 }
 
-/** runMessage queues the work lane's message and wakes the process lane to send it. */
+/**
+ * runMessage takes the work lane's message. One to an agent, under `runtime.direct_agent_messages`,
+ * or to Ankur, under `runtime.direct_ankur_messages`, is delivered at once, recorded sent, and
+ * never relayed by the process lane: a second author for a message is how one ask went out twice.
+ * Any other is queued, and the process lane is woken to send it. A message with status running,
+ * or giving a date without its weekday, is refused first (see send.ts). A routine wake's message is
+ * held to what a routine may say first (see send.ts routineRefusal). `expects_reply` holds only
+ * for an agent: Ankur's next message always reaches the process lane.
+ */
 export async function runMessage(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
@@ -82,16 +94,75 @@ export async function runMessage(ctx: ToolContext, raw: unknown): Promise<ToolEx
   if (to !== null) {
     await requireActiveAgent(ctx.db, to);
   }
+  const refused = runningRefusal(ctx, to, input.status) ?? weekdayRefusal(ctx, to, input.content);
+  if (refused !== null) {
+    return fail(refused);
+  }
+  const direct = to === null ? ctx.directAnkurMessages : ctx.directAgentMessages;
+  const silent = await routineRefusal(ctx, caller, to, direct ? input.status : undefined, !direct);
+  if (silent !== null) {
+    return fail(silent);
+  }
   const attachmentIds = await resolveAttachments(ctx, caller, input.attachments ?? []);
+  if (direct) {
+    return deliverDirect(ctx, caller, to, {
+      content: input.content,
+      attachmentIds,
+      expectsReply: input.expects_reply === true && to !== null,
+      ...(input.status !== undefined ? { status: input.status } : {}),
+    });
+  }
   const row = await queueOutbox(ctx.db, {
     agentId: caller,
     to,
     content: input.content,
     attachmentIds,
-    expectsReply: input.expects_reply === true,
+    expectsReply: input.expects_reply === true && to !== null,
   });
   ctx.enqueueProcess(caller, "a message from your work lane to send");
   return ok({ queued: row.id, to_agent_id: to, expects_reply: row.expectsReply });
+}
+
+/**
+ * deliverDirect sends the work lane's message to `to` (null is Ankur) now, as `caller`, and
+ * records it as a sent outbox row; a delivery that throws marks the row failed and rethrows.
+ */
+async function deliverDirect(
+  ctx: ToolContext,
+  caller: string,
+  to: string | null,
+  args: { content: string; attachmentIds: string[]; expectsReply: boolean; status?: MessageStatus },
+): Promise<ToolExecResult> {
+  const record = await insertDeliveredOutbox(ctx.db, {
+    agentId: caller,
+    to,
+    content: args.content,
+    attachmentIds: args.attachmentIds,
+    expectsReply: args.expectsReply,
+  });
+  let delivered: Awaited<ReturnType<typeof deliverFrom>>;
+  try {
+    delivered = await deliverFrom(ctx, caller, to, {
+      content: args.content,
+      attachmentIds: args.attachmentIds,
+      sentBy: "work",
+      ...(args.status !== undefined ? { status: args.status } : {}),
+    });
+  } catch (err) {
+    await settleDeliveredOutbox(ctx.db, record.id, { failed: err instanceof Error ? err.message : String(err) });
+    throw err;
+  }
+  const { row, oversized } = delivered;
+  await settleDeliveredOutbox(ctx.db, record.id, { messageId: row.id! });
+  return ok(
+    {
+      sent: row.seq,
+      to_agent_id: to,
+      expects_reply: args.expectsReply,
+      ...(oversized ? { note: oversizedNote(args.content.length) } : {}),
+    },
+    { message_id: row.id },
+  );
 }
 
 /** failedMessageSteer is what the work lane reads when its process lane failed before sending a message. */

@@ -4,9 +4,9 @@ import { after, before, test } from "node:test";
 import { migrate } from "../src/db/migrate.js";
 import { scheduledMessages, type ScheduledMessageRow } from "../src/db/schema.js";
 import { toScheduledMessageRecord } from "../src/serialize.js";
-import { insertAgent, openTestDb, resetRuntime, testConfig } from "./helpers.js";
+import { FLAGS_OFF, insertAgent, openTestDb, resetRuntime, testConfig, withRuntime } from "./helpers.js";
 
-const config = testConfig();
+const config = withRuntime(testConfig(), FLAGS_OFF);
 const handle = await openTestDb();
 
 /** Drizzle wraps driver errors; match against the outer message and its cause. */
