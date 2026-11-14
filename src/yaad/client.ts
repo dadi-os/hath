@@ -16,6 +16,8 @@ const recallNodeSchema = z
     body: z.string().nullable(),
     occurred_at: z.string().nullable(),
     expires_at: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
     detail: z.unknown().nullable(),
     hops: z.number().int(),
   })

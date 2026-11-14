@@ -11,7 +11,9 @@ const taskNode = {
   body: "Submit on Gradescope.",
   occurred_at: null,
   expires_at: null,
-  detail: { opens_on: "2026-11-12", closes_at: "2026-11-26T04:59:00.000Z", done_at: null },
+  created_at: "2026-11-10T15:00:00.000Z",
+  updated_at: "2026-11-11T15:00:00.000Z",
+  detail: { opens_on: "2026-11-12", closes_at: "2026-11-26T04:59:00.000Z", done_at: null, verified_at: "2026-11-12T15:00:00.000Z" },
   hops: 0,
 };
 
@@ -24,6 +26,9 @@ test("recall_memory sends relevant_on to Yaad and returns the tasks with their w
   const nodes = JSON.parse(result.content).nodes;
   assert.equal(nodes[0].kind, "task");
   assert.deepEqual(nodes[0].detail, taskNode.detail);
+  assert.equal(nodes[0].detail.verified_at, "2026-11-12T15:00:00.000Z");
+  assert.equal(nodes[0].created_at, taskNode.created_at);
+  assert.equal(nodes[0].updated_at, taskNode.updated_at);
 });
 
 test("recall_memory refuses a status or date Yaad no longer accepts before calling it", async () => {
