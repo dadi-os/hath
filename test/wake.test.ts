@@ -928,6 +928,43 @@ test("under implicit_yield a result message with the saves that record it ends t
   }
 });
 
+test("under implicit_steer_end a work turn of steers, messages and ingests ends the run, waiting on the tasks it steered; a read beside them, a failed call, or the flag off does not end it", async () => {
+  const cases: Array<{ name: string; calls: Array<[string, unknown]>; failing?: string; implicitSteerEnd?: boolean; ends: boolean; waits: string[] }> = [
+    { name: "a steer", calls: [["steer_browser", { message: "read D2L" }]], ends: true, waits: ["task/browser/3"] },
+    { name: "two steers and a message", calls: [["steer_browser", { message: "a" }], ["steer_terminal", { message: "b" }], ["queue_message", { to: "ankur", content: "Reading." }]], ends: true, waits: ["task/browser/3"] },
+    { name: "an ingest alone", calls: [["ingest_memory", { text: "x" }]], ends: true, waits: [] },
+    { name: "a read beside a steer", calls: [["read_file", {}], ["steer_browser", { message: "read D2L" }]], ends: false, waits: [] },
+    { name: "a failed steer", calls: [["steer_browser", { message: "read D2L" }]], failing: "steer_browser", ends: false, waits: [] },
+    { name: "a progress line", calls: [["steer_browser", { message: "a" }], ["queue_message", { to: "ankur", content: "Reading.", status: "running" }]], ends: false, waits: [] },
+    { name: "flag off", calls: [["steer_browser", { message: "read D2L" }]], implicitSteerEnd: false, ends: false, waits: [] },
+  ];
+  for (const { name, calls, failing, implicitSteerEnd = true, ends, waits: expected } of cases) {
+    const requests: DwarChatRequest[] = [];
+    const waits: string[][] = [];
+    let n = 0;
+    await runWorkLoop({
+      ...workLoopHooks,
+      ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+        n += 1;
+        return n === 1 ? turn("anthropic", calls.map(([tool, input], i) => use(tool, `c${i}`, input))) : turn("anthropic", [call("yield", `y${n}`)]);
+      }, requests),
+      executeTool: async (block) => ({
+        content: JSON.stringify({ id: "task/browser/3", to_agent_id: null, expects_reply: false }),
+        isError: block.name === failing,
+        audit: {},
+      }),
+      steer: new SteerQueue(),
+      implicitYield: true,
+      implicitSteerEnd,
+      wait: async (targets) => {
+        waits.push(targets);
+      },
+    });
+    assert.equal(requests.length, ends ? 1 : 2, name);
+    assert.deepEqual(waits, expected.length === 0 ? [] : [expected], name);
+  }
+});
+
 test("a pickup hath sent for the agent while a send was composed does not hold that send back", async () => {
   const transcript = new TranscriptStore();
   transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "what is due tonight?" });

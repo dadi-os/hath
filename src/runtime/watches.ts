@@ -9,6 +9,7 @@ import { and, desc, eq, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { currentRequester } from "../db/messages.js";
+import { openJob } from "./jobs.js";
 import { agentLogs, agents, messages, watches, type WatchRow } from "../db/schema.js";
 import type { NasClient } from "../nas/client.js";
 import { parseTaskAddress } from "../tools/helper/tasks.js";
@@ -79,10 +80,24 @@ export async function takeWatch(db: Db, agentId: string, target: string): Promis
 }
 
 /**
- * questionDeadline is when the agent must answer Ankur's question: `minutes` after his latest
- * message to it, or null when its current requester is not him or he has written nothing.
+ * questionDeadline is when the agent must answer Ankur's question, or null when it has no
+ * such deadline. Under `runtime.job_requester` (`byJob`) the question is the agent's open job
+ * from Ankur, and the deadline is `minutes` after his opening message; any other requester, or
+ * no open job, has none. Otherwise it is `minutes` after his latest message to the agent while
+ * he is its current requester.
  */
-async function questionDeadline(db: Db, agentId: string, minutes: number): Promise<Date | null> {
+async function questionDeadline(db: Db, agentId: string, minutes: number, byJob: boolean): Promise<Date | null> {
+  if (byJob) {
+    const job = await openJob(db, null, agentId);
+    if (job === undefined) {
+      return null;
+    }
+    const [opening] = await db.select({ at: messages.createdAt }).from(messages).where(eq(messages.seq, job.openedSeq));
+    if (opening === undefined) {
+      throw new Error(`job ${job.id} opened at message ${job.openedSeq}, which does not exist`);
+    }
+    return new Date(opening.at.getTime() + minutes * 60_000);
+  }
   if ((await currentRequester(db, agentId)) !== null) {
     return null;
   }
@@ -93,6 +108,22 @@ async function questionDeadline(db: Db, agentId: string, minutes: number): Promi
     .orderBy(desc(messages.seq))
     .limit(1);
   return latest === undefined ? null : new Date(latest.at.getTime() + minutes * 60_000);
+}
+
+/**
+ * answerCap is `requested` minutes of waiting, cut to the caller's question deadline (at least
+ * a minute from now) when its job is Ankur's question. A routine has no deadline, and under
+ * `runtime.job_requester` neither has a job whose deadline passed before this wait began.
+ */
+export async function answerCap(ctx: ToolContext, requested: number): Promise<number> {
+  if (ctx.callerId === null || (ctx.jobRequester && ctx.routineSince !== null)) {
+    return requested;
+  }
+  const deadline = await questionDeadline(ctx.db, ctx.callerId, ctx.questionAnswerMinutes, ctx.jobRequester);
+  if (deadline === null || (ctx.jobRequester && deadline.getTime() <= Date.now())) {
+    return requested;
+  }
+  return Math.min(requested, Math.max(1, Math.ceil((deadline.getTime() - Date.now()) / 60_000)));
 }
 
 /**
@@ -113,9 +144,7 @@ export async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecR
       return fail(problem);
     }
   }
-  const deadline = await questionDeadline(ctx.db, ctx.callerId, ctx.questionAnswerMinutes);
-  const untilDeadline = deadline === null ? Infinity : Math.max(1, Math.ceil((deadline.getTime() - Date.now()) / 60_000));
-  const minutes = Math.min(input.timeout_minutes, untilDeadline);
+  const minutes = await answerCap(ctx, input.timeout_minutes);
   const dueAt = await recordWatch(ctx.db, ctx.callerId, targets, minutes);
   return ok({
     waiting_on: targets,
@@ -136,6 +165,14 @@ export async function recordWatch(db: Db, agentId: string, targets: string[], mi
 
 /** targetProblem is why `target` cannot be waited on, or null when it can. */
 async function targetProblem(ctx: ToolContext, target: string): Promise<string | null> {
+  if (ctx.waitTargetGuard) {
+    if (target === ctx.callerId) {
+      return "you cannot wait on yourself: with nothing to wait on, call yield";
+    }
+    if (target.startsWith("toolu_")) {
+      return `${target} is a tool call: a tool returns its result in the call, so there is nothing to wait on`;
+    }
+  }
   if (target.startsWith("task/")) {
     const address = parseTaskAddress(target);
     if (address === null) {
@@ -155,6 +192,10 @@ async function targetProblem(ctx: ToolContext, target: string): Promise<string |
 export type WatchDeps = {
   deliver: DeliverDeps;
   nas: NasClient;
+  /** `runtime.job_requester`. */
+  jobRequester: boolean;
+  /** `runtime.question_answer_minutes`. */
+  questionAnswerMinutes: number;
 };
 
 /**
@@ -166,13 +207,21 @@ export async function checkDueWatches(deps: WatchDeps, now = new Date()): Promis
   for (const watch of due) {
     const facts = await Promise.all(watch.targets.map((target) => factsAbout(deps, watch, target, now)));
     await clearWatch(deps.deliver.db, watch.agentId);
-    const forAnkur = (await currentRequester(deps.deliver.db, watch.agentId)) === null;
+    const forAnkur = deps.jobRequester
+      ? await askedByAnkur(deps, watch)
+      : (await currentRequester(deps.deliver.db, watch.agentId)) === null;
     await rewakeWork(deps.deliver, watch.agentId, {
       content: `Your wait timed out after ${minutesBetween(watch.since, now)} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}${forAnkur ? "\nAnswer Ankur now with what you have; name what is missing in one clause." : ""}`,
       notice: "wait",
       wokenBy: "wait timeout",
     });
   }
+}
+
+/** askedByAnkur is true when `watch` began while the agent's open job from Ankur was inside its answer deadline. */
+async function askedByAnkur(deps: WatchDeps, watch: WatchRow): Promise<boolean> {
+  const deadline = await questionDeadline(deps.deliver.db, watch.agentId, deps.questionAnswerMinutes, true);
+  return deadline !== null && watch.since <= deadline;
 }
 
 /** factsAbout is what is known of one thing a lane waited on. */

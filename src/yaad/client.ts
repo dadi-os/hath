@@ -75,6 +75,12 @@ export type IngestRequest = {
   source: "agent";
   /** Writing agent, recorded on every node the ingest creates. */
   agent_id: string;
+  /**
+   * Ankur's own words: the text of the message that opened the writing agent's open job, sent
+   * only when that job is his (`runtime.ingest_source_text`). Optional in the contract; Yaad
+   * reads it as the source of anything Ankur stated and checks `text` against it.
+   */
+  source_text?: string;
 };
 
 /** Yaad surface used by agent tools. */

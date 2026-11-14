@@ -3,11 +3,15 @@
  * `ingest_memory` writes it stamped with the calling agent.
  */
 
+import { eq } from "drizzle-orm";
 import { z } from "zod";
+import type { Db } from "../db/client.js";
+import { messages } from "../db/schema.js";
 import { yaadToolCall } from "../tools/yaad/call.js";
 import { failWithoutAgentIdentity, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarTool } from "../types/domain.js";
 import { INGEST_MEMORY, RECALL_MEMORY } from "../types/domain.js";
+import { openJob } from "./jobs.js";
 
 const nodeKind = z.enum(["person", "memory", "plan", "place", "task"]);
 const planStatus = z.enum(["tentative", "confirmed", "cancelled"]);
@@ -35,8 +39,8 @@ const ingestMemoryInput = z
   .strict();
 
 /**
- * ingest_memory runs in the background (see async.ts): Yaad's ingest took 47 seconds at the
- * median and 11 minutes at worst (370 calls, 2026-10-22 to 29).
+ * ingest_memory runs in the background (see async.ts) unless `runtime.sync_ingest` is on:
+ * Yaad's ingest took 47 seconds at the median and 11 minutes at worst (370 calls, 2026-10-22 to 29).
  */
 export const INGEST_MEMORY_ASYNC = true;
 
@@ -78,7 +82,7 @@ export const recallMemoryTool: DwarTool = {
 export const ingestMemoryTool: DwarTool = {
   name: INGEST_MEMORY,
   description:
-    "Store something you learned about Ankur's world — a fact, a preference, an event, a deadline, a change — in memory yourself when you learned it first-hand (from Ankur, a page you read, a task you ran). A fact a teammate sends you is already stored by that teammate: do not store it again. Write it in plain language the way you would tell a person. Yaad extracts the people, places, events, tasks, and links and reconciles them with what is already stored, but send only what is new or changed since you last stored it: re-sending a whole report can still duplicate what is there, so recall_memory first when unsure. Keep each call to one topic and a handful of facts. Memory keeps two kinds of dated things. An event has a clock time Ankur is at (an interview, an appointment, an exam at its hour): give its date, start, end, and time zone. A task is something to get done with no time to be at (homework, a form, an application): give when it is due, with the time and zone, and when it becomes relevant, which is its release or open date or the lead the source states (\"posted today\", \"released one week before it is due\", \"start in January\"). Yaad decides each task's window from your text alone and nothing fills one in later, so tell it the dates it needs. Say \"time not stated\" when the source gives none rather than guessing one; a moved deadline keeps its old time unless a new one is given, so say the time it had. A venue is where, never whether. \"(Gradescope)\", \"on D2L\", \"submit via CLion\", \"in person\" say where something is handed in or happens. They never mean it was submitted or done. Say an item was submitted, paid, or done only when Ankur did it or an agent did it for him at his yes, on that item (\"Ankur says he submitted CSE 431 HW3\", \"Ankur's Semgrep application was submitted Nov 13 at his yes\"; add a time only if given). What a page, portal, gradebook or file listing shows (an upload, a `Submitted` badge, a score) is a record an agent can read again, never a done mark. A class that meets on a schedule: give the days, times, building and room, first and last day, and days off, and Yaad stores one session per meeting; change sessions by naming the course and the dates (\"Thursday Nov 19's CSE 380 lecture is cancelled\", \"from Dec 1 CSE 380 meets 10:30-11:50\", \"Ankur missed today's CSE 431 lecture\"). Say whether Ankur is going to something only when he said so (\"Ankur is not going to the talk\"); a declined event stays on his timeline. Say an event is cancelled only when it was called off. Time set aside is stored only when Ankur chose it (\"Ankur will take the IBM assessment Sat Oct 31, 2:20-3:50 PM; the link still expires Oct 31 at 11:59 PM\"); do not lay out his day with meals, study blocks, or routines. To correct something stored earlier, say so outright: \"Correction: <old claim> is wrong; <new claim>.\" A fact you simply leave out is not removed. A task you checked and found unchanged: say it is still true, and Yaad records it as verified today. Do not store progress or status that is about to change — what you checked, what is not posted yet, what is still to do — and label a snapshot you do store (a gradebook) \"as of <date>\"; never store that something does not exist (\"no quiz this week\"), a score on one item, or a submit time on its own. Give a place its full street address and the room (\"Engineering Building room 1345, 428 S Shaw Ln, East Lansing, MI 48824\"). What happened in his world is stored: an application submitted, an offer, a status change, hours entered, each with its date. Do not store how you did a task, how a site, login, tool, or repo behaves, rules for how agents should work (those belong in the owning agent's charter), approvals or relays, or an agent's own working steps and wake progress: those stay in your transcript and fade. Never store a password, code, or other secret. Pass participant_ids when you already have the people's node ids from recall_memory.",
+    "Store something you learned about Ankur's world — a fact, a preference, an event, a deadline, a change — in memory yourself when you learned it first-hand (from Ankur, a page you read, a task you ran). A fact a teammate sends you is already stored by that teammate: do not store it again. Write it in plain language the way you would tell a person. Yaad extracts the people, places, events, tasks, and links and reconciles them with what is already stored, but send only what is new or changed since you last stored it: re-sending a whole report can still duplicate what is there, so recall_memory first when unsure. Keep each call to one topic and a handful of facts. Memory keeps two kinds of dated things. An event has a clock time Ankur is at (an interview, an appointment, an exam at its hour): give its date, start, end, and time zone. A task is something to get done with no time to be at (homework, a form, an application): give when it is due, with the time and zone, and when it becomes relevant, which is its release or open date or the lead the source states (\"posted today\", \"released one week before it is due\", \"start in January\"). Yaad decides each task's window from your text alone and nothing fills one in later, so tell it the dates it needs. Say \"time not stated\" when the source gives none rather than guessing one; a moved deadline keeps its old time unless a new one is given, so say the time it had. A venue is where, never whether. \"(Gradescope)\", \"on D2L\", \"submit via CLion\", \"in person\" say where something is handed in or happens. They never mean it was submitted or done. Say an item was submitted, paid, or done only when Ankur did it or an agent did it for him at his yes, on that item (\"Ankur says he submitted CSE 431 HW3\", \"Ankur's Semgrep application was submitted Nov 13 at his yes\"; add a time only if given). What a page, portal, gradebook or file listing shows (an upload, a `Submitted` badge, a score) is a record an agent can read again, never a done mark. A class that meets on a schedule: give the days, times, building and room, first and last day, and days off, and Yaad stores one session per meeting; change sessions by naming the course and the dates (\"Thursday Nov 19's CSE 380 lecture is cancelled\", \"from Dec 1 CSE 380 meets 10:30-11:50\", \"Ankur missed today's CSE 431 lecture\"). Say whether Ankur is going to something only when he said so (\"Ankur is not going to the talk\"); a declined event stays on his timeline. Say an event is cancelled only when it was called off. Time set aside is stored only when Ankur chose it (\"Ankur will take the IBM assessment Sat Oct 31, 2:20-3:50 PM; the link still expires Oct 31 at 11:59 PM\"); do not lay out his day with meals, study blocks, or routines. To correct something stored earlier, say so outright: \"Correction: <old claim> is wrong; <new claim>.\" A fact you simply leave out is not removed. A task you checked and found unchanged: say it is still true, and Yaad records it as verified today. Do not store progress or status that is about to change — what you checked, what is not posted yet, what is still to do — and label a snapshot you do store (a gradebook) \"as of <date>\"; never store that something does not exist (\"no quiz this week\"), a score on one item, or a submit time on its own. Give a place its full street address and the room (\"Engineering Building room 1345, 428 S Shaw Ln, East Lansing, MI 48824\"). What happened in his world is stored: an application submitted, an offer, a status change, hours entered, each with its date. Do not store how you did a task, how a site, login, tool, or repo behaves, rules for how agents should work (those belong in the owning agent's charter), approvals or relays, or an agent's own working steps and wake progress: those stay in your transcript and fade. Never store a password, code, or other secret. Pass participant_ids when you already have the people's node ids from recall_memory. The call returns what was stored: check it, and fix a value Ankur did not state (a done mark, a time) with one more ingest before you reply.",
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -124,13 +128,34 @@ export async function runRecallMemory(ctx: ToolContext, raw: unknown): Promise<T
   );
 }
 
-/** Run `ingest_memory` against Yaad `/ingest`, stamped with the calling agent. */
+/**
+ * ankurJobText is the text of the message that opened `agentId`'s open job from Ankur, or null
+ * when it has none.
+ */
+async function ankurJobText(db: Db, agentId: string): Promise<string | null> {
+  const job = await openJob(db, null, agentId);
+  if (job === undefined) {
+    return null;
+  }
+  const [opening] = await db.select({ content: messages.content }).from(messages).where(eq(messages.seq, job.openedSeq));
+  if (opening === undefined) {
+    throw new Error(`job ${job.id} opened at message ${job.openedSeq}, which does not exist`);
+  }
+  return opening.content;
+}
+
+/**
+ * Run `ingest_memory` against Yaad `/ingest`, stamped with the calling agent. Under
+ * `runtime.ingest_source_text`, and outside a routine (whose open job is not its own), the
+ * request also carries the text of Ankur's message that opened the agent's open job from him.
+ */
 export async function runIngestMemory(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   const agentId = ctx.callerId;
   if (agentId === null) {
     return failWithoutAgentIdentity();
   }
   const input = ingestMemoryInput.parse(raw);
+  const sourceText = ctx.ingestSourceText && ctx.routineSince === null ? await ankurJobText(ctx.db, agentId) : null;
   return yaadToolCall(
     () =>
       ctx.yaad.ingest({
@@ -139,6 +164,7 @@ export async function runIngestMemory(ctx: ToolContext, raw: unknown): Promise<T
         source: "agent",
         agent_id: agentId,
         ...(input.participant_ids !== undefined ? { participant_ids: input.participant_ids } : {}),
+        ...(sourceText !== null ? { source_text: sourceText } : {}),
       }),
     (response) => ({
       counts: response.counts,

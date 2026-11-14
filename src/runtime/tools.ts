@@ -32,7 +32,7 @@ import {
   type ToolExecResult,
 } from "../tools/shared.js";
 import type { HelperTask } from "../nas/client.js";
-import { deliverDeps, runInBackground, toolIsAsync } from "./async.js";
+import { cutLong, deliverDeps, runInBackground, toolIsAsync } from "./async.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { ACTION_TOOLS } from "./record.js";
 import { shortArg } from "./status.js";
@@ -165,10 +165,13 @@ export async function executeTool(
     }
   };
   let result: ToolExecResult;
-  if (ctx.lane === "work" && ctx.callerId !== null && call.name !== YIELD && call.name !== WAIT && toolIsAsync(call.name)) {
+  if (ctx.lane === "work" && ctx.callerId !== null && call.name !== YIELD && call.name !== WAIT && toolIsAsync(call.name) && !(call.name === INGEST_MEMORY && ctx.syncIngest)) {
     result = await runInBackground(ctx, ctx.callerId, call, run);
   } else {
     result = await saveLargeResult(ctx, call, await run());
+    if (call.name === INGEST_MEMORY && ctx.syncIngest) {
+      result = cutLong(ctx, call, result);
+    }
   }
   if (ctx.callerId !== null) {
     ctx.toolDebounce.record(ctx.callerId, result.isError);

@@ -47,6 +47,9 @@ export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
     if (wokenBy !== null) {
       deps.wake.push({ message: { role: "user", content: wokenBy } });
     }
+    if (assembled.carried !== undefined) {
+      deps.wake.push({ message: { role: "user", content: assembled.carried }, only: "work" });
+    }
     return;
   }
   const arrived = deps.arrivalsSince(deps.wake.throughSeq);

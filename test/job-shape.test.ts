@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { awaitingReply, insertDeliveredOutbox } from "../src/db/outbox.js";
 import { currentRequester, hydrateTranscript } from "../src/db/messages.js";
 import { insertWake } from "../src/db/wakes.js";
-import { messages, outbox, scheduledMessages, watches } from "../src/db/schema.js";
+import { jobs, messages, outbox, pendingAsync, scheduledMessages, watches } from "../src/db/schema.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
+import { resultPath } from "../src/runtime/files.js";
+import { rewakeWork } from "../src/runtime/rewake.js";
+import { getLogs } from "../src/tools/hath/get-logs.js";
 import { createRuntime, type Runtime } from "../src/runtime/engine.js";
 import { EventBus } from "../src/runtime/events.js";
 import { PICKUP_TEXT, sendPickups } from "../src/runtime/pickups.js";
@@ -302,10 +305,10 @@ test("hath picks up Ankur's job once, only after the work lane acted on it and o
 
   const afterMs = base.runtime.pickup_delay_s * 1000;
   const soon = new Date(Date.now() + afterMs / 2);
-  assert.equal(await sendPickups(deps, soon, afterMs), 0, "nothing is overdue yet");
+  assert.equal(await sendPickups(deps, soon, afterMs, null), 0, "nothing is overdue yet");
   const late = new Date(Date.now() + afterMs + 5_000);
-  assert.equal(await sendPickups(deps, late, afterMs), 1);
-  assert.equal(await sendPickups(deps, late, afterMs), 0, "one pickup per message");
+  assert.equal(await sendPickups(deps, late, afterMs, null), 1);
+  assert.equal(await sendPickups(deps, late, afterMs, null), 0, "one pickup per message");
 
   const [pickup] = await handle.db.select().from(messages).where(and(eq(messages.fromAgentId, worked)));
   assert.equal(pickup?.content, PICKUP_TEXT);
@@ -397,4 +400,212 @@ test("modify_agent_prompt refuses an edit that adds a clock time, and allows one
   assert.match(refused.content, /times live in schedules, not prompts/);
   const allowed = await edit("m2", "Own the course and its notes.");
   assert.equal(allowed.isError, false, allowed.content);
+});
+
+/** A runtime whose work lane runs `work` on each call, so a test reads the runtime from inside a wake. */
+function withWork(config: Config, work: (request: DwarChatRequest) => DwarChatResponse | Promise<DwarChatResponse>, yaad = mockYaad(), nas = mockNas()) {
+  const dwar = mockDwar({ work });
+  const runtime = createRuntime({ db: handle.db, dwar, yaad, ghar: mockGhar(), nas, config, log: silentLog });
+  return { dwar, runtime, yaad, nas };
+}
+
+test("under routine_follow_up a helper's report after a routine opens the same routine, so its message to an agent is refused; Ankur's message ends it", async () => {
+  for (const routine_follow_up of [true, false]) {
+    await resetRuntime(handle.sql, handle.db, base);
+    const author = await insertAgent(handle.db, { id: "rf-author", systemPrompt: "author" });
+    const target = await insertAgent(handle.db, { id: "rf-target", systemPrompt: "target" });
+    const config = withRuntime(base, { ...FLAGS_OFF, routine_silence: true, routine_follow_up });
+    const seen: Array<{ routineSince: number | null; refused: boolean | null }> = [];
+    const { runtime } = withWork(config, async () => {
+      const ctx = runtime.toolContext(target, "work");
+      const refused =
+        ctx.routineSince === null
+          ? null
+          : (await executeTool(ctx, { type: "tool_use", id: `q${seen.length}`, name: QUEUE_MESSAGE, input: { to: author, content: "Done." } })).isError;
+      seen.push({ routineSince: ctx.routineSince, refused });
+      return yieldTurn(`wy${seen.length}`);
+    });
+    await dueSchedule(author, target, "Morning check.", 1440);
+    await runtime.scheduler.tick();
+    await runtime.waitUntilIdle();
+    const trigger = runtime.transcript.transcriptFor(target).find((row) => row.routine !== undefined)!;
+
+    await rewakeWork(runtimeDeps(runtime), target, { content: "Helper report.", notice: "helper", wokenBy: "helper result" });
+    await runtime.waitUntilIdle();
+    assert.deepEqual(seen.at(-1), routine_follow_up ? { routineSince: trigger.seq, refused: true } : { routineSince: null, refused: null }, `routine_follow_up ${routine_follow_up}`);
+
+    await deliverUserMessage(runtimeDeps(runtime), target, "anything due today?");
+    await runtime.waitUntilIdle();
+    await rewakeWork(runtimeDeps(runtime), target, { content: "Second report.", notice: "helper", wokenBy: "helper result" });
+    await runtime.waitUntilIdle();
+    assert.equal(seen.at(-1)?.routineSince, null, "someone's message ended the routine");
+  }
+});
+
+test("under job_requester only Ankur's open job inside question_answer_minutes caps a wait and adds Answer Ankur now to its timeout; a stale or closed job does not", async () => {
+  await resetRuntime(handle.sql, handle.db, base);
+  const agentId = await insertAgent(handle.db, { id: "jr-agent", systemPrompt: "agent" });
+  const classId = await insertAgent(handle.db, { id: "jr-class", systemPrompt: "class" });
+  const config = withRuntime(base, { ...FLAGS_OFF, job_requester: true, question_answer_minutes: 5 });
+  const { runtime } = scripted(config, []);
+  const ctx = runtime.toolContext(agentId, "work");
+  const waitOn = async (id: string) => {
+    const waited = await executeTool(ctx, { type: "tool_use", id, name: WAIT, input: { on: classId, timeout_minutes: 20 } });
+    assert.equal(waited.isError, false, waited.content);
+    return new Date((JSON.parse(waited.content) as { wakes_by: string }).wakes_by).getTime();
+  };
+  const timeoutNotice = async () => {
+    await handle.db.update(watches).set({ dueAt: new Date(Date.now() - 1000) }).where(eq(watches.agentId, agentId));
+    await runtime.scheduler.tick();
+    await runtime.waitUntilIdle();
+    return JSON.stringify(runtime.transcript.transcriptFor(agentId).at(-1));
+  };
+
+  await deliverUserMessage(quietDeps(runtime.transcript), agentId, "what is due tonight?");
+  assert.ok((await waitOn("w1")) <= Date.now() + 5 * 60_000, "his fresh question caps the wait at five minutes");
+  assert.match(await timeoutNotice(), /Answer Ankur now with what you have/);
+
+  await handle.db.update(messages).set({ createdAt: new Date(Date.now() - 10 * 60_000) }).where(eq(messages.toAgentId, agentId));
+  assert.ok((await waitOn("w2")) > Date.now() + 19 * 60_000, "his job is ten minutes old: the wait stands");
+  assert.doesNotMatch(await timeoutNotice(), /Answer Ankur now/);
+
+  await handle.db.update(messages).set({ createdAt: new Date() }).where(eq(messages.toAgentId, agentId));
+  await handle.db.update(jobs).set({ state: "done" }).where(eq(jobs.agentId, agentId));
+  assert.ok((await waitOn("w3")) > Date.now() + 19 * 60_000, "a closed job asks nothing");
+});
+
+test("under job_requester a routine's wait is not capped by Ankur's old question", async () => {
+  await resetRuntime(handle.sql, handle.db, base);
+  const agentId = await insertAgent(handle.db, { id: "jq-agent", systemPrompt: "agent" });
+  const classId = await insertAgent(handle.db, { id: "jq-class", systemPrompt: "class" });
+  const config = withRuntime(base, { ...FLAGS_OFF, job_requester: true, question_answer_minutes: 5 });
+  const { runtime } = scripted(config, []);
+  await deliverUserMessage(quietDeps(runtime.transcript), agentId, "what is due tonight?");
+  const ctx = { ...runtime.toolContext(agentId, "work"), routineSince: 1 };
+  const waited = await executeTool(ctx, { type: "tool_use", id: "w1", name: WAIT, input: { on: classId, timeout_minutes: 20 } });
+  assert.ok(new Date((JSON.parse(waited.content) as { wakes_by: string }).wakes_by).getTime() > Date.now() + 19 * 60_000);
+});
+
+test("under wait_target_guard wait refuses the caller's own id and a tool call id; off, the own id is accepted", async () => {
+  await resetRuntime(handle.sql, handle.db, base);
+  const agentId = await insertAgent(handle.db, { id: "wg-agent", systemPrompt: "agent" });
+  for (const wait_target_guard of [true, false]) {
+    const { runtime } = scripted(withRuntime(base, { ...FLAGS_OFF, wait_target_guard }), []);
+    const ctx = runtime.toolContext(agentId, "work");
+    const self = await executeTool(ctx, { type: "tool_use", id: "w1", name: WAIT, input: { on: agentId, timeout_minutes: 5 } });
+    const tool = await executeTool(ctx, { type: "tool_use", id: "w2", name: WAIT, input: { on: "toolu_01ABC", timeout_minutes: 5 } });
+    assert.equal(self.isError, wait_target_guard, self.content);
+    assert.equal(tool.isError, true, "a tool call id is never an agent or a task");
+    if (wait_target_guard) {
+      assert.match(self.content, /cannot wait on yourself/);
+      assert.match(tool.content, /nothing to wait on/);
+    }
+  }
+});
+
+test("under pickup_live_work a pickup needs the work lane running or waiting on something other than the agent", async () => {
+  await resetRuntime(handle.sql, handle.db, base);
+  const idle = await insertAgent(handle.db, { id: "pl-idle", systemPrompt: "agent" });
+  const waiting = await insertAgent(handle.db, { id: "pl-waiting", systemPrompt: "agent" });
+  const self = await insertAgent(handle.db, { id: "pl-self", systemPrompt: "agent" });
+  const peer = await insertAgent(handle.db, { id: "pl-peer", systemPrompt: "agent" });
+  const { runtime } = scripted(withRuntime(base, { ...FLAGS_OFF, hath_pickups: true, pickup_live_work: true }), []);
+  for (const agentId of [idle, waiting, self]) {
+    await deliverUserMessage(quietDeps(runtime.transcript), agentId, "what is due tonight?");
+    await writeAgentLog(handle.db, { agentId, lane: "work", event: "response", payload: {} });
+  }
+  await recordWatch(handle.db, waiting, [peer], 30);
+  await recordWatch(handle.db, self, [self], 30);
+
+  await runtime.scheduler.tick(new Date(Date.now() + base.runtime.pickup_delay_s * 1000 + 5_000));
+  await runtime.waitUntilIdle();
+
+  const pickups = await handle.db.select().from(messages).where(isNull(messages.toAgentId));
+  assert.deepEqual(pickups.map((row) => row.fromAgentId), [waiting]);
+});
+
+test("under sync_ingest ingest_memory returns what Yaad stored in the call, and with ingest_source_text carries Ankur's opening message, outside a routine only", async () => {
+  await resetRuntime(handle.sql, handle.db, base);
+  const agentId = await insertAgent(handle.db, { id: "si-agent", systemPrompt: "agent" });
+  const config = withRuntime(base, { ...FLAGS_OFF, sync_ingest: true, ingest_source_text: true });
+  const { runtime, yaad } = withWork(config, () => yieldTurn());
+  await deliverUserMessage(quietDeps(runtime.transcript), agentId, "submit on the portal");
+  const ingest = (id: string, ctx = runtime.toolContext(agentId, "work")) => executeTool(ctx, { type: "tool_use", id, name: "ingest_memory", input: { text: "Essay due Mon." } });
+
+  const stored = await ingest("i1");
+  assert.equal(stored.isError, false, stored.content);
+  assert.deepEqual(Object.keys(JSON.parse(stored.content)).sort(), ["counts", "operations"]);
+  assert.equal((await handle.db.select().from(pendingAsync)).length, 0, "nothing ran in the background");
+  assert.equal(yaad.ingestCalls[0]?.source_text, "submit on the portal");
+
+  await ingest("i2", { ...runtime.toolContext(agentId, "work"), routineSince: 1 });
+  assert.equal(yaad.ingestCalls[1]?.source_text, undefined, "a routine's open job is not its own");
+  await ingest("i3", { ...runtime.toolContext(agentId, "work"), ingestSourceText: false });
+  assert.equal(yaad.ingestCalls[2]?.source_text, undefined);
+
+  await handle.db.update(jobs).set({ state: "done" }).where(eq(jobs.agentId, agentId));
+  await ingest("i4");
+  assert.equal(yaad.ingestCalls[3]?.source_text, undefined, "no open job from Ankur");
+});
+
+test("a long sync ingest result shows its opening and the file holding it whole", async () => {
+  await resetRuntime(handle.sql, handle.db, base);
+  const agentId = await insertAgent(handle.db, { id: "sl-agent", systemPrompt: "agent" });
+  const config = withRuntime(base, { ...FLAGS_OFF, sync_ingest: true });
+  const yaad = mockYaad({
+    ingest: () => ({
+      counts: { create_node: 0, update_node: 0, close_node: 0, create_edge: 0, close_edge: 0, noop: 400 },
+      operations: Array.from({ length: 400 }, (_, i) => ({ op: "noop" as const, reason: `reason number ${i}` })),
+    }),
+  });
+  const { runtime, nas } = withWork(config, () => yieldTurn(), yaad);
+  const stored = await executeTool(runtime.toolContext(agentId, "work"), { type: "tool_use", id: "i1", name: "ingest_memory", input: { text: "x" } });
+  assert.equal(stored.isError, false);
+  assert.match(stored.content, new RegExp(`the whole result is saved at ${resultPath(config.files.dir, "i1")}: read_file it`));
+  assert.ok(nas.files.get(resultPath(config.files.dir, "i1"))!.length > 4_000);
+});
+
+test("under tool_hygiene get_logs leaves out the caller's current wake; off, it shows it", async () => {
+  await resetRuntime(handle.sql, handle.db, base);
+  const agentId = await insertAgent(handle.db, { id: "tg-agent", systemPrompt: "agent" });
+  const { runtime } = scripted(withRuntime(base, FLAGS_OFF), []);
+  const current = randomUUID();
+  const earlier = randomUUID();
+  await writeAgentLog(handle.db, { agentId, lane: "work", event: "response", wakeId: earlier, payload: { content: "earlier wake" } });
+  await writeAgentLog(handle.db, { agentId, lane: "work", event: "response", wakeId: current, payload: { content: "current wake" } });
+  for (const toolHygiene of [true, false]) {
+    const ctx = { ...runtime.toolContext(agentId, "work"), wakeId: current, toolHygiene };
+    const text = (await getLogs.handler(ctx, {})).content;
+    assert.match(text, /earlier wake/);
+    assert.equal(text.includes("current wake"), !toolHygiene, `toolHygiene ${toolHygiene}`);
+  }
+});
+
+test("under job_did_carry a wake the agent's own notice opens in a job starts with the job's earlier tool calls, and not those from before the job", async () => {
+  for (const job_did_carry of [true, false]) {
+    await resetRuntime(handle.sql, handle.db, base);
+    const agentId = await insertAgent(handle.db, { id: "cy-agent", systemPrompt: "agent" });
+    const config = withRuntime(base, { ...FLAGS_OFF, job_did_carry });
+    const { dwar, runtime } = withWork(config, () => yieldTurn());
+    const log = (event: "response" | "tool_result", wakeId: string, payload: Record<string, unknown>) =>
+      writeAgentLog(handle.db, { agentId, lane: "work", event, wakeId, payload });
+    await log("tool_result", randomUUID(), { tool_use_id: "old", name: "web_fetch", content: "OLD PAGE", is_error: false });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await deliverUserMessage(quietDeps(runtime.transcript), agentId, "what is due tonight?");
+    const earlier = randomUUID();
+    await log("response", earlier, { content: [{ type: "tool_use", id: "t1", name: "web_fetch", input: { url: "https://cse431.example/" } }, { type: "tool_use", id: "t2", name: "recall_memory", input: { query: "due" } }] });
+    await log("tool_result", earlier, { tool_use_id: "t1", name: "web_fetch", content: "Course site: HW3 due Fri", is_error: false });
+    await log("tool_result", earlier, { tool_use_id: "t2", name: "recall_memory", content: "x".repeat(500), is_error: false });
+
+    await rewakeWork(runtimeDeps(runtime), agentId, { content: "Helper report.", notice: "helper", wokenBy: "helper result" });
+    await runtime.waitUntilIdle();
+
+    const first = JSON.stringify(dwar.workCalls[0]!.messages);
+    assert.equal(first.includes("[Did in this job]"), job_did_carry, `job_did_carry ${job_did_carry}`);
+    if (job_did_carry) {
+      assert.match(first, /web_fetch [^\n]*cse431\.example[^\n]* -> Course site: HW3 due Fri/);
+      assert.ok(first.includes(`[whole result: ${resultPath(config.files.dir, "t2")}]`));
+      assert.equal(first.includes("OLD PAGE"), false);
+    }
+  }
 });

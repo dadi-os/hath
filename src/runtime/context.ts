@@ -56,6 +56,8 @@ function lineageBlock(agentId: string | null, parentAgentId: string | null): str
 export type AssembledContext = Omit<DwarChatRequest, "tool_choice" | "messages"> & {
   transcripts: Partial<Record<Lane, DwarMessage[]>>;
   throughSeq: number;
+  /** The work lane's [Did in this job] block, when the wake continues a job (see carry.ts). */
+  carried?: string;
 };
 
 /**

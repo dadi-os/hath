@@ -55,7 +55,7 @@ function clipStrings(value: unknown): unknown {
 export const getLogs = defineTool({
   name: "get_logs",
   description:
-    "Read the audit log for yourself or a direct child, newest first: response rows are whole model turns (thinking, text, tool calls), tool_result rows each tool's name and outcome. It is how you find what was said or done after it left your transcript (a plan, a list, an approval, a result). search keeps rows containing that text; before (an ISO time, such as a result's next_before) pages back. Long text is clipped and next_before is set when older rows remain. As the router, name the agent.",
+    "Read the audit log for yourself or a direct child, newest first: response rows are whole model turns (thinking, text, tool calls), tool_result rows each tool's name and outcome. It is how you find what was said or done after it left your transcript (a plan, a list, an approval, a result). search keeps rows containing that text; before (an ISO time, such as a result's next_before) pages back. Long text is clipped and next_before is set when older rows remain. Your current wake is left out: what you did in it is in your transcript. As the router, name the agent.",
   input,
   inputSchema: {
     type: "object",
@@ -90,6 +90,9 @@ export const getLogs = defineTool({
     const party: SQL = eq(agentLogs.agentId, targetId);
     const limit = parsed.limit ?? 50;
     const filters: SQL[] = [party];
+    if (ctx.toolHygiene && targetId === ctx.callerId && ctx.wakeId !== null) {
+      filters.push(sql`${agentLogs.wakeId} is distinct from ${ctx.wakeId}::uuid`);
+    }
     if (parsed.event) {
       filters.push(eq(agentLogs.event, parsed.event));
     }

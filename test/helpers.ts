@@ -593,6 +593,7 @@ export const workLoopHooks = {
   woke: async () => {},
   yieldReminder: async () => null,
   implicitYield: false,
+  implicitSteerEnd: false,
   wait: async () => {},
 };
 
@@ -614,4 +615,13 @@ export const FLAGS_OFF = {
   ingest_result_wakes: false,
   direct_ankur_messages: false,
   weekday_guard: false,
+  routine_follow_up: false,
+  job_requester: false,
+  wait_target_guard: false,
+  pickup_live_work: false,
+  tool_hygiene: false,
+  sync_ingest: false,
+  ingest_source_text: false,
+  job_did_carry: false,
+  implicit_steer_end: false,
 } satisfies Partial<Config["runtime"]>;

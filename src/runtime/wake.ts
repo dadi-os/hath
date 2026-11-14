@@ -185,6 +185,8 @@ export class Wake {
    * null once a message from anyone else joins it (engine.ts enqueue), and for every other wake.
    */
   routine: number | null = null;
+  /** True when the agent's own notice (a helper report, a wait timeout) created this wake, so it may continue a job (see carry.ts). */
+  ownNotice = false;
   private frozenSystem: string | null = null;
   private transcripts: Partial<Record<Lane, DwarMessage[]>> | null = null;
   private seenThrough = 0;

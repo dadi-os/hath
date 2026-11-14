@@ -19,10 +19,17 @@ export const PICKUP_TEXT = "Working on it.";
  * sendPickups sends PICKUP_TEXT to Ankur, as the agent with status running, for each active
  * agent whose latest message from him is between `afterMs` (`runtime.pickup_delay_s`) and PICKUP_HORIZON_MS old
  * at `now`, whose work lane has taken a step since it (so it is a job being worked, not a
- * message that needed none), and that has sent him nothing since it. The pickup is itself
+ * message that needed none), and that has sent him nothing since it. When `live` is given
+ * (`runtime.pickup_live_work`), an agent it calls false for is skipped: a lane that only
+ * yielded has nothing in hand to report on. The pickup is itself
  * a message to him after his, so each of his messages gets one at most. Returns how many it sent.
  */
-export async function sendPickups(deps: DeliverDeps, now: Date, afterMs: number): Promise<number> {
+export async function sendPickups(
+  deps: DeliverDeps,
+  now: Date,
+  afterMs: number,
+  live: ((agentId: string) => Promise<boolean>) | null,
+): Promise<number> {
   const due = await deps.db.execute<{ agent_id: string }>(sql`
     select m.to_agent_id as agent_id
     from ${messages} m
@@ -43,8 +50,13 @@ export async function sendPickups(deps: DeliverDeps, now: Date, afterMs: number)
         where l.agent_id = m.to_agent_id and l.lane = 'work' and l.event = 'response' and l.created_at > m.created_at
       )
   `);
+  let sent = 0;
   for (const { agent_id: agentId } of due) {
+    if (live !== null && !(await live(agentId))) {
+      continue;
+    }
     await deliverAgentMessage(deps, { fromAgentId: agentId, toAgentId: null, content: PICKUP_TEXT, status: "running", sentBy: "hath" });
+    sent += 1;
   }
-  return due.length;
+  return sent;
 }

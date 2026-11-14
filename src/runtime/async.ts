@@ -5,7 +5,8 @@
  * once and runs on; when it ends, its result (or its failure) reaches the agent as a message
  * that wakes its work lane, the way a helper's report does (see rewake.ts). A restart loses
  * a call still running, so each running call has a row in `pending_async`, and boot tells the
- * agent which ones were lost. A tool flagged async runs async only in the work lane; a
+ * agent which ones were lost. A tool flagged async runs async only in the work lane (ingest_memory
+ * only until `runtime.sync_ingest` is on, when it runs in the call); a
  * tool that is not flagged may still start a background call itself, when the service it
  * calls decides a request is too slow to wait for (control_device), and then its result wakes
  * the lane that made the call.
@@ -91,6 +92,19 @@ export async function runInBackground(
       ? `${call.name} is running in the background. It is saving in the background; you are told only if it fails. Carry on or yield.`
       : `${call.name} is running in the background. Its result will arrive as a message that wakes you, so carry on or yield.`,
   });
+}
+
+/**
+ * cutLong is `result` as the agent reads a sync call that may be long: one over
+ * INLINE_RESULT_CHARS shows its opening and the path of the file holding it whole (saved by
+ * executeTool), as an async result does. A result whose file could not be written is left whole.
+ */
+export function cutLong(ctx: ToolContext, call: DwarToolUseBlock, result: ToolExecResult): ToolExecResult {
+  if (result.content.length <= INLINE_RESULT_CHARS || result.audit.result_file_failed !== undefined) {
+    return result;
+  }
+  const path = resultPath(ctx.files.dir, call.id);
+  return { ...result, content: `${result.content.slice(0, PREVIEW_CHARS)}…\n[${result.content.length} characters in all; the whole result is saved at ${path}: read_file it.]` };
 }
 
 /** resultMessage is what the agent reads when an async call ends. */

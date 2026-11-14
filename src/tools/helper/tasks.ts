@@ -49,7 +49,7 @@ export const steerBrowser = defineTool({
       id: idProperty("browser"),
       message: {
         type: "string",
-        description: "What to get done with every detail it needs (where to start, accounts, dates, what to bring back), or the next step, correction or answer for a task already running",
+        description: "The site, the question and the date range, in at most 400 characters; or the next step, correction or answer for a task already running. The helper already knows how to sign in, that a question is read-only, and to answer first: never repeat those.",
       },
     },
   },
@@ -128,7 +128,7 @@ function listTool(kind: TaskKind, current: string) {
     input: listInput,
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     async handler(ctx) {
-      const tasks = (await ctx.nas.listTasks()).filter((task) => task.kind === kind);
+      const tasks = (await ctx.nas.listTasks()).filter((task) => task.kind === kind && !(ctx.toolHygiene && task.status === "stopped"));
       return ok({
         [`${kind}s`]: tasks.map((task) => ({
           id: task.task,

@@ -80,6 +80,18 @@ export type ToolContext = {
   questionAnswerMinutes: number;
   /** `runtime.weekday_guard`: a date in a message to Ankur needs its weekday (see runtime/send.ts weekdayRefusal). */
   weekdayGuard: boolean;
+  /** The id of the caller's current wake, or null for the router. */
+  wakeId: string | null;
+  /** `runtime.job_requester`: Ankur's question is the open job he opened under `questionAnswerMinutes` ago (see runtime/watches.ts). */
+  jobRequester: boolean;
+  /** `runtime.wait_target_guard`: wait refuses the caller's own id and tool call ids (see runtime/watches.ts). */
+  waitTargetGuard: boolean;
+  /** `runtime.tool_hygiene`: get_logs leaves out the current wake; the list tools leave out stopped tasks. */
+  toolHygiene: boolean;
+  /** `runtime.sync_ingest`: ingest_memory runs in the call and returns what Yaad stored (see runtime/tools.ts). */
+  syncIngest: boolean;
+  /** `runtime.ingest_source_text`: ingest_memory sends Yaad the text of Ankur's message that opened the open job (see runtime/memory.ts). */
+  ingestSourceText: boolean;
 };
 
 /**

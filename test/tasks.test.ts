@@ -77,6 +77,20 @@ test("list_browsers and list_terminals show their own kind with owner, purpose a
   assert.equal(terminals[0].owner, "a2");
 });
 
+test("under tool_hygiene list_browsers leaves out a stopped task, which cannot be steered; off, it lists it", async () => {
+  const nas = mockNas();
+  await nas.startTask("browser", { agent_id: "a1", message: "portal" });
+  await nas.startTask("browser", { agent_id: "a1", message: "inbox" });
+  const stopped = nas.tasks.get("task/browser/2")!;
+  nas.tasks.set(stopped.task, { ...stopped, status: "stopped" });
+
+  for (const toolHygiene of [true, false]) {
+    const ctx = { ...ctxFor(nas).ctx, toolHygiene } as ToolContext;
+    const ids = JSON.parse((await listBrowsers.handler(ctx, {})).content).browsers.map((task: { id: string }) => task.id);
+    assert.deepEqual(ids, toolHygiene ? ["task/browser/1"] : ["task/browser/1", "task/browser/2"], `toolHygiene ${toolHygiene}`);
+  }
+});
+
 test("task addresses parse to a kind and an id, and nothing else does", () => {
   assert.deepEqual(parseTaskAddress("task/browser/3"), { kind: "browser", id: "3" });
   assert.equal(parseTaskAddress("task/other/3"), null);

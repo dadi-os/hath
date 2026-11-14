@@ -18,6 +18,8 @@ export type WorkLoopDeps = StepDeps & {
   yieldReminder: () => Promise<string | null>;
   /** `runtime.implicit_yield`: a turn of a queue_message and the saves that go with it ends the run (see endsOnItsOwn). */
   implicitYield: boolean;
+  /** `runtime.implicit_steer_end`: a turn of only steers, messages and saves ends the run too (see endsOnItsOwn). */
+  implicitSteerEnd: boolean;
   /** Records that the lane waits on `targets` for `minutes`, as the wait tool does (see watches.ts recordWatch). */
   wait: (targets: string[], minutes: number) => Promise<void>;
 };
@@ -157,29 +159,41 @@ export const LONG_SILENCE_TURN =
  * queue_message or one of the saves that follow a result (SAVES), no queue_message was a progress
  * line (status running), and no browser or terminal task was started or steered in this wake
  * (its result may still need the lane's next step).
- * When any of those messages expects an agent's reply, the lane waits on those agents for
+ * Under `implicitSteerEnd` a turn also ends the run when it has a steer_browser, steer_terminal
+ * or ingest_memory call beside queue_message, schedule_message and saves, whatever the wake
+ * steered before: each task it steered is waited on, as an awaited agent is, since its report
+ * wakes the lane for the next step and a wait that times out wakes it with facts. A run that
+ * ends before the requester has its answer is reminded once (see yieldReminder).
+ * When any of the turn's messages expects an agent's reply, the lane waits on those agents for
  * IMPLICIT_WAIT_MINUTES, as a wait call would; otherwise it yields. The run is marked yielded
  * either way, so the yield's reminders still apply.
  */
 async function endsOnItsOwn(deps: WorkLoopDeps, outcomes: { call: DwarToolUseBlock; result: ToolExecResult }[]): Promise<boolean> {
   const messages = outcomes.filter(({ call }) => call.name === QUEUE_MESSAGE);
+  const steers = outcomes.filter(({ call }) => HELPER_STEERS.has(call.name));
+  const ends = deps.implicitSteerEnd
+    ? outcomes.some(({ call }) => call.name === QUEUE_MESSAGE || HELPER_STEERS.has(call.name) || call.name === INGEST_MEMORY)
+    : messages.length > 0;
+  const allowed = (name: string) => name === QUEUE_MESSAGE || SAVES.has(name) || (deps.implicitSteerEnd && HELPER_STEERS.has(name));
   if (
     !deps.implicitYield ||
-    messages.length === 0 ||
-    !outcomes.every(({ call, result }) => (call.name === QUEUE_MESSAGE || SAVES.has(call.name)) && !result.isError) ||
+    !ends ||
+    !outcomes.every(({ call, result }) => allowed(call.name) && !result.isError) ||
     messages.some(({ call }) => (call.input as { status?: string }).status === "running")
   ) {
     return false;
   }
-  if (deps.wake.workCalls(Number.MAX_SAFE_INTEGER).some((call) => HELPER_STEERS.has(call.name) && call.failed === false)) {
+  if (!deps.implicitSteerEnd && deps.wake.workCalls(Number.MAX_SAFE_INTEGER).some((call) => HELPER_STEERS.has(call.name) && call.failed === false)) {
     return false;
   }
   const awaited = messages.flatMap(({ result }) => {
     const queued = JSON.parse(result.content) as { to_agent_id: string | null; expects_reply: boolean };
     return queued.expects_reply && queued.to_agent_id !== null ? [queued.to_agent_id] : [];
   });
-  if (awaited.length > 0) {
-    await deps.wait([...new Set(awaited)], IMPLICIT_WAIT_MINUTES);
+  const tasks = steers.map(({ result }) => (JSON.parse(result.content) as { id: string }).id);
+  const targets = [...new Set([...awaited, ...tasks])];
+  if (targets.length > 0) {
+    await deps.wait(targets, IMPLICIT_WAIT_MINUTES);
   }
   deps.wake.markYield(deps.lane);
   return true;

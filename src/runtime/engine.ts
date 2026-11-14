@@ -26,6 +26,7 @@ import type {
   Lane,
   RoutedMessage,
 } from "../types/domain.js";
+import { carriedWork } from "./carry.js";
 import { arrivalsSince, assembleContext, assembleRouterContext, type TranscriptWindows } from "./context.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { runProcessLoop } from "./process.js";
@@ -39,7 +40,7 @@ import { SteerQueue } from "./steer.js";
 import { HostSessions } from "./sessions.js";
 import { HelperReports } from "./helper-reports.js";
 import type { FileStore } from "./files.js";
-import { clearWatch, recordWatch, watchOf } from "./watches.js";
+import { answerCap, clearWatch, recordWatch, watchOf } from "./watches.js";
 import { yieldReminder } from "./yield-reminder.js";
 import { ToolDebounce } from "./tool-debounce.js";
 import { blockOpenJob, settleWakeJobs } from "./jobs.js";
@@ -134,6 +135,8 @@ export function createRuntime(opts: {
   const wakeActivity = new WakeActivity(opts.db, events, opts.log);
   /** Per agent, the newest transcript seq its last finished wake covered (see settleJobs). */
   const settledThrough = new Map<string, number>();
+  /** Per agent, the trigger seq of its latest routine, until anyone else's message or another schedule's wake ends it (see enqueue). */
+  const lastRoutine = new Map<string, number>();
   let pending = 0;
   const idleWaiters: Array<() => void> = [];
 
@@ -175,22 +178,54 @@ export function createRuntime(opts: {
   /**
    * enqueue queues a lane run on the agent's wake, creating the wake when it has none. A wake
    * a repeating schedule's trigger creates is a routine (see Wake.routine) until a message
-   * from anyone but the agent itself joins it: then someone is asking, and it is a job.
+   * from anyone but the agent itself joins it: then someone is asking, and it is a job. Under
+   * `runtime.routine_follow_up` a wake the agent's own notice creates after a routine, with no
+   * one else's message since (see lastRoutine), is that routine again.
    */
   function enqueue(agentId: string, lane: Lane, reason: string | undefined, origin: WakeOrigin | undefined): string {
     const created = wakes.peek(agentId) === undefined;
-    const routine = created && origin !== undefined ? routineTrigger(agentId, origin) : null;
+    const trigger = created && origin !== undefined ? routineTrigger(agentId, origin) : null;
     const release = wakes.hold(agentId);
     const wake = wakes.get(agentId);
     wake.noteReason(reason);
     if (created) {
       beginWake(agentId, wake, origin ?? MANUAL_ORIGIN);
-      wake.routine = routine;
+      wake.ownNotice = isOwnNotice(agentId, origin);
+      wake.routine = trigger ?? (isOwnNotice(agentId, origin) ? (lastRoutine.get(agentId) ?? null) : null);
+      if (origin?.kind === "schedule") {
+        noteRoutine(agentId, trigger);
+      }
     } else if (origin?.kind === "message" && origin.ref !== agentId) {
       wake.routine = null;
     }
+    if (origin?.kind === "message" && origin.ref !== agentId) {
+      lastRoutine.delete(agentId);
+    }
     track(runLane(agentId, lane, release));
     return wake.id;
+  }
+
+  /** isOwnNotice is true when `origin` is the agent's own notice: a helper report, a wait timeout or an async result. */
+  function isOwnNotice(agentId: string, origin: WakeOrigin | undefined): boolean {
+    return origin?.kind === "message" && origin.ref === agentId;
+  }
+
+  /** noteRoutine remembers `trigger`, the seq that opened the agent's latest schedule wake, or forgets the routine when that wake is not one. */
+  function noteRoutine(agentId: string, trigger: number | null): void {
+    if (opts.config.runtime.routine_follow_up && trigger !== null) {
+      lastRoutine.set(agentId, trigger);
+    } else {
+      lastRoutine.delete(agentId);
+    }
+  }
+
+  /** workIsLive is true when the agent's work lane is running, or waits on something other than the agent itself. */
+  async function workIsLive(agentId: string): Promise<boolean> {
+    if (locks.isBusy(agentId, "work")) {
+      return true;
+    }
+    const watch = await watchOf(opts.db, agentId);
+    return watch !== undefined && watch.targets.some((target) => target !== agentId);
   }
 
   /**
@@ -272,14 +307,14 @@ export function createRuntime(opts: {
     wakeActivity,
     log: opts.log,
     tickSeconds: opts.config.schedule.tick_seconds,
-    watches: { deliver: deliverDeps, nas: opts.nas },
+    watches: { deliver: deliverDeps, nas: opts.nas, jobRequester: opts.config.runtime.job_requester, questionAnswerMinutes: opts.config.runtime.question_answer_minutes },
     sweep: async (now) => {
       const swept = await sweepCaches(files, opts.config.files.cache_retention_days, now);
       opts.log.info({ code: "cache_swept", files: swept }, "cache sweep done");
     },
     pickups: opts.config.runtime.hath_pickups
       ? async (now) => {
-          const sent = await sendPickups(deliverDeps, now, opts.config.runtime.pickup_delay_s * 1000);
+          const sent = await sendPickups(deliverDeps, now, opts.config.runtime.pickup_delay_s * 1000, opts.config.runtime.pickup_live_work ? workIsLive : null);
           if (sent > 0) {
             opts.log.info({ code: "pickups_sent", count: sent }, "hath sent pickups for overdue jobs");
           }
@@ -348,6 +383,12 @@ export function createRuntime(opts: {
       hathPickups: opts.config.runtime.hath_pickups,
       questionAnswerMinutes: opts.config.runtime.question_answer_minutes,
       weekdayGuard: opts.config.runtime.weekday_guard,
+      wakeId: callerId === null ? null : wakes.idOf(callerId),
+      jobRequester: opts.config.runtime.job_requester,
+      waitTargetGuard: opts.config.runtime.wait_target_guard,
+      toolHygiene: opts.config.runtime.tool_hygiene,
+      syncIngest: opts.config.runtime.sync_ingest,
+      ingestSourceText: opts.config.runtime.ingest_source_text,
     };
   }
 
@@ -530,8 +571,9 @@ export function createRuntime(opts: {
       agentId,
       lane,
       wake: wakes.get(agentId),
-      assemble: () =>
-        assembleContext({
+      assemble: async () => {
+        const wake = wakes.get(agentId);
+        const assembled = await assembleContext({
           db: opts.db,
           agentId,
           lane,
@@ -551,7 +593,13 @@ export function createRuntime(opts: {
               minChars: 0,
             },
           },
-        }),
+        });
+        if (!opts.config.runtime.job_did_carry || wake.started || !wake.ownNotice) {
+          return assembled;
+        }
+        const carried = await carriedWork(opts.db, transcript, { agentId, wakeId: wake.id, routineSeq: wake.routine, filesDir: opts.config.files.dir });
+        return carried === null ? assembled : { ...assembled, carried };
+      },
       arrivalsSince: (afterSeq: number) => arrivalsSince(transcript, agentId, afterSeq),
       executeTool: helpers.exec,
       logResponse: helpers.logResponse,
@@ -618,8 +666,9 @@ export function createRuntime(opts: {
       woke: () => clearWatch(opts.db, agentId),
       yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas, transcript }, agentId),
       implicitYield: opts.config.runtime.implicit_yield,
+      implicitSteerEnd: opts.config.runtime.implicit_steer_end,
       wait: async (targets: string[], minutes: number) => {
-        await recordWatch(opts.db, agentId, targets, minutes);
+        await recordWatch(opts.db, agentId, targets, await answerCap(toolContext(agentId, "work"), minutes));
       },
     };
   }

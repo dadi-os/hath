@@ -43,6 +43,15 @@ const fileSchema = z.object({
     pickup_delay_s: z.number().int().positive(),
     question_answer_minutes: z.number().int().positive(),
     weekday_guard: z.boolean(),
+    routine_follow_up: z.boolean(),
+    job_requester: z.boolean(),
+    wait_target_guard: z.boolean(),
+    pickup_live_work: z.boolean(),
+    tool_hygiene: z.boolean(),
+    sync_ingest: z.boolean(),
+    ingest_source_text: z.boolean(),
+    job_did_carry: z.boolean(),
+    implicit_steer_end: z.boolean(),
   }).refine((runtime) => runtime.wake_tool_results_kept_chars < runtime.wake_tool_results_max_chars, {
     message: "wake_tool_results_kept_chars must be below wake_tool_results_max_chars",
   }).refine(

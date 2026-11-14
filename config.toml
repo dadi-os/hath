@@ -78,13 +78,42 @@ ingest_result_wakes = false
 direct_ankur_messages = true
 # pickup_delay_s: how long Ankur's message waits for an answer before hath_pickups sends the
 # pickup. With hath_pickups on, a message with status running is refused from both lanes.
-pickup_delay_s = 150
+pickup_delay_s = 180
 # question_answer_minutes: a work lane whose job is Ankur's question may wait on others only
 # until this many minutes after his message; the timeout tells it to answer with what it has.
 question_answer_minutes = 5
 # weekday_guard: a message to Ankur that gives a month and day with no weekday beside it
 # (nor today, tonight, tomorrow or yesterday) is refused.
 weekday_guard = true
+# routine_follow_up: a wake the agent's own notice opens (a helper report, a wait timeout)
+# after a routine, with no message from anyone else in between, is still that routine: its
+# message limits hold and nobody is its requester.
+routine_follow_up = true
+# job_requester: the work lane's job is Ankur's question only while its open job is his and
+# his opening message is under question_answer_minutes old; history no longer decides it, and
+# a routine has no deadline and no "Answer Ankur now".
+job_requester = true
+# wait_target_guard: wait refuses the caller's own id and a tool call id (toolu_...).
+wait_target_guard = true
+# pickup_live_work: the pickup also needs the work lane running now or waiting on something
+# other than the agent itself, so a lane that only yielded gets none.
+pickup_live_work = true
+# tool_hygiene: get_logs leaves out the caller's current wake, and list_browsers and
+# list_terminals leave out stopped tasks (which cannot be steered).
+tool_hygiene = true
+# sync_ingest: ingest_memory runs in the work lane's call and returns what Yaad stored,
+# instead of returning {pending} and a later message.
+sync_ingest = true
+# ingest_source_text: ingest_memory sends Yaad `source_text`, the text of Ankur's message
+# that opened the work lane's open job, when that job is his.
+ingest_source_text = true
+# job_did_carry: a wake the agent's own notice opens inside a job (or routine) starts with a
+# [Did in this job] block of the job's earlier tool calls, so the lane does not redo them.
+job_did_carry = true
+# implicit_steer_end: a work turn of only successful steer_browser, steer_terminal,
+# queue_message, ingest_memory, schedule_message (and file saves) calls ends the run; each
+# steered task gets a watch of implicit_wait_minutes in code (30), as an awaited agent does.
+implicit_steer_end = true
 
 [dwar]
 timeout_ms = 330000
