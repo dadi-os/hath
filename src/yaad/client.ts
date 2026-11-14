@@ -61,8 +61,6 @@ export type RecallRequest = {
   name?: string | undefined;
   occurred_from?: string | undefined;
   occurred_to?: string | undefined;
-  /** A plan's status; only with `kind` plan or no kind. */
-  status?: "tentative" | "confirmed" | "cancelled" | undefined;
   /** A local date (YYYY-MM-DD): the tasks not done whose window has opened by then; only with `kind` task or no kind. */
   relevant_on?: string | undefined;
   limit?: number | undefined;

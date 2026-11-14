@@ -31,10 +31,10 @@ test("recall_memory sends relevant_on to Yaad and returns the tasks with their w
   assert.equal(nodes[0].updated_at, taskNode.updated_at);
 });
 
-test("recall_memory refuses a status or date Yaad no longer accepts before calling it", async () => {
+test("recall_memory refuses the removed status filter and a bad date before calling it", async () => {
   const yaad = mockYaad();
   const ctx = { yaad } as unknown as ToolContext;
-  await assert.rejects(() => runRecallMemory(ctx, { status: "idea" }));
+  await assert.rejects(() => runRecallMemory(ctx, { status: "confirmed" }));
   await assert.rejects(() => runRecallMemory(ctx, { relevant_on: "Nov 20" }));
   assert.equal(yaad.recallCalls.length, 0);
 });
