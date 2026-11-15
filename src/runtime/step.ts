@@ -40,6 +40,11 @@ export type StepDeps = {
    * text was taken as the agent's answer, which ends the run. Absent for the router, whose text is thought.
    */
   replyWithText?: (text: string) => Promise<boolean>;
+  /**
+   * True when the agent's job waits on an ask or a helper task (the test a watch is recorded
+   * by). Absent for the router. A turn of yield calls and text is the answer only when this is false.
+   */
+  hasPending?: () => Promise<boolean>;
 };
 
 /**
@@ -113,8 +118,9 @@ export async function callModel(
  * runStep records one model turn and its tool results on the wake, with what the
  * call measured (see Wake.measure) and what the turn cost to write. A turn with
  * no tool call is either the answer (see send.ts replyWithText) or is kept and followed
- * by a neutral continue turn, so the agent keeps going; only yield (or a stop) ends it. An
- * empty turn fails the run. Returns true when the run should exit.
+ * by a neutral continue turn, so the agent keeps going; only yield (or a stop) ends it. A turn
+ * whose calls are all yield, with text and nothing pending, is the same answer, sent before the
+ * yield runs. An empty turn fails the run. Returns true when the run should exit.
  */
 export async function runStep(
   deps: StepDeps,
@@ -154,6 +160,13 @@ export async function runStep(
       { message: { role: "user", content: capped > 0 ? CAPPED_TURN : CONTINUE_TURN } },
     );
     return false;
+  }
+
+  if (deps.replyWithText !== undefined && deps.hasPending !== undefined && uses.every((call) => call.name === YIELD)) {
+    const text = response.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n").trim();
+    if (text !== "" && !(await deps.hasPending())) {
+      await deps.replyWithText(text);
+    }
   }
 
   const results: DwarToolResultBlock[] = [];

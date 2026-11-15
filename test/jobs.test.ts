@@ -219,6 +219,63 @@ test("hath's pickup is a message marked sent_by hath with no status, in the job 
   assert.equal(await sendPickups(d, new Date(Date.now() + 200_000), 180_000, async () => true), 0, "one pickup per job");
 });
 
+/** Backdates every message of job `jobId`, in seq order, to the given ages in seconds before `now`. */
+async function ageMessages(jobId: string, now: Date, agesS: number[]): Promise<void> {
+  const rows = await handle.db.select({ id: messages.id }).from(messages).where(eq(messages.jobId, jobId)).orderBy(messages.seq);
+  assert.equal(rows.length, agesS.length);
+  for (const [i, row] of rows.entries()) {
+    await handle.db.update(messages).set({ createdAt: new Date(now.getTime() - agesS[i]! * 1000) }).where(eq(messages.id, row.id));
+  }
+}
+
+test("the pickup counts from his newest message in the job, within both age bounds, and from the agent's last word to him since", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "pickup-join-agent", systemPrompt: "agent" });
+  const d = deps();
+  const now = new Date();
+  const afterMs = 180_000;
+
+  await deliverUserMessage(d, agentId, "is the coffee on?");
+  await deliverUserMessage(d, agentId, "and when does it start?");
+  const [job] = await jobsOf(agentId);
+  assert.equal((await jobsOf(agentId)).length, 1, "his second message joined the first's job");
+  await handle.db.insert(agentLogs).values({ id: randomUUID(), agentId, jobId: job!.id, event: "response", payload: {} });
+
+  await ageMessages(job!.id, now, [600, 60]);
+  assert.equal(await sendPickups(d, now, afterMs, async () => true), 0, "the opening is old but the joined message is not");
+
+  await ageMessages(job!.id, now, [1200, 1000]);
+  assert.equal(await sendPickups(d, now, afterMs, async () => true), 0, "the newest message is past the horizon");
+
+  await ageMessages(job!.id, now, [1200, 200]);
+  assert.equal(await sendPickups(d, now, afterMs, async () => true), 1, "the newest message is due");
+  assert.equal(await sendPickups(d, now, afterMs, async () => true), 0, "the pickup is a word to him after it");
+});
+
+test("a word to Ankur before his newest message does not stop the pickup for it; one after does", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "pickup-since-agent", systemPrompt: "agent" });
+  const d = deps();
+  const now = new Date();
+
+  await deliverUserMessage(d, agentId, "first thing");
+  const [job] = await jobsOf(agentId);
+  await handle.db.insert(messages).values({ id: randomUUID(), fromAgentId: agentId, toAgentId: null, content: "On it.", jobId: job!.id });
+  await deliverUserMessage(d, agentId, "second thing");
+  await handle.db.insert(agentLogs).values({ id: randomUUID(), agentId, jobId: job!.id, event: "response", payload: {} });
+  await ageMessages(job!.id, now, [400, 300, 200]);
+  assert.equal(await sendPickups(d, now, 180_000, async () => true), 1, "the earlier word answered the earlier message");
+
+  await resetRuntime(handle.sql, handle.db, config);
+  const other = await insertAgent(handle.db, { id: "pickup-since-other", systemPrompt: "agent" });
+  await deliverUserMessage(d, other, "only thing");
+  const [otherJob] = await jobsOf(other);
+  await handle.db.insert(messages).values({ id: randomUUID(), fromAgentId: other, toAgentId: null, content: "On it.", jobId: otherJob!.id });
+  await handle.db.insert(agentLogs).values({ id: randomUUID(), agentId: other, jobId: otherJob!.id, event: "response", payload: {} });
+  await ageMessages(otherJob!.id, now, [400, 300]);
+  assert.equal(await sendPickups(d, now, 180_000, async () => true), 0, "a word after his message answered it");
+});
+
 test("a message to the requester with no status is the answer and closes the job; one to anyone else does not", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const managerId = await insertAgent(handle.db, { id: "answer-manager", systemPrompt: "manager" });
