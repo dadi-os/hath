@@ -263,3 +263,16 @@ test("ingest_memory sends every message Ankur wrote in the job as source_text, a
   await executeTool(runtime.toolContext(agentId), call("i2", "ingest_memory", { text: "A routine fact." }));
   assert.equal("source_text" in yaad.ingestCalls[1]!, false);
 });
+
+test("two messages from Ankur racing to open the line's job end in one job, and neither fails", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "racing-agent", systemPrompt: "agent" });
+  const { runtime } = harness();
+
+  await Promise.all([deliverUserMessage(quiet(runtime), agentId, "one"), deliverUserMessage(quiet(runtime), agentId, "two")]);
+
+  const rows = await handle.db.select().from(jobs).where(eq(jobs.agentId, agentId));
+  assert.equal(rows.length, 1);
+  const stamped = await handle.db.select().from(messages).where(eq(messages.toAgentId, agentId));
+  assert.deepEqual(stamped.map((row) => row.jobId), [rows[0]!.id, rows[0]!.id]);
+});

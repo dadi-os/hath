@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { helperSteers, jobs, messages, type JobRow } from "../db/schema.js";
+import { isUniqueViolation } from "../tools/shared.js";
 import { jobById, openJob } from "./jobs.js";
 
 /** A message's job, whether this message opened it. */
@@ -26,7 +27,8 @@ export type ResolvedJob = { job: JobRow; isNew: boolean };
 /**
  * resolveInbound is the job of message `message`, which reached agent `message.toAgentId` from
  * `message.fromAgentId` (null is Ankur), or null when it belongs to none. A new job is Ankur's
- * and due `answerByMinutes` after his message, or another agent's and due never.
+ * and due `answerByMinutes` after his message, or another agent's and due never. Two messages
+ * that race to open the line's job leave one insert to the unique index: the loser joins the winner's job.
  */
 export async function resolveInbound(
   db: Db,
@@ -60,21 +62,28 @@ export async function resolveInbound(
       }
     }
   }
-  const [created] = await db
-    .insert(jobs)
-    .values({
-      id: randomUUID(),
-      requesterId: sender,
-      agentId: agent,
-      state: "open",
-      openedSeq: message.seq,
-      answerBy: sender === null ? new Date(now.getTime() + answerByMinutes * 60_000) : null,
-    })
-    .returning();
-  if (created === undefined) {
-    throw new Error("job insert returned no row");
+  try {
+    const [created] = await db
+      .insert(jobs)
+      .values({
+        id: randomUUID(),
+        requesterId: sender,
+        agentId: agent,
+        state: "open",
+        openedSeq: message.seq,
+        answerBy: sender === null ? new Date(now.getTime() + answerByMinutes * 60_000) : null,
+      })
+      .returning();
+    if (created === undefined) {
+      throw new Error("job insert returned no row");
+    }
+    return { job: created, isNew: true };
+  } catch (err) {
+    if (!isUniqueViolation(err)) {
+      throw err;
+    }
+    return resolveInbound(db, message, answerByMinutes, now);
   }
-  return { job: created, isNew: true };
 }
 
 /**
