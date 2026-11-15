@@ -7,7 +7,6 @@ import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
 import { routerForwardAttachmentTool, routerSendMessageTool } from "./router.js";
 import { sendTool } from "./send.js";
 import { listAgentsTool, yieldTool } from "./tools.js";
-import { waitTool } from "./watches.js";
 
 /** A worker's id names its pool and task (`browser-worker-ibio-150-quiz-2`), per the system doctrine. */
 export const WORKER_ID = /(^|-)worker-/;
@@ -38,7 +37,7 @@ export function routerRegistryTool(name: string): ToolDefinition | undefined {
 
 /**
  * agentTools is every tool an agent holds, and the only place that says which: the registry
- * tools and send_message, list_agents, wait, the memory tools, the agent-management tools and
+ * tools and send_message, list_agents, the memory tools, the agent-management tools and
  * yield. A worker gets no `ingest_memory`: it reports what it found to the agent that owns the domain.
  */
 export function agentTools(agentId: string): DwarTool[] {
@@ -46,7 +45,6 @@ export function agentTools(agentId: string): DwarTool[] {
     ...allTools().map(asDwarTool),
     sendTool,
     listAgentsTool,
-    waitTool,
     recallMemoryTool,
     ...(WORKER_ID.test(agentId) ? [] : [ingestMemoryTool]),
     manageAgentTool,

@@ -1,47 +1,19 @@
 /**
- * What an agent is waiting on (the `wait` tool): its job's pending items, or nothing, which is a
- * plain sleep. A watch is a row, so a restart keeps it: the scheduler's tick wakes the agent
+ * What an agent is waiting on: its job's pending items, recorded when a run ends with any
+ * (see loop.ts). A watch is a row, so a restart keeps it: the scheduler's tick wakes the agent
  * with facts when one falls due, and the awaited result or message wakes it on its own
  * (deliver.ts takes the watch then). A watch is dropped when the agent next runs, since an
  * agent that woke for any reason is not waiting.
  */
 
 import { and, desc, eq, lte, sql } from "drizzle-orm";
-import { z } from "zod";
 import type { Db } from "../db/client.js";
 import { agentLogs, messages, watches, type WatchRow } from "../db/schema.js";
 import type { NasClient } from "../nas/client.js";
 import { parseTaskAddress } from "../tools/helper/tasks.js";
-import { failWithoutAgentIdentity, ok, type ToolContext, type ToolExecResult } from "../tools/shared.js";
-import type { DwarTool } from "../types/domain.js";
-import { WAIT } from "../types/domain.js";
 import type { DeliverDeps } from "./deliver.js";
 import { pendingItems, pendingTargets } from "./pending.js";
 import { rewake } from "./rewake.js";
-
-/** Longest a wait may last: a day, since Nas forgets an idle task after that. */
-export const WAIT_MAX_MINUTES = 24 * 60;
-
-const waitInput = z.object({ timeout_minutes: z.number().int().min(1).max(WAIT_MAX_MINUTES) }).strict();
-
-/** The wait tool. */
-export const waitTool: DwarTool = {
-  name: WAIT,
-  description: `End this run and sleep until something your job is waiting on answers: an agent you asked that has not replied, or a helper task you steered that is still working. No model call runs while you wait; the reply or the helper's report wakes you by itself. If nothing comes within timeout_minutes (1 to ${WAIT_MAX_MINUTES}) you are woken with the facts: for a task its state and how long since it last did anything, for an agent how long since it last acted and whether it has run since you messaged it. With nothing pending, it is a plain sleep until the timeout. Call it after you have done everything you can in this run; to end with nothing to wait on, call yield.`,
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["timeout_minutes"],
-    properties: {
-      timeout_minutes: {
-        type: "integer",
-        minimum: 1,
-        maximum: WAIT_MAX_MINUTES,
-        description: "Minutes to wait before you are woken with what is known",
-      },
-    },
-  },
-};
 
 /** The agent's watch, if it has one. */
 export async function watchOf(db: Db, agentId: string): Promise<WatchRow | undefined> {
@@ -64,20 +36,6 @@ export async function takeWatch(db: Db, agentId: string, target: string): Promis
     .where(and(eq(watches.agentId, agentId), sql`${target} = any(${watches.targets})`))
     .returning({ agentId: watches.agentId });
   return taken.length > 0;
-}
-
-/**
- * runWait records that the caller waits on its job's pending items (none for a wake that is on
- * no job), and returns the result the loop ends the run on (see step.ts).
- */
-export async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
-  if (ctx.callerId === null) {
-    return failWithoutAgentIdentity();
-  }
-  const input = waitInput.parse(raw);
-  const targets = ctx.jobId === null ? [] : pendingTargets(await pendingItems(ctx.db, ctx.nas, ctx.jobId));
-  const dueAt = await recordWatch(ctx.db, ctx.callerId, ctx.jobId, targets, input.timeout_minutes);
-  return ok({ waiting_on: targets, wakes_by: dueAt.toISOString() });
 }
 
 /** recordPendingWatch records a watch on job `jobId`'s pending items for `minutes` when it has any. */
@@ -118,7 +76,7 @@ export async function checkDueWatches(deps: WatchDeps, now = new Date()): Promis
     await clearWatch(deps.deliver.db, watch.agentId);
     const waited = minutesBetween(watch.since, now);
     await rewake(deps.deliver, watch.agentId, {
-      content: facts.length === 0 ? `Your wait of ${waited} minutes is over.` : `Your wait timed out after ${waited} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}`,
+      content: `Your wait timed out after ${waited} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}`,
       notice: "wait",
       wokenBy: "wait timeout",
       jobId: watch.jobId,

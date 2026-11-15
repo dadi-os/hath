@@ -16,7 +16,6 @@ import {
   MODIFY_AGENT_PROMPT,
   SEND_MESSAGE,
   SPAWN_AGENT,
-  WAIT,
   YIELD,
 } from "../types/domain.js";
 
@@ -59,7 +58,7 @@ const NO_RESULT = "no result (hath stopped before it returned)";
  * Calls a record leaves out: ending or pausing a turn, a send (the transcript already
  * holds the message), reopening a result, and the roster.
  */
-export const UNRECORDED_TOOLS = new Set<string>([YIELD, WAIT, SEND_MESSAGE, LIST_AGENTS]);
+export const UNRECORDED_TOOLS = new Set<string>([YIELD, SEND_MESSAGE, LIST_AGENTS]);
 
 /** How much of a read's input a record keeps: enough to name what was read. */
 const READ_INPUT_CHARS = 120;

@@ -512,7 +512,7 @@ test("an agent's tools are the whole registry and the loop tools, with no grants
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  for (const held of [SEND_MESSAGE, LIST_AGENTS, "wait", "yield", "recall_memory", "ingest_memory", "steer_browser", "stop_task", "my_activity", "set_routine"]) {
+  for (const held of [SEND_MESSAGE, LIST_AGENTS, "yield", "recall_memory", "ingest_memory", "steer_browser", "stop_task", "my_activity", "set_routine"]) {
     assert.ok(names.includes(held), held);
   }
   for (const gone of ["steer_work", "queue_message", "schedule_message"]) {
@@ -582,7 +582,6 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "edit_file",
       SEND_MESSAGE,
       LIST_AGENTS,
-      "wait",
       "recall_memory",
       "ingest_memory",
       "manage_agent",
@@ -973,7 +972,6 @@ test("an agent holds the whole registry in a fixed order, and list_agents among 
     "edit_file",
     SEND_MESSAGE,
     LIST_AGENTS,
-    "wait",
     "recall_memory",
     "ingest_memory",
     "manage_agent",

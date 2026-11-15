@@ -176,6 +176,49 @@ test("assembleContext keeps an open job's messages whole and cuts a rolling wind
   assert.equal(closed.throughSeq, whole.throughSeq);
 });
 
+test("a continuation's thread stops at the job's last logged step, and what arrived after it comes folded as arrived", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { name: "split-worker", systemPrompt: "system" });
+  const transcript = new TranscriptStore();
+  const deps = deliverDeps(transcript);
+  await deliverUserMessage(deps, agentId, "read D2L for the project dates");
+  const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, agentId));
+  const wakeId = randomUUID();
+  await handle.db.insert(agentLogs).values([
+    { id: randomUUID(), agentId, jobId: job!.id, wakeId, event: "response", payload: { provider: "anthropic", content: [{ type: "tool_use", id: "s1", name: "steer_browser", input: { message: "read D2L" } }] } },
+    { id: randomUUID(), agentId, jobId: job!.id, wakeId, event: "tool_result", payload: { tool_use_id: "s1", content: "{\"id\":\"task/browser/1\"}", is_error: false } },
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await deliverAgentMessage(deps, { fromAgentId: agentId, toAgentId: agentId, content: "Helper finished (task/browser/1):\nProject 2 is due Nov 20.", notice: "helper", jobId: job!.id });
+
+  const context = await assembleContext({
+    db: handle.db,
+    serviceRoot: config.serviceRoot,
+    agentId,
+    transcript,
+    window: wideWindow,
+    continuation: { wakeId: randomUUID(), jobId: job!.id, filesDir: "/files" },
+  });
+
+  assert.equal(context.continued?.length, 2, "the job's earlier step and its result");
+  const before = JSON.stringify(context.thread);
+  assert.match(before, /read D2L for the project dates/);
+  assert.doesNotMatch(before, /Helper finished/);
+  assert.equal(context.arrived?.role, "user");
+  assert.match(String(context.arrived?.content), /^\[Arrived since your last step\]\n\[Notice from hath[^\n]*\n[^\n]*Helper finished \(task\/browser\/1\):\nProject 2 is due Nov 20\./);
+
+  const fresh = await assembleContext({
+    db: handle.db,
+    serviceRoot: config.serviceRoot,
+    agentId,
+    transcript,
+    window: wideWindow,
+    continuation: null,
+  });
+  assert.equal(fresh.arrived, undefined, "a wake that continues no job keeps its whole thread in place");
+  assert.match(JSON.stringify(fresh.thread), /Helper finished/);
+});
+
 test("assembleContext shortens the window to the room its token budget leaves after the system and tools", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, {

@@ -22,7 +22,7 @@ export type AgentLoopDeps = StepDeps & {
   /** The note a yield is answered with once, or null when the job needs none (see yield-reminder.ts). */
   yieldReminder: () => Promise<string | null>;
   /** Records that the agent waits on its job's pending items for `minutes`, when it has any (see watches.ts recordPendingWatch). */
-  wait: (minutes: number) => Promise<void>;
+  watchPending: (minutes: number) => Promise<void>;
   /** Writes the log row of a model call that was cancelled before it answered. */
   logAborted: () => Promise<void>;
 };
@@ -37,10 +37,11 @@ export const IMPLICIT_WAIT_MINUTES = 30;
  * call runs and the model call in flight is cancelled. A run that finds nothing new since the
  * agent last yielded in this wake ends without a model call, as when a helper's report queues a
  * run behind one that already read it. A turn of text and no tool call is the agent's answer
- * (see send.ts replyWithText). A yield that leaves the job unanswered, with nothing pending to
- * wake the agent, is answered once with the reminder yieldReminder gives. The wait tool ends the
- * run like yield after recording what it waits on; so does a turn of only sends, steers and
- * saves (see endsOnItsOwn).
+ * (see send.ts replyWithText). A run that ends with asks or helpers pending records what it
+ * waits on first, so their answer wakes it, or the facts do after IMPLICIT_WAIT_MINUTES. A yield
+ * that leaves the job unanswered, with nothing pending to wake the agent, is answered once with
+ * the reminder yieldReminder gives. A turn of only sends and steers, with any saves, ends the
+ * run like a yield (see endsOnItsOwn).
  */
 export async function runAgentLoop(deps: AgentLoopDeps): Promise<void> {
   const stopped = () => deps.interrupts.isStopped(deps.agentId);
@@ -74,6 +75,9 @@ export async function runAgentLoop(deps: AgentLoopDeps): Promise<void> {
         return result;
       };
       if ((await runStep({ ...deps, executeTool: tracked }, response, stopped)) || (!stopped() && (await endsOnItsOwn(deps, outcomes)))) {
+        if (!stopped()) {
+          await deps.watchPending(IMPLICIT_WAIT_MINUTES);
+        }
         if (!stopped() && !reminded) {
           const unanswered = await deps.yieldReminder();
           if (unanswered !== null) {
@@ -116,20 +120,17 @@ async function callUnlessPreempted(
 }
 
 /**
- * endsOnItsOwn is true when a turn ends the run without a model call to yield or wait: it has
- * a send_message, a steer or an ingest, no call in it failed, and every call in it was one of
- * those or a save that records what the message reports (SAVES). A task the turn steered, and an
- * ask it sent, are waited on for IMPLICIT_WAIT_MINUTES, since the report or reply wakes the agent
- * for its next step and a wait that times out wakes it with facts. The run is marked yielded, so
- * the yield reminder still applies.
+ * endsOnItsOwn is true when a turn ends the run without a model call to yield: it has a
+ * send_message or a steer, no call in it failed, and every call in it was one of those or a save
+ * that records what the message reports (SAVES). A store alone does not end the run: the agent
+ * reads what it stored before it replies. The run is marked yielded, so the yield reminder still applies.
  */
 async function endsOnItsOwn(deps: AgentLoopDeps, outcomes: { call: DwarToolUseBlock; result: ToolExecResult }[]): Promise<boolean> {
-  const ends = outcomes.some(({ call }) => call.name === SEND_MESSAGE || HELPER_STEERS.has(call.name) || call.name === INGEST_MEMORY);
+  const ends = outcomes.some(({ call }) => call.name === SEND_MESSAGE || HELPER_STEERS.has(call.name));
   const allowed = (name: string) => name === SEND_MESSAGE || SAVES.has(name) || HELPER_STEERS.has(name);
   if (!ends || !outcomes.every(({ call, result }) => allowed(call.name) && !result.isError)) {
     return false;
   }
-  await deps.wait(IMPLICIT_WAIT_MINUTES);
   deps.wake.markYield();
   return true;
 }

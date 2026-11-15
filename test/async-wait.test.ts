@@ -7,6 +7,7 @@ import { agentLogs, jobs, pendingAsync, reminders, watches } from "../src/db/sch
 import { reportLostAsync } from "../src/runtime/async.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
+import { recordPendingWatch } from "../src/runtime/watches.js";
 import { yieldReminder } from "../src/runtime/yield-reminder.js";
 import type { DwarChatRequest } from "../src/types/domain.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
@@ -50,6 +51,13 @@ const call = (id: string, name: string, input: unknown) => ({ type: "tool_use" a
 /** Delivery that runs no agent, so a test sets the scene without a wake racing it. */
 function quiet(runtime: ReturnType<typeof harness>["runtime"]) {
   return { ...runtime.deliver, enqueue: () => randomUUID(), preempt: () => {} };
+}
+
+/** An agent holding the open job `requester`, another agent, gave it, and a tool context standing in that job. */
+async function inAgentJob(runtime: ReturnType<typeof harness>["runtime"], agentId: string, requester: string, words = "when is my exam?") {
+  await deliverAgentMessage(quiet(runtime), { fromAgentId: requester, toAgentId: agentId, content: words });
+  const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, agentId));
+  return { job: job!, ctx: { ...runtime.toolContext(agentId), jobId: job!.id } };
 }
 
 /** An agent holding Ankur's open job, and a tool context standing in that job. */
@@ -117,32 +125,25 @@ test("a large ingest result is saved to a file and the call shows its start and 
   assert.ok(nas.files.get(`${config.files.dir}/results/ing-4.txt`)!.length > 4_000);
 });
 
-test("wait watches the job's unanswered asks and working helper tasks, and nothing is a plain sleep", async () => {
+test("a run's end watches the job's unanswered asks and working helper tasks, and records nothing when none are pending", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
   await insertAgent(handle.db, { id: "other", systemPrompt: "other" });
-  const { runtime } = harness();
+  const { runtime, nas } = harness();
   const { job, ctx } = await inJob(runtime, "waiter");
 
-  const bare = await executeTool(ctx, call("w0", "wait", { timeout_minutes: 10 }));
-  assert.equal(bare.isError, false, bare.content);
-  const [sleeping] = await handle.db.select().from(watches).where(eq(watches.agentId, "waiter"));
-  assert.deepEqual(sleeping?.targets, [], "nothing pending");
-  assert.ok(Math.abs(sleeping!.dueAt.getTime() - Date.now() - 10 * 60_000) < 5_000);
+  await recordPendingWatch(handle.db, nas, "waiter", job.id, 10);
+  assert.equal((await handle.db.select().from(watches).where(eq(watches.agentId, "waiter"))).length, 0, "nothing pending, so no watch");
 
   await deliverAgentMessage(quiet(runtime), { fromAgentId: "waiter", toAgentId: "other", content: "what do you know?", jobId: job.id });
   await executeTool(ctx, call("s1", "steer_browser", { message: "go" }));
-  const waited = await executeTool(ctx, call("w1", "wait", { timeout_minutes: 10 }));
-  assert.equal(waited.isError, false, waited.content);
+  await recordPendingWatch(handle.db, nas, "waiter", job.id, 10);
   const [watch] = await handle.db.select().from(watches).where(eq(watches.agentId, "waiter"));
   assert.deepEqual(watch?.targets, ["other", "task/browser/1"]);
-  assert.deepEqual(JSON.parse(waited.content).waiting_on, ["other", "task/browser/1"]);
-
-  assert.equal((await executeTool(ctx, call("w4", "wait", { timeout_minutes: 0 }))).isError, true);
-  assert.deepEqual((await handle.db.select().from(watches).where(eq(watches.agentId, "waiter")))[0]?.targets, ["other", "task/browser/1"], "a refused wait changes nothing");
+  assert.ok(Math.abs(watch!.dueAt.getTime() - Date.now() - 10 * 60_000) < 5_000);
 
   await deliverAgentMessage(quiet(runtime), { fromAgentId: "other", toAgentId: "waiter", content: "this much" });
-  await executeTool(ctx, call("w5", "wait", { timeout_minutes: 10 }));
+  await recordPendingWatch(handle.db, nas, "waiter", job.id, 10);
   assert.deepEqual((await handle.db.select().from(watches).where(eq(watches.agentId, "waiter")))[0]?.targets, ["task/browser/1"], "an answered ask is no longer waited on");
 });
 
@@ -176,17 +177,20 @@ test("a due watch wakes the agent with facts about a task and an agent, and is d
   assert.match(JSON.stringify(dwar.agentCalls[0]!.messages), /\[Wake\] wait timeout/);
 });
 
-test("a watch survives a runtime restart and still falls due, and a plain sleep ends with its own line", async () => {
+test("a watch survives a runtime restart and still falls due", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
+  await insertAgent(handle.db, { id: "other", systemPrompt: "other" });
   const first = harness();
-  await executeTool(first.runtime.toolContext("waiter"), call("w1", "wait", { timeout_minutes: 1 }));
+  const { job } = await inJob(first.runtime, "waiter");
+  await deliverAgentMessage(quiet(first.runtime), { fromAgentId: "waiter", toAgentId: "other", content: "what do you know?", jobId: job.id });
+  await recordPendingWatch(handle.db, first.nas, "waiter", job.id, 1);
   const second = harness();
 
   await second.runtime.scheduler.tick(new Date(Date.now() + 2 * 60_000));
   await second.runtime.waitUntilIdle();
 
-  assert.match(second.runtime.transcript.transcriptFor("waiter").at(-1)?.content ?? "", /^Your wait of \d+ minutes is over\.$/);
+  assert.match(second.runtime.transcript.transcriptFor("waiter").at(-1)?.content ?? "", /^Your wait timed out after \d+ minutes with nothing from what you waited on\.\n- other: /);
 });
 
 test("a message from the agent waited on wakes the agent and drops the watch", async () => {
@@ -226,15 +230,21 @@ test("the running info of GET /agents shows whether the agent runs and what it w
   }
 });
 
-test("the yield reminder fires for an unanswered job with nothing pending, and not when something would wake the agent", async () => {
+test("the yield reminder fires for an agent's unanswered job with nothing pending, and not for Ankur's or when something would wake the agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "asked", systemPrompt: "is asked" });
+  await insertAgent(handle.db, { id: "asker", systemPrompt: "asks" });
+  await insertAgent(handle.db, { id: "asked-by-ankur", systemPrompt: "is asked by Ankur" });
   const { runtime, nas } = harness();
-  const { job, ctx } = await inJob(runtime, "asked");
+  const { job, ctx } = await inAgentJob(runtime, "asked", "asker");
   const deps = { db: handle.db, nas };
 
+  const ankurs = await inJob(runtime, "asked-by-ankur");
+  assert.notEqual(ankurs.job.answerBy, null);
+  assert.equal(await yieldReminder(deps, "asked-by-ankur", ankurs.job.id), null, "answer-by is Ankur's backstop, so no reminder");
+
   const reminder = await yieldReminder(deps, "asked", job.id);
-  assert.match(reminder ?? "", /^\[continue\] Ankur asked "when is my exam\?" at \d{4}-\d\d-\d\dT.* and nothing you started will wake you\. Answer now, or start or wait on what will\.$/);
+  assert.match(reminder ?? "", /^\[continue\] asker asked "when is my exam\?" at \d{4}-\d\d-\d\dT.* and nothing you started will wake you\. Answer now, or start what will\.$/);
   assert.equal(await yieldReminder(deps, "asked", null), null, "no job, no reminder");
 
   await executeTool(ctx, call("s1", "steer_browser", { message: "look it up" }));
@@ -243,7 +253,7 @@ test("the yield reminder fires for an unanswered job with nothing pending, and n
   assert.notEqual(await yieldReminder(deps, "asked", job.id), null, "an idle task does not");
 
   await handle.db.insert(watches).values({ agentId: "asked", targets: [], dueAt: new Date(Date.now() + 60_000) });
-  assert.equal(await yieldReminder(deps, "asked", job.id), null, "a wait wakes it");
+  assert.equal(await yieldReminder(deps, "asked", job.id), null, "a watch wakes it");
   await handle.db.delete(watches);
 
   await handle.db.insert(pendingAsync).values({ id: "p1", agentId: "asked", toolName: "control_device" });
@@ -259,13 +269,14 @@ test("the yield reminder fires for an unanswered job with nothing pending, and n
   };
   await assert.rejects(() => yieldReminder(deps, "asked", job.id), /nas is down/, "a Nas that cannot be read is an error, not a guess");
 
-  await deliverAgentMessage(quiet(runtime), { fromAgentId: "asked", toAgentId: null, content: "Thursday.", jobId: job.id, status: "done" });
+  await deliverAgentMessage(quiet(runtime), { fromAgentId: "asked", toAgentId: "asker", content: "Thursday.", jobId: job.id, status: "done" });
   assert.equal(await yieldReminder(deps, "asked", job.id), null, "answered");
 });
 
 test("the agent yields once more after the reminder, and a second yield stands", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "asked", systemPrompt: "is asked" });
+  await insertAgent(handle.db, { id: "asker", systemPrompt: "asks" });
   const requests: DwarChatRequest[] = [];
   const { runtime, dwar } = harness({
     agent: (request) => {
@@ -273,9 +284,9 @@ test("the agent yields once more after the reminder, and a second yield stands",
       return toolUse("yield", {}, `y${requests.length}`);
     },
   });
-  const { job } = await inJob(runtime, "asked");
+  const { job } = await inAgentJob(runtime, "asked", "asker");
 
-  runtime.enqueue("asked", "message from Ankur", { kind: "message", ref: null, openedByMessageId: null, jobId: job.id, jobIsNew: true });
+  runtime.enqueue("asked", "message from asker", { kind: "message", ref: null, openedByMessageId: null, jobId: job.id, jobIsNew: true });
   await runtime.waitUntilIdle();
 
   assert.equal(dwar.agentCalls.length, 2);

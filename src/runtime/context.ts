@@ -60,6 +60,12 @@ export type AssembledContext = Omit<DwarChatRequest, "tool_choice" | "messages">
   header?: string;
   /** The steps the job's earlier wakes took, when the wake continues a job (see continuation.ts). */
   continued?: WakeTurn[];
+  /**
+   * What arrived after the job's last step, folded into one turn, when the wake continues a
+   * job: it follows `continued`, so the arrival that woke the agent is the last thing it reads.
+   * `thread` then holds only what came before that step.
+   */
+  arrived?: DwarMessage;
 };
 
 /**
@@ -235,13 +241,18 @@ export async function assembleContext(opts: {
   const fixedTokens = Math.ceil(system.length / PROSE_CHARS_PER_TOKEN) + Math.ceil(JSON.stringify(tools).length / DATA_CHARS_PER_TOKEN);
   const roomChars = Math.floor(Math.max(0, opts.window.budgetTokens - fixedTokens) * PROSE_CHARS_PER_TOKEN);
   const shown = threadWindow(thread, opts.agentId, openJobIds, opts.window, roomChars);
-  const continued = opts.continuation === null ? [] : await continuedTurns(opts.db, { agentId: opts.agentId, ...opts.continuation });
+  const { turns: continued, lastStepAt } = opts.continuation === null ? { turns: [], lastStepAt: null } : await continuedTurns(opts.db, { agentId: opts.agentId, ...opts.continuation });
+  const split = continued.length === 0 || lastStepAt === null ? null : lastStepAt;
+  const later = (row: TranscriptEntry) => split !== null && row.createdAt > split && !isOwnSend(row, opts.agentId);
+  const before = shown.filter((row) => !later(row));
+  const arrived = split === null ? null : foldArrivals(shown.filter(later), opts.agentId, ARRIVED_SINCE_STEP);
   return {
     system,
-    thread: historyFor(shown, opts.agentId),
+    thread: historyFor(before, opts.agentId),
     tools,
     throughSeq: thread.at(-1)?.seq ?? 0,
     ...(continued.length > 0 ? { continued } : {}),
+    ...(arrived === null ? {} : { arrived }),
   };
 }
 
@@ -284,16 +295,28 @@ export function arrivalsSince(transcript: TranscriptStore, agentId: string, afte
   if (fresh.length === 0) {
     return { turn: null, throughSeq: afterSeq };
   }
-  const throughSeq = fresh.at(-1)!.seq;
-  const arrived = fresh.filter((row) => row.fromAgentId !== agentId || row.toAgentId === agentId);
-  const own = fresh.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId);
-  const text = (label: string, rows: TranscriptEntry[]): string[] =>
-    rows.length === 0 ? [] : [label, ...rows.map((row) => transcriptText(row, agentId, true))];
-  const parts = [
-    ...text("[Arrived during this wake]", arrived),
-    ...text("[Sent for you by hath]", own.filter((row) => row.sentBy === "hath")),
-  ];
-  return { turn: parts.length === 0 ? null : { role: "user", content: parts.join("\n\n") }, throughSeq };
+  return { turn: foldArrivals(fresh, agentId, ARRIVED_DURING_WAKE), throughSeq: fresh.at(-1)!.seq };
+}
+
+const ARRIVED_DURING_WAKE = "[Arrived during this wake]";
+const ARRIVED_SINCE_STEP = "[Arrived since your last step]";
+
+/** isOwnSend is true for a message the agent itself sent to someone else, as opposed to one hath sent for it. */
+function isOwnSend(row: TranscriptEntry, agentId: string): boolean {
+  return row.fromAgentId === agentId && row.toAgentId !== agentId && row.sentBy !== "hath";
+}
+
+/**
+ * foldArrivals folds thread entries into one user turn under `label`, or null when none is
+ * to show: what reached the agent, then what hath sent for it. Its own sends are left out.
+ */
+function foldArrivals(rows: TranscriptEntry[], agentId: string, label: string): DwarMessage | null {
+  const arrived = rows.filter((row) => row.fromAgentId !== agentId || row.toAgentId === agentId);
+  const own = rows.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId);
+  const text = (heading: string, group: TranscriptEntry[]): string[] =>
+    group.length === 0 ? [] : [heading, ...group.map((row) => transcriptText(row, agentId, true))];
+  const parts = [...text(label, arrived), ...text("[Sent for you by hath]", own.filter((row) => row.sentBy === "hath"))];
+  return parts.length === 0 ? null : { role: "user", content: parts.join("\n\n") };
 }
 
 /**

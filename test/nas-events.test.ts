@@ -13,6 +13,7 @@ const report = {
   text: "Applied.",
   detail: "",
   files: ["/var/home/dadi/Downloads/receipt.pdf"],
+  hosts: ["d2l.msu.edu"],
   at: "2026-10-29T14:00:00.123456789Z",
 };
 

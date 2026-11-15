@@ -28,7 +28,7 @@
 
 import { randomUUID } from "node:crypto";
 import { HathError } from "../errors.js";
-import type { DwarMessage, DwarTool, DwarUsage } from "../types/domain.js";
+import { YIELD, type DwarMessage, type DwarTool, type DwarToolUseBlock, type DwarUsage } from "../types/domain.js";
 import { resultPath, savesResult } from "./files.js";
 import { formatActions } from "./record.js";
 
@@ -305,6 +305,14 @@ export class Wake {
   /** True once the agent has taken a step in this wake. */
   reasoned(): boolean {
     return this.turns.some((turn) => turn.message.role === "assistant");
+  }
+
+  /** True when the agent took steps in this wake and every call in them was a yield. */
+  yieldedOnly(): boolean {
+    const calls = this.turns.flatMap((turn) =>
+      turn.message.role === "assistant" && typeof turn.message.content !== "string" ? turn.message.content.filter((block): block is DwarToolUseBlock => block.type === "tool_use") : [],
+    );
+    return this.reasoned() && calls.every((block) => block.name === YIELD);
   }
 
   /** How many turns in a row ran out of output room while thinking (see CAPPED_TURN). */

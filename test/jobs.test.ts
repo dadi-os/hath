@@ -9,10 +9,12 @@ import { recordActivity } from "../src/runtime/activity.js";
 import { deliverAgentMessage, deliverUserMessage, type DeliverDeps } from "../src/runtime/deliver.js";
 import { EventBus } from "../src/runtime/events.js";
 import { renderHeader } from "../src/runtime/header.js";
-import { jobOfTask, noteSteer } from "../src/runtime/job-of.js";
+import { jobOfTask, noteSteer, openRunJob } from "../src/runtime/job-of.js";
+import { settleWakeJobs } from "../src/runtime/jobs.js";
+import { Wake } from "../src/runtime/wake.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import type { WakeOrigin } from "../src/types/domain.js";
-import { insertAgent, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
+import { insertAgent, mockNas, openTestDb, resetRuntime, roomyWakeLimits, silentLog, testConfig } from "./helpers.js";
 
 const config = testConfig();
 const handle = await openTestDb();
@@ -215,4 +217,80 @@ test("hath's pickup is a message marked sent_by hath with no status, in the job 
   assert.deepEqual([pickup?.content, pickup?.status, pickup?.sentBy, pickup?.jobId], ["Working on it.", null, "hath", job?.id]);
   assert.equal((await jobsOf(agentId))[0]?.state, "open");
   assert.equal(await sendPickups(d, new Date(Date.now() + 200_000), 180_000, async () => true), 0, "one pickup per job");
+});
+
+test("a message to the requester with no status is the answer and closes the job; one to anyone else does not", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const managerId = await insertAgent(handle.db, { id: "answer-manager", systemPrompt: "manager" });
+  const workerId = await insertAgent(handle.db, { id: "answer-worker", systemPrompt: "worker", parentAgentId: managerId });
+  const peerId = await insertAgent(handle.db, { id: "answer-peer", systemPrompt: "peer" });
+  const d = deps();
+
+  await deliverAgentMessage(d, { fromAgentId: managerId, toAgentId: workerId, content: "read the page" });
+  await deliverAgentMessage(d, { fromAgentId: workerId, toAgentId: peerId, content: "do you know the page?" });
+  assert.equal((await jobsOf(workerId))[0]?.state, "open", "an ask to a third agent leaves the job open");
+
+  const answer = await deliverAgentMessage(d, { fromAgentId: workerId, toAgentId: managerId, content: "3 items" });
+  const [job] = await jobsOf(workerId);
+  assert.equal(job?.state, "done");
+  assert.equal(job?.closedSeq, answer.seq);
+});
+
+test("a no-status reply to Ankur closes his job, and a later message from him opens the next", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { id: "reply-agent", systemPrompt: "agent" });
+  const d = deps();
+
+  await deliverUserMessage(d, agentId, "is the coffee still on?");
+  await deliverAgentMessage(d, { fromAgentId: agentId, toAgentId: null, content: "Yes, 3 PM." });
+  assert.deepEqual((await jobsOf(agentId)).map((row) => row.state), ["done"]);
+
+  await deliverUserMessage(d, agentId, "and tomorrow?");
+  assert.deepEqual((await jobsOf(agentId)).map((row) => row.state).sort(), ["done", "open"]);
+});
+
+/** A wake whose steps are the calls named in `calls`, one turn each. */
+function wakeThatCalled(calls: string[], jobId: string | null = null): Wake {
+  const wake = new Wake(roomyWakeLimits);
+  wake.jobId = jobId;
+  calls.forEach((name, i) => {
+    wake.push({ message: { role: "assistant", content: [{ type: "tool_use", id: `c${i}`, name, input: {} }] } });
+  });
+  return wake;
+}
+
+test("a wake that only yielded closes the job it opened as noop; one that did anything else leaves it open", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const idleId = await insertAgent(handle.db, { id: "idle-agent", systemPrompt: "agent" });
+  const busyId = await insertAgent(handle.db, { id: "busy-agent", systemPrompt: "agent" });
+  const d = deps();
+  await deliverUserMessage(d, idleId, "ok thanks");
+  await deliverUserMessage(d, busyId, "ok thanks");
+  const nas = mockNas({});
+
+  await settleWakeJobs(handle.db, nas, d.transcript.transcriptFor(idleId), idleId, wakeThatCalled(["yield"]));
+  await settleWakeJobs(handle.db, nas, d.transcript.transcriptFor(busyId), busyId, wakeThatCalled(["read_file", "yield"]));
+
+  assert.deepEqual((await jobsOf(idleId)).map((row) => row.state), ["noop"]);
+  assert.deepEqual((await jobsOf(busyId)).map((row) => row.state), ["open"]);
+});
+
+test("a routine's job closes when its run ends with nothing pending, and stays open while a helper it steered works", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const doneId = await insertAgent(handle.db, { id: "routine-done", systemPrompt: "agent" });
+  const waitingId = await insertAgent(handle.db, { id: "routine-waiting", systemPrompt: "agent" });
+  const nas = mockNas({});
+  await nas.startTask("browser", { agent_id: waitingId, message: "go" });
+  const d = deps();
+  const doneRow = await deliverAgentMessage(d, { fromAgentId: doneId, toAgentId: doneId, content: "Your routine fired.", notice: "routine" });
+  const waitingRow = await deliverAgentMessage(d, { fromAgentId: waitingId, toAgentId: waitingId, content: "Your routine fired.", notice: "routine" });
+  const doneJob = await openRunJob(handle.db, { agentId: doneId, seq: doneRow.seq, routineId: null, requesterId: doneId });
+  const waitingJob = await openRunJob(handle.db, { agentId: waitingId, seq: waitingRow.seq, routineId: null, requesterId: waitingId });
+  await noteSteer(handle.db, "task/browser/1", waitingId, waitingJob.id, "go");
+
+  await settleWakeJobs(handle.db, nas, [], doneId, wakeThatCalled(["read_file", "yield"], doneJob.id));
+  await settleWakeJobs(handle.db, nas, [], waitingId, wakeThatCalled(["steer_browser", "yield"], waitingJob.id));
+
+  assert.equal((await jobsOf(doneId))[0]?.state, "done");
+  assert.equal((await jobsOf(waitingId))[0]?.state, "open");
 });

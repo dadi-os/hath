@@ -8,7 +8,7 @@ import type {
   DwarToolResultBlock,
   DwarToolUseBlock,
 } from "../types/domain.js";
-import { INGEST_MEMORY, WAIT, YIELD } from "../types/domain.js";
+import { INGEST_MEMORY, YIELD } from "../types/domain.js";
 import { mergeIngests } from "./memory.js";
 import type { Arrivals, AssembledContext } from "./context.js";
 import type { ToolExecResult } from "./tools.js";
@@ -44,7 +44,8 @@ export type StepDeps = {
 
 /**
  * syncWake freezes the system and the thread on the wake's first call, followed by the wake
- * header (see header.ts) and the job's earlier steps (see continuation.ts); after that,
+ * header (see header.ts), the job's earlier steps (see continuation.ts) and what arrived
+ * after the last of them, so the arrival that woke the agent is read last; after that,
  * messages that landed since are appended once, where they arrived.
  */
 export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
@@ -55,6 +56,9 @@ export function syncWake(deps: StepDeps, assembled: AssembledContext): void {
     }
     if (assembled.continued !== undefined) {
       deps.wake.push(...assembled.continued);
+    }
+    if (assembled.arrived !== undefined) {
+      deps.wake.push({ message: assembled.arrived });
     }
     return;
   }
@@ -158,7 +162,7 @@ export async function runStep(
   let stopped = false;
   const merged = mergeIngests(uses.filter((call) => call.name === INGEST_MEMORY));
   for (const call of uses) {
-    if (isStopped() && call.name !== YIELD && call.name !== WAIT) {
+    if (isStopped() && call.name !== YIELD) {
       const result: ToolExecResult = { content: TERMINATED, isError: true, audit: { terminated: true } };
       await deps.logToolResult(call, result);
       results.push({ type: "tool_result", tool_use_id: call.id, content: result.content, is_error: true });
@@ -166,7 +170,7 @@ export async function runStep(
       continue;
     }
     const result = merged === null || call.name !== INGEST_MEMORY ? await deps.executeTool(call) : await executeMerged(deps, merged, call);
-    if (call.name === YIELD || (call.name === WAIT && !result.isError)) {
+    if (call.name === YIELD) {
       yielded = true;
     }
     await deps.logToolResult(call, result);
@@ -179,7 +183,7 @@ export async function runStep(
     if (result.state !== undefined) {
       states[call.id] = result.state;
     }
-    if (isStopped() && call.name !== YIELD && call.name !== WAIT) {
+    if (isStopped() && call.name !== YIELD) {
       stopped = true;
     }
   }

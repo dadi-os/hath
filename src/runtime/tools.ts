@@ -17,7 +17,6 @@ import {
   MODIFY_AGENT_PROMPT,
   RECALL_MEMORY,
   SEND_MESSAGE,
-  WAIT,
   YIELD,
 } from "../types/domain.js";
 import { agentRegistryTool } from "./tool-set.js";
@@ -31,7 +30,6 @@ import {
 import { cutLong } from "./async.js";
 import { KEEP_WHOLE_CHARS } from "./wake.js";
 import { resultPath, savesResult, writeBytes } from "./files.js";
-import { runWait } from "./watches.js";
 import { runIngestMemory, runRecallMemory } from "./memory.js";
 import { recallDigestRow, recordActivity, storeRow } from "./activity.js";
 import { runManageAgent, runModifyAgentPrompt } from "./modify.js";
@@ -185,9 +183,6 @@ async function dispatchTool(
     }
     if (call.name === SEND_MESSAGE) {
       return await runSend(ctx, call.input);
-    }
-    if (call.name === WAIT) {
-      return await runWait(ctx, call.input);
     }
     if (call.name === RECALL_MEMORY) {
       return await runRecallMemory(ctx, call.input);

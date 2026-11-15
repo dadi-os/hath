@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
-import { attachments, deliveredReports, watches } from "../src/db/schema.js";
+import { agentActivity, attachments, deliveredReports, watches } from "../src/db/schema.js";
 import type { HelperReport } from "../src/nas/client.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, yieldTurn } from "./helpers.js";
@@ -29,6 +29,7 @@ function report(overrides: Partial<HelperReport> = {}): HelperReport {
     text: "Applied to 3 roles.",
     detail: "",
     files: [],
+    hosts: [],
     at: "2026-10-29T14:00:00.000000000Z",
     ...overrides,
   };
@@ -76,6 +77,18 @@ test("a helper report reaches the owning agent as a notice and wakes it, even th
   const first = JSON.stringify(dwar.agentCalls[0]!.messages);
   assert.match(first, /\[Wake\] helper result from task\/browser\/1/);
   assert.match(first, /Applied to 3 roles\./);
+});
+
+test("a browser report records a site read of the hosts the helper navigated, not of hosts its text mentions", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
+  const { runtime } = harness();
+
+  await runtime.helperReports.handle(report({ text: "Nothing due. Cross-checked gradescope.com.", hosts: ["d2l.msu.edu"] }));
+  await runtime.waitUntilIdle();
+
+  const rows = await handle.db.select().from(agentActivity).where(eq(agentActivity.agentId, "reporter"));
+  assert.deepEqual(rows.filter((row) => row.kind === "site_read").map((row) => row.subject), ["d2l.msu.edu"]);
 });
 
 test("a report delivered twice, by the stream and by reconcile, is one message", async () => {

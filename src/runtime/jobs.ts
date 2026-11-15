@@ -7,8 +7,11 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { jobs, type JobRow } from "../db/schema.js";
+import type { NasClient } from "../nas/client.js";
 import type { MessageStatus } from "../types/domain.js";
+import { pendingItems } from "./pending.js";
 import type { TranscriptEntry } from "./transcript.js";
+import type { Wake } from "./wake.js";
 
 /** Job states in which the work is still the agent's. */
 export const OPEN_STATES = ["open", "needs_input"] as const;
@@ -55,36 +58,47 @@ export async function blockOpenJob(db: Db, requester: string | null, agent: stri
 
 /**
  * recordStatus applies the status of an agent's message `seq` to job `job` when the message is
- * to the job's requester: done or blocked closes the job, needs_input parks it on that question.
- * A message to anyone else, or with no status, leaves the job as it is.
+ * to the job's requester: done or blocked closes the job, needs_input parks it on that question,
+ * and a message with no status is the answer, so it closes the job as done. A message to anyone
+ * else, or one hath sent for the agent (a pickup), leaves the job as it is.
  */
 export async function recordStatus(
   db: Db,
   job: JobRow,
-  message: { seq: number; toAgentId: string | null; status: MessageStatus | null },
+  message: { seq: number; toAgentId: string | null; status: MessageStatus | null; sentBy?: "hath" },
 ): Promise<void> {
-  if (message.status === null || message.toAgentId !== job.requesterId || !(OPEN_STATES as readonly string[]).includes(job.state)) {
+  if (message.sentBy !== undefined || message.toAgentId !== job.requesterId || !(OPEN_STATES as readonly string[]).includes(job.state)) {
     return;
   }
   const change =
     message.status === "needs_input"
       ? { state: "needs_input" as const, questionSeq: message.seq }
-      : { state: message.status, closedSeq: message.seq };
+      : { state: message.status ?? ("done" as const), closedSeq: message.seq };
   await db.update(jobs).set({ ...change, updatedAt: new Date() }).where(eq(jobs.id, job.id));
 }
 
 /**
  * settleWakeJobs closes, when an agent's wake ends, each job opened during that wake (by a
  * message among `lines`, the agent's transcript rows since its previous wake) that the wake
- * did nothing on: no step and no message back, so it was a message that needed
- * no work (noop). Every other job stays open until the agent reports on it: hath
- * never decides from outside that a job stalled, since an agent that yielded may be
+ * did nothing on: no step but a yield and no message back, so it was a message that needed
+ * no work (noop). The wake's own job, when it has no requester (a routine's), closes as done
+ * when the run ends with nothing pending. Every other job stays open until the agent reports
+ * on it: hath never decides from outside that a job stalled, since an agent that yielded may be
  * waiting on a reply that wakes it (health-specialist's Dr. Zubair job was closed as
  * "unfinished" on 2026-10-19 while it waited on efficiency-specialist).
  */
-export async function settleWakeJobs(db: Db, lines: TranscriptEntry[], agentId: string, reasoned: boolean): Promise<void> {
+export async function settleWakeJobs(db: Db, nas: NasClient, lines: TranscriptEntry[], agentId: string, wake: Wake): Promise<void> {
+  if (wake.jobId !== null) {
+    const job = await jobById(db, wake.jobId);
+    if (job.state === "open" && !hasRequester(job)) {
+      const pending = await pendingItems(db, nas, job.id);
+      if (pending.asks.length + pending.tasks.length === 0) {
+        await db.update(jobs).set({ state: "done", closedSeq: lines.at(-1)?.seq ?? job.openedSeq, updatedAt: new Date() }).where(eq(jobs.id, job.id));
+      }
+    }
+  }
   const firstSeq = lines[0]?.seq;
-  if (reasoned || firstSeq === undefined) {
+  if ((wake.reasoned() && !wake.yieldedOnly()) || firstSeq === undefined) {
     return;
   }
   const open = await db.select().from(jobs).where(and(eq(jobs.agentId, agentId), eq(jobs.state, "open")));

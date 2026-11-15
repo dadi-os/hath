@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activityBudgetChars, hostsIn, recallDigestRow, sendRow, siteReadRow, storeRow } from "../src/runtime/activity.js";
+import { activityBudgetChars, recallDigestRow, sendRow, siteReadRow, storeRow } from "../src/runtime/activity.js";
 
 test("a store row names each created or changed node with its id and local close", () => {
   const closes = new Date(2026, 10, 14, 23, 59).toISOString();
@@ -40,18 +40,15 @@ test("a recall by date digests its tasks, those closing that day first", () => {
   assert.equal(recallDigestRow(input, JSON.stringify({ nodes: [] })), null);
 });
 
-test("a browser report is a site read of the hosts its steer and answer name, ok only when the helper finished", () => {
-  const ok = siteReadRow({ task: "task/browser/3", state: "done", text: "Nothing due. Checked https://d2l.msu.edu/d2l/home." }, "Read the due dates on D2L");
-  assert.deepEqual([ok.kind, ok.subject], ["site_read", "d2l.msu.edu"]);
+test("a browser report is a site read of the hosts the helper navigated, ok only when the helper finished", () => {
+  const ok = siteReadRow({ task: "task/browser/3", state: "done", text: "Nothing due.", hosts: ["d2l.msu.edu", "us.kritik.io"] });
+  assert.deepEqual([ok.kind, ok.subject], ["site_read", "d2l.msu.edu, us.kritik.io"]);
   assert.match(ok.digest, /^task\/browser\/3 ok: Nothing due/);
-  const failed = siteReadRow({ task: "task/browser/4", state: "failed", text: "Sign-in failed" }, "Check gradescope.com");
+  const failed = siteReadRow({ task: "task/browser/4", state: "failed", text: "Sign-in failed", hosts: ["gradescope.com"] });
   assert.equal(failed.subject, "gradescope.com");
   assert.match(failed.digest, /not_read \(failed\)/);
-  assert.equal(siteReadRow({ task: "task/browser/5", state: "done", text: "ok" }, "look").subject, "task/browser/5");
-});
-
-test("hosts are found once each, lowercased", () => {
-  assert.deepEqual(hostsIn("Open D2L.msu.edu then d2l.msu.edu and us.kritik.io"), ["d2l.msu.edu", "us.kritik.io"]);
+  assert.equal(siteReadRow({ task: "task/browser/5", state: "done", text: "ok", hosts: [] }).subject, "task/browser/5");
+  assert.equal(siteReadRow({ task: "task/browser/6", state: "done", text: "Checked gradescope.com", hosts: ["d2l.msu.edu"] }).subject, "d2l.msu.edu", "prose naming a host is not a read of it");
 });
 
 test("a send row is the recipient and the start of the message; the list budget is a share of the ceiling", () => {

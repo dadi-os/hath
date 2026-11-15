@@ -44,26 +44,13 @@ export async function recordActivity(
   });
 }
 
-const HOST = /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|org|edu|net|io|gov|dev|app|us|co|ai|cloud)\b/gi;
-
-/** hostsIn is the host names that appear in `texts`, lowercased, each once, in order. */
-export function hostsIn(...texts: string[]): string[] {
-  const found = new Set<string>();
-  for (const text of texts) {
-    for (const match of text.matchAll(HOST)) {
-      found.add(match[0].toLowerCase());
-    }
-  }
-  return [...found];
-}
-
 /**
- * siteReadRow is the activity row for a browser helper's report: the hosts its steer and
- * answer name (the task's address when they name none), and the start of the answer, marked
+ * siteReadRow is the activity row for a browser helper's report: the hosts the helper reports
+ * it navigated (the task's address when it loaded none), and the start of the answer, marked
  * ok when the helper finished and else with the state it ended in (`not_read`).
  */
-export function siteReadRow(report: { task: string; state: string; text: string }, steer: string): Pick<ActivityRow, "kind" | "subject" | "digest"> {
-  const hosts = hostsIn(steer, report.text);
+export function siteReadRow(report: { task: string; state: string; text: string; hosts: string[] }): Pick<ActivityRow, "kind" | "subject" | "digest"> {
+  const { hosts } = report;
   const outcome = report.state === "done" ? "ok" : `not_read (${report.state})`;
   return {
     kind: "site_read",

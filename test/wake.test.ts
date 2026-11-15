@@ -607,10 +607,29 @@ test("the wake header is the first turn after the transcript, and a wake with no
   assert.equal(new Wake(roomyWakeLimits).reasonList.length, 0);
 });
 
+test("a continuation's earlier steps come before what arrived since, so the arrival that woke the agent is read last", async () => {
+  const requests: DwarChatRequest[] = [];
+  const deps = stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", "y1")]), requests);
+  const steer: DwarMessage = { role: "assistant", content: [call("steer_browser", "s1")] };
+  const result: DwarMessage = { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: "{\"id\":\"task/browser/1\"}", is_error: false }] };
+  await runAgentLoop({
+    ...loopHooks(),
+    ...deps,
+    assemble: async () => ({
+      ...(await deps.assemble()),
+      header: "[Wake] helper result from task/browser/1",
+      continued: [{ message: steer }, { message: result }],
+      arrived: { role: "user", content: "[Arrived since your last step]\n[Notice from hath]\nHelper finished (task/browser/1)" },
+    }),
+  });
+  const kinds = requests[0]!.messages.map((message) => (typeof message.content === "string" ? message.content.split("\n")[0] : message.content[0]!.type));
+  assert.deepEqual(kinds, ["[From: Ankur]", "[Wake] helper result from task/browser/1", "tool_use", "tool_result", "[Arrived since your last step]"]);
+});
+
 test("a yield that leaves a request unanswered with nothing to wake the agent gets the reminder once", async () => {
   const requests: DwarChatRequest[] = [];
   let asked = 0;
-  const reminder = "[continue] ankur asked \"x\" at t and nothing you started will wake you. Answer now, or start or wait on what will.";
+  const reminder = "[continue] ankur asked \"x\" at t and nothing you started will wake you. Answer now, or start what will.";
   await runAgentLoop({
     ...loopHooks(),
     yieldReminder: async () => {
@@ -625,17 +644,35 @@ test("a yield that leaves a request unanswered with nothing to wake the agent ge
   assert.equal(typeof last.content === "string" ? last.content : "", reminder);
 });
 
-test("a wait with a target ends the run like a yield, and a refused wait does not", async () => {
-  for (const [isError, calls] of [[false, 1], [true, 2]] as const) {
-    const requests: DwarChatRequest[] = [];
-    let n = 0;
-    await runAgentLoop({
-      ...loopHooks(),
-      ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call(n++ === 0 ? "wait" : "yield", `w${n}`)]), requests),
-      executeTool: async (use) => ({ content: use.name === "wait" && isError ? "no agent x" : "{}", isError: use.name === "wait" && isError, audit: {} }),
-    });
-    assert.equal(requests.length, calls);
-  }
+test("a yield records what the run waits on before the reminder check, and a stopped run records nothing", async () => {
+  const order: string[] = [];
+  const requests: DwarChatRequest[] = [];
+  await runAgentLoop({
+    ...loopHooks(),
+    watchPending: async (minutes) => {
+      order.push(`watch ${minutes}`);
+    },
+    yieldReminder: async () => {
+      order.push("reminder");
+      return null;
+    },
+    ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", "y1")]), requests),
+  });
+  assert.deepEqual(order, [`watch ${IMPLICIT_WAIT_MINUTES}`, "reminder"]);
+
+  const hooks = loopHooks();
+  const stoppedWaits: number[] = [];
+  await runAgentLoop({
+    ...hooks,
+    watchPending: async (minutes) => {
+      stoppedWaits.push(minutes);
+    },
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
+      hooks.interrupts.stop("agent-1");
+      return turn("anthropic", [call("yield", "y2")]);
+    }, []),
+  });
+  assert.deepEqual(stoppedWaits, []);
 });
 
 /** A tool_use block with `input`. */
@@ -643,12 +680,13 @@ function use(name: string, id: string, input: unknown): DwarResponseBlock {
   return { type: "tool_use", id, name, input };
 }
 
-test("a turn of only sends, steers, stores and saves ends the run by itself and waits on what it started; anything else does not", async () => {
+test("a turn of only sends and steers, with any saves, ends the run by itself; a store alone, or anything else, does not", async () => {
   const cases: Array<{ name: string; calls: Array<[string, unknown]>; failing?: string; ends: boolean }> = [
     { name: "result and saves", calls: [["write_file", {}], ["ingest_memory", {}], ["set_routine", {}], ["send_message", { to: "ankur", content: "Done.", status: "done" }]], ends: true },
     { name: "a steer", calls: [["steer_browser", { message: "read D2L" }]], ends: true },
     { name: "two steers and a message", calls: [["steer_browser", { message: "a" }], ["steer_terminal", { message: "b" }], ["send_message", { to: "ankur", content: "Reading." }]], ends: true },
-    { name: "an ingest alone", calls: [["ingest_memory", { text: "x" }]], ends: true },
+    { name: "an ingest alone", calls: [["ingest_memory", { text: "x" }]], ends: false },
+    { name: "an ingest beside a message", calls: [["ingest_memory", { text: "x" }], ["send_message", { to: "ankur", content: "Stored." }]], ends: true },
     { name: "a stop and its report", calls: [["stop_task", { id: "task/browser/3" }], ["send_message", { to: "requester", content: "Stopped.", status: "done" }]], ends: true },
     { name: "failed save", calls: [["edit_file", {}], ["send_message", { to: "ankur", content: "Done." }]], failing: "edit_file", ends: false },
     { name: "saves alone", calls: [["write_file", {}]], ends: false },
@@ -671,12 +709,12 @@ test("a turn of only sends, steers, stores and saves ends the run by itself and 
         isError: block.name === failing,
         audit: {},
       }),
-      wait: async (minutes) => {
+      watchPending: async (minutes) => {
         waits.push(minutes);
       },
     });
     assert.equal(requests.length, ends ? 1 : 2, name);
-    assert.deepEqual(waits, ends ? [IMPLICIT_WAIT_MINUTES] : [], name);
+    assert.deepEqual(waits, [IMPLICIT_WAIT_MINUTES], `${name}: the run ends once and records what it waits on once`);
   }
 });
 

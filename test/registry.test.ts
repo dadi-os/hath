@@ -67,7 +67,7 @@ const NOT_TOOLS = new Set(["needs_input", "timeout_minutes"]);
 /** Backticked words in router.md that are tool inputs, not tools. */
 const ROUTER_PARAMETERS = new Set(["agent_id", "show_retired"]);
 
-/** The tool-looking names a prompt mentions: backticked or snake_case words, and the bare tools `wait` and `yield`. */
+/** The tool-looking names a prompt mentions: backticked or snake_case words, and the bare tool `yield`. */
 function mentionedTools(text: string, pattern: RegExp): string[] {
   return [...new Set([...text.matchAll(pattern)].map((match) => match[1]!))].filter((name) => !NOT_TOOLS.has(name));
 }

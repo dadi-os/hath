@@ -394,7 +394,7 @@ export function createRuntime(opts: {
     const since = settledThrough.get(agentId) ?? transcript.hydratedThrough;
     const lines = transcript.transcriptFor(agentId).filter((row) => row.seq > since);
     settledThrough.set(agentId, lines.at(-1)?.seq ?? since);
-    await settleWakeJobs(opts.db, lines, agentId, wakes.get(agentId).reasoned());
+    await settleWakeJobs(opts.db, opts.nas, lines, agentId, wakes.get(agentId));
   }
 
   /**
@@ -578,7 +578,7 @@ export function createRuntime(opts: {
       woke: () => clearWatch(opts.db, agentId),
       replyWithText: (text: string) => replyWithText(toolContext(agentId), text),
       yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas }, agentId, wakes.peek(agentId)?.jobId ?? null),
-      wait: (minutes: number) => recordPendingWatch(opts.db, opts.nas, agentId, wakes.peek(agentId)?.jobId ?? null, minutes),
+      watchPending: (minutes: number) => recordPendingWatch(opts.db, opts.nas, agentId, wakes.peek(agentId)?.jobId ?? null, minutes),
       logAborted: helpers.logAborted,
     };
   }

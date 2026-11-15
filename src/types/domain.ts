@@ -336,7 +336,6 @@ export type WakeEntry =
 export const SEND_MESSAGE = "send_message";
 export const FORWARD_ATTACHMENT = "forward_attachment";
 export const YIELD = "yield";
-export const WAIT = "wait";
 export const READ_FILE = "read_file";
 export const FIND_FILES = "find_files";
 export const RECALL_MEMORY = "recall_memory";

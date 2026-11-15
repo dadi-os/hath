@@ -26,9 +26,10 @@ export type YieldReminderDeps = {
 
 /**
  * yieldReminder is the note for `agentId`'s yield in job `jobId`, or null when it needs none:
- * the wake is on no job, the job is closed, parked or has no requester (a routine's), the
+ * the wake is on no job, the job is closed, parked, has no requester (a routine's) or has an
+ * answer-by time (Ankur's: the answer-by wakes the agent, see answer-by.ts), the
  * requester was told something, or something is pending that wakes the agent: an ask no one
- * answered, a helper task still working, a wait, a reminder of its own, or an async tool call
+ * answered, a helper task still working, a reminder of its own, or an async tool call
  * still running. A Nas that cannot be read is an error.
  */
 export async function yieldReminder(deps: YieldReminderDeps, agentId: string, jobId: string | null): Promise<string | null> {
@@ -36,7 +37,7 @@ export async function yieldReminder(deps: YieldReminderDeps, agentId: string, jo
     return null;
   }
   const job = await jobById(deps.db, jobId);
-  if (job.state !== "open" || !hasRequester(job)) {
+  if (job.state !== "open" || !hasRequester(job) || job.answerBy !== null) {
     return null;
   }
   const ledger = await jobLedger(deps.db, job);
@@ -44,7 +45,7 @@ export async function yieldReminder(deps: YieldReminderDeps, agentId: string, jo
     return null;
   }
   const quote = ledger.opened.content.length > QUOTE_CHARS ? `${ledger.opened.content.slice(0, QUOTE_CHARS)}…` : ledger.opened.content;
-  return `[continue] ${ledger.requester ?? "Ankur"} asked "${quote}" at ${formatISO(new Date(ledger.opened.at))} and nothing you started will wake you. Answer now, or start or wait on what will.`;
+  return `[continue] ${ledger.requester ?? "Ankur"} asked "${quote}" at ${formatISO(new Date(ledger.opened.at))} and nothing you started will wake you. Answer now, or start what will.`;
 }
 
 /** somethingWillWake is true when anything pending would wake `agentId` on its own. */

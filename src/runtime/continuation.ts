@@ -22,10 +22,15 @@ type LoggedResponse = { provider: DwarProvider; content: DwarResponseBlock[] };
  * continuedTurns is, oldest first, the model turns of the job's earlier wakes that called tools
  * (without their thinking, which a later wake does not replay), each followed by its results.
  * A turn of text alone carried no action and is left out. Empty when the job has no earlier wake.
+ * `lastStepAt` is the newest log row of the job outside this wake, null when there is none: the
+ * thread entries written after it are what arrived since the agent's last step.
  */
-export async function continuedTurns(db: Db, args: { agentId: string; wakeId: string; jobId: string }): Promise<WakeTurn[]> {
+export async function continuedTurns(
+  db: Db,
+  args: { agentId: string; wakeId: string; jobId: string },
+): Promise<{ turns: WakeTurn[]; lastStepAt: Date | null }> {
   const rows = await db
-    .select({ event: agentLogs.event, payload: agentLogs.payload })
+    .select({ event: agentLogs.event, payload: agentLogs.payload, createdAt: agentLogs.createdAt })
     .from(agentLogs)
     .where(
       and(
@@ -64,5 +69,5 @@ export async function continuedTurns(db: Db, args: { agentId: string; wakeId: st
     });
     turns.push({ message: { role: "user", content: answers } });
   }
-  return turns;
+  return { turns, lastStepAt: rows.at(-1)?.createdAt ?? null };
 }

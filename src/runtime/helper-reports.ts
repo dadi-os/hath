@@ -13,7 +13,7 @@
 
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agents, deliveredReports, helperSteers } from "../db/schema.js";
+import { agents, deliveredReports } from "../db/schema.js";
 import type { HelperReport, NasClient } from "../nas/client.js";
 import { attachHostFile, type HostFileDeps } from "./attachments.js";
 import type { DeliverDeps } from "./deliver.js";
@@ -146,8 +146,7 @@ export class HelperReports {
     }
     const jobId = await jobOfTask(db, report.task);
     if (report.task.startsWith("task/browser/")) {
-      const [steer] = await db.select({ message: helperSteers.message }).from(helperSteers).where(eq(helperSteers.task, report.task));
-      await recordActivity(db, { agentId: report.agent_id, jobId, ...siteReadRow(report, steer?.message ?? "") });
+      await recordActivity(db, { agentId: report.agent_id, jobId, ...siteReadRow(report) });
     }
     await rewake(this.deps.deliver, report.agent_id, {
       jobId,

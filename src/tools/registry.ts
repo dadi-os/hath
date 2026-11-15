@@ -17,7 +17,7 @@ import { editFile, findFiles, readFile, writeFile } from "./files/files.js";
 /**
  * Every tool defined by a zod schema and a handler, in the order agents see them. Which
  * tools an agent and the router hold is declared in runtime/tool-set.ts, together with the
- * tools (send_message, yield, memory, list_agents, wait, manage_agent, modify_agent_prompt)
+ * tools (send_message, yield, memory, list_agents, manage_agent, modify_agent_prompt)
  * that have no definition here.
  */
 const definitions = [

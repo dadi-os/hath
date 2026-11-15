@@ -20,6 +20,8 @@ const reportSchema = z
     /** Absolute path of the file holding the helper's detail, or "" when it gave none. It is not also in `files`. */
     detail: z.string(),
     files: z.array(z.string()),
+    /** The hosts the helper navigated to for this report, each once; empty for a terminal task or a browser that loaded no page. */
+    hosts: z.array(z.string()),
     at: z.string().min(1),
     /** Who stopped the task, on a `stopped` report: "ankur" from the takeover UI, else an agent id or "hath". */
     stopped_by: z.string().min(1).optional(),

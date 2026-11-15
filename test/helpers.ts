@@ -572,7 +572,7 @@ export function loopHooks() {
     interrupts: new Interrupts(),
     woke: async () => {},
     yieldReminder: async () => null,
-    wait: async () => {},
+    watchPending: async () => {},
     logAborted: async () => {},
   };
 }
