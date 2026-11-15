@@ -1,7 +1,7 @@
 /**
- * The lane tools steer_work, yield and list_agents, and the executeTool dispatcher. A lane's
- * registry tools resolve through laneRegistryTool (lanes.ts, which also declares each lane's
- * whole tool set); the async flag applies here (see async.ts).
+ * The tools yield and list_agents, and the executeTool dispatcher. Registry tools resolve through
+ * agentRegistryTool (tool-set.ts, which also declares the whole tool set); the async flag applies
+ * here (see async.ts).
  */
 
 import { and, asc, eq } from "drizzle-orm";
@@ -17,24 +17,18 @@ import {
   MODIFY_AGENT_PROMPT,
   RECALL_MEMORY,
   SEND_MESSAGE,
-  STEER_WORK,
   WAIT,
   YIELD,
 } from "../types/domain.js";
-import { laneRegistryTool, toolsForLane } from "./lanes.js";
+import { agentRegistryTool } from "./tool-set.js";
 import {
   fail,
   ok,
   requireActiveAgent,
-  failWithoutAgentIdentity,
   type ToolContext,
   type ToolExecResult,
 } from "../tools/shared.js";
-import type { HelperTask } from "../nas/client.js";
-import { cutLong, deliverDeps, runInBackground, toolIsAsync } from "./async.js";
-import { deliverAgentMessage } from "./deliver.js";
-import { ACTION_TOOLS } from "./record.js";
-import { shortArg } from "./status.js";
+import { cutLong } from "./async.js";
 import { KEEP_WHOLE_CHARS } from "./wake.js";
 import { resultPath, savesResult, writeBytes } from "./files.js";
 import { runWait } from "./watches.js";
@@ -46,23 +40,6 @@ import { runSend } from "./send.js";
 
 export type { ToolContext, ToolExecResult } from "../tools/shared.js";
 export { requireAgent, requireActiveAgent } from "../tools/shared.js";
-
-export const steerWorkInputSchema: Record<string, unknown> = {
-  type: "object",
-  properties: {
-    instruction: {
-      type: "string",
-      description:
-        "What the work lane should do next. Omit when terminate is true and you only need to halt.",
-    },
-    terminate: {
-      type: "boolean",
-      description:
-        "When true, stop the work lane in its tracks: its in-flight model call is aborted and no further tool call runs. Use for stop/kill. Can combine with instruction.",
-    },
-  },
-  additionalProperties: false,
-};
 
 export const yieldInputSchema: Record<string, unknown> = {
   type: "object",
@@ -85,24 +62,11 @@ export const listAgentsInputSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/**
- * Queue an instruction for the caller's work lane and/or halt it. The result says whether
- * the lane was running and whether the halt was applied (`terminated`); terminate on an
- * idle lane has nothing to halt and reports `terminated: false`. A halt that was applied
- * also halts the agent's running helper tasks in Nas (`stopped_tasks`, `halt_failed`).
- */
-export const steerWorkTool: DwarTool = {
-  name: STEER_WORK,
-  description:
-    "Direct your work lane. You manage it from the process lane: pass instruction for what it should do next (domain tools run there), and/or terminate true to halt it: the in-flight model call is aborted and no further tool call runs. Starts a work-lane wake if that lane is idle. The result's `terminated` is true only when a running lane was halted; a halt also stops your running browser and terminal helper tasks, listed in `stopped_tasks` (any that could not be stopped are in `halt_failed`). Say a stop is done only when it is. Use terminate for stop/kill.",
-  input_schema: steerWorkInputSchema,
-};
-
-/** End the current lane turn. */
+/** End the run. */
 export const yieldTool: DwarTool = {
   name: YIELD,
   description:
-    "End this lane turn. Call when you have nothing more to do right now. Sending a message or running other tools does not end the turn — only yield does.",
+    "End this run. Call when you have nothing more to do right now. Sending a message or running other tools does not end the run by itself; yield does.",
   input_schema: yieldInputSchema,
 };
 
@@ -114,16 +78,6 @@ export const listAgentsTool: DwarTool = {
   input_schema: listAgentsInputSchema,
 };
 
-const steerInput = z
-  .object({
-    instruction: z.string().min(1).optional(),
-    terminate: z.boolean().optional(),
-  })
-  .strict()
-  .refine((value) => value.terminate === true || value.instruction !== undefined, {
-    message: "instruction or terminate is required",
-  });
-
 const yieldInput = z.object({}).strict();
 
 const listAgentsInput = z
@@ -133,7 +87,7 @@ const listAgentsInput = z
   })
   .strict();
 
-/** Map an unexpected throw into a tool error so the lane transcript stays valid. */
+/** Map an unexpected throw into a tool error so the transcript stays valid. */
 export function unexpectedToolError(err: unknown): ToolExecResult {
   if (err instanceof HathError) {
     return fail(`${err.type}: ${err.message}`);
@@ -144,7 +98,7 @@ export function unexpectedToolError(err: unknown): ToolExecResult {
   return fail(String(err));
 }
 
-/** Dispatch a tool_use block for the caller's lane; map Zod/4xx to tool errors.
+/** Dispatch a tool_use block for the caller; map Zod/4xx to tool errors.
  * A caller that just failed waits an adaptive backoff before its next call runs. */
 export async function executeTool(
   ctx: ToolContext,
@@ -163,21 +117,14 @@ export async function executeTool(
       return unexpectedToolError(err);
     }
   };
-  let result: ToolExecResult;
-  let whole: string;
-  if (ctx.lane === "work" && ctx.callerId !== null && call.name !== YIELD && call.name !== WAIT && toolIsAsync(call.name) && !(call.name === INGEST_MEMORY && ctx.syncIngest)) {
-    result = await runInBackground(ctx, ctx.callerId, call, run);
-    whole = result.content;
-  } else {
-    result = await saveLargeResult(ctx, call, await run());
-    whole = result.content;
-    if (call.name === INGEST_MEMORY && ctx.syncIngest) {
-      result = cutLong(ctx, call, result);
-    }
+  let result = await saveLargeResult(ctx, call, await run());
+  const whole = result.content;
+  if (call.name === INGEST_MEMORY) {
+    result = cutLong(ctx, call, result);
   }
   if (ctx.callerId !== null) {
     ctx.toolDebounce.record(ctx.callerId, result.isError);
-    if (!result.isError && ctx.lane !== "router") {
+    if (!result.isError && ctx.callerKind === "agent") {
       await recordToolActivity(ctx, call, whole);
     }
   }
@@ -233,146 +180,41 @@ async function dispatchTool(
     if (call.name === LIST_AGENTS) {
       return await runListAgents(ctx, call.input);
     }
-    if (ctx.lane === "router") {
+    if (ctx.callerKind === "router") {
       return await runRouterTool(ctx, call);
     }
-    if (ctx.lane === "work") {
-      if (call.name === SEND_MESSAGE) {
-        return await runSend(ctx, call.input);
-      }
-      if (call.name === WAIT) {
-        return await runWait(ctx, call.input);
-      }
-      if (call.name === RECALL_MEMORY) {
-        return await runRecallMemory(ctx, call.input);
-      }
-      if (call.name === INGEST_MEMORY) {
-        return await runIngestMemory(ctx, call.input);
-      }
-      if (call.name === MANAGE_AGENT) {
-        return await runManageAgent(ctx, call.input);
-      }
-      if (call.name === MODIFY_AGENT_PROMPT) {
-        return await runModifyAgentPrompt(ctx, call.input);
-      }
-      const definition = laneRegistryTool("work", call.name);
-      if (!definition) {
-        return fail(`unknown work-lane tool: ${call.name}`);
-      }
-      if (ctx.callerId !== null) {
-        await requireActiveAgent(ctx.db, ctx.callerId);
-      }
-      return await definition.handler(ctx, definition.input.parse(call.input));
+    if (call.name === SEND_MESSAGE) {
+      return await runSend(ctx, call.input);
     }
-    switch (call.name) {
-      case SEND_MESSAGE:
-        return await runSend(ctx, call.input);
-      case STEER_WORK:
-        return await runSteerWork(ctx, call.input);
-      case RECALL_MEMORY:
-        return await runRecallMemory(ctx, call.input);
-      default: {
-        const registry = laneRegistryTool("process", call.name);
-        if (registry) {
-          const result = await registry.handler(ctx, registry.input.parse(call.input));
-          await noteProcessAction(ctx, call, result);
-          return result;
-        }
-        return fail(
-          `${call.name} is not a process-lane tool. Yours are ${toolsForLane(ctx.callerId, "process").map((tool) => tool.name).join(", ")}. Every other tool this agent holds runs in the work lane: call ${STEER_WORK} with what you need done.`,
-        );
-      }
+    if (call.name === WAIT) {
+      return await runWait(ctx, call.input);
     }
+    if (call.name === RECALL_MEMORY) {
+      return await runRecallMemory(ctx, call.input);
+    }
+    if (call.name === INGEST_MEMORY) {
+      return await runIngestMemory(ctx, call.input);
+    }
+    if (call.name === MANAGE_AGENT) {
+      return await runManageAgent(ctx, call.input);
+    }
+    if (call.name === MODIFY_AGENT_PROMPT) {
+      return await runModifyAgentPrompt(ctx, call.input);
+    }
+    const definition = agentRegistryTool(call.name);
+    if (!definition) {
+      return fail(`unknown tool: ${call.name}`);
+    }
+    if (ctx.callerId !== null) {
+      await requireActiveAgent(ctx.db, ctx.callerId);
+    }
+    return await definition.handler(ctx, definition.input.parse(call.input));
   } catch (err) {
     if (err instanceof ZodError) {
       return fail(err.issues.map((issue) => issue.message).join("; "));
     }
     return unexpectedToolError(err);
   }
-}
-
-/** How much of an action's result its note keeps. */
-const ACTION_NOTE_RESULT_CHARS = 200;
-
-/**
- * noteProcessAction tells the work lane what the process lane just did to the world: the
- * work lane never sees the process lane's calls, so a successful action is recorded as a
- * note from hath to the agent, delivered without waking anyone, which both lanes read among
- * their next arrivals.
- */
-async function noteProcessAction(ctx: ToolContext, call: DwarToolUseBlock, result: ToolExecResult): Promise<void> {
-  if (ctx.callerId === null || result.isError || !ACTION_TOOLS.has(call.name)) {
-    return;
-  }
-  await deliverAgentMessage(deliverDeps(ctx), {
-    fromAgentId: ctx.callerId,
-    toAgentId: ctx.callerId,
-    content: `Your process lane ran ${call.name} ${shortArg(call.input)}: ${result.content.slice(0, ACTION_NOTE_RESULT_CHARS)}`,
-    notice: "tool",
-    wake: false,
-    jobId: ctx.jobId,
-  });
-}
-
-async function runSteerWork(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
-  if (ctx.callerId === null) {
-    return failWithoutAgentIdentity();
-  }
-  const input = steerInput.parse(raw ?? {});
-  const running = ctx.locks.isBusy(ctx.callerId, "work");
-  const terminated = input.terminate === true && running;
-  if (input.instruction !== undefined) {
-    ctx.steer.append(ctx.callerId, input.instruction);
-  }
-  if (terminated) {
-    ctx.steer.requestTerminate(ctx.callerId);
-  }
-  if (!running) {
-    ctx.enqueueWork(ctx.callerId, undefined, { kind: "steer", ref: null, openedByMessageId: null });
-  }
-  const halted = terminated ? await haltHelperTasks(ctx, ctx.callerId) : null;
-  return ok({
-    queued: input.instruction !== undefined,
-    running,
-    terminated,
-    ...(halted === null ? {} : { stopped_tasks: halted.stopped, ...(halted.failed.length > 0 ? { halt_failed: halted.failed } : {}) }),
-  });
-}
-
-/**
- * haltHelperTasks halts, in Nas, the helper tasks `agentId` owns or last steered that are
- * still going: working, paused, asking, or idle with a resource held. A task that cannot be
- * listed or halted is reported in `failed`, never skipped.
- */
-async function haltHelperTasks(
-  ctx: ToolContext,
-  agentId: string,
-): Promise<{ stopped: string[]; failed: { task: string | null; error: string }[] }> {
-  let running: HelperTask[];
-  try {
-    running = (await ctx.sessions.snapshot()).filter(
-      (task) =>
-        (task.owner === agentId || task.steered_by === agentId) &&
-        (task.status === "working" ||
-          task.status === "paused" ||
-          task.status === "asking" ||
-          (task.status === "idle" && (task.resource ?? "") !== "")),
-    );
-  } catch (err) {
-    return { stopped: [], failed: [{ task: null, error: err instanceof Error ? err.message : String(err) }] };
-  }
-  const results = await Promise.allSettled(running.map((task) => ctx.nas.haltTask(task.kind, task.id)));
-  const stopped: string[] = [];
-  const failed: { task: string | null; error: string }[] = [];
-  results.forEach((result, index) => {
-    const task = running[index]!.task;
-    if (result.status === "fulfilled") {
-      stopped.push(task);
-    } else {
-      failed.push({ task, error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
-    }
-  });
-  return { stopped, failed };
 }
 
 /** runListAgents returns id/name/parent/retired for matching agents (global visibility). */

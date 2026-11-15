@@ -10,6 +10,9 @@ import type { HelperTask } from "../nas/client.js";
 import { requireAgent } from "../runtime/tools.js";
 import { HathError } from "../errors.js";
 import { toAgentRecord, toLogRecord } from "../serialize.js";
+import type { Db } from "../db/client.js";
+import { jobById } from "../runtime/jobs.js";
+import { jobLedger } from "../runtime/ledger.js";
 import { toAgentSession } from "../runtime/sessions.js";
 import type { AgentRecord } from "../types/domain.js";
 import {
@@ -26,31 +29,29 @@ import {
 } from "./schemas.js";
 
 /** What a response shows beyond the stored rows: Nas's tasks and every agent's watch. */
-type Live = { tasks: HelperTask[]; watches: Map<string, WatchRow> };
+type Live = { db: Db; tasks: HelperTask[]; watches: Map<string, WatchRow> };
 
 async function loadLive(app: FastifyInstance): Promise<Live> {
   const [tasks, watchRows] = await Promise.all([app.runtime.sessions.snapshot(), app.db.select().from(watches)]);
-  return { tasks, watches: new Map(watchRows.map((row) => [row.agentId, row])) };
+  return { db: app.db, tasks, watches: new Map(watchRows.map((row) => [row.agentId, row])) };
 }
 
 /**
- * Attach ephemeral running locks, what each lane waits on, the status block while a lane
- * runs or the work lane waits (null otherwise), and the agent's Nas tasks for API responses.
+ * Attach whether the agent is running, what it waits on, the job its current wake is on (null
+ * when it has none), and the agent's Nas tasks for API responses.
  */
 async function withLive(row: AgentRow, runtime: FastifyInstance["runtime"], live: Live): Promise<AgentRecord> {
   const watch = live.watches.get(row.id);
-  const work = runtime.locks.isHeld(row.id, "work");
-  const process = runtime.locks.isHeld(row.id, "process");
+  const jobId = runtime.wakeJobOf(row.id);
   return {
     ...toAgentRecord(row),
     running: {
-      work,
-      process,
+      working: runtime.locks.isHeld(row.id),
       waiting_on:
         watch === undefined
           ? null
           : { targets: watch.targets, since: watch.since.toISOString(), wakes_by: watch.dueAt.toISOString() },
-      status: work || process || watch !== undefined ? await runtime.statusOf(row.id) : null,
+      job: jobId === null ? null : await jobLedger(live.db, await jobById(live.db, jobId)),
     },
     sessions: runtime.sessions.forAgent(live.tasks, row.id),
   };
@@ -168,6 +169,14 @@ export async function registerAgents(app: FastifyInstance): Promise<void> {
     const wake = await requireWake(app.db, id, wake_id);
     const [record] = await loadWakeRecords(app.db, id, [wake]);
     return { wake: record, entries: await loadWakeEntries(app.db, wake) };
+  });
+
+  app.post("/agents/:id/stop", async (request) => {
+    const { id } = parse(idParam, request.params);
+    await requireAgent(app.db, id);
+    const stopped = await app.runtime.stop(id, "ankur");
+    app.runtime.events.emit({ type: "sessions_changed", at: new Date().toISOString() });
+    return { agent_id: id, ...stopped };
   });
 
   app.post("/agents/:id/sessions/:task_id/halt", async (request) => {

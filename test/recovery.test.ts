@@ -7,10 +7,10 @@ import { agentLogs, agents, messages, wakes } from "../src/db/schema.js";
 import { EventBus } from "../src/runtime/events.js";
 import { recoverInterruptedWakes } from "../src/runtime/recovery.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import type { Lane, LogEvent } from "../src/types/domain.js";
-import { FLAGS_OFF, insertAgent, openTestDb, resetRuntime, silentLog, testConfig, withRuntime } from "./helpers.js";
+import type { LogEvent } from "../src/types/domain.js";
+import { insertAgent, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -24,7 +24,6 @@ after(async () => {
 /** seedLog writes one audit row `secondsAgo` before now, so rows sort in the order a test lists them. */
 async function seedLog(
   agentId: string,
-  lane: Lane,
   event: LogEvent,
   payload: Record<string, unknown>,
   secondsAgo: number,
@@ -32,7 +31,6 @@ async function seedLog(
   await handle.db.insert(agentLogs).values({
     id: randomUUID(),
     agentId,
-    lane,
     event,
     payload,
     createdAt: new Date(Date.now() - secondsAgo * 1000),
@@ -61,12 +59,10 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
   await handle.db.update(agents).set({ active: false }).where(eq(agents.id, retiredId));
 
   await seedMessage(parentId, cutId, "click it", 60);
-  await seedLog(cutId, "process", "response", { content: [] }, 59);
-  await seedLog(cutId, "process", "tool_result", { name: "steer_work", is_error: false, content: '{"queued":true,"terminate":false}' }, 58);
-  await seedLog(cutId, "process", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 57);
+  await seedLog(cutId, "response", { content: [] }, 59);
+  await seedLog(cutId, "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 57);
   await seedLog(
     cutId,
-    "work",
     "response",
     { content: [{ type: "tool_use", id: "c1", name: "browser_click", input: { ref: "e1" } }] },
     56,
@@ -75,7 +71,6 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
   await seedMessage(parentId, staleId, "read it", 3_600);
   await seedLog(
     staleId,
-    "work",
     "response",
     { content: [{ type: "tool_use", id: "s1", name: "browser_navigate", input: { url: "https://example.com" } }] },
     3_590,
@@ -84,8 +79,8 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
   await seedMessage(null, waitingId, "hello?", 30);
 
   await seedMessage(null, doneId, "hi", 20);
-  await seedLog(doneId, "process", "response", { content: [] }, 19);
-  await seedLog(doneId, "process", "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 18);
+  await seedLog(doneId, "response", { content: [] }, 19);
+  await seedLog(doneId, "tool_result", { name: "yield", is_error: false, content: '{"yielded":true}' }, 18);
 
   await seedMessage(null, retiredId, "too late", 10);
 
@@ -95,11 +90,11 @@ test("boot recovery reports a recent wake cut mid-tool once without waking its r
     transcript: new TranscriptStore(),
     events: new EventBus(silentLog),
     answerByMinutes: 5,
-    enqueueProcess: (agentId: string) => {
+    enqueue: (agentId: string) => {
       woken.push(agentId);
-   return randomUUID();
- },
-    enqueueWork: () => randomUUID(),
+      return randomUUID();
+    },
+    preempt: () => {},
     log: silentLog,
     recoveryWindowMinutes: 10,
   };

@@ -3,7 +3,7 @@ import type { ToolExecResult } from "../shared.js";
 import { fail, ok } from "../shared.js";
 
 /**
- * Run a Ghar client call; map every Ghar failure to a tool error so the lane stays alive.
+ * Run a Ghar client call; map every Ghar failure to a tool error so the run stays alive.
  * Include the error type in the content so capability vs unreachable stay distinguishable.
  */
 export async function gharToolCall<T>(

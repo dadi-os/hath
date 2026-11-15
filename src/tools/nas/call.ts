@@ -3,7 +3,7 @@ import type { ToolExecResult } from "../shared.js";
 import { ok } from "../shared.js";
 
 /**
- * Run a Nas client call; map every Nas failure to a tool error so the lane stays alive.
+ * Run a Nas client call; map every Nas failure to a tool error so the run stays alive.
  * Include the error type in the content so not_found / busy / forbidden stay distinguishable.
  */
 export async function nasToolCall<T>(

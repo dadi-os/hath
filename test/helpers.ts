@@ -6,6 +6,7 @@ import { createDb, type Db, type Sql } from "../src/db/client.js";
 import { agents } from "../src/db/schema.js";
 import type { DwarChatRequest, DwarChatResponse, HelperLogEntry } from "../src/types/domain.js";
 import type { DwarClient, DwarDescribeImageResponse } from "../src/dwar/client.js";
+import { Interrupts } from "../src/runtime/interrupts.js";
 import type { WakeLimits } from "../src/runtime/wake.js";
 import type {
   ControlRequest,
@@ -42,11 +43,8 @@ export function testConfig(): Config {
   return loadConfig();
 }
 
-/** Transcript windows wide enough that tests see the whole thread on both lanes. */
-export const wideWindows = {
-  process: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000, minChars: 0 },
-  work: { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000, minChars: 0 },
-};
+/** A thread window wide enough that tests see the whole thread. */
+export const wideWindow = { chars: 1_000_000, stepChars: 1_000, budgetTokens: 10_000_000 };
 
 /** Wake limits no test wake reaches, for tests that are not about clearing tool results. */
 export const roomyWakeLimits: WakeLimits = {
@@ -71,7 +69,7 @@ const usage = {
   cache_creation_input_tokens: 0,
 };
 
-/** A turn with no tool call. In a lane loop it continues; it never ends the lane. */
+/** A turn with no tool call. In the loop it continues unless it is taken as the answer. */
 export function endTurn(text = "ok"): DwarChatResponse {
   return {
     provider: "anthropic",
@@ -90,17 +88,15 @@ export function toolUse(name: string, input: unknown, id = "call-1"): DwarChatRe
   };
 }
 
-/** Default mock lane exit — call the embedded yield tool. */
+/** Default mock exit — call the embedded yield tool. */
 export function yieldTurn(id = "yield-1"): DwarChatResponse {
   return toolUse("yield", {}, id);
 }
 
 export function mockDwar(opts: {
-  work?: (
+  agent?: (
     request: DwarChatRequest,
-  ) => DwarChatResponse | Promise<DwarChatResponse>;
-  process?: (
-    request: DwarChatRequest,
+    signal?: AbortSignal,
   ) => DwarChatResponse | Promise<DwarChatResponse>;
   complete?: (
     request: DwarChatRequest,
@@ -111,39 +107,29 @@ export function mockDwar(opts: {
   }) =>
     DwarDescribeImageResponse | Promise<DwarDescribeImageResponse>;
 }): DwarClient & {
-  workCalls: DwarChatRequest[];
-  processCalls: DwarChatRequest[];
+  agentCalls: DwarChatRequest[];
   completeCalls: DwarChatRequest[];
   describeCalls: Array<{
     image: { media_type: string; data: string };
     prompt?: string;
   }>;
 } {
-  const workCalls: DwarChatRequest[] = [];
-  const processCalls: DwarChatRequest[] = [];
+  const agentCalls: DwarChatRequest[] = [];
   const completeCalls: DwarChatRequest[] = [];
   const describeCalls: Array<{
     image: { media_type: string; data: string };
     prompt?: string;
   }> = [];
   return {
-    workCalls,
-    processCalls,
+    agentCalls,
     completeCalls,
     describeCalls,
-    async work(request) {
-      workCalls.push(request);
-      if (opts.work) {
-        return opts.work(request);
+    async agent(request, _caller, signal) {
+      agentCalls.push(request);
+      if (opts.agent) {
+        return opts.agent(request, signal);
       }
-      return yieldTurn("work-yield");
-    },
-    async process(request) {
-      processCalls.push(request);
-      if (opts.process) {
-        return opts.process(request);
-      }
-      return yieldTurn("process-yield");
+      return yieldTurn("agent-yield");
     },
     async complete(request) {
       completeCalls.push(request);
@@ -193,6 +179,7 @@ export function mockYaad(opts: {
         edges: [],
         sufficient: false,
         coverage: 0,
+        courses: {},
       };
     },
     async ingest(body) {
@@ -577,35 +564,23 @@ export async function insertAgent(
 }
 
 /**
- * The work loop's wake hooks, doing nothing: a lane with no watch and no requester waiting,
- * with `runtime.implicit_yield` off (a test of it sets it on).
+ * The agent loop's hooks, doing nothing: an agent with no watch, no job to remind about and
+ * nothing pending. Each call has its own interrupts, so a test can preempt or stop its loop.
  */
-export const workLoopHooks = {
-  woke: async () => {},
-  yieldReminder: async () => null,
-  implicitYield: false,
-  implicitSteerEnd: false,
-  wait: async () => {},
-};
+export function loopHooks() {
+  return {
+    interrupts: new Interrupts(),
+    woke: async () => {},
+    yieldReminder: async () => null,
+    wait: async () => {},
+    logAborted: async () => {},
+  };
+}
 
 /**
  * withRuntime is `config` with the given `[runtime]` keys replaced, so a test states each
- * job-shape flag it depends on instead of inheriting config.toml's value.
+ * value it depends on instead of inheriting config.toml's.
  */
 export function withRuntime(config: Config, runtime: Partial<Config["runtime"]>): Config {
   return { ...config, runtime: { ...config.runtime, ...runtime } };
 }
-
-/** Every remaining job-shape flag off. */
-export const FLAGS_OFF = {
-  hath_pickups: false,
-  implicit_yield: false,
-  ingest_result_wakes: false,
-  job_requester: false,
-  wait_target_guard: false,
-  pickup_live_work: false,
-  tool_hygiene: false,
-  sync_ingest: false,
-  job_did_carry: false,
-  implicit_steer_end: false,
-} satisfies Partial<Config["runtime"]>;

@@ -1,7 +1,7 @@
 /**
- * The router's lane. The router is the null identity — the same as Ankur — so
+ * The router. The router is the null identity — the same as Ankur — so
  * everything it sends reaches its agent as a message from him. It runs one model
- * loop per utterance with the same composer and step machinery as agent lanes,
+ * loop per utterance with the same composer and step machinery as an agent,
  * and nothing here caps what it does: how it gathers context and hands work off
  * is its prompt's job (`prompts/router.md`). The loop ends when it yields.
  */
@@ -15,7 +15,8 @@ import { toAttachmentSummary } from "../db/attachments.js";
 import { MAX_ATTACHMENTS } from "./attachments.js";
 import { deliverUserMessage } from "./deliver.js";
 import { runRecallMemory } from "./memory.js";
-import { laneRegistryTool } from "./lanes.js";
+import { deliverDeps } from "./async.js";
+import { routerRegistryTool } from "./tool-set.js";
 
 /** Lock and wake key for the router; not a valid agent id, so it never collides with one. */
 export const ROUTER_KEY = "(router)";
@@ -76,7 +77,7 @@ export const routerForwardAttachmentTool: DwarTool = {
   },
 };
 
-/** Run one router-lane tool call. list_agents and yield are handled before this. */
+/** Run one router tool call. list_agents and yield are handled before this. */
 export async function runRouterTool(
   ctx: ToolContext,
   call: DwarToolUseBlock,
@@ -90,7 +91,7 @@ export async function runRouterTool(
   if (call.name === RECALL_MEMORY) {
     return runRecallMemory(ctx, call.input);
   }
-  const definition = laneRegistryTool("router", call.name);
+  const definition = routerRegistryTool(call.name);
   if (!definition) {
     return fail(`unknown router tool: ${call.name}`);
   }
@@ -118,15 +119,7 @@ async function deliverAsAnkur(
 ): Promise<ToolExecResult> {
   const target = await requireActiveAgent(ctx.db, toAgentId);
   const row = await deliverUserMessage(
-    {
-      db: ctx.db,
-      transcript: ctx.transcript,
-      events: ctx.events,
-      enqueueProcess: ctx.enqueueProcess,
-      enqueueWork: ctx.enqueueWork,
-      answerByMinutes: ctx.answerByMinutes,
-      ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
-    },
+    deliverDeps(ctx),
     target.id,
     content,
     { uploads: [], forward: attachmentIds },

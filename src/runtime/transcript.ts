@@ -20,12 +20,12 @@ export type TranscriptEntry = {
   status: MessageStatus | null;
   /** A notice is hath's word that an agent's work stopped, never chat; absent means message. */
   kind?: MessageKind;
-  /**
-   * Who sent an agent's message for it when the lane that wrote it did not: hath (a pickup, see
-   * pickups.ts; kept in `messages.sent_by`) or the work lane (`send_message` from the work lane
-   * reaches the process lane as its own fold; in memory only, not kept across a restart).
-   */
-  sentBy?: "work" | "hath";
+  /** Set when hath sent an agent's message for it (a pickup, see pickups.ts; kept in `messages.sent_by`). */
+  sentBy?: "hath";
+  /** The job the message is stamped with (see job-of.ts); null for none. For a message between agents it is the sender's job. */
+  jobId: string | null;
+  /** The number of the job the message belongs to for its recipient, once known; in memory only, for the arrival fold (see context.ts). */
+  jobNumber?: number;
   createdAt: Date;
 };
 
@@ -67,6 +67,7 @@ export class TranscriptStore {
       content: entry.content,
       attachments: [],
       status: null,
+      jobId: null,
       createdAt: new Date(),
       ...(entry.id !== undefined ? { id: entry.id } : {}),
     };

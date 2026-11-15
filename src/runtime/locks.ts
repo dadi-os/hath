@@ -1,5 +1,4 @@
 import { HathError } from "../errors.js";
-import type { Lane } from "../types/domain.js";
 
 type Waiter = {
   resolve: (release: () => void) => void;
@@ -8,45 +7,40 @@ type Waiter = {
   timer: ReturnType<typeof setTimeout> | undefined;
 };
 
-type LaneState = {
+type LockState = {
   held: boolean;
   waiters: Waiter[];
 };
 
 /**
- * Two independent single-flight locks per agent, one per lane.
+ * One single-flight lock per agent: its run, or the router's.
  * Waiters queue in memory. This assumes a single Hath process.
  */
-export class LaneLocks {
-  private readonly states = new Map<string, LaneState>();
+export class RunLocks {
+  private readonly states = new Map<string, LockState>();
 
-  private key(agentId: string, lane: Lane): string {
-    return `${agentId}:${lane}`;
-  }
-
-  /** Held or queued. A steer must not start a second work-lane run in this case. */
-  isBusy(agentId: string, lane: Lane): boolean {
-    const state = this.states.get(this.key(agentId, lane));
+  /** Held or queued. */
+  isBusy(agentId: string): boolean {
+    const state = this.states.get(agentId);
     return Boolean(state && (state.held || state.waiters.length > 0));
   }
 
   /** Currently held by a run. A waiter with no holder is not running. */
-  isHeld(agentId: string, lane: Lane): boolean {
-    const state = this.states.get(this.key(agentId, lane));
+  isHeld(agentId: string): boolean {
+    const state = this.states.get(agentId);
     return Boolean(state?.held);
   }
 
   /**
-   * acquire resolves with a release once the lane is free. A waiter with a
-   * `timeoutMs` fails with `503 lane_busy` when it has not been granted in time;
+   * acquire resolves with a release once the agent's run is free. A waiter with a
+   * `timeoutMs` fails with `503 run_busy` when it has not been granted in time;
    * a null timeout waits its turn however long the runs ahead of it take.
    */
-  acquire(agentId: string, lane: Lane, timeoutMs: number | null): Promise<() => void> {
-    const key = this.key(agentId, lane);
-    let state = this.states.get(key);
+  acquire(agentId: string, timeoutMs: number | null): Promise<() => void> {
+    let state = this.states.get(agentId);
     if (!state) {
       state = { held: false, waiters: [] };
-      this.states.set(key, state);
+      this.states.set(agentId, state);
     }
 
     const grant = (): (() => void) => {
@@ -59,7 +53,7 @@ export class LaneLocks {
           next.resolve(grant());
           return;
         }
-        this.states.delete(key);
+        this.states.delete(agentId);
       };
     };
 
@@ -79,8 +73,8 @@ export class LaneLocks {
           reject(
             new HathError(
               503,
-              "lane_busy",
-              `${lane} lane queue timed out for agent ${agentId}`,
+              "run_busy",
+              `run queue timed out for ${agentId}`,
             ),
           );
         }, timeoutMs),

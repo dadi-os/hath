@@ -1,5 +1,5 @@
 /**
- * `send_message`: every lane's way to speak. It delivers a message to Ankur, to the job's
+ * `send_message`: every agent's way to speak. It delivers a message to Ankur, to the job's
  * requester or to an agent, stamps it with its job, snapshots any file path it is given into the
  * attachments store at send time, and puts the weekday beside every date in a message to Ankur.
  * Nothing about what is said is refused: the only errors are an address that cannot be
@@ -14,6 +14,7 @@ import type { DwarTool, MessageStatus } from "../types/domain.js";
 import { MESSAGE_STATUSES, SEND_MESSAGE } from "../types/domain.js";
 import { MAX_ATTACHMENTS, resolveAttachments, textAttachment } from "./attachments.js";
 import { recordActivity, sendRow } from "./activity.js";
+import { deliverDeps } from "./async.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { fillWeekdays } from "./weekdays.js";
 import { hasRequester, jobById } from "./jobs.js";
@@ -28,7 +29,7 @@ const sendInput = z
   })
   .strict();
 
-/** Every agent lane's voice. */
+/** Every agent's voice. */
 export const sendTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
@@ -59,8 +60,7 @@ function oversizedPreview(content: string): string {
 }
 
 /**
- * deliverFrom delivers one message as `caller` from either lane (`sentBy` says which when it is
- * the work lane): an agent message past AGENT_MESSAGE_MAX_CHARS goes as its opening with the whole
+ * deliverFrom delivers one message as `caller`: an agent message past AGENT_MESSAGE_MAX_CHARS goes as its opening with the whole
  * text attached as message.md. It belongs to the caller's job `jobId`, or to the job its recipient
  * gave it. Returns the message and whether it was cut.
  */
@@ -68,20 +68,12 @@ export async function deliverFrom(
   ctx: ToolContext,
   caller: string,
   to: string | null,
-  args: { content: string; attachmentIds: string[]; status?: MessageStatus; sentBy?: "work"; jobId: string | null },
+  args: { content: string; attachmentIds: string[]; status?: MessageStatus; jobId: string | null },
 ): Promise<{ row: TranscriptEntry; oversized: boolean }> {
   const oversized = to !== null && args.content.length > AGENT_MESSAGE_MAX_CHARS;
   const whole = oversized ? await textAttachment(ctx.files, "message.md", "text/markdown", args.content) : null;
   const row = await deliverAgentMessage(
-    {
-      db: ctx.db,
-      transcript: ctx.transcript,
-      events: ctx.events,
-      enqueueProcess: ctx.enqueueProcess,
-      enqueueWork: ctx.enqueueWork,
-      answerByMinutes: ctx.answerByMinutes,
-      ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
-    },
+    deliverDeps(ctx),
     {
       fromAgentId: caller,
       toAgentId: to,
@@ -90,7 +82,6 @@ export async function deliverFrom(
       uploads: whole === null ? [] : [whole],
       jobId: args.jobId,
       ...(args.status !== undefined ? { status: args.status } : {}),
-      ...(args.sentBy !== undefined ? { sentBy: args.sentBy } : {}),
     },
   );
   return { row, oversized };
@@ -122,7 +113,7 @@ async function recipientOf(ctx: ToolContext, name: string): Promise<{ to: string
   return 'Not sent: to must be "ankur", "requester" or a kebab-case agent id.';
 }
 
-/** runSend delivers one message from an agent lane. */
+/** runSend delivers one message from an agent. */
 export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
@@ -146,7 +137,6 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
     content,
     attachmentIds,
     jobId: ctx.jobId,
-    ...(ctx.lane === "work" ? { sentBy: "work" as const } : {}),
     ...(input.status !== undefined ? { status: input.status } : {}),
   });
   await recordActivity(ctx.db, { agentId: caller, jobId: ctx.jobId, ...sendRow(to, content) });
@@ -166,7 +156,7 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
 }
 
 /**
- * replyWithText is what happens to a turn of text and no tool call, as the lane's answer: in a job
+ * replyWithText is what happens to a turn of text and no tool call, as the agent's answer: in a job
  * whose requester has no answer yet (the job is open), the text goes to the requester as a message
  * marked done; in a routine or any job nobody asked, it ends the wake silently. True when the text
  * was taken either way, false when it is only thought (no job, or the requester already has an

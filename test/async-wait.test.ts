@@ -3,15 +3,14 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, pendingAsync, reminders, watches } from "../src/db/schema.js";
+import { agentLogs, jobs, pendingAsync, reminders, watches } from "../src/db/schema.js";
 import { reportLostAsync } from "../src/runtime/async.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { yieldReminder } from "../src/runtime/yield-reminder.js";
 import type { DwarChatRequest } from "../src/types/domain.js";
-import { deliverUserMessage } from "../src/runtime/deliver.js";
+import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import {
-  FLAGS_OFF,
   insertAgent,
   mockDwar,
   mockGhar,
@@ -22,11 +21,10 @@ import {
   silentLog,
   testConfig,
   toolUse,
-  withRuntime,
   yieldTurn,
 } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -37,160 +35,118 @@ after(async () => {
   await handle.close();
 });
 
-function harness(opts: { work?: (request: DwarChatRequest) => ReturnType<typeof yieldTurn> } = {}) {
+function harness(opts: { agent?: (request: DwarChatRequest) => ReturnType<typeof yieldTurn> } = {}) {
   const nas = mockNas({});
-  const gate: { release: () => void } = { release: () => {} };
   const yaad = mockYaad({
-    ingest: async () => {
-      await new Promise<void>((resolve) => {
-        gate.release = resolve;
-      });
-      return { counts: { create_node: 1, update_node: 0, close_node: 0, create_edge: 0, close_edge: 0, noop: 0 }, operations: [] };
-    },
+    ingest: async () => ({ counts: { create_node: 1, update_node: 0, close_node: 0, create_edge: 0, close_edge: 0, noop: 0 }, operations: [] }),
   });
-  const dwar = mockDwar({ work: opts.work ?? (() => yieldTurn()) });
+  const dwar = mockDwar({ agent: opts.agent ?? (() => yieldTurn()) });
   const runtime = createRuntime({ db: handle.db, dwar, yaad, ghar: mockGhar(), nas, config, log: silentLog });
-  return { nas, dwar, yaad, runtime, gate };
+  return { nas, dwar, yaad, runtime };
 }
 
 const call = (id: string, name: string, input: unknown) => ({ type: "tool_use" as const, id, name, input });
 
-test("an async tool returns pending at once, and a successful ingest_memory result joins the thread without waking the work lane", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
-  const { runtime, yaad, gate, dwar } = harness();
+/** Delivery that runs no agent, so a test sets the scene without a wake racing it. */
+function quiet(runtime: ReturnType<typeof harness>["runtime"]) {
+  return { ...runtime.deliver, enqueue: () => randomUUID(), preempt: () => {} };
+}
 
-  const started = await executeTool(runtime.toolContext("remember", "work"), call("ing-1", "ingest_memory", { text: "Ankur likes tea." }));
-  assert.equal(started.isError, false);
-  assert.equal(JSON.parse(started.content).pending, "ing-1");
-  assert.equal(yaad.ingestCalls.length, 1, "it is running");
-  assert.equal((await handle.db.select().from(pendingAsync)).length, 1);
-  assert.equal(dwar.workCalls.length, 0, "nothing woke the lane yet");
+/** An agent holding Ankur's open job, and a tool context standing in that job. */
+async function inJob(runtime: ReturnType<typeof harness>["runtime"], agentId: string, words = "when is my exam?") {
+  await deliverUserMessage(quiet(runtime), agentId, words);
+  const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, agentId));
+  return { job: job!, ctx: { ...runtime.toolContext(agentId), jobId: job!.id } };
+}
 
-  gate.release();
-  await runtime.waitUntilIdle();
-
-  assert.equal((await handle.db.select().from(pendingAsync)).length, 0, "the call is done");
-  const notice = runtime.transcript.transcriptFor("remember").at(-1)!;
-  assert.equal(notice.kind, "notice");
-  assert.match(notice.content, /^Result of ingest_memory \(ing-1\), done:\n/);
-  assert.equal(dwar.workCalls.length, 0, "a saved memory wakes no lane");
-});
-
-test("with ingest_result_wakes on, a successful ingest_memory result wakes the work lane", async () => {
-  const waking = withRuntime(config, { ingest_result_wakes: true });
-  await resetRuntime(handle.sql, handle.db, waking);
-  await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
-  const nas = mockNas({});
-  const gate: { release: () => void } = { release: () => {} };
-  const yaad = mockYaad({
-    ingest: async () => {
-      await new Promise<void>((resolve) => {
-        gate.release = resolve;
-      });
-      return { counts: { create_node: 1, update_node: 0, close_node: 0, create_edge: 0, close_edge: 0, noop: 0 }, operations: [] };
-    },
-  });
-  const dwar = mockDwar({ work: () => yieldTurn() });
-  const runtime = createRuntime({ db: handle.db, dwar, yaad, ghar: mockGhar(), nas, config: waking, log: silentLog });
-
-  await executeTool(runtime.toolContext("remember", "work"), call("ing-w", "ingest_memory", { text: "Ankur likes tea." }));
-  gate.release();
-  await runtime.waitUntilIdle();
-
-  assert.equal(dwar.workCalls.length, 1, "the lane woke for the result");
-  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /\[Wake\] async tool result \(ingest_memory ing-w\)/);
-});
-
-test("an async tool's failure arrives as the message too", async () => {
+test("ingest_memory returns what Yaad stored in the call, and a failure comes back as an error with nothing left pending", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
   const { runtime, yaad } = harness();
+
+  const stored = await executeTool(runtime.toolContext("remember"), call("ing-1", "ingest_memory", { text: "Ankur likes tea." }));
+  assert.equal(stored.isError, false);
+  assert.equal(JSON.parse(stored.content).counts.create_node, 1);
+  assert.equal(yaad.ingestCalls.length, 1);
+
   yaad.ingest = async () => {
     throw new Error("yaad exploded");
   };
-
-  await executeTool(runtime.toolContext("remember", "work"), call("ing-2", "ingest_memory", { text: "x" }));
-  await runtime.waitUntilIdle();
-
-  const notice = runtime.transcript.transcriptFor("remember").at(-1)!;
-  assert.match(notice.content, /^Result of ingest_memory \(ing-2\), failed:\n/);
+  const failed = await executeTool(runtime.toolContext("remember"), call("ing-2", "ingest_memory", { text: "x" }));
+  assert.equal(failed.isError, true);
   assert.equal((await handle.db.select().from(pendingAsync)).length, 0);
 });
 
-test("a call a restart cut short is reported lost at boot, and the agent's work lane wakes for it", async () => {
+test("a call a restart cut short is reported lost at boot, and the agent wakes for it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
   const { runtime, dwar } = harness();
-  await handle.db.insert(pendingAsync).values({ id: "ing-3", agentId: "remember", toolName: "ingest_memory" });
+  await handle.db.insert(pendingAsync).values({ id: "ing-3", agentId: "remember", toolName: "control_device" });
 
-  const lost = await reportLostAsync({
-    db: handle.db,
-    transcript: runtime.transcript,
-    events: runtime.events,
-    answerByMinutes: 5,
-    enqueueProcess: runtime.enqueueProcess,
-    enqueueWork: runtime.enqueueWork,
-    wakeActivity: runtime.wakeActivity,
-  });
+  const lost = await reportLostAsync(runtime.deliver);
   await runtime.waitUntilIdle();
 
   assert.equal(lost, 1);
-  assert.match(runtime.transcript.transcriptFor("remember").at(-1)!.content, /^Result of ingest_memory \(ing-3\) lost: hath restarted/);
-  assert.equal(dwar.workCalls.length, 1);
+  assert.match(runtime.transcript.transcriptFor("remember").at(-1)!.content, /^Result of control_device \(ing-3\) lost: hath restarted/);
+  assert.equal(dwar.agentCalls.length, 1);
   assert.equal((await handle.db.select().from(pendingAsync)).length, 0);
 });
 
 test("a synchronous tool is not run in the background", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
-  const { runtime, yaad } = harness();
-  yaad.recall = async () => ({ nodes: [], edges: [], sufficient: false, coverage: 0 });
+  const { runtime } = harness();
 
-  const result = await executeTool(runtime.toolContext("remember", "work"), call("rec-1", "recall_memory", { query: "tea" }));
+  const result = await executeTool(runtime.toolContext("remember"), call("rec-1", "recall_memory", { query: "tea" }));
   assert.equal(result.isError, false);
   assert.equal(JSON.parse(result.content).pending, undefined);
 });
 
-test("a large result is saved to a file and the message shows its start and where the rest is", async () => {
+test("a large ingest result is saved to a file and the call shows its start and where the rest is", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "remember", systemPrompt: "remembers" });
-  const { runtime, nas, yaad, gate } = harness();
+  const { runtime, nas, yaad } = harness();
   yaad.ingest = async () => ({
     counts: { create_node: 0, update_node: 0, close_node: 0, create_edge: 0, close_edge: 0, noop: 1 },
     operations: Array.from({ length: 400 }, (_, i) => ({ op: "noop" as const, reason: `reason number ${i}` })),
   });
 
-  await executeTool(runtime.toolContext("remember", "work"), call("ing-4", "ingest_memory", { text: "x" }));
-  gate.release();
-  await runtime.waitUntilIdle();
+  const result = await executeTool(runtime.toolContext("remember"), call("ing-4", "ingest_memory", { text: "x" }));
 
-  const notice = runtime.transcript.transcriptFor("remember").at(-1)!;
-  assert.match(notice.content, new RegExp(`the whole result is saved at ${config.files.dir}/results/ing-4\\.txt: read_file it`));
+  assert.match(result.content, new RegExp(`the whole result is saved at ${config.files.dir}/results/ing-4\\.txt: read_file it`));
   assert.ok(nas.files.get(`${config.files.dir}/results/ing-4.txt`)!.length > 4_000);
 });
 
-test("wait records what the agent waits on, ends nothing by itself, and refuses a target that does not exist", async () => {
+test("wait watches the job's unanswered asks and working helper tasks, and nothing is a plain sleep", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
   await insertAgent(handle.db, { id: "other", systemPrompt: "other" });
-  const { runtime, nas } = harness();
-  await nas.startTask("browser", { agent_id: "waiter", message: "go" });
-  const ctx = runtime.toolContext("waiter", "work");
+  const { runtime } = harness();
+  const { job, ctx } = await inJob(runtime, "waiter");
 
-  const waited = await executeTool(ctx, call("w1", "wait", { on: ["task/browser/1", "other"], timeout_minutes: 10 }));
+  const bare = await executeTool(ctx, call("w0", "wait", { timeout_minutes: 10 }));
+  assert.equal(bare.isError, false, bare.content);
+  const [sleeping] = await handle.db.select().from(watches).where(eq(watches.agentId, "waiter"));
+  assert.deepEqual(sleeping?.targets, [], "nothing pending");
+  assert.ok(Math.abs(sleeping!.dueAt.getTime() - Date.now() - 10 * 60_000) < 5_000);
+
+  await deliverAgentMessage(quiet(runtime), { fromAgentId: "waiter", toAgentId: "other", content: "what do you know?", jobId: job.id });
+  await executeTool(ctx, call("s1", "steer_browser", { message: "go" }));
+  const waited = await executeTool(ctx, call("w1", "wait", { timeout_minutes: 10 }));
   assert.equal(waited.isError, false, waited.content);
   const [watch] = await handle.db.select().from(watches).where(eq(watches.agentId, "waiter"));
-  assert.deepEqual(watch?.targets, ["task/browser/1", "other"]);
-  assert.ok(Math.abs(watch!.dueAt.getTime() - Date.now() - 10 * 60_000) < 5_000);
+  assert.deepEqual(watch?.targets, ["other", "task/browser/1"]);
+  assert.deepEqual(JSON.parse(waited.content).waiting_on, ["other", "task/browser/1"]);
 
-  assert.equal((await executeTool(ctx, call("w2", "wait", { on: "task/browser/99", timeout_minutes: 5 }))).isError, true);
-  assert.equal((await executeTool(ctx, call("w3", "wait", { on: "nobody-here", timeout_minutes: 5 }))).isError, true);
-  assert.equal((await executeTool(ctx, call("w4", "wait", { on: "other", timeout_minutes: 0 }))).isError, true);
-  assert.deepEqual((await handle.db.select().from(watches).where(eq(watches.agentId, "waiter")))[0]?.targets, ["task/browser/1", "other"], "a refused wait changes nothing");
+  assert.equal((await executeTool(ctx, call("w4", "wait", { timeout_minutes: 0 }))).isError, true);
+  assert.deepEqual((await handle.db.select().from(watches).where(eq(watches.agentId, "waiter")))[0]?.targets, ["other", "task/browser/1"], "a refused wait changes nothing");
+
+  await deliverAgentMessage(quiet(runtime), { fromAgentId: "other", toAgentId: "waiter", content: "this much" });
+  await executeTool(ctx, call("w5", "wait", { timeout_minutes: 10 }));
+  assert.deepEqual((await handle.db.select().from(watches).where(eq(watches.agentId, "waiter")))[0]?.targets, ["task/browser/1"], "an answered ask is no longer waited on");
 });
 
-test("a due watch wakes the work lane with facts about a task and an agent, and is dropped", async () => {
+test("a due watch wakes the agent with facts about a task and an agent, and is dropped", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
   await insertAgent(handle.db, { id: "other", systemPrompt: "other" });
@@ -216,45 +172,39 @@ test("a due watch wakes the work lane with facts about a task and an agent, and 
   assert.match(notice.content, /^Your wait timed out after 30 minutes/);
   assert.match(notice.content, /- task\/browser\/1 is working; it last did anything 12 minutes ago\./);
   assert.match(notice.content, /- other: it has never acted; you have not messaged it\./);
-  assert.equal(dwar.workCalls.length, 1);
-  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /\[Wake\] wait timeout/);
+  assert.equal(dwar.agentCalls.length, 1);
+  assert.match(JSON.stringify(dwar.agentCalls[0]!.messages), /\[Wake\] wait timeout/);
 });
 
-test("a watch survives a runtime restart and still falls due", async () => {
+test("a watch survives a runtime restart and still falls due, and a plain sleep ends with its own line", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
-  await insertAgent(handle.db, { id: "other", systemPrompt: "other" });
   const first = harness();
-  await executeTool(first.runtime.toolContext("waiter", "work"), call("w1", "wait", { on: "other", timeout_minutes: 1 }));
+  await executeTool(first.runtime.toolContext("waiter"), call("w1", "wait", { timeout_minutes: 1 }));
   const second = harness();
 
   await second.runtime.scheduler.tick(new Date(Date.now() + 2 * 60_000));
   await second.runtime.waitUntilIdle();
 
-  assert.match(second.runtime.transcript.transcriptFor("waiter").at(-1)?.content ?? "", /Your wait timed out/);
+  assert.match(second.runtime.transcript.transcriptFor("waiter").at(-1)?.content ?? "", /^Your wait of \d+ minutes is over\.$/);
 });
 
-test("a message from the agent waited on wakes the work lane and drops the watch", async () => {
+test("a message from the agent waited on wakes the agent and drops the watch", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
   await insertAgent(handle.db, { id: "other", systemPrompt: "other" });
   const { runtime, dwar } = harness();
   await handle.db.insert(watches).values({ agentId: "waiter", targets: ["other"], dueAt: new Date(Date.now() + 60_000) });
 
-  const { deliverAgentMessage } = await import("../src/runtime/deliver.js");
-  await deliverAgentMessage(
-    runtime.deliver,
-    { fromAgentId: "other", toAgentId: "waiter", content: "here is the answer" },
-  );
+  await deliverAgentMessage(runtime.deliver, { fromAgentId: "other", toAgentId: "waiter", content: "here is the answer" });
   await runtime.waitUntilIdle();
 
-  assert.equal(dwar.workCalls.length, 2, "the answer wakes the work lane, whose yield then gets the one reminder");
-  assert.equal(dwar.processCalls.length, 0);
-  assert.match(JSON.stringify(dwar.workCalls[0]!.messages), /\[Wake\] message from other/);
+  assert.equal(dwar.agentCalls.length, 2, "the answer wakes the agent, whose yield then gets the one reminder");
+  assert.match(JSON.stringify(dwar.agentCalls[0]!.messages), /\[Wake\] message from other/);
   assert.equal((await handle.db.select().from(watches)).length, 0);
 });
 
-test("the running info of GET /agents shows what the agent waits on", async () => {
+test("the running info of GET /agents shows whether the agent runs and what it waits on", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
   const { runtime } = harness();
@@ -265,74 +215,71 @@ test("the running info of GET /agents shows what the agent waits on", async () =
   const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas, runtime });
   try {
     const listed = (await app.inject({ method: "GET", url: "/agents" })).json() as {
-      agents: Array<{ id: string; running: { waiting_on: unknown } }>;
+      agents: Array<{ id: string; running: { working: boolean; waiting_on: unknown; job: unknown } }>;
     };
-    assert.deepEqual(listed.agents.find((agent) => agent.id === "waiter")?.running.waiting_on, {
-      targets: ["task/browser/1"],
-      since: since.toISOString(),
-      wakes_by: "2026-10-29T15:00:00.000Z",
-    });
+    const running = listed.agents.find((agent) => agent.id === "waiter")?.running;
+    assert.equal(running?.working, false);
+    assert.equal(running?.job, null);
+    assert.deepEqual(running?.waiting_on, { targets: ["task/browser/1"], since: since.toISOString(), wakes_by: "2026-10-29T15:00:00.000Z" });
   } finally {
     await app.close();
   }
 });
 
-test("the yield reminder fires for an unanswered request with nothing pending, and not when something would wake the agent", async () => {
+test("the yield reminder fires for an unanswered job with nothing pending, and not when something would wake the agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "asked", systemPrompt: "is asked" });
   const { runtime, nas } = harness();
-  const deps = { db: handle.db, nas, transcript: runtime.transcript };
-  await deliverUserMessage(
-    { ...runtime.deliver, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
-    "asked",
-    "when is my exam?",
-  );
+  const { job, ctx } = await inJob(runtime, "asked");
+  const deps = { db: handle.db, nas };
 
-  const reminder = await yieldReminder(deps, "asked");
+  const reminder = await yieldReminder(deps, "asked", job.id);
   assert.match(reminder ?? "", /^\[continue\] Ankur asked "when is my exam\?" at \d{4}-\d\d-\d\dT.* and nothing you started will wake you\. Answer now, or start or wait on what will\.$/);
+  assert.equal(await yieldReminder(deps, "asked", null), null, "no job, no reminder");
 
-  await nas.startTask("browser", { agent_id: "asked", message: "look it up" });
-  assert.equal(await yieldReminder(deps, "asked"), null, "a running task wakes it");
+  await executeTool(ctx, call("s1", "steer_browser", { message: "look it up" }));
+  assert.equal(await yieldReminder(deps, "asked", job.id), null, "a working task wakes it");
   nas.tasks.set("task/browser/1", { ...nas.tasks.get("task/browser/1")!, status: "idle" });
-  assert.notEqual(await yieldReminder(deps, "asked"), null, "an idle task does not");
+  assert.notEqual(await yieldReminder(deps, "asked", job.id), null, "an idle task does not");
 
-  await handle.db.insert(watches).values({ agentId: "asked", targets: ["task/browser/1"], dueAt: new Date(Date.now() + 60_000) });
-  assert.equal(await yieldReminder(deps, "asked"), null, "a wait wakes it");
+  await handle.db.insert(watches).values({ agentId: "asked", targets: [], dueAt: new Date(Date.now() + 60_000) });
+  assert.equal(await yieldReminder(deps, "asked", job.id), null, "a wait wakes it");
   await handle.db.delete(watches);
 
-  await handle.db.insert(pendingAsync).values({ id: "p1", agentId: "asked", toolName: "ingest_memory" });
-  assert.equal(await yieldReminder(deps, "asked"), null, "an async call wakes it");
+  await handle.db.insert(pendingAsync).values({ id: "p1", agentId: "asked", toolName: "control_device" });
+  assert.equal(await yieldReminder(deps, "asked", job.id), null, "a background call wakes it");
   await handle.db.delete(pendingAsync);
 
   await handle.db.insert(reminders).values({ id: "00000000-0000-4000-8000-0000000000e2", agentId: "asked", authorId: "asked", note: "later", runAt: new Date(Date.now() + 3_600_000) });
-  assert.equal(await yieldReminder(deps, "asked"), null, "a reminder of its own wakes it");
+  assert.equal(await yieldReminder(deps, "asked", job.id), null, "a reminder of its own wakes it");
   await handle.db.delete(reminders);
 
-  runtime.transcript.append({ fromAgentId: "asked", toAgentId: null, content: "Thursday." });
-  assert.equal(await yieldReminder(deps, "asked"), null, "answered");
+  nas.listTasks = async () => {
+    throw new Error("nas is down");
+  };
+  await assert.rejects(() => yieldReminder(deps, "asked", job.id), /nas is down/, "a Nas that cannot be read is an error, not a guess");
+
+  await deliverAgentMessage(quiet(runtime), { fromAgentId: "asked", toAgentId: null, content: "Thursday.", jobId: job.id, status: "done" });
+  assert.equal(await yieldReminder(deps, "asked", job.id), null, "answered");
 });
 
-test("the work lane yields once more after the reminder, and a second yield stands", async () => {
+test("the agent yields once more after the reminder, and a second yield stands", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "asked", systemPrompt: "is asked" });
   const requests: DwarChatRequest[] = [];
   const { runtime, dwar } = harness({
-    work: (request) => {
+    agent: (request) => {
       requests.push(request);
       return toolUse("yield", {}, `y${requests.length}`);
     },
   });
-  await deliverUserMessage(
-    { ...runtime.deliver, enqueueProcess: () => randomUUID(), enqueueWork: () => randomUUID() },
-    "asked",
-    "when is my exam?",
-  );
+  const { job } = await inJob(runtime, "asked");
 
-  runtime.enqueueWork("asked", "message from Ankur");
+  runtime.enqueue("asked", "message from Ankur", { kind: "message", ref: null, openedByMessageId: null, jobId: job.id, jobIsNew: true });
   await runtime.waitUntilIdle();
 
-  assert.equal(dwar.workCalls.length, 2);
-  assert.match(JSON.stringify(dwar.workCalls[1]!.messages), /nothing you started will wake you/);
+  assert.equal(dwar.agentCalls.length, 2);
+  assert.match(JSON.stringify(dwar.agentCalls[1]!.messages), /nothing you started will wake you/);
   const logs = await handle.db.select().from(agentLogs).where(eq(agentLogs.agentId, "asked"));
   assert.ok(logs.length > 0);
 });

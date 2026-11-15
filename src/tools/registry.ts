@@ -11,14 +11,14 @@ import { getMessages } from "./hath/get-messages.js";
 import { webFetch, webSearch } from "./web/web.js";
 import { getDevice } from "./ghar/get-device.js";
 import { controlDevice } from "./ghar/control-device.js";
-import { listBrowsers, listTerminals, steerBrowser, steerTerminal } from "./helper/tasks.js";
+import { listBrowsers, listTerminals, steerBrowser, steerTerminal, stopTask } from "./helper/tasks.js";
 import { editFile, findFiles, readFile, writeFile } from "./files/files.js";
 
 /**
  * Every tool defined by a zod schema and a handler, in the order agents see them. Which
- * lane may call which is declared in runtime/lanes.ts, together with the lane tools
- * (send_message, steer_work, yield, memory, list_agents, wait, manage_agent,
- * modify_agent_prompt) that have no definition here.
+ * tools an agent and the router hold is declared in runtime/tool-set.ts, together with the
+ * tools (send_message, yield, memory, list_agents, wait, manage_agent, modify_agent_prompt)
+ * that have no definition here.
  */
 const definitions = [
   spawnAgent,
@@ -36,6 +36,7 @@ const definitions = [
   myActivity,
   steerBrowser,
   steerTerminal,
+  stopTask,
   listBrowsers,
   listTerminals,
   readFile,

@@ -1,51 +1,38 @@
 /**
- * What an agent's work lane is waiting on (the `wait` tool). A watch is a row, so a restart
- * keeps it: the scheduler's tick wakes the lane with facts when one falls due, and the
- * awaited result or message wakes it on its own (deliver.ts takes the watch then). A watch
- * is dropped when the lane next runs, since a lane that woke for any reason is not waiting.
+ * What an agent is waiting on (the `wait` tool): its job's pending items, or nothing, which is a
+ * plain sleep. A watch is a row, so a restart keeps it: the scheduler's tick wakes the agent
+ * with facts when one falls due, and the awaited result or message wakes it on its own
+ * (deliver.ts takes the watch then). A watch is dropped when the agent next runs, since an
+ * agent that woke for any reason is not waiting.
  */
 
-import { and, desc, eq, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../db/client.js";
-import { currentRequester } from "../db/messages.js";
-import { openJob } from "./jobs.js";
-import { agentLogs, agents, messages, watches, type WatchRow } from "../db/schema.js";
+import { agentLogs, messages, watches, type WatchRow } from "../db/schema.js";
 import type { NasClient } from "../nas/client.js";
 import { parseTaskAddress } from "../tools/helper/tasks.js";
-import { fail, failWithoutAgentIdentity, ok, type ToolContext, type ToolExecResult } from "../tools/shared.js";
+import { failWithoutAgentIdentity, ok, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarTool } from "../types/domain.js";
 import { WAIT } from "../types/domain.js";
-import { agentIdSchema } from "../agent-id.js";
 import type { DeliverDeps } from "./deliver.js";
-import { rewakeWork } from "./rewake.js";
+import { pendingItems, pendingTargets } from "./pending.js";
+import { rewake } from "./rewake.js";
 
 /** Longest a wait may last: a day, since Nas forgets an idle task after that. */
 export const WAIT_MAX_MINUTES = 24 * 60;
 
-const waitInput = z
-  .object({
-    on: z.union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)]),
-    timeout_minutes: z.number().int().min(1).max(WAIT_MAX_MINUTES),
-  })
-  .strict();
+const waitInput = z.object({ timeout_minutes: z.number().int().min(1).max(WAIT_MAX_MINUTES) }).strict();
 
-/** The wait tool the work lane sees. */
+/** The wait tool. */
 export const waitTool: DwarTool = {
   name: WAIT,
-  description: `End this run and sleep until what you are waiting on arrives: a helper task's result (its id, such as task/browser/3, from steer_browser or steer_terminal), a message from another agent (its agent id), or a list of either. No model call runs while you wait; the result or message wakes you by itself, and you are shown as waiting on it. If nothing comes within timeout_minutes (1 to ${WAIT_MAX_MINUTES}) you are woken with the facts: for a task its state and how long since it last did anything, for an agent how long since it last acted and whether it has run since you messaged it. Call it after you have done everything you can in this run; to end with nothing to wait on, call yield.`,
+  description: `End this run and sleep until something your job is waiting on answers: an agent you asked that has not replied, or a helper task you steered that is still working. No model call runs while you wait; the reply or the helper's report wakes you by itself. If nothing comes within timeout_minutes (1 to ${WAIT_MAX_MINUTES}) you are woken with the facts: for a task its state and how long since it last did anything, for an agent how long since it last acted and whether it has run since you messaged it. With nothing pending, it is a plain sleep until the timeout. Call it after you have done everything you can in this run; to end with nothing to wait on, call yield.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
-    required: ["on", "timeout_minutes"],
+    required: ["timeout_minutes"],
     properties: {
-      on: {
-        oneOf: [
-          { type: "string" },
-          { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 },
-        ],
-        description: "A task id, an agent id, or a list of them",
-      },
       timeout_minutes: {
         type: "integer",
         minimum: 1,
@@ -69,7 +56,7 @@ export async function clearWatch(db: Db, agentId: string): Promise<void> {
 
 /**
  * takeWatch drops the agent's watch when it is waiting on `target` (a task address or an
- * agent id), and says whether it was: that arrival is what the lane waited for.
+ * agent id), and says whether it was: that arrival is what the agent waited for.
  */
 export async function takeWatch(db: Db, agentId: string, target: string): Promise<boolean> {
   const taken = await db
@@ -80,80 +67,31 @@ export async function takeWatch(db: Db, agentId: string, target: string): Promis
 }
 
 /**
- * questionDeadline is when the agent must answer Ankur's question, or null when it has no
- * such deadline. Under `runtime.job_requester` (`byJob`) the question is the agent's open job
- * from Ankur, and the deadline is `minutes` after his opening message; any other requester, or
- * no open job, has none. Otherwise it is `minutes` after his latest message to the agent while
- * he is its current requester.
- */
-async function questionDeadline(db: Db, agentId: string, minutes: number, byJob: boolean): Promise<Date | null> {
-  if (byJob) {
-    const job = await openJob(db, null, agentId);
-    if (job === undefined) {
-      return null;
-    }
-    const [opening] = await db.select({ at: messages.createdAt }).from(messages).where(eq(messages.seq, job.openedSeq));
-    if (opening === undefined) {
-      throw new Error(`job ${job.id} opened at message ${job.openedSeq}, which does not exist`);
-    }
-    return new Date(opening.at.getTime() + minutes * 60_000);
-  }
-  if ((await currentRequester(db, agentId)) !== null) {
-    return null;
-  }
-  const [latest] = await db
-    .select({ at: messages.createdAt })
-    .from(messages)
-    .where(and(isNull(messages.fromAgentId), eq(messages.toAgentId, agentId), eq(messages.kind, "message")))
-    .orderBy(desc(messages.seq))
-    .limit(1);
-  return latest === undefined ? null : new Date(latest.at.getTime() + minutes * 60_000);
-}
-
-/**
- * answerCap is `requested` minutes of waiting, cut to the caller's question deadline (at least
- * a minute from now) when its job is Ankur's question. Under
- * `runtime.job_requester` a job whose deadline passed before this wait began has none.
- */
-export async function answerCap(ctx: ToolContext, requested: number): Promise<number> {
-  if (ctx.callerId === null) {
-    return requested;
-  }
-  const deadline = await questionDeadline(ctx.db, ctx.callerId, ctx.questionAnswerMinutes, ctx.jobRequester);
-  if (deadline === null || (ctx.jobRequester && deadline.getTime() <= Date.now())) {
-    return requested;
-  }
-  return Math.min(requested, Math.max(1, Math.ceil((deadline.getTime() - Date.now()) / 60_000)));
-}
-
-/**
- * runWait records what the caller waits on, after checking that every target exists, and
- * returns the result the lane loop ends the run on (see step.ts). When the job is Ankur's
- * question the wait ends no later than `runtime.question_answer_minutes` after his message
- * (at least a minute from now), so the answer goes out with what has come back.
+ * runWait records that the caller waits on its job's pending items (none for a wake that is on
+ * no job), and returns the result the loop ends the run on (see step.ts).
  */
 export async function runWait(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   if (ctx.callerId === null) {
     return failWithoutAgentIdentity();
   }
   const input = waitInput.parse(raw);
-  const targets = [...new Set(Array.isArray(input.on) ? input.on : [input.on])];
-  for (const target of targets) {
-    const problem = await targetProblem(ctx, target);
-    if (problem !== null) {
-      return fail(problem);
-    }
-  }
-  const minutes = await answerCap(ctx, input.timeout_minutes);
-  const dueAt = await recordWatch(ctx.db, ctx.callerId, ctx.jobId, targets, minutes);
-  return ok({
-    waiting_on: targets,
-    wakes_by: dueAt.toISOString(),
-    ...(minutes < input.timeout_minutes ? { note: `Shortened to ${minutes} minutes: Ankur's question is answered within ${ctx.questionAnswerMinutes} minutes of his message, with what has come back.` } : {}),
-  });
+  const targets = ctx.jobId === null ? [] : pendingTargets(await pendingItems(ctx.db, ctx.nas, ctx.jobId));
+  const dueAt = await recordWatch(ctx.db, ctx.callerId, ctx.jobId, targets, input.timeout_minutes);
+  return ok({ waiting_on: targets, wakes_by: dueAt.toISOString() });
 }
 
-/** recordWatch records that `agentId`'s work lane waits on `targets` for `minutes` in job `jobId` (null for none), replacing any wait it had, and returns when it falls due. */
+/** recordPendingWatch records a watch on job `jobId`'s pending items for `minutes` when it has any. */
+export async function recordPendingWatch(db: Db, nas: NasClient, agentId: string, jobId: string | null, minutes: number): Promise<void> {
+  if (jobId === null) {
+    return;
+  }
+  const targets = pendingTargets(await pendingItems(db, nas, jobId));
+  if (targets.length > 0) {
+    await recordWatch(db, agentId, jobId, targets, minutes);
+  }
+}
+
+/** recordWatch records that `agentId` waits on `targets` for `minutes` in job `jobId` (null for none), replacing any wait it had, and returns when it falls due. */
 export async function recordWatch(db: Db, agentId: string, jobId: string | null, targets: string[], minutes: number): Promise<Date> {
   const dueAt = new Date(Date.now() + minutes * 60_000);
   await db
@@ -163,55 +101,24 @@ export async function recordWatch(db: Db, agentId: string, jobId: string | null,
   return dueAt;
 }
 
-/** targetProblem is why `target` cannot be waited on, or null when it can. */
-async function targetProblem(ctx: ToolContext, target: string): Promise<string | null> {
-  if (ctx.waitTargetGuard) {
-    if (target === ctx.callerId) {
-      return "you cannot wait on yourself: with nothing to wait on, call yield";
-    }
-    if (target.startsWith("toolu_")) {
-      return `${target} is a tool call: a tool returns its result in the call, so there is nothing to wait on`;
-    }
-  }
-  if (target.startsWith("task/")) {
-    const address = parseTaskAddress(target);
-    if (address === null) {
-      return `${target} is not a task id; they look like task/browser/3`;
-    }
-    await ctx.nas.getTask(address.kind, address.id);
-    return null;
-  }
-  if (!agentIdSchema.safeParse(target).success) {
-    return `${target} is neither a task id (task/browser/3) nor an agent id`;
-  }
-  const [agent] = await ctx.db.select({ id: agents.id }).from(agents).where(eq(agents.id, target));
-  return agent === undefined ? `no agent ${target}` : null;
-}
-
-/** What the facts of a due watch need: the database, Nas for task state, and a way to wake the lane. */
+/** What the facts of a due watch need: the database, Nas for task state, and a way to wake the agent. */
 export type WatchDeps = {
   deliver: DeliverDeps;
   nas: NasClient;
-  /** `runtime.job_requester`. */
-  jobRequester: boolean;
-  /** `runtime.question_answer_minutes`. */
-  questionAnswerMinutes: number;
 };
 
 /**
- * checkDueWatches wakes the work lane of every agent whose watch has fallen due, with the
- * facts of what it waited on, and drops the watch. Run from the scheduler's tick.
+ * checkDueWatches wakes every agent whose watch has fallen due, with the facts of what it
+ * waited on, and drops the watch. Run from the scheduler's tick.
  */
 export async function checkDueWatches(deps: WatchDeps, now = new Date()): Promise<void> {
   const due = await deps.deliver.db.select().from(watches).where(lte(watches.dueAt, now));
   for (const watch of due) {
     const facts = await Promise.all(watch.targets.map((target) => factsAbout(deps, watch, target, now)));
     await clearWatch(deps.deliver.db, watch.agentId);
-    const forAnkur = deps.jobRequester
-      ? await askedByAnkur(deps, watch)
-      : (await currentRequester(deps.deliver.db, watch.agentId)) === null;
-    await rewakeWork(deps.deliver, watch.agentId, {
-      content: `Your wait timed out after ${minutesBetween(watch.since, now)} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}${forAnkur ? "\nAnswer Ankur now with what you have; name what is missing in one clause." : ""}`,
+    const waited = minutesBetween(watch.since, now);
+    await rewake(deps.deliver, watch.agentId, {
+      content: facts.length === 0 ? `Your wait of ${waited} minutes is over.` : `Your wait timed out after ${waited} minutes with nothing from what you waited on.\n${facts.map((fact) => `- ${fact}`).join("\n")}`,
       notice: "wait",
       wokenBy: "wait timeout",
       jobId: watch.jobId,
@@ -219,13 +126,7 @@ export async function checkDueWatches(deps: WatchDeps, now = new Date()): Promis
   }
 }
 
-/** askedByAnkur is true when `watch` began while the agent's open job from Ankur was inside its answer deadline. */
-async function askedByAnkur(deps: WatchDeps, watch: WatchRow): Promise<boolean> {
-  const deadline = await questionDeadline(deps.deliver.db, watch.agentId, deps.questionAnswerMinutes, true);
-  return deadline !== null && watch.since <= deadline;
-}
-
-/** factsAbout is what is known of one thing a lane waited on. */
+/** factsAbout is what is known of one thing an agent waited on. */
 async function factsAbout(deps: WatchDeps, watch: WatchRow, target: string, now: Date): Promise<string> {
   const address = parseTaskAddress(target);
   if (address !== null) {

@@ -8,7 +8,6 @@ import type {
   AgentRecord,
   LogEvent,
   LogRecord,
-  Lane,
   MessageRecord,
   ReminderRecord,
   RoutineRecord,
@@ -19,13 +18,6 @@ import type {
   WakeToolResult,
 } from "./types/domain.js";
 import { HathError } from "./errors.js";
-
-function parseLane(value: string): Lane {
-  if (value === "work" || value === "process" || value === "router") {
-    return value;
-  }
-  throw new HathError(500, "internal_error", `invalid lane in database: ${value}`);
-}
 
 function parseLogEvent(value: string): LogEvent {
   if (value === "response" || value === "tool_result") {
@@ -53,7 +45,6 @@ export function toLogRecord(row: AgentLogRow): LogRecord {
   return {
     id: row.id,
     agent_id: row.agentId,
-    lane: parseLane(row.lane),
     event: parseLogEvent(row.event),
     payload: row.payload,
     wake_id: row.wakeId,
@@ -100,9 +91,9 @@ export function toMessageRecord(row: MessageRow, attachments: AttachmentMeta[]):
 }
 
 /**
- * wakeOutcome derives where a wake stands. `running` is a wake still open (a lane run is
- * queued or running); `failed` is an `error` set; `waiting` is an ended wake whose work
- * lane left the agent's watch, a watch that began during the wake and is still standing
+ * wakeOutcome derives where a wake stands. `running` is a wake still open (a run is
+ * queued or running); `failed` is an `error` set; `waiting` is an ended wake that
+ * left the agent's watch, a watch that began during the wake and is still standing
  * (a watch is dropped when the awaited report or the next real run arrives, so only the
  * latest wake can be waiting); otherwise `yielded`.
  */
@@ -169,8 +160,8 @@ const toolUseBlock = z.object({ type: z.literal("tool_use"), id: z.string(), nam
 export type WakeResultRow = { logId: string; result: WakeToolResult };
 
 /**
- * toTurnEntry maps one `response` log row to a timeline turn without its `ord`: the lane,
- * usage, joined thinking and text blocks (null when none), and each `tool_use` block paired
+ * toTurnEntry maps one `response` log row to a timeline turn without its `ord`: usage, joined
+ * thinking and text blocks (null when none), and each `tool_use` block paired
  * with its result in `results` by `tool_use_id` (null until the result is logged). Throws
  * `500 internal_error` for a row that is not a response payload.
  */
@@ -179,8 +170,7 @@ export function toTurnEntry(
   results: ReadonlyMap<string, WakeResultRow>,
 ): Omit<Extract<WakeEntry, { type: "turn" }>, "ord"> {
   const parsed = responsePayload.safeParse(row.payload);
-  const lane = parseLane(row.lane);
-  if (!parsed.success || lane === "router") {
+  if (!parsed.success || row.agentId === null) {
     throw new HathError(500, "internal_error", `log ${row.id} is not a wake response`);
   }
   const thinking: string[] = [];
@@ -209,7 +199,6 @@ export function toTurnEntry(
   return {
     at: row.createdAt.toISOString(),
     type: "turn",
-    lane,
     usage: {
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,

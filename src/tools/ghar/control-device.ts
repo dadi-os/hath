@@ -42,7 +42,7 @@ async function followRun(ctx: ToolContext, runId: string): Promise<ToolExecResul
 /**
  * Changes the house from a request in plain words, via Ghar `POST /control`, where Ghar's own
  * model loop does the reading and commanding. A request that settles within CONTROL_WAIT_MS
- * answers in the call; a slower one returns `{ pending }` and its result wakes the calling lane.
+ * answers in the call; a slower one returns `{ pending }` and its result wakes the calling agent.
  */
 export const controlDevice = defineTool({
   name: CONTROL_DEVICE,

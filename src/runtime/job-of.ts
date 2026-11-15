@@ -20,8 +20,8 @@ import type { Db } from "../db/client.js";
 import { helperSteers, jobs, messages, type JobRow } from "../db/schema.js";
 import { jobById, openJob } from "./jobs.js";
 
-/** A message's job, whether this message opened it, and whether it answers an ask the agent made. */
-export type ResolvedJob = { job: JobRow; isNew: boolean; reply: boolean };
+/** A message's job, whether this message opened it. */
+export type ResolvedJob = { job: JobRow; isNew: boolean };
 
 /**
  * resolveInbound is the job of message `message`, which reached agent `message.toAgentId` from
@@ -41,7 +41,7 @@ export async function resolveInbound(
     if (open.state === "needs_input") {
       await db.update(jobs).set({ state: "open", questionSeq: null, updatedAt: now }).where(eq(jobs.id, open.id));
     }
-    return { job: open, isNew: false, reply: false };
+    return { job: open, isNew: false };
   }
   if (sender !== null) {
     const [asked] = await db
@@ -56,7 +56,7 @@ export async function resolveInbound(
       }
       const job = await jobById(db, asked.jobId);
       if (job.requesterId !== sender) {
-        return { job, isNew: false, reply: true };
+        return { job, isNew: false };
       }
     }
   }
@@ -74,7 +74,7 @@ export async function resolveInbound(
   if (created === undefined) {
     throw new Error("job insert returned no row");
   }
-  return { job: created, isNew: true, reply: false };
+  return { job: created, isNew: true };
 }
 
 /**

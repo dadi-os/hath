@@ -3,10 +3,12 @@
  * `ingest_memory` writes it stamped with the calling agent.
  */
 
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { messages } from "../db/schema.js";
 import { yaadToolCall } from "../tools/yaad/call.js";
 import { failWithoutAgentIdentity, type ToolContext, type ToolExecResult } from "../tools/shared.js";
-import type { DwarTool } from "../types/domain.js";
+import type { DwarTool, DwarToolUseBlock } from "../types/domain.js";
 import { INGEST_MEMORY, RECALL_MEMORY } from "../types/domain.js";
 
 const nodeKind = z.enum(["person", "memory", "plan", "place", "task"]);
@@ -21,6 +23,9 @@ const recallMemoryInput = z
     occurred_from: z.string().datetime({ offset: true }).optional(),
     occurred_to: z.string().datetime({ offset: true }).optional(),
     relevant_on: z.string().date().optional(),
+    hub: z.string().min(1).optional(),
+    closes_from: z.string().date().optional(),
+    closes_to: z.string().date().optional(),
     limit: z.number().int().positive().optional(),
   })
   .strict();
@@ -32,17 +37,11 @@ const ingestMemoryInput = z
   })
   .strict();
 
-/**
- * ingest_memory runs in the background (see async.ts) unless `runtime.sync_ingest` is on:
- * Yaad's ingest took 47 seconds at the median and 11 minutes at worst (370 calls, 2026-10-22 to 29).
- */
-export const INGEST_MEMORY_ASYNC = true;
-
 /** Read memory by meaning, from known nodes, or by exact filters (including the tasks relevant on a day), walking `hops` links out. */
 export const recallMemoryTool: DwarTool = {
   name: RECALL_MEMORY,
   description:
-    'Look things up in Ankur\'s memory: people, places, events (plans), tasks, and facts. Start one of three ways. `query` searches by meaning ("what do I know about Sparsh"). `from` starts at node ids you already have. Filters match exactly: `kind`, `name` (exact title or alias), `occurred_from`/`occurred_to` (an event window: "what\'s on Tuesday" is `kind: "plan"` with that day; a course\'s class sessions are found this way, never by meaning), and `relevant_on`. `relevant_on` is a local date (YYYY-MM-DD) and returns every task not done whose window has opened by that day, still open or past due: it is the exact answer to "what is due" or "what is open today", so use it instead of a query for that, with `kind: "task"` or no kind. Each task\'s `detail` has `opens_on`, `closes_at` (when it is due) and `done_at`; a plan\'s has its end and `rsvp` (whether Ankur is going; absent until he answers). Filters narrow a query; `from` cannot be combined with filters. `hops` walks that many links out from where you started — `{ from: [id], hops: 1 }` is a node and everything linked to it. Returned edges carry their properties. With a query, check `sufficient`: false means memory did not have enough, so say so rather than filling the gap. For when or where something is ("when\'s my advising appt"), name the thing itself ("advising"), or use `kind: "plan"` with a date window; Ankur\'s name adds nothing to a query. Anything Ankur told any agent is in memory: recall before saying you do not know or asking a teammate. A task\'s `detail` has `verified_at` (when it was last created, changed, ticked, or restated true), and `created_at` and `updated_at` sit beside it. A task last verified before today is stale when the answer depends on it: check the source (the course site, the portal, Ankur) and ingest what changed, or restate it as still true if nothing did. Everything else memory returns is true: act on it, and do not send a worker to re-check it.',
+    'Look things up in Ankur\'s memory: people, places, events (plans), tasks, and facts. Start one of three ways. `query` searches by meaning ("what do I know about Sparsh"). `from` starts at node ids you already have. Filters match exactly and return exactly the rows they match; a query then only re-ranks them: `kind`, `name` (exact title or alias), `hub` (a course or project, by id or exact title: its tasks), `occurred_from`/`occurred_to` (an event window: "what\'s on Tuesday" is `kind: "plan"` with that day; a course\'s class sessions are found this way, never by meaning; not for tasks), `closes_from`/`closes_to` (local dates, inclusive: the tasks due in that range), and `relevant_on`. `relevant_on` is a local date (YYYY-MM-DD) and returns every task not done whose window has opened by that day, still open or past due: it is the exact answer to "what is due" or "what is open today", so use it instead of a query for that, with `kind: "task"` or no kind. Each task\'s `detail` has `opens_on`, `closes_at` (when it is due), `closes_local` and `opens_local` (the same in local time), `bucket` (`due_on_day`, `upcoming` or `past_due`, against the day you asked about), `owner` and `done`. A plan\'s has its end, `rsvp` (whether Ankur is going) and `attended` (whether he went); each is absent until set, and one he set himself is true. The result\'s `courses` has, for each course the tasks sit under, `verified_today` (a source check touched it today), `verified_at` and its owner. Filters narrow a query; `from` cannot be combined with filters. `hops` walks that many links out from where you started: `{ from: [id], hops: 1 }` is a node and everything linked to it. Returned edges carry their properties. With a query, check `sufficient`: false means memory did not have enough, so say so rather than filling the gap. For when or where something is ("when\'s my advising appt"), name the thing itself ("advising"), or use `kind: "plan"` with a date window; Ankur\'s name adds nothing to a query. Anything Ankur told any agent is in memory: recall before saying you do not know or asking a teammate. A course whose `verified_today` is false has not been checked against its source today: when the answer depends on it, its owner checks the source and ingests what changed, or restates the tasks as still true if nothing did. Everything else memory returns is true: act on it, and do not send a helper to re-check it.',
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -66,6 +65,9 @@ export const recallMemoryTool: DwarTool = {
         type: "string",
         description: "Local date YYYY-MM-DD: the tasks not done whose window has opened by then (open or past due)",
       },
+      hub: { type: "string", description: "A course or project, by id or exact title: its tasks" },
+      closes_from: { type: "string", description: "Local date YYYY-MM-DD: tasks due on or after it" },
+      closes_to: { type: "string", description: "Local date YYYY-MM-DD: tasks due on or before it" },
       limit: { type: "integer", minimum: 1, description: "Max nodes to return" },
     },
   },
@@ -117,6 +119,7 @@ export async function runRecallMemory(ctx: ToolContext, raw: unknown): Promise<T
       })),
       sufficient: response.sufficient,
       coverage: response.coverage,
+      courses: response.courses,
     }),
   );
 }
@@ -128,10 +131,12 @@ export async function runIngestMemory(ctx: ToolContext, raw: unknown): Promise<T
     return failWithoutAgentIdentity();
   }
   const input = ingestMemoryInput.parse(raw);
+  const sourceText = await ankurJobText(ctx);
   return yaadToolCall(
     () =>
       ctx.yaad.ingest({
         text: input.text,
+        ...(sourceText !== null ? { source_text: sourceText } : {}),
         occurred_at: new Date().toISOString(),
         source: "agent",
         agent_id: agentId,
@@ -142,4 +147,44 @@ export async function runIngestMemory(ctx: ToolContext, raw: unknown): Promise<T
       operations: response.operations,
     }),
   );
+}
+
+/**
+ * ankurJobText is Ankur's own words in the caller's job: every message from him in it, in
+ * order, joined by blank lines; null when the job has none (a routine's, or an agent's).
+ * Yaad stores a task that closed before the text only when his words state the day.
+ */
+async function ankurJobText(ctx: ToolContext): Promise<string | null> {
+  if (ctx.jobId === null) {
+    return null;
+  }
+  const rows = await ctx.db
+    .select({ content: messages.content })
+    .from(messages)
+    .where(and(eq(messages.jobId, ctx.jobId), isNull(messages.fromAgentId), eq(messages.kind, "message")))
+    .orderBy(asc(messages.seq));
+  return rows.length === 0 ? null : rows.map((row) => row.content).join("\n\n");
+}
+
+/**
+ * mergeIngests is one ingest_memory call standing for several made in one turn: their texts
+ * joined by blank lines in order, their participant ids together. `first` is the call that runs
+ * it. Null when there are fewer than two calls or one of them is not a valid ingest, which
+ * then runs alone and fails on its own.
+ */
+export function mergeIngests(calls: DwarToolUseBlock[]): { first: DwarToolUseBlock; call: DwarToolUseBlock } | null {
+  const parsed = calls.map((call) => ingestMemoryInput.safeParse(call.input));
+  if (calls.length < 2 || !parsed.every((result) => result.success)) {
+    return null;
+  }
+  const inputs = parsed.map((result) => result.data!);
+  const participants = [...new Set(inputs.flatMap((input) => input.participant_ids ?? []))];
+  const first = calls[0]!;
+  return {
+    first,
+    call: {
+      ...first,
+      input: { text: inputs.map((input) => input.text).join("\n\n"), ...(participants.length > 0 ? { participant_ids: participants } : {}) },
+    },
+  };
 }

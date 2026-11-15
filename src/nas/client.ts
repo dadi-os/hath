@@ -15,7 +15,10 @@ const reportSchema = z
     id: z.string().min(1),
     agent_id: z.string().min(1),
     state: z.enum(["done", "needs_input", "failed", "stopped"]),
+    /** The answer, then one `Not read: <source>: <symptom>` line per source the helper could not read; any length. */
     text: z.string(),
+    /** Absolute path of the file holding the helper's detail, or "" when it gave none. It is not also in `files`. */
+    detail: z.string(),
     files: z.array(z.string()),
     at: z.string().min(1),
     /** Who stopped the task, on a `stopped` report: "ankur" from the takeover UI, else an agent id or "hath". */
@@ -175,9 +178,8 @@ export type NasClient = {
   listTasks: () => Promise<HelperTask[]>;
   getTask: (kind: TaskKind, id: string) => Promise<HelperTask>;
   /**
-   * Halt a task for good: it ends `stopped`, its resource is killed, and every later steer
-   * is refused `409 task_stopped`. Halting a stopped task changes nothing. Throws `not_found`
-   * for an unknown task.
+   * Halt a task: it ends `stopped` and its resource is killed; a later steer revives it with its
+   * history. Halting a stopped task changes nothing. Throws `not_found` for an unknown task.
    */
   haltTask: (kind: TaskKind, id: string) => Promise<HelperTask>;
   /**
@@ -392,7 +394,6 @@ const PASSTHROUGH_TYPES = new Set([
   "upstream_unreachable",
   "conflict",
   "stale_ref",
-  "task_stopped",
   "internal_error",
 ]);
 

@@ -14,7 +14,7 @@ import { executeTool } from "../src/runtime/tools.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import { SEND_MESSAGE, type WakeOrigin } from "../src/types/domain.js";
 import {
-  FLAGS_OFF,
+  
   insertAgent,
   mockDwar,
   mockGhar,
@@ -24,10 +24,9 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
-  withRuntime,
 } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -82,17 +81,16 @@ test("a throwing listener is logged and does not block others or the emitter", (
   });
   assert.doesNotThrow(() => {
     bus.emit({
-      type: "lane_started",
+      type: "run_started",
       agent_id: randomUUID(),
-      lane: "process",
       at: new Date().toISOString(),
     });
   });
   assert.equal(seen.length, 1);
-  assert.equal(seen[0]?.type, "lane_started");
+  assert.equal(seen[0]?.type, "run_started");
   assert.deepEqual(errors, [
     {
-      obj: { event: "lane_started", error: "subscriber blew up" },
+      obj: { event: "run_started", error: "subscriber blew up" },
       msg: "runtime event listener failed",
     },
   ]);
@@ -186,7 +184,7 @@ test("send emits message with agent_id set to the recipient", async () => {
       seen.push(event);
     }
   });
-  const result = await executeTool(runtime.toolContext(callerId, "process"), {
+  const result = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "d-evt",
     name: SEND_MESSAGE,
@@ -230,11 +228,11 @@ test("deliverAgentMessage with a schedule id opens a schedule wake and stamps th
       transcript,
       events,
       answerByMinutes: 5,
-      enqueueProcess: (agentId, _reason, origin) => {
+      enqueue: (agentId, _reason, origin) => {
         enqueued.push({ agentId, origin });
         return wakeId;
       },
-      enqueueWork: () => randomUUID(),
+      preempt: () => {},
     },
     {
       fromAgentId: fromId,
@@ -253,14 +251,14 @@ test("deliverAgentMessage with a schedule id opens a schedule wake and stamps th
   assert.equal(logs.length, 0);
 });
 
-test("lane_finished is emitted even when the lane run throws", async () => {
+test("run_finished is emitted even when the run throws", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
   });
   const dwar = mockDwar({
-    process: async () => {
+    agent: async () => {
       throw new Error("dwar exploded");
     },
   });
@@ -274,21 +272,20 @@ test("lane_finished is emitted even when the lane run throws", async () => {
   });
   const finished: RuntimeEvent[] = [];
   runtime.events.subscribe((event) => {
-    if (event.type === "lane_finished" && event.lane === "process") {
+    if (event.type === "run_finished") {
       finished.push(event);
     }
   });
-  runtime.enqueueProcess(workerId);
+  runtime.enqueue(workerId);
   await runtime.waitUntilIdle();
   assert.equal(finished.length, 1);
-  assert.equal(finished[0]?.type, "lane_finished");
-  if (finished[0]?.type === "lane_finished") {
+  assert.equal(finished[0]?.type, "run_finished");
+  if (finished[0]?.type === "run_finished") {
     assert.equal(finished[0].agent_id, workerId);
-    assert.equal(finished[0].lane, "process");
   }
 });
 
-test("GET /agents includes running and it flips true while a lane holds the lock", async () => {
+test("GET /agents includes running and it flips true while the agent's run holds the lock", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
@@ -314,22 +311,21 @@ test("GET /agents includes running and it flips true while a lane holds the lock
   const idle = await app.inject({ method: "GET", url: "/agents" });
   assert.equal(idle.statusCode, 200);
   const idleBody = idle.json() as {
-    agents: Array<{ id: string; running: { work: boolean; process: boolean } }>;
+    agents: Array<{ id: string; running: { working: boolean } }>;
   };
   const idleAgent = idleBody.agents.find((agent) => agent.id === workerId);
   assert.ok(idleAgent);
-  assert.deepEqual(idleAgent.running, { work: false, process: false, waiting_on: null, status: null });
+  assert.deepEqual(idleAgent.running, { working: false, waiting_on: null, job: null });
 
-  const release = await runtime.locks.acquire(workerId, "process", 1000);
+  const release = await runtime.locks.acquire(workerId, 1000);
   const held = await app.inject({ method: "GET", url: "/agents" });
   assert.equal(held.statusCode, 200);
   const heldBody = held.json() as {
-    agents: Array<{ id: string; running: { work: boolean; process: boolean; status?: { work: { state: string } } | null } }>;
+    agents: Array<{ id: string; running: { working: boolean; waiting_on: unknown; job: unknown } }>;
   };
   const heldAgent = heldBody.agents.find((agent) => agent.id === workerId);
   assert.ok(heldAgent);
-  assert.deepEqual({ ...heldAgent.running, status: undefined }, { work: false, process: true, waiting_on: null, status: undefined });
-  assert.equal(heldAgent.running.status?.work.state, "idle", "a running lane carries the status block");
+  assert.deepEqual(heldAgent.running, { working: true, waiting_on: null, job: null });
   release();
 
   await app.close();
@@ -367,7 +363,7 @@ test("GET /agents shows the helper tasks an agent owns, read from Nas, and steer
 
   const changes: string[] = [];
   runtime.events.subscribe((event) => changes.push(event.type));
-  const steered = await executeTool(runtime.toolContext(workerId, "work"), {
+  const steered = await executeTool(runtime.toolContext(workerId), {
     type: "tool_use",
     id: "sb1",
     name: "steer_browser",
@@ -452,7 +448,7 @@ test("GET /agents/:id carries no tool list, since no tool is granted per agent",
   });
   const res = await app.inject({ method: "GET", url: `/agents/${workerId}` });
   assert.equal(res.statusCode, 200);
-  const body = res.json() as { running: { work: boolean; process: boolean } };
+  const body = res.json() as { running: { working: boolean } };
   assert.ok(body.running);
   assert.equal("tools" in body, false);
   await app.close();
@@ -470,19 +466,16 @@ test("GET /logs returns across agents; event filters; limit above cap is 422", a
   });
   await writeAgentLog(handle.db, {
     agentId: workerId,
-    lane: "process",
     event: "tool_result",
     payload: { note: "from-worker" },
   });
   await writeAgentLog(handle.db, {
     agentId: otherId,
-    lane: "work",
     event: "response",
     payload: { note: "from-other" },
   });
   await writeAgentLog(handle.db, {
     agentId: otherId,
-    lane: "process",
     event: "tool_result",
     payload: { note: "other-result" },
   });

@@ -13,12 +13,12 @@ const taskNode = {
   expires_at: null,
   created_at: "2026-11-10T15:00:00.000Z",
   updated_at: "2026-11-11T15:00:00.000Z",
-  detail: { opens_on: "2026-11-12", closes_at: "2026-11-26T04:59:00.000Z", done_at: null, verified_at: "2026-11-12T15:00:00.000Z" },
+  detail: { opens_on: "2026-11-12", closes_at: "2026-11-26T04:59:00.000Z", done: false, closes_local: "2026-11-25", bucket: "upcoming" },
   hops: 0,
 };
 
-test("recall_memory sends relevant_on to Yaad and returns the tasks with their windows", async () => {
-  const yaad = mockYaad({ recall: () => ({ nodes: [taskNode], edges: [], sufficient: null, coverage: null }) });
+test("recall_memory sends relevant_on to Yaad and returns the tasks with their windows and each course's freshness", async () => {
+  const yaad = mockYaad({ recall: () => ({ nodes: [taskNode], edges: [], sufficient: null, coverage: null, courses: { "CSE 300": { verified_at: null, verified_today: false } } }) });
   const ctx = { yaad } as unknown as ToolContext;
   const result = await runRecallMemory(ctx, { relevant_on: "2026-11-20", kind: "task" });
   assert.equal(result.isError, false);
@@ -26,7 +26,7 @@ test("recall_memory sends relevant_on to Yaad and returns the tasks with their w
   const nodes = JSON.parse(result.content).nodes;
   assert.equal(nodes[0].kind, "task");
   assert.deepEqual(nodes[0].detail, taskNode.detail);
-  assert.equal(nodes[0].detail.verified_at, "2026-11-12T15:00:00.000Z");
+  assert.equal(JSON.parse(result.content).courses["CSE 300"].verified_today, false);
   assert.equal(nodes[0].created_at, taskNode.created_at);
   assert.equal(nodes[0].updated_at, taskNode.updated_at);
 });
@@ -37,4 +37,13 @@ test("recall_memory refuses the removed status filter and a bad date before call
   await assert.rejects(() => runRecallMemory(ctx, { status: "confirmed" }));
   await assert.rejects(() => runRecallMemory(ctx, { relevant_on: "Nov 20" }));
   assert.equal(yaad.recallCalls.length, 0);
+});
+
+test("recall_memory passes the hub and due-date filters to Yaad", async () => {
+  const yaad = mockYaad();
+  const ctx = { yaad } as unknown as ToolContext;
+  const result = await runRecallMemory(ctx, { hub: "CSE 300", closes_from: "2026-11-20", closes_to: "2026-11-27" });
+  assert.equal(result.isError, false);
+  assert.deepEqual(yaad.recallCalls, [{ hub: "CSE 300", closes_from: "2026-11-20", closes_to: "2026-11-27" }]);
+  await assert.rejects(() => runRecallMemory(ctx, { closes_from: "Nov 20" }));
 });

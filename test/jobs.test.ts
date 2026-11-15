@@ -12,9 +12,9 @@ import { renderHeader } from "../src/runtime/header.js";
 import { jobOfTask, noteSteer } from "../src/runtime/job-of.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
 import type { WakeOrigin } from "../src/types/domain.js";
-import { FLAGS_OFF, insertAgent, openTestDb, resetRuntime, silentLog, testConfig, withRuntime } from "./helpers.js";
+import { insertAgent, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -25,9 +25,9 @@ after(async () => {
   await handle.close();
 });
 
-type Woken = { lane: "process" | "work"; agentId: string; origin: WakeOrigin | undefined };
+type Woken = { agentId: string; origin: WakeOrigin | undefined };
 
-/** Delivery deps that wake no lane and record who would have been woken. */
+/** Delivery deps that run no agent and record who would have been woken. */
 function deps(): DeliverDeps & { woken: Woken[] } {
   const woken: Woken[] = [];
   return {
@@ -36,14 +36,11 @@ function deps(): DeliverDeps & { woken: Woken[] } {
     events: new EventBus(silentLog),
     answerByMinutes: 5,
     woken,
-    enqueueProcess: (agentId, _reason, origin) => {
-      woken.push({ lane: "process", agentId, origin });
+    enqueue: (agentId, _reason, origin) => {
+      woken.push({ agentId, origin });
       return randomUUID();
     },
-    enqueueWork: (agentId, _reason, origin) => {
-      woken.push({ lane: "work", agentId, origin });
-      return randomUUID();
-    },
+    preempt: () => {},
   };
 }
 
@@ -101,7 +98,7 @@ test("a message from an agent opens a job with no answer-by, and a status to the
   assert.deepEqual((await jobsOf(workerId)).map((row) => row.state).sort(), ["done", "open"], "a new request after the result is a new job");
 });
 
-test("a reply to an ask joins the job the ask was made in and wakes that agent's work lane", async () => {
+test("a reply to an ask joins the job the ask was made in and wakes that agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const eduId = await insertAgent(handle.db, { id: "education-specialist", systemPrompt: "edu" });
   const classId = await insertAgent(handle.db, { id: "cse-300-specialist", systemPrompt: "class", parentAgentId: eduId });
@@ -119,8 +116,8 @@ test("a reply to an ask joins the job the ask was made in and wakes that agent's
   await deliverAgentMessage(d, { fromAgentId: classId, toAgentId: eduId, content: "Module 8 quiz at 11:59 PM", status: "done" });
   assert.equal((await jobsOf(eduId)).length, 1, "the reply opened no new job");
   assert.deepEqual(
-    d.woken.map((entry) => [entry.lane, entry.agentId, entry.origin?.jobId, entry.origin?.jobIsNew]),
-    [["work", eduId, eduJob!.id, false]],
+    d.woken.map((entry) => [entry.agentId, entry.origin?.jobId, entry.origin?.jobIsNew]),
+    [[eduId, eduJob!.id, false]],
   );
   const [classDone] = await jobsOf(classId);
   assert.equal(classDone?.state, "done", "the status closed the class's own job");
@@ -190,7 +187,7 @@ test("a wake with no job says so, and the ledger of a missing job is an error", 
   const header = await renderHeader({
     db: handle.db,
     agentId,
-    reasons: ["lane failure"],
+    reasons: ["run failure"],
     jobId: null,
     jobIsNew: false,
     now: new Date(),
@@ -198,7 +195,7 @@ test("a wake with no job says so, and the ledger of a missing job is an error", 
     activityShare: 0.05,
     ceilingTokens: 96_000,
   });
-  assert.match(header, /^\[Wake\] lane failure · no job\n\[Your recent activity/);
+  assert.match(header, /^\[Wake\] run failure · no job\n\[Your recent activity/);
   await assert.rejects(
     renderHeader({ db: handle.db, agentId, reasons: [], jobId: randomUUID(), jobIsNew: false, now: new Date(), activityHours: 24, activityShare: 0.05, ceilingTokens: 96_000 }),
     /does not exist/,
@@ -211,11 +208,11 @@ test("hath's pickup is a message marked sent_by hath with no status, in the job 
   const d = deps();
   await deliverUserMessage(d, agentId, "plan my week");
   const [job] = await jobsOf(agentId);
-  await handle.db.insert(agentLogs).values({ id: randomUUID(), agentId, lane: "work", event: "response", payload: {} });
+  await handle.db.insert(agentLogs).values({ id: randomUUID(), agentId, jobId: job!.id, event: "response", payload: {} });
 
-  assert.equal(await sendPickups(d, new Date(Date.now() + 200_000), 180_000, null), 1);
+  assert.equal(await sendPickups(d, new Date(Date.now() + 200_000), 180_000, async () => true), 1);
   const [pickup] = await handle.db.select().from(messages).where(eq(messages.fromAgentId, agentId));
   assert.deepEqual([pickup?.content, pickup?.status, pickup?.sentBy, pickup?.jobId], ["Working on it.", null, "hath", job?.id]);
   assert.equal((await jobsOf(agentId))[0]?.state, "open");
-  assert.equal(await sendPickups(d, new Date(Date.now() + 200_000), 180_000, null), 0, "one pickup per message");
+  assert.equal(await sendPickups(d, new Date(Date.now() + 200_000), 180_000, async () => true), 0, "one pickup per job");
 });

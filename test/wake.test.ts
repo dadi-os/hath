@@ -5,16 +5,12 @@ import type {
   DwarChatResponse,
   DwarMessage,
   DwarResponseBlock,
-  Lane,
 } from "../src/types/domain.js";
-import type { Db } from "../src/db/client.js";
-import { runProcessLoop } from "../src/runtime/process.js";
 import { TranscriptStore } from "../src/runtime/transcript.js";
-import { IMPLICIT_WAIT_MINUTES, LONG_SILENCE_TURN, runWorkLoop, TURNS_BEFORE_NUDGE } from "../src/runtime/work.js";
+import { IMPLICIT_WAIT_MINUTES, runAgentLoop } from "../src/runtime/loop.js";
 import type { StepDeps } from "../src/runtime/step.js";
-import { SteerQueue, STEER_TURN_PREFIX } from "../src/runtime/steer.js";
 import { CAPPED_TURN, CLEARED_PREFIX, CONTINUE_TURN, OVERSIZED_PREFIX, SUPERSEDED_RESULT, TRIMMED_TURN, Wake, WakeStore } from "../src/runtime/wake.js";
-import { roomyWakeLimits, workLoopHooks } from "./helpers.js";
+import { roomyWakeLimits, loopHooks } from "./helpers.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
@@ -33,7 +29,6 @@ function call(name: string, id: string): DwarResponseBlock {
 }
 
 function stepDeps(
-  lane: Lane,
   wake: Wake,
   model: (request: DwarChatRequest) => DwarChatResponse,
   requests: DwarChatRequest[],
@@ -41,15 +36,16 @@ function stepDeps(
   return {
     transcript: new TranscriptStore(),
     agentId: "agent-1",
-    lane,
     wake,
+    toolChoice: "auto",
+    tagTurns: true,
     assemble: async () => ({
       system: "sys",
       tools: [],
-      transcripts: { work: [ASK], process: [ASK] },
+      thread: [ASK],
       throughSeq: 1,
     }),
-    arrivalsSince: (afterSeq) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
+    arrivalsSince: (afterSeq) => ({ turn: null, throughSeq: afterSeq }),
     call: async (request) => {
       requests.push(structuredClone(request));
       return model(request);
@@ -75,12 +71,12 @@ function toolResults(messages: DwarMessage[]): string[] {
   return out;
 }
 
-test("under its budget, the work lane keeps every full tool result and its own thinking for the whole wake", async () => {
+test("under its budget, the agent keeps every full tool result and its own thinking for the whole wake", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
       n += 1;
       if (n <= 12) {
         return turn("anthropic", [
@@ -91,7 +87,6 @@ test("under its budget, the work lane keeps every full tool result and its own t
       }
       return turn("anthropic", [call("yield", "y")]);
     }, requests),
-    steer: new SteerQueue(),
   });
 
   const last = requests.at(-1)!;
@@ -104,7 +99,6 @@ test("under its budget, the work lane keeps every full tool result and its own t
   assert.deepEqual(assistants[0], {
     role: "assistant",
     provider: "anthropic",
-    lane: "work",
     content: [
       { type: "thinking", thinking: "step 1: the page did not change", signature: "sig-1" },
       { type: "text", text: "Taking a screenshot (1)." },
@@ -116,11 +110,9 @@ test("under its budget, the work lane keeps every full tool result and its own t
 test("past its budget the wake clears older tool results in jumps, keeping every turn and the newest results", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps(
-      "work",
-      new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000, supersedeWindowTurns: 8 }),
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 10_000, toolResultsKeptChars: 4_000, supersedeWindowTurns: 8 }),
       () => {
         n += 1;
         return n <= 12
@@ -129,7 +121,6 @@ test("past its budget the wake clears older tool results in jumps, keeping every
       },
       requests,
     ),
-    steer: new SteerQueue(),
   });
 
   const results = toolResults(requests.at(-1)!.messages);
@@ -152,9 +143,9 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
   const requests: DwarChatRequest[] = [];
   let systems = 0;
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("anthropic", [call(n < 3 ? "modify_agent_prompt" : "yield", `m${n}`)]);
     }, requests),
@@ -163,11 +154,10 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
       return {
         system: `sys v${systems}`,
         tools: [],
-        transcripts: { work: [ASK], process: [ASK] },
+        thread: [ASK],
         throughSeq: 1,
       };
     },
-    steer: new SteerQueue(),
   });
 
   assert.equal(requests.length, 3);
@@ -177,13 +167,12 @@ test("a wake keeps the system it began with, so prompt changes land at the next 
 test("only the transcript's last turn carries the cache breakpoint", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
       n += 1;
       return turn("anthropic", [call(n < 3 ? "browser_navigate" : "yield", `b${n}`)]);
     }, requests),
-    steer: new SteerQueue(),
   });
 
   for (const request of requests) {
@@ -192,12 +181,12 @@ test("only the transcript's last turn carries the cache breakpoint", async () =>
   }
 });
 
-test("a turn without a tool call continues the lane; only yield ends it", async () => {
+test("a turn without a tool call continues the run; only yield ends it", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
       n += 1;
       if (n === 1) {
         return turn("anthropic", [
@@ -207,7 +196,6 @@ test("a turn without a tool call continues the lane; only yield ends it", async 
       }
       return turn("anthropic", [call("yield", "y")]);
     }, requests),
-    steer: new SteerQueue(),
   });
 
   assert.equal(requests.length, 2);
@@ -216,37 +204,35 @@ test("a turn without a tool call continues the lane; only yield ends it", async 
   assert.deepEqual(second.at(-1), { role: "user", content: CONTINUE_TURN });
 });
 
-test("an empty turn or a provider error with no tool call fails the lane instead of looping", async () => {
+test("an empty turn or a provider error with no tool call fails the run instead of looping", async () => {
   for (const response of [
     turn("anthropic", []),
     { ...turn("anthropic", [{ type: "text", text: "refused" }]), stop_reason: "error" as const },
   ]) {
     await assert.rejects(
-      runWorkLoop({
-    ...workLoopHooks,
-        ...stepDeps("work", new Wake(roomyWakeLimits), () => response, []),
-        steer: new SteerQueue(),
+      runAgentLoop({
+    ...loopHooks(),
+        ...stepDeps(new Wake(roomyWakeLimits), () => response, []),
       }),
     );
   }
 });
 
-test("a turn that runs out of room while thinking is told to write its plan down and act, and three in a row stop the lane", async () => {
+test("a turn that runs out of room while thinking is told to write its plan down and act, and three in a row stop the run", async () => {
   const capped = { ...turn("anthropic", [{ type: "thinking", thinking: "laying out the week", signature: "sig" }]), stop_reason: "max_tokens" as const };
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
       n += 1;
       return n === 1 ? capped : turn("anthropic", [call("yield", "y")]);
     }, requests),
-    steer: new SteerQueue(),
   });
   assert.ok(JSON.stringify(requests[1]!.messages).includes(CAPPED_TURN));
 
   await assert.rejects(
-    runWorkLoop({ ...workLoopHooks, ...stepDeps("work", new Wake(roomyWakeLimits), () => capped, []), steer: new SteerQueue() }),
+    runAgentLoop({ ...loopHooks(), ...stepDeps(new Wake(roomyWakeLimits), () => capped, []) }),
     /ran out of output room while thinking 3 turns in a row/,
   );
 });
@@ -254,111 +240,41 @@ test("a turn that runs out of room while thinking is told to write its plan down
 test("an empty turn is asked again once, and the retry's answer is the step", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
       n += 1;
       return n === 1 ? turn("anthropic", []) : turn("anthropic", [call("yield", "y")]);
     }, requests),
-    steer: new SteerQueue(),
   });
   assert.equal(requests.length, 2);
 });
 
-test("a process-lane turn still empty after its retry ends the run instead of failing the wake", async () => {
-  const requests: DwarChatRequest[] = [];
-  await runProcessLoop({
-    ...stepDeps("process", new Wake(roomyWakeLimits), () => turn("anthropic", []), requests),
-    ...processGateDeps(),
-  });
-  assert.equal(requests.length, 2);
-});
-
-test("the process lane's view leaves out the work lane's turns and ends on the status block; steers stay private to work", async () => {
-  const wake = new Wake(roomyWakeLimits);
-  const steer = new SteerQueue();
-  const workRequests: DwarChatRequest[] = [];
-  const processRequests: DwarChatRequest[] = [];
-
-  steer.append("agent-1", "open Gmail and search newer_than:1d");
-  let r = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", wake, () => {
-      r += 1;
-      if (r === 1) {
-        return turn("anthropic", [
-          { type: "thinking", thinking: "navigate first", signature: "sig" },
-          call("browser_navigate", "nav-1"),
-        ]);
-      }
-      return turn("anthropic", [call("yield", "r-y")]);
-    }, workRequests),
-    steer,
-  });
-
-  await runProcessLoop({
-    ...stepDeps("process", wake, () => turn("gemini", [call("yield", "c-y")]), processRequests),
-    ...processGateDeps(),
-  });
-
-  const messages = processRequests[0]!.messages;
-  const seen = JSON.stringify(messages);
-  assert.ok(!seen.includes("navigate first"));
-  assert.ok(!seen.includes("browser_navigate"));
-  assert.ok(!seen.includes("full result of nav-1"));
-  assert.ok(!seen.includes(STEER_TURN_PREFIX));
-  assert.deepEqual(messages.at(-1), { role: "user", content: "[Status] test block" });
-
-  const workBlob = JSON.stringify(wake.view("work"));
-  assert.ok(workBlob.includes(STEER_TURN_PREFIX));
-  assert.ok(workBlob.includes("navigate first"));
-  assert.ok(!workBlob.includes('"lane":"process"'));
-});
-
-test("a turn of text and no tool call is the lane's answer when it is taken, and only thought when it is not", async () => {
+test("a turn of text and no tool call is the agent's answer when it is taken, and only thought when it is not", async () => {
   const taken: string[] = [];
   const requests: DwarChatRequest[] = [];
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [{ type: "text", text: "HW3 is due Wed Nov 11." }]), requests),
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [{ type: "text", text: "HW3 is due Wed Nov 11." }]), requests),
     replyWithText: async (text) => {
       taken.push(text);
       return true;
     },
-    steer: new SteerQueue(),
   });
   assert.deepEqual(taken, ["HW3 is due Wed Nov 11."]);
   assert.equal(requests.length, 1, "a taken answer ends the run");
 
   const thoughts: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
       n += 1;
       return n === 1 ? turn("anthropic", [{ type: "text", text: "thinking aloud" }]) : turn("anthropic", [call("yield", "y1")]);
     }, thoughts),
     replyWithText: async () => false,
-    steer: new SteerQueue(),
   });
-  assert.equal(thoughts.length, 2, "text that is only thought continues the lane");
-});
-
-test("a work lane that reports nothing for TURNS_BEFORE_NUDGE turns is asked what it has once, then keeps working", async () => {
-  const requests: DwarChatRequest[] = [];
-  let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => {
-      n += 1;
-      return turn("anthropic", [call(n <= TURNS_BEFORE_NUDGE ? "terminal_grep" : "yield", `t${n}`)]);
-    }, requests),
-    steer: new SteerQueue(),
-  });
-  assert.equal(requests.length, TURNS_BEFORE_NUDGE + 1);
-  assert.ok(!JSON.stringify(requests[TURNS_BEFORE_NUDGE - 1]!.messages).includes(LONG_SILENCE_TURN));
-  assert.ok(JSON.stringify(requests[TURNS_BEFORE_NUDGE]!.messages).includes(LONG_SILENCE_TURN));
+  assert.equal(thoughts.length, 2, "text that is only thought continues the run");
 });
 
 test("a wake lives while any run holds it and is dropped when the last releases", () => {
@@ -379,54 +295,34 @@ test("a wake lives while any run holds it and is dropped when the last releases"
   assert.equal(next.started, false);
 });
 
-test("a queued process-lane run makes no model call until something it can see joins the wake", async () => {
+test("a queued run makes no model call until something joins the wake", async () => {
   const wake = new Wake(roomyWakeLimits);
   const requests: DwarChatRequest[] = [];
   let arrival: DwarMessage | null = null;
   const deps = {
-    ...stepDeps("process", wake, () => turn("gemini", [call("yield", `y${requests.length}`)]), requests),
+    ...loopHooks(),
+    ...stepDeps(wake, () => turn("anthropic", [call("yield", `y${requests.length}`)]), requests),
     arrivalsSince: (afterSeq: number) => {
       const next = arrival;
       arrival = null;
-      return next === null ? { turn: null, sent: null, sentByWork: null, throughSeq: afterSeq } : { turn: next, sent: null, sentByWork: null, throughSeq: afterSeq + 1 };
+      return next === null ? { turn: null, throughSeq: afterSeq } : { turn: next, throughSeq: afterSeq + 1 };
     },
-    ...processGateDeps(),
   };
 
-  await runProcessLoop(deps);
+  await runAgentLoop(deps);
   assert.equal(requests.length, 1);
 
-  await runProcessLoop(deps);
-  wake.push({ message: { role: "user", content: "steer: look again" }, only: "work" });
-  await runProcessLoop(deps);
-  assert.equal(requests.length, 1);
+  await runAgentLoop(deps);
+  assert.equal(requests.length, 1, "nothing new since the yield");
 
   arrival = { role: "user", content: "[Arrived during this wake]\n\n[From: Ankur]\nany update?" };
-  await runProcessLoop(deps);
+  await runAgentLoop(deps);
   assert.equal(requests.length, 2);
 });
 
-/** A query chain that finds no rows however it is built, awaited like a drizzle select. */
-const noRows: unknown = {
-  from: () => noRows,
-  where: () => noRows,
-  orderBy: () => noRows,
-  then: (resolve: (rows: unknown[]) => void) => resolve([]),
-};
-
-/** What the process lane reads: a db with no queued work-lane messages and nothing else a test send reaches, a status block, and an empty transcript. */
-function processGateDeps() {
-  return {
-    db: { select: () => noRows } as unknown as Db,
-    transcript: new TranscriptStore(),
-    status: async () => "[Status] test block",
-    implicitYield: false,
-  };
-}
-
-/** Both lanes' transcripts frozen as one user message of `content`. */
-function frozen(content: string): Record<"work" | "process", DwarMessage[]> {
-  return { work: [{ role: "user", content }], process: [{ role: "user", content }] };
+/** The thread frozen as one user message of `content`. */
+function frozen(content: string): DwarMessage[] {
+  return [{ role: "user", content }];
 }
 
 /** Push one step onto `wake`: a call to `id`, then its result of `chars` characters under `state`. */
@@ -444,7 +340,7 @@ function pushRead(wake: Wake, id: string, state?: string, chars = 1_000): void {
 }
 
 test("a newer read of the same state replaces the older one within the window at the next cut, never before; other states stay", () => {
-  const wake = new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 1_000_000, toolResultsKeptChars: 500_000, supersedeWindowTurns: 4, promptCeilingTokens: 1_000, promptTrimTokens: 400 });
+  const wake = new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 1_000_000, toolResultsKeptChars: 500_000, supersedeWindowTurns: 4, promptCeilingTokens: 3_800, promptTrimTokens: 400 });
   wake.begin("sys", frozen("[From: Ankur]\ncheck the course page"), 1);
   pushRead(wake, "t1", "browser:1:tree:tab");
   pushRead(wake, "x1", "browser:1:text:https://a.example/");
@@ -453,10 +349,10 @@ test("a newer read of the same state replaces the older one within the window at
   pushRead(wake, "s1");
   pushRead(wake, "s2");
   pushRead(wake, "x3", "browser:1:text:https://a.example/");
-  assert.ok(toolResults(wake.view("process")).every((result) => result !== SUPERSEDED_RESULT), "no replacement before a cut");
+  assert.ok(toolResults(wake.view()).every((result) => result !== SUPERSEDED_RESULT), "no replacement before a cut");
 
-  wake.fit("work", []);
-  const results = toolResults(wake.view("process"));
+  wake.fit([]);
+  const results = toolResults(wake.view());
   assert.equal(results[0], SUPERSEDED_RESULT);
   assert.ok(results[1]!.startsWith("x1 "), "a.example's text is too far back to replace");
   assert.ok(results[2]!.startsWith("t2 "));
@@ -470,7 +366,7 @@ test("at the clearing budget the queued older reads are replaced first, and clea
   for (let i = 1; i <= 5; i += 1) {
     pushRead(wake, `r${i}`, "terminal:t1");
   }
-  const results = toolResults(wake.view("work"));
+  const results = toolResults(wake.view());
   assert.deepEqual(results.slice(0, 3), Array(3).fill(SUPERSEDED_RESULT), "r4 passed the budget: the reads queued by then were the cut");
   assert.ok(results[3]!.startsWith("r4 "), "r4 was queued after that cut and waits for the next");
   assert.ok(results[4]!.startsWith("r5 "));
@@ -480,9 +376,9 @@ test("at the clearing budget the queued older reads are replaced first, and clea
 test("a tool result's state reaches the wake through the step loop", async () => {
   const requests: DwarChatRequest[] = [];
   let n = 0;
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 800, toolResultsKeptChars: 400 }), () => {
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake({ ...roomyWakeLimits, toolResultsMaxChars: 800, toolResultsKeptChars: 400 }), () => {
       n += 1;
       return n <= 3
         ? turn("anthropic", [call("browser_accessibility_tree", `t${n}`)])
@@ -494,7 +390,6 @@ test("a tool result's state reaches the wake through the step loop", async () =>
       audit: {},
       state: "browser:1:tree:tab",
     }),
-    steer: new SteerQueue(),
   });
   assert.deepEqual(toolResults(requests.at(-1)!.messages), [
     SUPERSEDED_RESULT,
@@ -503,10 +398,10 @@ test("a tool result's state reaches the wake through the step loop", async () =>
   ]);
 });
 
-/** Push one work-lane step onto `wake` that cost `outputTokens` to write, with a short result. */
+/** Push one step onto `wake` that cost `outputTokens` to write, with a short result. */
 function pushStep(wake: Wake, id: string, outputTokens: number): void {
   wake.push(
-    { message: { role: "assistant", content: [call("terminal_read", id)], provider: "anthropic", lane: "work" }, outputTokens },
+    { message: { role: "assistant", content: [call("terminal_read", id)], provider: "anthropic" }, outputTokens },
     { message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: `${id} `.padEnd(30, "x"), is_error: false }] } },
   );
 }
@@ -523,30 +418,29 @@ function callIds(messages: DwarMessage[]): string[] {
 /** Wake limits with a 1000-token prompt ceiling that trims to 600, for tests about trimming. */
 const ceilingLimits = { ...roomyWakeLimits, promptCeilingTokens: 1_000, promptTrimTokens: 400 };
 
-test("past its ceiling a lane drops its oldest steps in one jump behind a trimmed note, and the other lane keeps them", () => {
+test("past its ceiling the agent drops its oldest steps in one jump behind a trimmed note", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   for (let i = 1; i <= 6; i += 1) {
     pushStep(wake, `s${i}`, 140);
   }
-  wake.fit("work", []);
-  assert.deepEqual(callIds(wake.view("work")), ["s1", "s2", "s3", "s4", "s5", "s6"]);
+  wake.fit([]);
+  assert.deepEqual(callIds(wake.view()), ["s1", "s2", "s3", "s4", "s5", "s6"]);
 
   pushStep(wake, "s7", 140);
-  wake.fit("work", []);
-  const trimmed = wake.view("work");
+  wake.fit([]);
+  const trimmed = wake.view();
   assert.deepEqual(callIds(trimmed), ["s5", "s6", "s7"]);
   assert.equal(trimmed[1]!.content, TRIMMED_TURN);
   assert.equal(trimmed[2]!.role, "assistant");
-  assert.deepEqual(callIds(wake.view("process")), ["s1", "s2", "s3", "s4", "s5", "s6", "s7"]);
 
   pushStep(wake, "s8", 140);
-  wake.fit("work", []);
-  const next = wake.view("work");
+  wake.fit([]);
+  const next = wake.view();
   assert.deepEqual(next.slice(0, trimmed.length), trimmed, "the trimmed prefix holds until the next trim");
 });
 
-/** Push one work-lane step onto `wake` whose model turn thought `thought` characters and cost `outputTokens`. */
+/** Push one step onto `wake` whose model turn thought `thought` characters and cost `outputTokens`. */
 function pushThoughtStep(wake: Wake, id: string, thought: number, outputTokens: number): void {
   wake.push(
     {
@@ -554,7 +448,6 @@ function pushThoughtStep(wake: Wake, id: string, thought: number, outputTokens: 
         role: "assistant",
         content: [{ type: "thinking", thinking: "t".repeat(thought), signature: "sig" }, call("terminal_read", id)],
         provider: "anthropic",
-        lane: "work",
       },
       outputTokens,
     },
@@ -569,26 +462,25 @@ function thoughtTurns(messages: DwarMessage[]): number {
   ).length;
 }
 
-test("past its ceiling a lane drops older thinking before any step, keeping the newest turn's", () => {
+test("past its ceiling the agent drops older thinking before any step, keeping the newest turn's", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nrebuild the resume"), 1);
   for (let i = 1; i <= 4; i += 1) {
     pushThoughtStep(wake, `s${i}`, 460, 200);
   }
-  wake.fit("work", []);
-  assert.equal(thoughtTurns(wake.view("work")), 4);
+  wake.fit([]);
+  assert.equal(thoughtTurns(wake.view()), 4);
 
   pushThoughtStep(wake, "s5", 460, 200);
-  wake.fit("work", []);
-  const view = wake.view("work");
+  wake.fit([]);
+  const view = wake.view();
   assert.deepEqual(callIds(view), ["s1", "s2", "s3", "s4", "s5"]);
   assert.equal(thoughtTurns(view), 1);
   assert.equal((view.at(-2)!.content as DwarResponseBlock[])[0]!.type, "thinking");
-  assert.equal(thoughtTurns(wake.view("process")), 5);
 
   pushThoughtStep(wake, "s6", 460, 200);
-  wake.fit("work", []);
-  const next = wake.view("work");
+  wake.fit([]);
+  const next = wake.view();
   assert.deepEqual(next.slice(0, view.length - 2), view.slice(0, -2), "the thought-free prefix holds until the next cut");
   assert.equal(thoughtTurns(next), 2);
 });
@@ -597,31 +489,31 @@ test("a turn that thought weighs what its provider billed, not its shorter visib
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nplan the week"), 1);
   pushThoughtStep(wake, "s1", 460, 2_000);
-  assert.throws(() => wake.fit("work", []), /over the 1000-token ceiling/, "billed thinking past the ceiling never goes out under it");
+  assert.throws(() => wake.fit([]), /over the 1000-token ceiling/, "billed thinking past the ceiling never goes out under it");
 });
 
-test("a lane's measured prompt, not its estimate, decides when it trims", () => {
+test("the measured prompt, not its estimate, decides when it trims", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   pushStep(wake, "s1", 100);
-  wake.fit("work", []);
-  wake.measure("work", { ...usage, input_tokens: 4, cache_read_input_tokens: 800 });
+  wake.fit([]);
+  wake.measure({ ...usage, input_tokens: 4, cache_read_input_tokens: 800 });
 
   pushStep(wake, "s2", 100);
-  wake.fit("work", []);
-  assert.deepEqual(callIds(wake.view("work")), ["s1", "s2"]);
+  wake.fit([]);
+  assert.deepEqual(callIds(wake.view()), ["s1", "s2"]);
 
   pushStep(wake, "s3", 150);
-  wake.fit("work", []);
-  assert.deepEqual(callIds(wake.view("work")), ["s3"]);
+  wake.fit([]);
+  assert.deepEqual(callIds(wake.view()), ["s3"]);
 });
 
-test("a newest step that alone passes the ceiling fails the lane instead of going out", () => {
+test("a newest step that alone passes the ceiling fails the run instead of going out", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nwatch the terminal"), 1);
   pushStep(wake, "s1", 100);
   pushStep(wake, "s2", 2_000);
-  assert.throws(() => wake.fit("work", []), /over the 1000-token ceiling/);
+  assert.throws(() => wake.fit([]), /over the 1000-token ceiling/);
 });
 
 test("a newest step whose results alone pass the ceiling drops its largest results, only as many as it must, instead of failing", () => {
@@ -629,7 +521,7 @@ test("a newest step whose results alone pass the ceiling drops its largest resul
   wake.begin("sys", frozen("[From: Ankur]\nsearch my logs"), 1);
   wake.push(
     {
-      message: { role: "assistant", content: [call("get_logs", "g1"), call("get_logs", "g2"), call("recall_memory", "r1")], provider: "anthropic", lane: "work" },
+      message: { role: "assistant", content: [call("get_logs", "g1"), call("get_logs", "g2"), call("recall_memory", "r1")], provider: "anthropic" },
       outputTokens: 50,
     },
     {
@@ -643,16 +535,16 @@ test("a newest step whose results alone pass the ceiling drops its largest resul
       },
     },
   );
-  wake.fit("work", []);
-  const results = toolResults(wake.view("work"));
+  wake.fit([]);
+  const results = toolResults(wake.view());
   assert.ok(results[0]!.startsWith(OVERSIZED_PREFIX));
   assert.match(results[0]!, /get_logs \{\} · 1500 chars, too large for the prompt\. Saved at \/files\/results\/g1\.txt: read_file it/);
   assert.equal(results[1], "b".repeat(1_200));
   assert.equal(results[2], "small recall");
-  assert.ok(toolResults(wake.view("process"))[0]!.startsWith(OVERSIZED_PREFIX));
+  assert.ok(toolResults(wake.view())[0]!.startsWith(OVERSIZED_PREFIX));
 });
 
-/** Push one work-lane step onto `wake` that says `text` and calls `name` as `id`, with `result`. */
+/** Push one step onto `wake` that says `text` and calls `name` as `id`, with `result`. */
 function pushAction(wake: Wake, id: string, name: string, text: string, result: string, outputTokens = 1): void {
   wake.push(
     {
@@ -660,7 +552,6 @@ function pushAction(wake: Wake, id: string, name: string, text: string, result: 
         role: "assistant",
         content: [{ type: "text", text }, { type: "tool_use", id, name, input: { ref: id } }],
         provider: "anthropic",
-        lane: "work",
       },
       outputTokens,
     },
@@ -668,15 +559,15 @@ function pushAction(wake: Wake, id: string, name: string, text: string, result: 
   );
 }
 
-test("a trimmed note lists the actions of the steps it dropped, so the lane does not redo them", () => {
+test("a trimmed note lists the actions of the steps it dropped, so the agent does not redo them", () => {
   const wake = new Wake(ceilingLimits);
   wake.begin("sys", frozen("[From: Ankur]\nsend the invites"), 1);
   pushAction(wake, "a1", "steer_browser", "Clicking Send on Luke's invite.", '{"clicked":true}', 140);
   for (let i = 2; i <= 7; i += 1) {
     pushStep(wake, `s${i}`, 140);
   }
-  wake.fit("work", []);
-  const view = wake.view("work");
+  wake.fit([]);
+  const view = wake.view();
   assert.ok(!callIds(view).includes("a1"), "the action's step left the view");
   const note = view[1]!.content;
   assert.ok(typeof note === "string" && note.startsWith(TRIMMED_TURN));
@@ -705,12 +596,11 @@ test("the wake's reasons keep the order they arrived in, and a reason that arriv
 
 test("the wake header is the first turn after the transcript, and a wake with none has no first line", async () => {
   const requests: DwarChatRequest[] = [];
-  const deps = stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", "y1")]), requests);
-  await runWorkLoop({
-    ...workLoopHooks,
+  const deps = stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", "y1")]), requests);
+  await runAgentLoop({
+    ...loopHooks(),
     ...deps,
     assemble: async () => ({ ...(await deps.assemble()), header: "[Wake] message from Ankur · job #7 (new)" }),
-    steer: new SteerQueue(),
   });
   const texts = requests[0]!.messages.map((message) => (typeof message.content === "string" ? message.content : ""));
   assert.equal(texts.at(-1), "[Wake] message from Ankur · job #7 (new)");
@@ -721,14 +611,13 @@ test("a yield that leaves a request unanswered with nothing to wake the agent ge
   const requests: DwarChatRequest[] = [];
   let asked = 0;
   const reminder = "[continue] ankur asked \"x\" at t and nothing you started will wake you. Answer now, or start or wait on what will.";
-  await runWorkLoop({
-    ...workLoopHooks,
+  await runAgentLoop({
+    ...loopHooks(),
     yieldReminder: async () => {
       asked += 1;
       return reminder;
     },
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", `y${requests.length}`)]), requests),
-    steer: new SteerQueue(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", `y${requests.length}`)]), requests),
   });
   assert.equal(requests.length, 2, "the second yield stands");
   assert.equal(asked, 1, "the check runs for the first yield only");
@@ -740,11 +629,10 @@ test("a wait with a target ends the run like a yield, and a refused wait does no
   for (const [isError, calls] of [[false, 1], [true, 2]] as const) {
     const requests: DwarChatRequest[] = [];
     let n = 0;
-    await runWorkLoop({
-      ...workLoopHooks,
-      ...stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [call(n++ === 0 ? "wait" : "yield", `w${n}`)]), requests),
+    await runAgentLoop({
+      ...loopHooks(),
+      ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call(n++ === 0 ? "wait" : "yield", `w${n}`)]), requests),
       executeTool: async (use) => ({ content: use.name === "wait" && isError ? "no agent x" : "{}", isError: use.name === "wait" && isError, audit: {} }),
-      steer: new SteerQueue(),
     });
     assert.equal(requests.length, calls);
   }
@@ -755,137 +643,26 @@ function use(name: string, id: string, input: unknown): DwarResponseBlock {
   return { type: "tool_use", id, name, input };
 }
 
-test("under implicit_yield a process turn of only sends and steers ends the run with no model call to yield; off, it takes one", async () => {
-  for (const implicitYield of [true, false]) {
-    const requests: DwarChatRequest[] = [];
-    let n = 0;
-    await runProcessLoop({
-      ...stepDeps("process", new Wake(roomyWakeLimits), () => {
-        n += 1;
-        return n === 1
-          ? turn("anthropic", [use("send_message", "s1", { to: "ankur", content: "CSE 300: quiz at 11:59 PM" }), use("steer_work", "w1", { instruction: "update due.md" })])
-          : turn("anthropic", [call("yield", `y${n}`)]);
-      }, requests),
-      ...processGateDeps(),
-      implicitYield,
-    });
-    assert.equal(requests.length, implicitYield ? 1 : 2, `implicitYield ${implicitYield}`);
-  }
-});
-
-test("an implicit process yield waits for the next call when a message arrived while the turn was composed", async () => {
-  const transcript = new TranscriptStore();
-  transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "what is due?" });
-  const requests: DwarChatRequest[] = [];
-  let n = 0;
-  await runProcessLoop({
-    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
-      n += 1;
-      if (n === 1) {
-        transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "and tomorrow?" });
-        return turn("anthropic", [use("steer_work", "w1", { instruction: "Ankur asks what is due" })]);
-      }
-      return turn("anthropic", [call("yield", `y${n}`)]);
-    }, requests),
-    ...processGateDeps(),
-    transcript,
-    implicitYield: true,
-  });
-  assert.equal(requests.length, 2);
-});
-
-test("under implicit_yield a work turn of only send_message ends the run, waiting on the agents it asked", async () => {
-  const waits: Array<{ targets: string[]; minutes: number }> = [];
-  const requests: DwarChatRequest[] = [];
-  await runWorkLoop({
-    ...workLoopHooks,
-    ...stepDeps("work", new Wake(roomyWakeLimits), () => turn("anthropic", [
-      use("send_message", "q1", { to: "cse-300", content: "due tonight?" }),
-      use("send_message", "q2", { to: "cse-335", content: "due tonight?" }),
-      use("send_message", "q3", { to: "ankur", content: "asking the classes" }),
-    ]), requests),
-    executeTool: async (block) => {
-      const input = block.input as { to: string };
-      const to = input.to === "ankur" ? null : input.to;
-      return { content: JSON.stringify({ sent: 1, to_agent_id: to, ask: to !== null && to !== "ankur" }), isError: false, audit: {} };
-    },
-    steer: new SteerQueue(),
-    implicitYield: true,
-    wait: async (targets, minutes) => {
-      waits.push({ targets, minutes });
-    },
-  });
-  assert.equal(requests.length, 1);
-  assert.deepEqual(waits, [{ targets: ["cse-300", "cse-335"], minutes: IMPLICIT_WAIT_MINUTES }]);
-});
-
-test("a work turn of only send_message keeps the run going after a helper task was started in the wake, or with implicit_yield off", async () => {
-  for (const [implicitYield, steered] of [[true, true], [false, false]] as const) {
-    const requests: DwarChatRequest[] = [];
-    let n = 0;
-    await runWorkLoop({
-      ...workLoopHooks,
-      ...stepDeps("work", new Wake(roomyWakeLimits), () => {
-        n += 1;
-        if (steered && n === 1) {
-          return turn("anthropic", [use("steer_browser", "b1", { message: "read D2L" })]);
-        }
-        return n <= (steered ? 2 : 1)
-          ? turn("anthropic", [use("send_message", `q${n}`, { to: "ankur", content: "reading D2L" })])
-          : turn("anthropic", [call("yield", `y${n}`)]);
-      }, requests),
-      executeTool: async (block) => ({ content: JSON.stringify({ seq: 1, to_agent_id: null, ask: false, id: block.id }), isError: false, audit: {} }),
-      steer: new SteerQueue(),
-      implicitYield,
-    });
-    assert.equal(requests.length, steered ? 3 : 2, `implicitYield ${implicitYield}`);
-  }
-});
-
-test("under implicit_yield a result message with the saves that record it ends the run; a failed save does not", async () => {
+test("a turn of only sends, steers, stores and saves ends the run by itself and waits on what it started; anything else does not", async () => {
   const cases: Array<{ name: string; calls: Array<[string, unknown]>; failing?: string; ends: boolean }> = [
     { name: "result and saves", calls: [["write_file", {}], ["ingest_memory", {}], ["set_routine", {}], ["send_message", { to: "ankur", content: "Done.", status: "done" }]], ends: true },
+    { name: "a steer", calls: [["steer_browser", { message: "read D2L" }]], ends: true },
+    { name: "two steers and a message", calls: [["steer_browser", { message: "a" }], ["steer_terminal", { message: "b" }], ["send_message", { to: "ankur", content: "Reading." }]], ends: true },
+    { name: "an ingest alone", calls: [["ingest_memory", { text: "x" }]], ends: true },
+    { name: "a stop and its report", calls: [["stop_task", { id: "task/browser/3" }], ["send_message", { to: "requester", content: "Stopped.", status: "done" }]], ends: true },
     { name: "failed save", calls: [["edit_file", {}], ["send_message", { to: "ankur", content: "Done." }]], failing: "edit_file", ends: false },
     { name: "saves alone", calls: [["write_file", {}]], ends: false },
     { name: "a read beside the message", calls: [["read_file", {}], ["send_message", { to: "ankur", content: "Done." }]], ends: false },
+    { name: "a read beside a steer", calls: [["read_file", {}], ["steer_browser", { message: "read D2L" }]], ends: false },
+    { name: "a failed steer", calls: [["steer_browser", { message: "read D2L" }]], failing: "steer_browser", ends: false },
   ];
   for (const { name, calls, failing, ends } of cases) {
     const requests: DwarChatRequest[] = [];
+    const waits: number[] = [];
     let n = 0;
-    await runWorkLoop({
-      ...workLoopHooks,
-      ...stepDeps("work", new Wake(roomyWakeLimits), () => {
-        n += 1;
-        return n === 1 ? turn("anthropic", calls.map(([tool, input], i) => use(tool, `c${i}`, input))) : turn("anthropic", [call("yield", `y${n}`)]);
-      }, requests),
-      executeTool: async (block) => ({
-        content: JSON.stringify({ seq: 1, to_agent_id: null, ask: false }),
-        isError: block.name === failing,
-        audit: {},
-      }),
-      steer: new SteerQueue(),
-      implicitYield: true,
-    });
-    assert.equal(requests.length, ends ? 1 : 2, name);
-  }
-});
-
-test("under implicit_steer_end a work turn of steers, messages and ingests ends the run, waiting on the tasks it steered; a read beside them, a failed call, or the flag off does not end it", async () => {
-  const cases: Array<{ name: string; calls: Array<[string, unknown]>; failing?: string; implicitSteerEnd?: boolean; ends: boolean; waits: string[] }> = [
-    { name: "a steer", calls: [["steer_browser", { message: "read D2L" }]], ends: true, waits: ["task/browser/3"] },
-    { name: "two steers and a message", calls: [["steer_browser", { message: "a" }], ["steer_terminal", { message: "b" }], ["send_message", { to: "ankur", content: "Reading." }]], ends: true, waits: ["task/browser/3"] },
-    { name: "an ingest alone", calls: [["ingest_memory", { text: "x" }]], ends: true, waits: [] },
-    { name: "a read beside a steer", calls: [["read_file", {}], ["steer_browser", { message: "read D2L" }]], ends: false, waits: [] },
-    { name: "a failed steer", calls: [["steer_browser", { message: "read D2L" }]], failing: "steer_browser", ends: false, waits: [] },
-    { name: "flag off", calls: [["steer_browser", { message: "read D2L" }]], implicitSteerEnd: false, ends: false, waits: [] },
-  ];
-  for (const { name, calls, failing, implicitSteerEnd = true, ends, waits: expected } of cases) {
-    const requests: DwarChatRequest[] = [];
-    const waits: string[][] = [];
-    let n = 0;
-    await runWorkLoop({
-      ...workLoopHooks,
-      ...stepDeps("work", new Wake(roomyWakeLimits), () => {
+    await runAgentLoop({
+      ...loopHooks(),
+      ...stepDeps(new Wake(roomyWakeLimits), () => {
         n += 1;
         return n === 1 ? turn("anthropic", calls.map(([tool, input], i) => use(tool, `c${i}`, input))) : turn("anthropic", [call("yield", `y${n}`)]);
       }, requests),
@@ -894,39 +671,123 @@ test("under implicit_steer_end a work turn of steers, messages and ingests ends 
         isError: block.name === failing,
         audit: {},
       }),
-      steer: new SteerQueue(),
-      implicitYield: true,
-      implicitSteerEnd,
-      wait: async (targets) => {
-        waits.push(targets);
+      wait: async (minutes) => {
+        waits.push(minutes);
       },
     });
     assert.equal(requests.length, ends ? 1 : 2, name);
-    assert.deepEqual(waits, expected.length === 0 ? [] : [expected], name);
+    assert.deepEqual(waits, ends ? [IMPLICIT_WAIT_MINUTES] : [], name);
   }
 });
 
-test("a pickup hath sent for the agent while a send was composed does not hold that send back", async () => {
-  const transcript = new TranscriptStore();
-  transcript.append({ fromAgentId: null, toAgentId: "agent-1", content: "what is due tonight?" });
-  const ran: string[] = [];
+/** A model call that stays out until its signal aborts, as a request cancelled in flight does. */
+function hangingCall(requests: DwarChatRequest[], answer: () => DwarChatResponse) {
+  return async (request: DwarChatRequest, signal?: AbortSignal): Promise<DwarChatResponse> => {
+    requests.push(structuredClone(request));
+    if (requests.length > 1) {
+      return answer();
+    }
+    return new Promise((_, reject) => {
+      signal!.addEventListener("abort", () => reject(new Error("request cancelled")), { once: true });
+    });
+  };
+}
+
+test("preempting the model call in flight cancels it within a second, and the step runs again with the arrival in view", async () => {
+  const hooks = loopHooks();
   const requests: DwarChatRequest[] = [];
-  let n = 0;
-  await runProcessLoop({
-    ...stepDeps("process", new Wake(roomyWakeLimits), () => {
-      n += 1;
-      if (n === 1) {
-        transcript.append({ fromAgentId: "agent-1", toAgentId: null, content: "Working on it." }).sentBy = "hath";
-        return turn("anthropic", [use("send_message", "answer", { to: "ankur", content: "CSE 300: four items at 11:59 PM." })]);
-      }
-      return turn("anthropic", [call("yield", `y${n}`)]);
-    }, requests),
+  const aborted: string[] = [];
+  let arrival: DwarMessage | null = null;
+  const deps = {
+    ...hooks,
+    ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", "y")]), requests),
+    call: hangingCall(requests, () => turn("anthropic", [call("yield", "y")])),
+    arrivalsSince: (afterSeq: number) => {
+      const next = arrival;
+      arrival = null;
+      return next === null ? { turn: null, throughSeq: afterSeq } : { turn: next, throughSeq: afterSeq + 1 };
+    },
+    logAborted: async () => {
+      aborted.push("aborted");
+    },
+  };
+  const started = Date.now();
+  const running = runAgentLoop(deps);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  arrival = { role: "user", content: "[Arrived during this wake]\n\n[From: Ankur · job #7]\nstop, only the exams" };
+  assert.equal(hooks.interrupts.preempt("agent-1"), true);
+  assert.equal(hooks.interrupts.preempt("agent-1"), false, "one cancel per arrival: the stretch is already aborted");
+  await running;
+
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(requests.length, 2);
+  assert.match(JSON.stringify(requests[1]!.messages.at(-1)), /only the exams/);
+  assert.deepEqual(aborted, ["aborted"]);
+});
+
+test("a stop ends the run within a second: the call in flight is cancelled and later calls in the turn do not run", async () => {
+  const hooks = loopHooks();
+  const requests: DwarChatRequest[] = [];
+  const started = Date.now();
+  const running = runAgentLoop({
+    ...hooks,
+    ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call("yield", "y")]), requests),
+    call: hangingCall(requests, () => turn("anthropic", [call("yield", "y")])),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(hooks.interrupts.stop("agent-1"), true);
+  await running;
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(requests.length, 1, "no further model call");
+  assert.equal(hooks.interrupts.isStopped("agent-1"), false, "the stop ends with the run");
+
+  const ran: string[] = [];
+  const results: Array<[string, boolean]> = [];
+  const second = loopHooks();
+  await runAgentLoop({
+    ...second,
+    ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", [call("read_file", "a"), call("read_file", "b")]), []),
     executeTool: async (block) => {
       ran.push(block.id);
+      second.interrupts.stop("agent-1");
       return { content: "{}", isError: false, audit: {} };
     },
-    ...processGateDeps(),
-    transcript,
+    logToolResult: async (block, result) => {
+      results.push([block.id, result.isError]);
+    },
   });
-  assert.deepEqual(ran, ["answer", "y2"]);
+  assert.deepEqual(ran, ["a"]);
+  assert.deepEqual(results, [["a", false], ["b", true]]);
+});
+
+test("a stop of an agent whose loop is not running changes nothing", () => {
+  const hooks = loopHooks();
+  assert.equal(hooks.interrupts.stop("agent-1"), false);
+  assert.equal(hooks.interrupts.preempt("agent-1"), false);
+  assert.equal(hooks.interrupts.isStopped("agent-1"), false);
+});
+
+test("several ingest_memory calls in one turn make one request, and every call gets a result", async () => {
+  const executed: Array<{ id: string; input: unknown }> = [];
+  const requests: DwarChatRequest[] = [];
+  let n = 0;
+  await runAgentLoop({
+    ...loopHooks(),
+    ...stepDeps(new Wake(roomyWakeLimits), () => {
+      n += 1;
+      return n === 1
+        ? turn("anthropic", [use("ingest_memory", "i1", { text: "CSE 300 quiz Nov 20" }), use("ingest_memory", "i2", { text: "CSE 335 HW due Nov 22", participant_ids: ["8a0f0f0e-0000-4000-8000-000000000001"] }), use("read_file", "r", {})])
+        : turn("anthropic", [call("yield", "y")]);
+    }, requests),
+    executeTool: async (block) => {
+      executed.push({ id: block.id, input: block.input });
+      return { content: '{"counts":{"create_node":2}}', isError: false, audit: {} };
+    },
+  });
+  assert.deepEqual(executed.filter((entry) => entry.id.startsWith("i")), [
+    { id: "i1", input: { text: "CSE 300 quiz Nov 20\n\nCSE 335 HW due Nov 22", participant_ids: ["8a0f0f0e-0000-4000-8000-000000000001"] } },
+  ]);
+  const results = requests.at(-1)!.messages.flatMap((message) => (typeof message.content === "string" ? [] : message.content.filter((block) => block.type === "tool_result")));
+  assert.deepEqual(results.map((block) => (block.type === "tool_result" ? block.tool_use_id : "")), ["i1", "i2", "r"]);
+  assert.match(JSON.stringify(results[1]), /stored_with/);
 });

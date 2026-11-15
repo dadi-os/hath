@@ -1,28 +1,19 @@
 /**
- * Async tools. A tool is async when its definition says so (`async: true` on a tool
- * definition, or the flag its lane module exports, as memory.ts does for
- * ingest_memory); changing that is a code change. A flagged call returns `{ pending: id }` at
- * once and runs on; when it ends, its result (or its failure) reaches the agent as a message
- * that wakes its work lane, the way a helper's report does (see rewake.ts). A restart loses
- * a call still running, so each running call has a row in `pending_async`, and boot tells the
- * agent which ones were lost. A tool flagged async runs async only in the work lane (ingest_memory
- * only until `runtime.sync_ingest` is on, when it runs in the call); a
- * tool that is not flagged may still start a background call itself, when the service it
- * calls decides a request is too slow to wait for (control_device), and then its result wakes
- * the lane that made the call.
+ * Background calls. A tool whose service decides a request is too slow to wait for
+ * (control_device) returns `{ pending: id }` at once and runs on; when it ends, its result (or
+ * its failure) reaches the agent as a message that wakes it, the way a helper's report does (see
+ * rewake.ts). A restart loses a call still running, so each running call has a row in
+ * `pending_async`, and boot tells the agent which ones were lost.
  */
 
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { pendingAsync } from "../db/schema.js";
-import { findTool } from "../tools/registry.js";
-import { INGEST_MEMORY_ASYNC } from "./memory.js";
 import { ok, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarToolUseBlock } from "../types/domain.js";
-import { INGEST_MEMORY } from "../types/domain.js";
-import { deliverAgentMessage, type DeliverDeps } from "./deliver.js";
+import type { DeliverDeps } from "./deliver.js";
 import { resultPath, savesResult, writeBytes } from "./files.js";
-import { rewakeProcess, rewakeWork } from "./rewake.js";
+import { rewake } from "./rewake.js";
 
 /** A result longer than this reaches the agent as its opening and the path of a file holding it all. */
 const INLINE_RESULT_CHARS = 4_000;
@@ -30,38 +21,23 @@ const INLINE_RESULT_CHARS = 4_000;
 /** How much of a long result its message shows. */
 const PREVIEW_CHARS = 1_500;
 
-/** toolIsAsync is true when the tool named `name` is defined async. */
-export function toolIsAsync(name: string): boolean {
-  if (name === INGEST_MEMORY) {
-    return INGEST_MEMORY_ASYNC;
-  }
-  return findTool(name)?.async === true;
-}
-
 /** deliverDeps is what delivering to the caller's thread needs, from a tool context. */
 export function deliverDeps(ctx: ToolContext): DeliverDeps {
   return {
     db: ctx.db,
     transcript: ctx.transcript,
     events: ctx.events,
-    enqueueProcess: ctx.enqueueProcess,
-    enqueueWork: ctx.enqueueWork,
+    enqueue: ctx.enqueue,
+    preempt: ctx.preempt,
     answerByMinutes: ctx.answerByMinutes,
     ...(ctx.wakeActivity !== undefined ? { wakeActivity: ctx.wakeActivity } : {}),
   };
 }
 
-/** wakeLane is the rewake that wakes the lane `lane`. */
-function wakeLane(lane: "process" | "work") {
-  return lane === "process" ? rewakeProcess : rewakeWork;
-}
-
 /**
  * runInBackground starts `run` for the caller's call and returns `{ pending: id }` at once;
- * the call's result reaches the caller as a message that wakes the lane that made the call
- * (`ctx.lane`) when `run` settles. Unless `runtime.ingest_result_wakes` is on, a successful
- * `ingest_memory` is the exception: it only joins the thread, since a wake with nothing left to
- * do re-investigates and re-reports the work the earlier wake finished; its failure still wakes. `run` must return its outcome, never throw.
+ * the call's result reaches the caller as a message that wakes it when `run` settles. `run`
+ * must return its outcome, never throw.
  */
 export async function runInBackground(
   ctx: ToolContext,
@@ -69,29 +45,18 @@ export async function runInBackground(
   call: DwarToolUseBlock,
   run: () => Promise<ToolExecResult>,
 ): Promise<ToolExecResult> {
-  if (ctx.lane === "router") {
-    throw new Error("the router lane runs no background calls");
-  }
-  const lane = ctx.lane;
-  await ctx.db.insert(pendingAsync).values({ id: call.id, agentId, toolName: call.name, lane });
-  const quiet = call.name === INGEST_MEMORY && !ctx.ingestResultWakes;
+  await ctx.db.insert(pendingAsync).values({ id: call.id, agentId, toolName: call.name });
   ctx.background(
     (async () => {
       const result = await run();
       const content = await resultMessage(ctx, call, result);
-      if (quiet && !result.isError) {
-        await deliverAgentMessage(deliverDeps(ctx), { fromAgentId: agentId, toAgentId: agentId, content, notice: "tool", wake: false, jobId: ctx.jobId });
-      } else {
-        await wakeLane(lane)(deliverDeps(ctx), agentId, { content, notice: "tool", wokenBy: `async tool result (${call.name} ${call.id})`, jobId: ctx.jobId });
-      }
+      await rewake(deliverDeps(ctx), agentId, { content, notice: "tool", wokenBy: `async tool result (${call.name} ${call.id})`, jobId: ctx.jobId });
       await ctx.db.delete(pendingAsync).where(eq(pendingAsync.id, call.id));
     })(),
   );
   return ok({
     pending: call.id,
-    note: quiet
-      ? `${call.name} is running in the background. It is saving in the background; you are told only if it fails. Carry on or yield.`
-      : `${call.name} is running in the background. Its result will arrive as a message that wakes you, so carry on or yield.`,
+    note: `${call.name} is running in the background. Its result will arrive as a message that wakes you, so carry on or yield.`,
   });
 }
 
@@ -126,7 +91,7 @@ async function resultMessage(ctx: ToolContext, call: DwarToolUseBlock, result: T
 export async function reportLostAsync(deps: DeliverDeps): Promise<number> {
   const lost = await deps.db.select().from(pendingAsync);
   for (const call of lost) {
-    await wakeLane(call.lane)(deps, call.agentId, {
+    await rewake(deps, call.agentId, {
       content: `Result of ${call.toolName} (${call.id}) lost: hath restarted while it was running, so it may or may not have taken effect. Check what it was for, and run it again if it still matters.`,
       notice: "tool",
       wokenBy: `async tool result lost in a restart (${call.toolName} ${call.id})`,

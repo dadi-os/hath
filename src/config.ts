@@ -20,10 +20,9 @@ const tomlPath = join(serviceRoot, "config.toml");
 
 const fileSchema = z.object({
   runtime: z.object({
-    lane_queue_timeout_ms: z.number().int().positive(),
-    process_context_tokens: z.number().int().positive(),
-    work_transcript_window_chars: z.number().int().positive(),
-    transcript_window_step_chars: z.number().int().positive(),
+    router_queue_timeout_ms: z.number().int().positive(),
+    thread_window_step_chars: z.number().int().positive(),
+    thread_window_share: z.number().positive().max(1),
     tool_debounce_base_ms: z.number().int().positive(),
     tool_debounce_max_ms: z.number().int().positive(),
     wake_tool_results_max_chars: z.number().int().positive(),
@@ -32,28 +31,13 @@ const fileSchema = z.object({
     recovery_window_minutes: z.number().int().positive(),
     prompt_ceiling_tokens: z.number().int().positive(),
     prompt_trim_tokens: z.number().int().positive(),
-    process_window_min_chars: z.number().int().positive(),
-    hath_pickups: z.boolean(),
-    implicit_yield: z.boolean(),
-    ingest_result_wakes: z.boolean(),
     pickup_delay_s: z.number().int().positive(),
-    question_answer_minutes: z.number().int().positive(),
-    job_requester: z.boolean(),
-    wait_target_guard: z.boolean(),
-    pickup_live_work: z.boolean(),
-    tool_hygiene: z.boolean(),
-    sync_ingest: z.boolean(),
-    job_did_carry: z.boolean(),
-    implicit_steer_end: z.boolean(),
     answer_by_minutes: z.number().int().positive(),
     activity_hours: z.number().int().positive(),
     activity_ceiling_share: z.number().positive().max(1),
   }).refine((runtime) => runtime.wake_tool_results_kept_chars < runtime.wake_tool_results_max_chars, {
     message: "wake_tool_results_kept_chars must be below wake_tool_results_max_chars",
-  }).refine(
-    (runtime) => runtime.transcript_window_step_chars < runtime.work_transcript_window_chars,
-    { message: "transcript_window_step_chars must be below work_transcript_window_chars" },
-  ).refine((runtime) => runtime.prompt_trim_tokens < runtime.prompt_ceiling_tokens, {
+  }).refine((runtime) => runtime.prompt_trim_tokens < runtime.prompt_ceiling_tokens, {
     message: "prompt_trim_tokens must be below prompt_ceiling_tokens",
   }),
   dwar: z.object({

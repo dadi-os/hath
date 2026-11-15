@@ -48,21 +48,20 @@ function clipStrings(value: unknown): unknown {
 }
 
 /**
- * Query durable audit logs. Agents read themselves or a direct child. The router
- * reads any agent but never the null identity: it is ephemeral, so earlier runs
- * and Ankur's messages stay out of reach.
+ * Query durable audit logs of any agent, never the null identity: the router is ephemeral, so
+ * earlier runs and Ankur's messages stay out of reach.
  */
 export const getLogs = defineTool({
   name: "get_logs",
   description:
-    "Read the audit log for yourself or a direct child, newest first: response rows are whole model turns (thinking, text, tool calls), tool_result rows each tool's name and outcome. It is how you find what was said or done after it left your transcript (a plan, a list, an approval, a result). search keeps rows containing that text; before (an ISO time, such as a result's next_before) pages back. Long text is clipped and next_before is set when older rows remain. Your current wake is left out: what you did in it is in your transcript. As the router, name the agent.",
+    "Read any agent's audit log, newest first (yours by default): response rows are whole model turns (thinking, text, tool calls), tool_result rows each tool's name and outcome. It is how you find what was said or done after it left your transcript (a plan, a list, an approval, a result). search keeps rows containing that text; before (an ISO time, such as a result's next_before) pages back. Long text is clipped and next_before is set when older rows remain. Your current wake is left out of your own log: what you did in it is in your transcript. As the router, name the agent.",
   input,
   inputSchema: {
     type: "object",
     properties: {
       agent_id: {
         type: "string",
-        description: "Self or a direct child (any agent for the router, which must pass one); defaults to yourself",
+        description: "Any agent; defaults to yourself (the router must pass one)",
       },
       event: {
         type: "string",
@@ -79,18 +78,11 @@ export const getLogs = defineTool({
     if (targetId === null) {
       return fail("the router is ephemeral and has no logs of its own; pass an agent_id");
     }
-    const target = await requireAgent(ctx.db, targetId);
-    if (
-      ctx.callerId !== null &&
-      target.id !== ctx.callerId &&
-      target.parentAgentId !== ctx.callerId
-    ) {
-      return fail("get_logs is limited to self or direct children");
-    }
+    await requireAgent(ctx.db, targetId);
     const party: SQL = eq(agentLogs.agentId, targetId);
     const limit = parsed.limit ?? 50;
     const filters: SQL[] = [party];
-    if (ctx.toolHygiene && targetId === ctx.callerId && ctx.wakeId !== null) {
+    if (targetId === ctx.callerId && ctx.wakeId !== null) {
       filters.push(sql`${agentLogs.wakeId} is distinct from ${ctx.wakeId}::uuid`);
     }
     if (parsed.event) {

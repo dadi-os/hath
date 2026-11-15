@@ -38,6 +38,8 @@ const recallResponseSchema = z
     edges: z.array(recallEdgeSchema),
     sufficient: z.boolean().nullable(),
     coverage: z.number().nullable(),
+    /** Per course (hub) the tasks sit under: when a source check last touched it, whether that was today, and its owner. */
+    courses: z.record(z.unknown()),
   })
   .passthrough();
 
@@ -63,11 +65,18 @@ export type RecallRequest = {
   occurred_to?: string | undefined;
   /** A local date (YYYY-MM-DD): the tasks not done whose window has opened by then; only with `kind` task or no kind. */
   relevant_on?: string | undefined;
+  /** A course or project, by id or exact title: its tasks. */
+  hub?: string | undefined;
+  /** Local dates (YYYY-MM-DD), inclusive: the tasks due in the range. */
+  closes_from?: string | undefined;
+  closes_to?: string | undefined;
   limit?: number | undefined;
 };
 
 export type IngestRequest = {
   text: string;
+  /** Ankur's own words in the job, verbatim: lets Yaad store a task that closed before the text when his words state the day. */
+  source_text?: string;
   occurred_at: string;
   participant_ids?: string[];
   source: "agent";

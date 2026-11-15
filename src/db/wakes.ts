@@ -1,4 +1,4 @@
-/** Durable wake rows: written when a wake is created, closed when its last lane run releases. */
+/** Durable wake rows: written when a wake is created, closed when its last run releases. */
 
 import { and, asc, desc, eq, inArray, lt, min, or, sql } from "drizzle-orm";
 import type { Db } from "./client.js";
@@ -36,7 +36,7 @@ export async function insertWake(
   });
 }
 
-/** Close a wake: when its last lane run released, and the error a lane died with, if any. */
+/** Close a wake: when its last run released, and the error a run died with, if any. */
 export async function endWake(db: Db, id: string, endedAt: Date, error: string | null): Promise<void> {
   await db.update(wakes).set({ endedAt, error }).where(eq(wakes.id, id));
 }

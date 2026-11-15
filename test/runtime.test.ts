@@ -21,7 +21,7 @@ import { agentLogs, agents, jobs, messages, routines, wakes } from "../src/db/sc
 import { writeAgentLog } from "../src/db/logs.js";
 import {
   endTurn,
-  FLAGS_OFF,
+  
   insertAgent,
   mockDwar,
   mockGhar,
@@ -32,12 +32,11 @@ import {
   silentLog,
   testConfig,
   toolUse,
-  wideWindows,
-  withRuntime,
+  wideWindow,
   yieldTurn,
 } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -49,7 +48,7 @@ after(async () => {
   await handle.close();
 });
 
-test("two concurrent messages to one agent serialize on its process-lane lock", async (t) => {
+test("two concurrent messages to one agent serialize on its run lock", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
@@ -58,7 +57,7 @@ test("two concurrent messages to one agent serialize on its process-lane lock", 
   let active = 0;
   let overlap = false;
   const dwar = mockDwar({
-    process: async () => {
+    agent: async () => {
       active += 1;
       if (active > 1) {
         overlap = true;
@@ -90,8 +89,8 @@ test("two concurrent messages to one agent serialize on its process-lane lock", 
   assert.equal(b.statusCode, 201);
   await runtime.waitUntilIdle();
   assert.equal(overlap, false);
-  assert.ok(dwar.processCalls.length >= 1 && dwar.processCalls.length <= 2);
-  const lastSeen = JSON.stringify(dwar.processCalls.at(-1)?.messages);
+  assert.ok(dwar.agentCalls.length >= 1 && dwar.agentCalls.length <= 3, "a second message from the requester may cancel the call in flight once");
+  const lastSeen = JSON.stringify(dwar.agentCalls.at(-1)?.messages);
   assert.ok(lastSeen.includes("message-one") && lastSeen.includes("message-two"));
 });
 
@@ -113,7 +112,7 @@ test("manage_agent on a non-child is rejected", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(parentId, "work"), {
+  const result = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "m1",
     name: MANAGE_AGENT,
@@ -142,7 +141,7 @@ test("modify_agent_prompt on a direct child is allowed", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(parentId, "work"), {
+  const result = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "m2",
     name: MODIFY_AGENT_PROMPT,
@@ -173,7 +172,7 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
     log: silentLog,
   });
   const call = (name: string, input: Record<string, unknown>, id: string) =>
-    executeTool(runtime.toolContext(parentId, "work"), { type: "tool_use", id, name, input });
+    executeTool(runtime.toolContext(parentId), { type: "tool_use", id, name, input });
 
   const retire = await call(MANAGE_AGENT, { agent_id: childId, retired: true }, "rh1");
   assert.equal(retire.isError, false, retire.content);
@@ -187,7 +186,7 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   assert.equal(promptOnly.isError, true);
   assert.match(promptOnly.content, /^retired: agent rehire-child is retired; only its parent can reactivate it/);
 
-  const blocked = await executeTool(runtime.toolContext(parentId, "process"), {
+  const blocked = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "rh3",
     name: "send_message",
@@ -202,7 +201,7 @@ test("a parent can retire a child and reactivate it; nothing else can change a r
   assert.equal(row?.active, true);
   assert.equal(row?.systemPrompt, "child");
 
-  const delivered = await executeTool(runtime.toolContext(parentId, "process"), {
+  const delivered = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "rh5",
     name: "send_message",
@@ -233,7 +232,7 @@ test("modify_agent_prompt edits the prompt of self and a direct child", async ()
     log: silentLog,
   });
 
-  const self = await executeTool(runtime.toolContext(parentId, "work"), {
+  const self = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "rn-self",
     name: MODIFY_AGENT_PROMPT,
@@ -248,7 +247,7 @@ test("modify_agent_prompt edits the prompt of self and a direct child", async ()
   assert.equal(parent?.systemPrompt, "boss prompt v2");
   assert.equal(parent?.id, "boss");
 
-  const child = await executeTool(runtime.toolContext(parentId, "work"), {
+  const child = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "rn-child",
     name: MODIFY_AGENT_PROMPT,
@@ -280,7 +279,7 @@ test("modify_agent_prompt of a stranger is rejected", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(parentId, "work"), {
+  const result = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "rn-stranger",
     name: MODIFY_AGENT_PROMPT,
@@ -308,7 +307,7 @@ test("modify_agent_prompt saves nothing unless every edit matches exactly once",
     log: silentLog,
   });
   const edit = (edits: unknown, id: string) =>
-    executeTool(runtime.toolContext(selfId, "work"), {
+    executeTool(runtime.toolContext(selfId), {
       type: "tool_use",
       id,
       name: MODIFY_AGENT_PROMPT,
@@ -360,7 +359,7 @@ test("manage_agent retires without touching the prompt", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(selfId, "work"), {
+  const result = await executeTool(runtime.toolContext(selfId), {
     type: "tool_use",
     id: "rn-only",
     name: MANAGE_AGENT,
@@ -372,7 +371,7 @@ test("manage_agent retires without touching the prompt", async () => {
   assert.equal(row?.active, false);
   assert.equal(row?.systemPrompt, "keep me");
 
-  const missingFlag = await executeTool(runtime.toolContext(selfId, "work"), {
+  const missingFlag = await executeTool(runtime.toolContext(selfId), {
     type: "tool_use",
     id: "rn-no-flag",
     name: MANAGE_AGENT,
@@ -380,7 +379,7 @@ test("manage_agent retires without touching the prompt", async () => {
   });
   assert.equal(missingFlag.isError, true);
 
-  const again = await executeTool(runtime.toolContext(selfId, "work"), {
+  const again = await executeTool(runtime.toolContext(selfId), {
     type: "tool_use",
     id: "rn-after",
     name: MODIFY_AGENT_PROMPT,
@@ -393,18 +392,18 @@ test("manage_agent retires without touching the prompt", async () => {
   );
 });
 
-test("work-lane context has send_message and list_agents, and no hand_off or create_attachment", async () => {
+test("an agent holds send_message and list_agents, and no hand_off or create_attachment", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
     systemPrompt: "do the job",
   });
   const ctx = await assembleContext({
-    windows: wideWindows,
+    window: wideWindow,
+    continuation: null,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: workerId,
-    lane: "work",
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
@@ -416,7 +415,7 @@ test("work-lane context has send_message and list_agents, and no hand_off or cre
   }
 });
 
-test("the work lane cannot write another agent's mailbox", async () => {
+test("a tool an agent does not hold writes nothing to another agent's mailbox", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, {
     name: "caller",
@@ -435,84 +434,41 @@ test("the work lane cannot write another agent's mailbox", async () => {
     log: silentLog,
   });
   const before = runtime.transcript.transcriptFor(targetId).length;
-  const result = await executeTool(runtime.toolContext(callerId, "work"), {
+  const result = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "d1",
-    name: SEND_MESSAGE,
+    name: "queue_message",
     input: { to: targetId, content: "sneak" },
   });
   assert.equal(result.isError, true);
-  assert.match(result.content, /unknown work-lane tool/);
+  assert.match(result.content, /unknown tool/);
   const after = runtime.transcript.transcriptFor(targetId).length;
   assert.equal(before, after);
 });
 
-test("a steer with the work lane idle starts a Dwar work-lane call", async () => {
+test("enqueue starts a run whose first request names why the agent woke", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const callerId = await insertAgent(handle.db, {
-    name: "steer-caller",
-    systemPrompt: "steer",
-  });
-  const dwar = mockDwar({
-    work: async () => yieldTurn("steered"),
-    process: async () => yieldTurn(),
-  });
+  const callerId = await insertAgent(handle.db, { name: "wake-caller", systemPrompt: "wake" });
+  const dwar = mockDwar({ agent: async () => yieldTurn("woken") });
   const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
-  await executeTool(runtime.toolContext(callerId, "process"), {
-    type: "tool_use",
-    id: "s1",
-    name: "steer_work",
-    input: { instruction: "wake up" },
-  });
+  runtime.enqueue(callerId, "a nudge from the test");
   await runtime.waitUntilIdle();
-  assert.ok(dwar.workCalls.length >= 1);
-  const first = dwar.workCalls[0];
-  assert.ok(first);
-  const blob = JSON.stringify(first.messages);
-  assert.match(blob, /wake up/);
+  assert.equal(dwar.agentCalls.length, 1);
+  assert.match(JSON.stringify(dwar.agentCalls[0]!.messages), /\[Wake\] a nudge from the test · no job/);
 });
 
-test("work-lane exit without a message does not wake the process lane", async () => {
+test("a run queued behind one that already read everything ends without a model call", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const callerId = await insertAgent(handle.db, {
-    name: "quiet-reasoner",
-    systemPrompt: "think quietly",
-  });
-  const dwar = mockDwar({
-    work: async () => yieldTurn("r-yield"),
-    process: async () => yieldTurn(),
-  });
-  const runtime = createRuntime({
-    db: handle.db,
-    dwar,
-    ghar: mockGhar(),
-    nas: mockNas(),
-    yaad: mockYaad(),
-    config,
-    log: silentLog,
-  });
-  runtime.transcript.append({
-    fromAgentId: null,
-    toAgentId: callerId,
-    content: "earlier user note",
-  });
-  runtime.transcript.append({
-    fromAgentId: callerId,
-    toAgentId: null,
-    content: "already replied",
-  });
-  await executeTool(runtime.toolContext(callerId, "process"), {
-    type: "tool_use",
-    id: "s-quiet",
-    name: "steer_work",
-    input: { instruction: "think then stop" },
-  });
+  const callerId = await insertAgent(handle.db, { name: "quiet-reasoner", systemPrompt: "think quietly" });
+  const dwar = mockDwar({ agent: async () => yieldTurn("r-yield") });
+  const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
+  runtime.enqueue(callerId, "first");
+  runtime.enqueue(callerId, "second");
   await runtime.waitUntilIdle();
-  assert.ok(dwar.workCalls.length >= 1);
-  assert.equal(dwar.processCalls.length, 0);
+  assert.equal(dwar.agentCalls.length, 1);
 });
 
-test("send_message refuses itself as a recipient, and an unknown work-lane tool is an error", async () => {
+test("send_message refuses itself as a recipient, and an unknown tool is an error", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const callerId = await insertAgent(handle.db, { id: "refused-sender", systemPrompt: "sender" });
   const peerId = await insertAgent(handle.db, { id: "refused-peer", systemPrompt: "peer" });
@@ -525,15 +481,15 @@ test("send_message refuses itself as a recipient, and an unknown work-lane tool 
     config,
     log: silentLog,
   });
-  const legacy = await executeTool(runtime.toolContext(callerId, "work"), {
+  const legacy = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "sm-peer",
     name: "queue_message",
     input: { to: peerId, content: "hello" },
   });
   assert.equal(legacy.isError, true);
-  assert.match(legacy.content, /unknown work-lane tool/);
-  const toSelf = await executeTool(runtime.toolContext(callerId, "work"), {
+  assert.match(legacy.content, /unknown tool/);
+  const toSelf = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "sm-self",
     name: SEND_MESSAGE,
@@ -544,39 +500,24 @@ test("send_message refuses itself as a recipient, and an unknown work-lane tool 
   await runtime.waitUntilIdle();
 });
 
-test("process-lane tools are the fixed front-desk list, with no grants or async tools", async () => {
+test("an agent's tools are the whole registry and the loop tools, with no grants and no steering of another loop", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const workerId = await insertAgent(handle.db, {
-    name: "thread",
-    systemPrompt: "do the job",
-  });
+  const workerId = await insertAgent(handle.db, { name: "thread", systemPrompt: "do the job" });
   const ctx = await assembleContext({
-    windows: wideWindows,
+    window: wideWindow,
+    continuation: null,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: workerId,
-    lane: "process",
     transcript: new TranscriptStore(),
   });
   const names = ctx.tools.map((tool) => tool.name);
-  assert.deepEqual(names, [
-    SEND_MESSAGE,
-    "steer_work",
-    "read_file",
-    "find_files",
-    "get_logs",
-    "get_messages",
-    "web_search",
-    "web_fetch",
-    "get_agent",
-    "list_routines",
-    "my_activity",
-    "get_device",
-    "control_device",
-    "recall_memory",
-    LIST_AGENTS,
-    "yield",
-  ]);
+  for (const held of [SEND_MESSAGE, LIST_AGENTS, "wait", "yield", "recall_memory", "ingest_memory", "steer_browser", "stop_task", "my_activity", "set_routine"]) {
+    assert.ok(names.includes(held), held);
+  }
+  for (const gone of ["steer_work", "queue_message", "schedule_message"]) {
+    assert.equal(names.includes(gone), false, gone);
+  }
 });
 
 test("spawn_agent requires system_prompt, and the child holds the whole registry", async () => {
@@ -590,7 +531,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
     config,
     log: silentLog,
   });
-  const missing = await executeTool(runtime.toolContext(managerId, "work"), {
+  const missing = await executeTool(runtime.toolContext(managerId), {
     type: "tool_use",
     id: "sp0",
     name: "spawn_agent",
@@ -598,7 +539,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
   });
   assert.equal(missing.isError, true);
 
-  const spawned = await executeTool(runtime.toolContext(managerId, "work"), {
+  const spawned = await executeTool(runtime.toolContext(managerId), {
     type: "tool_use",
     id: "sp1",
     name: "spawn_agent",
@@ -607,11 +548,11 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
   assert.equal(spawned.isError, false);
   const childId = JSON.parse(spawned.content).agent_id as string;
   const childCtx = await assembleContext({
-    windows: wideWindows,
+    window: wideWindow,
+    continuation: null,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId: childId,
-    lane: "work",
     transcript: new TranscriptStore(),
   });
   assert.deepEqual(
@@ -670,7 +611,7 @@ test("as the router, manage_agent and modify_agent_prompt are refused and change
     config,
     log: silentLog,
   });
-  const retire = await executeTool(runtime.toolContext(null, "work"), {
+  const retire = await executeTool(runtime.toolContext(null, "agent"), {
     type: "tool_use",
     id: "dadi-manage",
     name: MANAGE_AGENT,
@@ -678,7 +619,7 @@ test("as the router, manage_agent and modify_agent_prompt are refused and change
   });
   assert.equal(retire.isError, true);
   assert.match(retire.content, /agent identity/);
-  const edit = await executeTool(runtime.toolContext(null, "work"), {
+  const edit = await executeTool(runtime.toolContext(null, "agent"), {
     type: "tool_use",
     id: "dadi-edit",
     name: MODIFY_AGENT_PROMPT,
@@ -713,7 +654,7 @@ test("get_agent returns a direct child's stored prompt byte for byte", async () 
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(parentId, "work"), {
+  const result = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "get-child",
     name: GET_AGENT,
@@ -742,7 +683,7 @@ test("get_agent lets an agent read itself", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(selfId, "work"), {
+  const result = await executeTool(runtime.toolContext(selfId), {
     type: "tool_use",
     id: "get-self",
     name: GET_AGENT,
@@ -761,7 +702,7 @@ test("get_agent lets an agent read itself", async () => {
   assert.equal(body.retired, false);
 });
 
-test("get_agent refuses a grandchild and a sibling with the self-or-direct-child rule", async () => {
+test("get_agent reads a grandchild and a sibling: reading is free across the org", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const grandparentId = await insertAgent(handle.db, {
     name: "grandparent",
@@ -792,25 +733,23 @@ test("get_agent refuses a grandchild and a sibling with the self-or-direct-child
     log: silentLog,
   });
 
-  const grandchild = await executeTool(runtime.toolContext(grandparentId, "work"), {
+  const grandchild = await executeTool(runtime.toolContext(grandparentId), {
     type: "tool_use",
     id: "get-grandchild",
     name: GET_AGENT,
     input: { agent_id: grandchildId },
   });
-  assert.equal(grandchild.isError, true);
-  assert.match(grandchild.content, /self or direct children/);
-  assert.doesNotMatch(grandchild.content, /not found/);
+  assert.equal(grandchild.isError, false, grandchild.content);
+  assert.equal(JSON.parse(grandchild.content).system_prompt, "leaf prompt");
 
-  const sibling = await executeTool(runtime.toolContext(siblingId, "work"), {
+  const sibling = await executeTool(runtime.toolContext(siblingId), {
     type: "tool_use",
     id: "get-sibling",
     name: GET_AGENT,
     input: { agent_id: childId },
   });
-  assert.equal(sibling.isError, true);
-  assert.match(sibling.content, /self or direct children/);
-  assert.doesNotMatch(sibling.content, /not found/);
+  assert.equal(sibling.isError, false, sibling.content);
+  assert.equal(JSON.parse(sibling.content).system_prompt, "mid");
 });
 
 test("as Dadi, get_agent reads any agent", async () => {
@@ -833,7 +772,7 @@ test("as Dadi, get_agent reads any agent", async () => {
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(null, "work", "router"), {
+  const result = await executeTool(runtime.toolContext(null), {
     type: "tool_use",
     id: "dadi-get",
     name: GET_AGENT,
@@ -863,7 +802,7 @@ test("get_agent returns no tool list, since no tool is granted per agent", async
     config,
     log: silentLog,
   });
-  const result = await executeTool(runtime.toolContext(parentId, "work"), {
+  const result = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "get-tools",
     name: GET_AGENT,
@@ -893,7 +832,7 @@ test("an edit built from get_agent's prompt changes only the edited text", async
     config,
     log: silentLog,
   });
-  const ctx = runtime.toolContext(parentId, "work");
+  const ctx = runtime.toolContext(parentId);
   const before = await executeTool(ctx, {
     type: "tool_use",
     id: "round-read",
@@ -944,7 +883,7 @@ test("as Dadi, set_routine fails without writing a row", async () => {
     log: silentLog,
   });
   const before = await handle.db.select().from(routines);
-  const result = await executeTool(runtime.toolContext(null, "work"), {
+  const result = await executeTool(runtime.toolContext(null, "agent"), {
     type: "tool_use",
     id: "dadi-sched",
     name: "set_routine",
@@ -973,7 +912,7 @@ test("as Dadi, message and send fail and deliver nothing", async () => {
   });
   const before = runtime.transcript.transcriptFor(targetId).length;
 
-  const send = await executeTool(runtime.toolContext(null, "work"), {
+  const send = await executeTool(runtime.toolContext(null, "agent"), {
     type: "tool_use",
     id: "dadi-send",
     name: SEND_MESSAGE,
@@ -982,7 +921,7 @@ test("as Dadi, message and send fail and deliver nothing", async () => {
   assert.equal(send.isError, true);
   assert.match(send.content, /agent identity/);
 
-  const dispatch = await executeTool(runtime.toolContext(null, "process"), {
+  const dispatch = await executeTool(runtime.toolContext(null, "agent"), {
     type: "tool_use",
     id: "dadi-dispatch",
     name: SEND_MESSAGE,
@@ -994,29 +933,21 @@ test("as Dadi, message and send fail and deliver nothing", async () => {
   assert.equal(runtime.transcript.transcriptFor(targetId).length, before);
 });
 
-test("list_agents is in both lanes", async () => {
+test("an agent holds the whole registry in a fixed order, and list_agents among the loop tools", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, {
     name: "no-grants",
     systemPrompt: "empty",
   });
-  const workContext = await assembleContext({
-    windows: wideWindows,
+  const agentContext = await assembleContext({
+    window: wideWindow,
+    continuation: null,
     db: handle.db,
     serviceRoot: config.serviceRoot,
     agentId,
-    lane: "work",
     transcript: new TranscriptStore(),
   });
-  const processContext = await assembleContext({
-    windows: wideWindows,
-    db: handle.db,
-    serviceRoot: config.serviceRoot,
-    agentId,
-    lane: "process",
-    transcript: new TranscriptStore(),
-  });
-  assert.deepEqual(workContext.tools.map((tool) => tool.name), [
+  assert.deepEqual(agentContext.tools.map((tool) => tool.name), [
     "spawn_agent",
     "get_device",
     "control_device",
@@ -1032,6 +963,7 @@ test("list_agents is in both lanes", async () => {
     "my_activity",
     "steer_browser",
     "steer_terminal",
+    "stop_task",
     "list_browsers",
     "list_terminals",
     "read_file",
@@ -1047,7 +979,6 @@ test("list_agents is in both lanes", async () => {
     "modify_agent_prompt",
     "yield",
   ]);
-  assert.ok(processContext.tools.map((tool) => tool.name).includes(LIST_AGENTS));
 });
 
 test("list_agents exact id is case-sensitive and empty on miss", async () => {
@@ -1069,7 +1000,7 @@ test("list_agents exact id is case-sensitive and empty on miss", async () => {
     config,
     log: silentLog,
   });
-  const hit = await executeTool(runtime.toolContext(callerId, "work"), {
+  const hit = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "la1",
     name: LIST_AGENTS,
@@ -1086,7 +1017,7 @@ test("list_agents exact id is case-sensitive and empty on miss", async () => {
   assert.equal(hitBody.agents[0]?.parent_name, null);
   assert.equal(hitBody.agents[0]?.retired, false);
 
-  const missCase = await executeTool(runtime.toolContext(callerId, "work"), {
+  const missCase = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "la2",
     name: LIST_AGENTS,
@@ -1095,7 +1026,7 @@ test("list_agents exact id is case-sensitive and empty on miss", async () => {
   assert.equal(missCase.isError, false);
   assert.deepEqual(JSON.parse(missCase.content).agents, []);
 
-  const missName = await executeTool(runtime.toolContext(callerId, "work"), {
+  const missName = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "la3",
     name: LIST_AGENTS,
@@ -1130,7 +1061,7 @@ test("list_agents omits retired agents unless show_retired", async () => {
     log: silentLog,
   });
 
-  const activeOnly = await executeTool(runtime.toolContext(callerId, "work"), {
+  const activeOnly = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "la4",
     name: LIST_AGENTS,
@@ -1145,7 +1076,7 @@ test("list_agents omits retired agents unless show_retired", async () => {
   assert.ok(activeIds.has(callerId));
   assert.equal(activeIds.has(retiredId), false);
 
-  const withRetired = await executeTool(runtime.toolContext(callerId, "work"), {
+  const withRetired = await executeTool(runtime.toolContext(callerId), {
     type: "tool_use",
     id: "la5",
     name: LIST_AGENTS,
@@ -1182,7 +1113,7 @@ test("list_agents resolves parent_name when the parent is retired", async () => 
     config,
     log: silentLog,
   });
-  const listed = await executeTool(runtime.toolContext(childId, "work"), {
+  const listed = await executeTool(runtime.toolContext(childId), {
     type: "tool_use",
     id: "la7",
     name: LIST_AGENTS,
@@ -1227,7 +1158,7 @@ test("list_agents visibility is global across parents", async () => {
     log: silentLog,
   });
 
-  const listed = await executeTool(runtime.toolContext(nestedCaller, "process"), {
+  const listed = await executeTool(runtime.toolContext(nestedCaller), {
     type: "tool_use",
     id: "la6",
     name: LIST_AGENTS,
@@ -1257,14 +1188,12 @@ test("get_logs searches, clips long strings, and pages back with next_before", a
   const agentId = await insertAgent(handle.db, { name: "log-search", systemPrompt: "searcher" });
   await writeAgentLog(handle.db, {
     agentId,
-    lane: "process",
     event: "response",
     payload: { content: "Here is the revised Batch 2 (Thursday, Oct 8): Zehua Li, Sandra Kue" },
   });
   for (let i = 0; i < 30; i += 1) {
     await writeAgentLog(handle.db, {
       agentId,
-      lane: "work",
       event: "tool_result",
       payload: { name: "browser_accessibility_tree", content: "x".repeat(10_000) },
     });
@@ -1279,7 +1208,7 @@ test("get_logs searches, clips long strings, and pages back with next_before", a
     log: silentLog,
   });
   const read = async (input: Record<string, unknown>) => {
-    const result = await executeTool(runtime.toolContext(agentId, "work"), {
+    const result = await executeTool(runtime.toolContext(agentId), {
       type: "tool_use",
       id: "gls",
       name: "get_logs",
@@ -1315,7 +1244,7 @@ test("every agent's system lists the standing agents with their directory entrie
   await insertAgent(handle.db, { id: "dir-browser-worker-1", systemPrompt: "One job.", parentAgentId: browserId });
   const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas: mockNas(), config, log: silentLog });
   const modify = (input: Record<string, unknown>) =>
-    executeTool(runtime.toolContext(browserId, "work"), { type: "tool_use", id: "md", name: "modify_agent_prompt", input });
+    executeTool(runtime.toolContext(browserId), { type: "tool_use", id: "md", name: "modify_agent_prompt", input });
 
   const refused = await modify({ agent_id: browserId, description: "I do browsers" });
   assert.equal(refused.isError, true);
@@ -1323,19 +1252,19 @@ test("every agent's system lists the standing agents with their directory entrie
   const set = await modify({ agent_id: browserId, description: "Owns: Every browser.\nAsk for: a browser worker for a site you name." });
   assert.equal(set.isError, false, set.content);
 
-  const ctx = await assembleContext({ windows: wideWindows, db: handle.db, serviceRoot: config.serviceRoot, agentId: ownerId, lane: "work", transcript: new TranscriptStore() });
+  const ctx = await assembleContext({ window: wideWindow, continuation: null, db: handle.db, serviceRoot: config.serviceRoot, agentId: ownerId, transcript: new TranscriptStore() });
   assert.match(ctx.system, /- dir-browser-manager\n {2}Owns: Every browser\.\n {2}Ask for: a browser worker for a site you name\./);
   assert.match(ctx.system, /- dir-course-helper \(your child\)\n {2}\(no description yet\) You help\./);
   assert.doesNotMatch(ctx.system, /- dir-course-owner\n/, "an agent is not listed in its own directory");
   assert.doesNotMatch(ctx.system, /dir-browser-worker-1/);
   assert.match(ctx.system, /You have no directory entry yet/);
 
-  const own = await assembleContext({ windows: wideWindows, db: handle.db, serviceRoot: config.serviceRoot, agentId: browserId, lane: "work", transcript: new TranscriptStore() });
+  const own = await assembleContext({ window: wideWindow, continuation: null, db: handle.db, serviceRoot: config.serviceRoot, agentId: browserId, transcript: new TranscriptStore() });
   assert.match(own.system, /Your directory entry, which every agent sees:\nOwns: Every browser\./);
   void childId;
 });
 
-test("get_logs defaults to caller and allows direct children only", async () => {
+test("get_logs defaults to the caller and reads any agent", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, {
     name: "log-parent",
@@ -1352,19 +1281,16 @@ test("get_logs defaults to caller and allows direct children only", async () => 
   });
   await writeAgentLog(handle.db, {
     agentId: parentId,
-    lane: "work",
     event: "response",
     payload: { text: "parent thought" },
   });
   await writeAgentLog(handle.db, {
     agentId: childId,
-    lane: "work",
     event: "response",
     payload: { text: "child thought" },
   });
   await writeAgentLog(handle.db, {
     agentId: strangerId,
-    lane: "work",
     event: "response",
     payload: { text: "stranger thought" },
   });
@@ -1378,7 +1304,7 @@ test("get_logs defaults to caller and allows direct children only", async () => 
     log: silentLog,
   });
 
-  const self = await executeTool(runtime.toolContext(parentId, "work"), {
+  const self = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "gl1",
     name: "get_logs",
@@ -1392,7 +1318,7 @@ test("get_logs defaults to caller and allows direct children only", async () => 
   assert.equal(selfBody.logs[0]?.agent_id, parentId);
   assert.equal(selfBody.logs[0]?.payload.text, "parent thought");
 
-  const child = await executeTool(runtime.toolContext(parentId, "work"), {
+  const child = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "gl2",
     name: "get_logs",
@@ -1405,16 +1331,16 @@ test("get_logs defaults to caller and allows direct children only", async () => 
   assert.equal(childBody.logs.length, 1);
   assert.equal(childBody.logs[0]?.agent_id, childId);
 
-  const denied = await executeTool(runtime.toolContext(parentId, "work"), {
+  const stranger = await executeTool(runtime.toolContext(parentId), {
     type: "tool_use",
     id: "gl3",
     name: "get_logs",
     input: { agent_id: strangerId },
   });
-  assert.equal(denied.isError, true);
-  assert.match(denied.content, /direct children/);
+  assert.equal(stranger.isError, false, stranger.content);
+  assert.equal((JSON.parse(stranger.content) as { logs: Array<{ agent_id: string }> }).logs[0]?.agent_id, strangerId);
 
-  const asRouter = await executeTool(runtime.toolContext(null, "router"), {
+  const asRouter = await executeTool(runtime.toolContext(null), {
     type: "tool_use",
     id: "gl4",
     name: "get_logs",
@@ -1441,7 +1367,7 @@ test("executeTool refuses a registry tool for a retired agent", async () => {
     log: silentLog,
   });
 
-  const refused = await executeTool(runtime.toolContext(retired, "work"), {
+  const refused = await executeTool(runtime.toolContext(retired), {
     type: "tool_use",
     id: "eg2",
     name: "get_device",
@@ -1451,7 +1377,7 @@ test("executeTool refuses a registry tool for a retired agent", async () => {
   assert.equal(refused.content, `retired: agent ${retired} is retired`);
 });
 
-test("a failed work-lane wake is reported to the parent and wakes it", async () => {
+test("a failed run is reported to the parent and wakes it", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "failure-parent", systemPrompt: "parent" });
   const childId = await insertAgent(handle.db, {
@@ -1463,10 +1389,10 @@ test("a failed work-lane wake is reported to the parent and wakes it", async () 
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({
-      work: async () => {
-        throw new Error("Dwar is unreachable");
-      },
-      process: async (request) => {
+      agent: async (request) => {
+        if (request.system.includes(`Your agent id is ${childId}.`)) {
+          throw new Error("Dwar is unreachable");
+        }
         conversed.push(JSON.stringify(request.messages));
         return yieldTurn();
       },
@@ -1478,7 +1404,7 @@ test("a failed work-lane wake is reported to the parent and wakes it", async () 
     log: silentLog,
   });
 
-  runtime.enqueueWork(childId);
+  runtime.enqueue(childId);
   await runtime.waitUntilIdle();
 
   const sent = await handle.db.select().from(messages).where(eq(messages.fromAgentId, childId));
@@ -1512,7 +1438,7 @@ test("currentRequester is whoever most recently wrote after opening the line, ne
   assert.equal(await currentRequester(handle.db, workerId), agentId);
 });
 
-test("a lane that fails on Ankur's job sends him nothing: hath logs its own failures", async () => {
+test("a run that fails on Ankur's job sends him nothing: hath logs its own failures", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const parentId = await insertAgent(handle.db, { id: "conv-failure-parent", systemPrompt: "parent" });
   const childId = await insertAgent(handle.db, {
@@ -1523,7 +1449,7 @@ test("a lane that fails on Ankur's job sends him nothing: hath logs its own fail
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({
-      process: async (request) => {
+      agent: async (request) => {
         if (request.system.includes(`Your agent id is ${childId}.`)) {
           throw new Error("quota exceeded");
         }
@@ -1548,23 +1474,14 @@ test("a lane that fails on Ankur's job sends him nothing: hath logs its own fail
   assert.deepEqual(sent, [], "no notice, no message to Ankur");
 });
 
-test("a work lane that fails on Ankur's job sends him nothing and leaves the job open, and the wake's rows share its id", async () => {
+test("an agent that fails on Ankur's job sends him nothing and leaves the job open, and the wake's rows share its id", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const childId = await insertAgent(handle.db, { id: "failing-reasoner", systemPrompt: "child" });
   let reasoned = 0;
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({
-      process: async () => ({
-        provider: "anthropic",
-        content: [
-          { type: "tool_use", id: "c-steer", name: "steer_work", input: { instruction: "fix the resume" } },
-          { type: "tool_use", id: "c-yield", name: "yield", input: {} },
-        ],
-        stop_reason: "tool_use",
-        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-      }),
-      work: async () => {
+      agent: async () => {
         reasoned += 1;
         if (reasoned === 1) {
           return toolUse("list_agents", {}, "r-list");
@@ -1597,7 +1514,7 @@ test("a work lane that fails on Ankur's job sends him nothing and leaves the job
   assert.notEqual([...wakeIds][0], null);
 });
 
-test("the same lane failure on every wake is reported once to a waiting agent until a run finishes cleanly", async () => {
+test("the same failure on every wake is reported once to a waiting agent until a run finishes cleanly", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const requesterId = await insertAgent(handle.db, { id: "repeat-failure-requester", systemPrompt: "requester" });
   const childId = await insertAgent(handle.db, { id: "repeat-failure-child", systemPrompt: "child" });
@@ -1606,7 +1523,7 @@ test("the same lane failure on every wake is reported once to a waiting agent un
   const runtime = createRuntime({
     db: handle.db,
     dwar: mockDwar({
-      process: async (request) => {
+      agent: async (request) => {
         if (request.system.includes(`Your agent id is ${childId}.`) && broken) {
           call += 1;
           throw new Error(`credit balance is too low, request_id req_${call}abc`);
@@ -1639,24 +1556,22 @@ test("the same lane failure on every wake is reported once to a waiting agent un
   assert.equal(await reports(), 2);
 });
 
-test("queued steers for a missing agent end the work-lane wake instead of re-queuing it", { timeout: 10_000 }, async () => {
+test("a run for a missing agent calls nothing", { timeout: 10_000 }, async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const dwar = mockDwar({});
   const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
-  runtime.steer.append("ghost-agent", "keep going");
-  runtime.enqueueWork("ghost-agent");
+  runtime.enqueue("ghost-agent");
   await runtime.waitUntilIdle();
 
-  assert.equal(dwar.workCalls.length, 0);
-  assert.equal(runtime.steer.hasItems("ghost-agent"), true);
+  assert.equal(dwar.agentCalls.length, 0);
 });
 
-test("a lane logs each model turn whole before its tools run, and each result with its tool name", async () => {
+test("the agent logs each model turn whole before its tools run, and each result with its tool name", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, { name: "log-shape", systemPrompt: "work" });
   let turn = 0;
   const dwar = mockDwar({
-    work: async () => {
+    agent: async () => {
       turn += 1;
       if (turn === 1) {
         return {
@@ -1675,10 +1590,10 @@ test("a lane logs each model turn whole before its tools run, and each result wi
     },
   });
   const runtime = createRuntime({ db: handle.db, dwar, ghar: mockGhar(), nas: mockNas(), yaad: mockYaad(), config, log: silentLog });
-  runtime.enqueueWork(workerId);
+  runtime.enqueue(workerId);
   await runtime.waitUntilIdle();
 
-  assert.ok(dwar.workCalls.every((request) => request.tool_choice === "auto"));
+  assert.ok(dwar.agentCalls.every((request) => request.tool_choice === "auto"));
   const rows = await handle.db
     .select()
     .from(agentLogs)
@@ -1697,13 +1612,13 @@ test("a lane logs each model turn whole before its tools run, and each result wi
   assert.equal(result.is_error, false);
 });
 
-test("a wake gets a row when created, ended_at when its lanes release, and the error of a lane that failed", async () => {
+test("a wake gets a row when created, ended_at when its runs release, and the error of a run that failed", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const okId = await insertAgent(handle.db, { id: "wake-row-ok", systemPrompt: "ok" });
   const failId = await insertAgent(handle.db, { id: "wake-row-fail", systemPrompt: "fail" });
   let failing = false;
   const dwar = mockDwar({
-    work: async () => {
+    agent: async () => {
       if (failing) {
         throw new Error("dwar exploded");
       }
@@ -1717,21 +1632,21 @@ test("a wake gets a row when created, ended_at when its lanes release, and the e
       seen.push(`${event.type}:${event.agent_id}`);
     }
   });
-  const okWake = runtime.enqueueWork(okId, undefined, { kind: "steer", ref: null, openedByMessageId: null });
+  const okWake = runtime.enqueue(okId, undefined, { kind: "recovery", ref: null, openedByMessageId: null });
   await runtime.waitUntilIdle();
   failing = true;
-  const failWake = runtime.enqueueWork(failId);
+  const failWake = runtime.enqueue(failId);
   await runtime.waitUntilIdle();
 
   const [okRow] = await handle.db.select().from(wakes).where(eq(wakes.id, okWake));
   assert.equal(okRow?.agentId, okId);
-  assert.equal(okRow?.reasonKind, "steer");
+  assert.equal(okRow?.reasonKind, "recovery");
   assert.ok(okRow?.endedAt);
   assert.equal(okRow?.error, null);
   const [failRow] = await handle.db.select().from(wakes).where(eq(wakes.id, failWake));
   assert.equal(failRow?.reasonKind, "manual");
   assert.ok(failRow?.endedAt);
-  assert.match(failRow?.error ?? "", /^work lane failed: dwar exploded/);
+  assert.match(failRow?.error ?? "", /^run failed: dwar exploded/);
   assert.deepEqual(
     seen.sort(),
     [`wake_ended:${failId}`, `wake_ended:${okId}`, `wake_started:${failId}`, `wake_started:${okId}`].sort(),

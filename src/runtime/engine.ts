@@ -1,9 +1,9 @@
 /**
- * Agent runtime: lane locks, the steer queue, transcript, and lane runners.
- * Process-lane enqueue always schedules a run — the lane lock serializes concurrent
- * wakes so a second user message is not dropped while the process lane is busy.
- * A blanket wake races a follow-up run whose transcript ends on an assistant turn, which
- * chat providers reject.
+ * Agent runtime: run locks, interrupts, the thread, and the agent's loop. Enqueueing always
+ * schedules a run — the run lock serializes concurrent wakes so a second message is not dropped
+ * while the agent is busy. A run that finds nothing new since the agent last yielded ends without
+ * a model call, because a follow-up run whose history ends on an assistant turn is rejected by
+ * chat providers.
  */
 
 import { eq } from "drizzle-orm";
@@ -21,35 +21,32 @@ import type {
   DwarChatRequest,
   DwarChatResponse,
   DwarToolUseBlock,
-  Lane,
   RoutedMessage,
 } from "../types/domain.js";
-import { carriedWork } from "./carry.js";
-import { arrivalsSince, assembleContext, assembleRouterContext, type TranscriptWindows } from "./context.js";
+import { arrivalsSince, assembleContext, assembleRouterContext } from "./context.js";
 import { deliverAgentMessage, type DeliverDeps } from "./deliver.js";
 import { renderHeader } from "./header.js";
 import { replyWithText } from "./send.js";
-import { runProcessLoop } from "./process.js";
 import { EventBus } from "./events.js";
 import { DeviceGateway } from "./devices.js";
-import { gatherStatus, renderStatus } from "./status.js";
-import { LaneLocks } from "./locks.js";
-import { runWorkLoop } from "./work.js";
-import { SteerQueue } from "./steer.js";
+import { RunLocks } from "./locks.js";
+import { runAgentLoop } from "./loop.js";
+import { Interrupts } from "./interrupts.js";
+import { stopAgent, type StopResult } from "./stop.js";
 import { HostSessions } from "./sessions.js";
 import { HelperReports } from "./helper-reports.js";
 import type { FileStore } from "./files.js";
-import { answerCap, clearWatch, recordWatch, watchOf } from "./watches.js";
+import { clearWatch, recordPendingWatch, watchOf } from "./watches.js";
 import { yieldReminder } from "./yield-reminder.js";
 import { ToolDebounce } from "./tool-debounce.js";
 import { blockOpenJob, settleWakeJobs } from "./jobs.js";
 import { executeTool, type ToolContext, type ToolExecResult } from "./tools.js";
 import type { ToolCallerKind } from "../tools/shared.js";
 import { TranscriptStore } from "./transcript.js";
-import { Wake, WakeStore, type WakeLimits } from "./wake.js";
+import { PROSE_CHARS_PER_TOKEN, Wake, WakeStore, type WakeLimits } from "./wake.js";
 import { ROUTER_KEY } from "./router.js";
-import { laneRequest, runStep, syncWake, type StepDeps } from "./step.js";
-import { FORWARD_ATTACHMENT, SEND_MESSAGE, type AgentStatus, type WakeOrigin } from "../types/domain.js";
+import { callModel, runStep, stepRequest, syncWake, type StepDeps } from "./step.js";
+import { FORWARD_ATTACHMENT, SEND_MESSAGE, type WakeOrigin } from "../types/domain.js";
 import { sweepCaches } from "./retention.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
 import { sendPickups } from "./pickups.js";
@@ -62,8 +59,8 @@ export type RuntimeLog = {
 };
 
 export type Runtime = {
-  locks: LaneLocks;
-  steer: SteerQueue;
+  locks: RunLocks;
+  interrupts: Interrupts;
   transcript: TranscriptStore;
   events: EventBus;
   devices: DeviceGateway;
@@ -75,29 +72,26 @@ export type Runtime = {
   /** What delivering a message needs, for the routes that deliver as Ankur. */
   deliver: DeliverDeps;
   /**
-   * Queue a lane run; returns the id of the wake it joins. `reason` is why, for the wake's
+   * Queue a run; returns the id of the wake it joins. `reason` is why, for the wake's
    * first line; `origin` is why, as the wake's row records it when the run creates the wake
    * (manual when left out), and is ignored when the run joins a wake already running.
    */
-  enqueueProcess: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
-  enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  enqueue: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
   /** Coalesced `wake_activity` events (see wake-activity.ts). */
   wakeActivity: WakeActivity;
   /** The id of the agent's current wake, or null when it has none. */
   wakeOf: (agentId: string) => string | null;
-  /** The agent's status block data (see status.ts), for `GET /agents`. */
-  statusOf: (agentId: string) => Promise<AgentStatus>;
+  /** The job the agent's current wake is on, or null when it has no wake or none is on a job. */
+  wakeJobOf: (agentId: string) => string | null;
+  /** Ends the agent's running loop, halts its job's helper tasks and marks the job stopped by `by` (see stop.ts). */
+  stop: (agentId: string, by: string) => Promise<StopResult>;
   waitUntilIdle: () => Promise<void>;
   /** Run the router on one utterance from Ankur; resolves with every message it sent as him. */
   route: (content: string) => Promise<RoutedMessage[]>;
-  toolContext: (
-    callerId: string | null,
-    lane: Lane,
-    callerKind?: ToolCallerKind,
-  ) => ToolContext;
+  toolContext: (callerId: string | null, callerKind?: ToolCallerKind) => ToolContext;
 };
 
-/** Wire locks, queues, and lane runners for one process. */
+/** Wire locks, interrupts and the agent loop for one process. */
 export function createRuntime(opts: {
   db: Db;
   dwar: DwarClient;
@@ -107,10 +101,10 @@ export function createRuntime(opts: {
   config: Config;
   log: RuntimeLog;
 }): Runtime {
-  const locks = new LaneLocks();
-  const steer = new SteerQueue();
+  const locks = new RunLocks();
+  const interrupts = new Interrupts();
   /**
-   * Per agent, the lane failure it last reported (request ids stripped), until one of its
+   * Per agent, the run failure it last reported (request ids stripped), until one of its
    * runs next finishes cleanly: the same failure on every wake during an outage is reported
    * once, since each report wakes a requester that would fail the same way.
    */
@@ -162,24 +156,13 @@ export function createRuntime(opts: {
   }
 
   /**
-   * Always schedule a process-lane run. The lane lock serializes concurrent wakes;
-   * dropping here would lose a second user message that arrives while busy. Returns
-   * the id of the wake the run joins: the agent's current one, or a new one.
-   */
-  function enqueueProcess(agentId: string, reason?: string, origin?: WakeOrigin): string {
-    return enqueue(agentId, "process", reason, origin);
-  }
-
-  function enqueueWork(agentId: string, reason?: string, origin?: WakeOrigin): string {
-    return enqueue(agentId, "work", reason, origin);
-  }
-
-  /**
-   * enqueue queues a lane run on the agent's wake, creating the wake when it has none. The wake
+   * enqueue queues a run on the agent's wake, creating the wake when it has none. The wake
    * belongs to the job its first reason belongs to (`origin.jobId`); a wake that began with no
-   * job takes the first one a later arrival brings.
+   * job takes the first one a later arrival brings. The run lock serializes runs; dropping one
+   * here would lose a second message that arrives while the agent is busy. Returns the id of
+   * the wake the run joins: the agent's current one, or a new one.
    */
-  function enqueue(agentId: string, lane: Lane, reason: string | undefined, origin: WakeOrigin | undefined): string {
+  function enqueue(agentId: string, reason?: string, origin?: WakeOrigin): string {
     const created = wakes.peek(agentId) === undefined;
     const release = wakes.hold(agentId);
     const wake = wakes.get(agentId);
@@ -191,17 +174,27 @@ export function createRuntime(opts: {
       wake.jobId = origin.jobId;
       wake.jobIsNew = origin.jobIsNew === true;
     }
-    track(runLane(agentId, lane, release));
+    track(runAgent(agentId, release));
     return wake.id;
   }
 
-  /** workIsLive is true when the agent's work lane is running, or waits on something other than the agent itself. */
-  async function workIsLive(agentId: string): Promise<boolean> {
-    if (locks.isBusy(agentId, "work")) {
+  /**
+   * preempt cancels the model call `agentId`'s running loop has out when its wake is on job
+   * `jobId`: an arrival that changes the job is read before the call's answer is acted on.
+   */
+  function preempt(agentId: string, jobId: string): void {
+    if (wakes.peek(agentId)?.jobId === jobId) {
+      interrupts.preempt(agentId);
+    }
+  }
+
+  /** isLive is true when the agent's loop is running, or it waits on something pending. */
+  async function isLive(agentId: string): Promise<boolean> {
+    if (locks.isBusy(agentId)) {
       return true;
     }
     const watch = await watchOf(opts.db, agentId);
-    return watch !== undefined && watch.targets.some((target) => target !== agentId);
+    return watch !== undefined && watch.targets.length > 0;
   }
 
   /**
@@ -226,8 +219,8 @@ export function createRuntime(opts: {
   }
 
   /**
-   * finishWake closes the wake's row and announces its outcome: failed when a lane died,
-   * waiting when the work lane watches a task or agent, else yielded.
+   * finishWake closes the wake's row and announces its outcome: failed when a run died,
+   * waiting when the agent watches a task or agent, else yielded.
    */
   async function finishWake(agentId: string, wake: Wake): Promise<void> {
     await wake.recorded;
@@ -250,37 +243,36 @@ export function createRuntime(opts: {
     return wakes.idOf(agentId);
   }
 
-  function statusOf(agentId: string): Promise<AgentStatus> {
-    return gatherStatus(
-      { db: opts.db, nas: opts.nas, locks, transcript, wake: wakes.peek(agentId) },
-      agentId,
-    );
+  function wakeJobOf(agentId: string): string | null {
+    return wakes.peek(agentId)?.jobId ?? null;
   }
 
-  const deliverDeps: DeliverDeps = { db: opts.db, transcript, events, enqueueProcess, enqueueWork, wakeActivity, answerByMinutes: opts.config.runtime.answer_by_minutes };
+  function stop(agentId: string, by: string): Promise<StopResult> {
+    return stopAgent({ db: opts.db, nas: opts.nas, interrupts, wakeJobId: wakeJobOf }, agentId, by);
+  }
+
+  const deliverDeps: DeliverDeps = { db: opts.db, transcript, events, enqueue, preempt, wakeActivity, answerByMinutes: opts.config.runtime.answer_by_minutes };
   const scheduler = createScheduler({
     db: opts.db,
     transcript,
     events,
-    enqueueProcess,
-    enqueueWork,
+    enqueue,
+    preempt,
     wakeActivity,
     answerByMinutes: opts.config.runtime.answer_by_minutes,
     log: opts.log,
     tickSeconds: opts.config.schedule.tick_seconds,
-    watches: { deliver: deliverDeps, nas: opts.nas, jobRequester: opts.config.runtime.job_requester, questionAnswerMinutes: opts.config.runtime.question_answer_minutes },
+    watches: { deliver: deliverDeps, nas: opts.nas },
     sweep: async (now) => {
       const swept = await sweepCaches(files, opts.config.files.cache_retention_days, now);
       opts.log.info({ code: "cache_swept", files: swept }, "cache sweep done");
     },
-    pickups: opts.config.runtime.hath_pickups
-      ? async (now) => {
-          const sent = await sendPickups(deliverDeps, now, opts.config.runtime.pickup_delay_s * 1000, opts.config.runtime.pickup_live_work ? workIsLive : null);
-          if (sent > 0) {
-            opts.log.info({ code: "pickups_sent", count: sent }, "hath sent pickups for overdue jobs");
-          }
-        }
-      : null,
+    pickups: async (now) => {
+      const sent = await sendPickups(deliverDeps, now, opts.config.runtime.pickup_delay_s * 1000, isLive);
+      if (sent > 0) {
+        opts.log.info({ code: "pickups_sent", count: sent }, "hath sent pickups for overdue jobs");
+      }
+    },
   });
 
   const helperReports = new HelperReports({
@@ -292,7 +284,7 @@ export function createRuntime(opts: {
 
   const runtime: Runtime = {
     locks,
-    steer,
+    interrupts,
     transcript,
     events,
     devices,
@@ -301,32 +293,26 @@ export function createRuntime(opts: {
     helperReports,
     scheduler,
     deliver: deliverDeps,
-    enqueueProcess,
-    enqueueWork,
+    enqueue,
     wakeActivity,
     wakeOf,
-    statusOf,
+    wakeJobOf,
+    stop,
     waitUntilIdle,
     route,
     toolContext,
   };
 
-  function toolContext(
-    callerId: string | null,
-    lane: Lane,
-    callerKind: ToolCallerKind = callerId === null ? "router" : "agent",
-  ): ToolContext {
+  function toolContext(callerId: string | null, callerKind: ToolCallerKind = callerId === null ? "router" : "agent"): ToolContext {
     return {
       db: opts.db,
       callerId,
       callerKind,
-      lane,
       yaad: opts.yaad,
       ghar: opts.ghar,
       nas: opts.nas,
       dwar: opts.dwar,
       devices,
-      steer,
       locks,
       transcript,
       events,
@@ -335,16 +321,10 @@ export function createRuntime(opts: {
       callId: null,
       background,
       toolDebounce,
-      enqueueProcess,
-      enqueueWork,
+      enqueue,
+      preempt,
       wakeActivity,
-      ingestResultWakes: opts.config.runtime.ingest_result_wakes,
-      questionAnswerMinutes: opts.config.runtime.question_answer_minutes,
       wakeId: callerId === null ? null : wakes.idOf(callerId),
-      jobRequester: opts.config.runtime.job_requester,
-      waitTargetGuard: opts.config.runtime.wait_target_guard,
-      toolHygiene: opts.config.runtime.tool_hygiene,
-      syncIngest: opts.config.runtime.sync_ingest,
       jobId: callerId === null ? null : (wakes.peek(callerId)?.jobId ?? null),
       timeZone: opts.config.env.timezone,
       answerByMinutes: opts.config.runtime.answer_by_minutes,
@@ -354,74 +334,45 @@ export function createRuntime(opts: {
   }
 
   /**
-   * Acquire the lane lock and run the work lane or the process lane. `releaseWake` is
-   * this run's hold on the agent's shared wake, taken when the run was queued
-   * and released last, after any follow-up run has taken its own hold. Only a
-   * work-lane run that finished its loop queues a follow-up for steers that
-   * arrived after its last drain; a run that failed, or found the agent missing
-   * or retired, leaves them for the next wake instead of re-queuing itself forever.
-   * The run that holds the wake last settles the jobs the wake left open
-   * before releasing it (see settleJobs); a failure is logged, since the wake must still
-   * release.
-   * Runs wait for the lane lock without a deadline, so no queued wake is dropped.
+   * Acquire the run lock and run the agent's loop. `releaseWake` is this run's hold on the
+   * agent's wake, taken when the run was queued and released last. The run that holds the wake
+   * last settles the jobs the wake left open before releasing it (see settleJobs); a failure is
+   * logged, since the wake must still release. A run that failed, or found the agent missing or
+   * retired, is reported and not retried. Runs wait for the lock without a deadline, so no
+   * queued wake is dropped.
    */
-  async function runLane(agentId: string, lane: Lane, releaseWake: () => void): Promise<void> {
+  async function runAgent(agentId: string, releaseWake: () => void): Promise<void> {
     let release: (() => void) | undefined;
-    let reasoned = false;
     try {
-      release = await locks.acquire(agentId, lane, null);
-      events.emit({
-        type: "lane_started",
-        agent_id: agentId,
-        lane,
-        at: new Date().toISOString(),
-      });
+      release = await locks.acquire(agentId, null);
+      events.emit({ type: "run_started", agent_id: agentId, at: new Date().toISOString() });
       try {
         const rows = await opts.db.select().from(agents).where(eq(agents.id, agentId));
         const agent = rows[0];
         if (!agent || !agent.active) {
           return;
         }
-        if (lane === "work") {
-          await runWorkLoop(workDeps(agentId));
-          reasoned = true;
-        } else {
-          await runProcessLoop(processDeps(agentId));
-        }
+        await runAgentLoop(loopDeps(agentId));
         reportedFailures.delete(agentId);
       } finally {
-        events.emit({
-          type: "lane_finished",
-          agent_id: agentId,
-          lane,
-          at: new Date().toISOString(),
-        });
+        events.emit({ type: "run_finished", agent_id: agentId, at: new Date().toISOString() });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      opts.log.error({ err, agentId, lane }, `${lane} lane failed`);
-      events.emit({
-        type: "lane_failed",
-        agent_id: agentId,
-        lane,
-        message,
-        at: new Date().toISOString(),
-      });
-      wakes.peek(agentId)?.noteError(`${lane} lane failed: ${message}`);
+      opts.log.error({ err, agentId }, "run failed");
+      events.emit({ type: "run_failed", agent_id: agentId, message, at: new Date().toISOString() });
+      wakes.peek(agentId)?.noteError(`run failed: ${message}`);
       const failure = message.replace(/req_[A-Za-z0-9]+/g, "req");
       if (reportedFailures.get(agentId) === failure) {
-        opts.log.warn({ code: "lane_failure_repeat", agentId, lane }, `${lane} lane failed again with the error already reported`);
+        opts.log.warn({ code: "run_failure_repeat", agentId }, "run failed again with the error already reported");
       } else {
         reportedFailures.set(agentId, failure);
-        await reportLaneFailure(agentId, lane, message).catch((reportErr: unknown) => {
-          opts.log.error({ err: reportErr, agentId, lane }, `${lane} failure report failed`);
+        await reportRunFailure(agentId, message).catch((reportErr: unknown) => {
+          opts.log.error({ err: reportErr, agentId }, "failure report failed");
         });
       }
     } finally {
       release?.();
-      if (reasoned && steer.hasItems(agentId)) {
-        enqueueWork(agentId, undefined, { kind: "steer", ref: null, openedByMessageId: null });
-      }
       if (wakes.lastHold(agentId)) {
         await settleJobs(agentId).catch((settleErr: unknown) => {
           opts.log.error({ err: settleErr, agentId, code: "job_settle_failed" }, "job settle failed");
@@ -447,16 +398,16 @@ export function createRuntime(opts: {
   }
 
   /**
-   * reportLaneFailure tells an agent that is waiting on the failed one that its work
+   * reportRunFailure tells an agent that is waiting on the failed one that its work
    * stopped, as a notice that wakes it, so it does not wait on a dead worker; the notice
    * closes that agent's job with it as blocked. Ankur never gets one: hath's failures are
    * its own to log, never his to read, and his job stays open for the agent's next wake.
    * Tool errors never get here: they come back to the model as tool results.
    */
-  async function reportLaneFailure(agentId: string, lane: Lane, message: string): Promise<void> {
+  async function reportRunFailure(agentId: string, message: string): Promise<void> {
     const requester = await currentRequester(opts.db, agentId);
     if (requester === null) {
-      opts.log.error({ code: "lane_failed", agentId, lane, message }, "lane failed on Ankur's job; not messaging him");
+      opts.log.error({ code: "run_failed", agentId, message }, "run failed on Ankur's job; not messaging him");
       return;
     }
     const row = await deliverAgentMessage(
@@ -465,21 +416,20 @@ export function createRuntime(opts: {
         fromAgentId: agentId,
         toAgentId: requester,
         content: `${agentId} stopped before finishing because of an error: ${message}. Work after its last update was not done; message ${agentId} to try again.`,
-        notice: "lane_failed",
+        notice: "run_failed",
       },
     );
     await blockOpenJob(opts.db, requester, agentId, row.seq);
   }
 
-  /** Tool execution and audit logging for a lane. Null agentId is the router. */
-  function laneHelpers(agentId: string | null, lane: Lane) {
-    const exec = (call: DwarToolUseBlock) => executeTool(toolContext(agentId, lane), call);
+  /** Tool execution and audit logging for a run. Null agentId is the router. */
+  function runHelpers(agentId: string | null) {
+    const exec = (call: DwarToolUseBlock) => executeTool(toolContext(agentId), call);
     const wakeId = () => (agentId === null ? null : wakes.idOf(agentId));
     const jobId = () => (agentId === null ? null : (wakes.peek(agentId)?.jobId ?? null));
     const logResponse = (response: DwarChatResponse) =>
       writeAgentLog(opts.db, {
         agentId,
-        lane,
         wakeId: wakeId(),
         jobId: jobId(),
         event: "response",
@@ -490,10 +440,22 @@ export function createRuntime(opts: {
           usage: response.usage,
         },
       });
+    const logAborted = () =>
+      writeAgentLog(opts.db, {
+        agentId,
+        wakeId: wakeId(),
+        jobId: jobId(),
+        event: "response",
+        payload: {
+          stop_reason: "aborted",
+          aborted: true,
+          content: [],
+          usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+      });
     const logToolResult = (call: DwarToolUseBlock, result: ToolExecResult) =>
       writeAgentLog(opts.db, {
         agentId,
-        lane,
         wakeId: wakeId(),
         jobId: jobId(),
         event: "tool_result",
@@ -505,37 +467,31 @@ export function createRuntime(opts: {
           ...result.audit,
         },
       });
-    return { exec, logResponse, logToolResult };
+    return { exec, logResponse, logAborted, logToolResult };
   }
 
-  function stepDeps(agentId: string, lane: keyof TranscriptWindows) {
-    const helpers = laneHelpers(agentId, lane);
+  /** The agent's step deps: its context, its folds of arrivals, its tools and its log. */
+  function agentStepDeps(agentId: string) {
+    const helpers = runHelpers(agentId);
+    const { runtime: limits } = opts.config;
     return {
       agentId,
-      lane,
       wake: wakes.get(agentId),
+      toolChoice: "auto" as const,
+      tagTurns: true,
       assemble: async () => {
         const wake = wakes.get(agentId);
         const assembled = await assembleContext({
           db: opts.db,
           agentId,
-          lane,
           transcript,
           serviceRoot: opts.config.serviceRoot,
-          windows: {
-            process: {
-              chars: Number.MAX_SAFE_INTEGER,
-              stepChars: opts.config.runtime.transcript_window_step_chars,
-              budgetTokens: opts.config.runtime.process_context_tokens,
-              minChars: opts.config.runtime.process_window_min_chars,
-            },
-            work: {
-              chars: opts.config.runtime.work_transcript_window_chars,
-              stepChars: opts.config.runtime.transcript_window_step_chars,
-              budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
-              minChars: 0,
-            },
+          window: {
+            chars: Math.floor(limits.prompt_ceiling_tokens * limits.thread_window_share * PROSE_CHARS_PER_TOKEN),
+            stepChars: limits.thread_window_step_chars,
+            budgetTokens: wakeLimits.promptCeilingTokens - wakeLimits.promptTrimTokens,
           },
+          continuation: wake.started || wake.jobId === null || wake.jobIsNew ? null : { wakeId: wake.id, jobId: wake.jobId, filesDir: opts.config.files.dir },
         });
         if (wake.started) {
           return assembled;
@@ -547,15 +503,11 @@ export function createRuntime(opts: {
           jobId: wake.jobId,
           jobIsNew: wake.jobIsNew,
           now: new Date(),
-          activityHours: opts.config.runtime.activity_hours,
-          activityShare: opts.config.runtime.activity_ceiling_share,
-          ceilingTokens: opts.config.runtime.prompt_ceiling_tokens,
+          activityHours: limits.activity_hours,
+          activityShare: limits.activity_ceiling_share,
+          ceilingTokens: limits.prompt_ceiling_tokens,
         });
-        if (!opts.config.runtime.job_did_carry || wake.jobId === null || wake.jobIsNew) {
-          return { ...assembled, header };
-        }
-        const carried = await carriedWork(opts.db, { agentId, wakeId: wake.id, jobId: wake.jobId, filesDir: opts.config.files.dir });
-        return carried === null ? { ...assembled, header } : { ...assembled, header, carried };
+        return { ...assembled, header };
       },
       arrivalsSince: (afterSeq: number) => arrivalsSince(transcript, agentId, afterSeq),
       executeTool: helpers.exec,
@@ -568,27 +520,28 @@ export function createRuntime(opts: {
    * The router's run. The router is ephemeral: each run sees only this
    * utterance — no earlier run, nothing sent as Ankur, no reply to him, and
    * nothing that arrives mid-run. The utterance is stored as a `utterance` message,
-   * which belongs to no conversation. Loops the router lane on Dwar's context-free
+   * which belongs to no conversation. Loops the model on Dwar's context-free
    * chat/complete until it yields. Runs are serialized. Nothing caps the loop.
    */
   async function route(content: string): Promise<RoutedMessage[]> {
-    const release = await locks.acquire(ROUTER_KEY, "router", opts.config.runtime.lane_queue_timeout_ms);
+    const release = await locks.acquire(ROUTER_KEY, opts.config.runtime.router_queue_timeout_ms);
     try {
       await insertUtterance(opts.db, content);
 
-      const helpers = laneHelpers(null, "router");
+      const helpers = runHelpers(null);
       const sent: RoutedMessage[] = [];
       const deps: StepDeps = {
         agentId: ROUTER_KEY,
-        lane: "router",
         wake: new Wake(wakeLimits),
+        toolChoice: "any",
+        tagTurns: false,
         assemble: () =>
           assembleRouterContext({
             db: opts.db,
             serviceRoot: opts.config.serviceRoot,
             utterance: content,
           }),
-        arrivalsSince: (afterSeq: number) => ({ turn: null, sent: null, sentByWork: null, throughSeq: afterSeq }),
+        arrivalsSince: (afterSeq: number) => ({ turn: null, throughSeq: afterSeq }),
         call: (request: DwarChatRequest) => opts.dwar.complete(request, "hath/router"),
         executeTool: async (call: DwarToolUseBlock) => {
           const result = await helpers.exec(call);
@@ -603,9 +556,10 @@ export function createRuntime(opts: {
       for (;;) {
         const assembled = await deps.assemble();
         syncWake(deps, assembled);
-        const request = laneRequest(deps, assembled);
-        const response = await deps.call(request);
-        await deps.logResponse(response);
+        const response = await callModel(deps, stepRequest(deps, assembled));
+        if (response === null) {
+          throw new Error("the router's model call was cancelled, and nothing cancels it");
+        }
         if (await runStep(deps, response, () => false)) {
           return sent;
         }
@@ -615,30 +569,17 @@ export function createRuntime(opts: {
     }
   }
 
-  function workDeps(agentId: string) {
+  function loopDeps(agentId: string) {
+    const helpers = runHelpers(agentId);
     return {
-      ...stepDeps(agentId, "work"),
-      call: (request: DwarChatRequest, signal?: AbortSignal) => opts.dwar.work(request, `hath/${agentId}`, signal),
-      steer,
+      ...agentStepDeps(agentId),
+      call: (request: DwarChatRequest, signal?: AbortSignal) => opts.dwar.agent(request, `hath/${agentId}`, signal),
+      interrupts,
       woke: () => clearWatch(opts.db, agentId),
-      replyWithText: (text: string) => replyWithText(toolContext(agentId, "work"), text),
-      yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas, transcript }, agentId),
-      implicitYield: opts.config.runtime.implicit_yield,
-      implicitSteerEnd: opts.config.runtime.implicit_steer_end,
-      wait: async (targets: string[], minutes: number) => {
-        await recordWatch(opts.db, agentId, wakes.peek(agentId)?.jobId ?? null, targets, await answerCap(toolContext(agentId, "work"), minutes));
-      },
-    };
-  }
-
-  function processDeps(agentId: string) {
-    return {
-      ...stepDeps(agentId, "process"),
-      call: (request: DwarChatRequest) => opts.dwar.process(request, `hath/${agentId}`),
-      db: opts.db,
-      transcript,
-      status: async () => renderStatus(await statusOf(agentId)),
-      implicitYield: opts.config.runtime.implicit_yield,
+      replyWithText: (text: string) => replyWithText(toolContext(agentId), text),
+      yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas }, agentId, wakes.peek(agentId)?.jobId ?? null),
+      wait: (minutes: number) => recordPendingWatch(opts.db, opts.nas, agentId, wakes.peek(agentId)?.jobId ?? null, minutes),
+      logAborted: helpers.logAborted,
     };
   }
 

@@ -80,37 +80,21 @@ test("list_browsers and list_terminals show their own kind with owner, purpose a
   assert.equal(terminals[0].owner, "a2");
 });
 
-test("under tool_hygiene list_browsers leaves out a stopped task, which cannot be steered; off, it lists it", async () => {
+test("list_browsers shows a stopped task too, since a steer revives it", async () => {
   const nas = mockNas();
   await nas.startTask("browser", { agent_id: "a1", message: "portal" });
   await nas.startTask("browser", { agent_id: "a1", message: "inbox" });
   const stopped = nas.tasks.get("task/browser/2")!;
   nas.tasks.set(stopped.task, { ...stopped, status: "stopped" });
 
-  for (const toolHygiene of [true, false]) {
-    const ctx = { ...ctxFor(nas).ctx, toolHygiene } as ToolContext;
-    const ids = JSON.parse((await listBrowsers.handler(ctx, {})).content).browsers.map((task: { id: string }) => task.id);
-    assert.deepEqual(ids, toolHygiene ? ["task/browser/1"] : ["task/browser/1", "task/browser/2"], `toolHygiene ${toolHygiene}`);
-  }
+  const listed = JSON.parse((await listBrowsers.handler(ctxFor(nas).ctx, {})).content).browsers as Array<{ id: string; status: string }>;
+  assert.deepEqual(listed.map((task) => [task.id, task.status]), [["task/browser/1", "working"], ["task/browser/2", "stopped"]]);
 });
 
 test("task addresses parse to a kind and an id, and nothing else does", () => {
   assert.deepEqual(parseTaskAddress("task/browser/3"), { kind: "browser", id: "3" });
   assert.equal(parseTaskAddress("task/other/3"), null);
   assert.equal(parseTaskAddress("browser/3"), null);
-});
-
-test("only ingest_memory is defined async, and the flag is a field on a tool's definition", async () => {
-  const { toolIsAsync } = await import("../src/runtime/async.js");
-  const { allTools } = await import("../src/tools/registry.js");
-  assert.equal(toolIsAsync("ingest_memory"), true);
-  assert.deepEqual(
-    allTools().filter((tool) => toolIsAsync(tool.name)).map((tool) => tool.name),
-    [],
-    "no definition is flagged yet",
-  );
-  assert.equal(toolIsAsync("recall_memory"), false);
-  assert.equal(toolIsAsync("steer_browser"), false);
 });
 
 test("a result over the receipt threshold is saved whole to its file, and a short one or a read_file result is not", async () => {
@@ -127,7 +111,6 @@ test("a result over the receipt threshold is saved whole to its file, and a shor
     db: { select: () => ({ from: () => ({ where: async () => [{ id: "a1", active: true }] }) }) },
     callerId: "a1",
     callerKind: "agent",
-    lane: "work",
     nas,
     dwar,
     files: { nas, dir: "/files" },

@@ -1,10 +1,10 @@
 /**
- * In-process pub/sub for runtime events (messages, lane lifecycle, agent changes).
- * A listener that throws is logged and skipped, so a broken subscriber cannot take down a lane run.
+ * In-process pub/sub for runtime events (messages, run lifecycle, agent changes).
+ * A listener that throws is logged and skipped, so a broken subscriber cannot take down a run.
  */
 
 import type { WakeCounts } from "../db/wakes.js";
-import type { AttachmentSummary, Lane, MessageKind, WakeReasonKind } from "../types/domain.js";
+import type { AttachmentSummary, MessageKind, WakeReasonKind } from "../types/domain.js";
 import type { RuntimeLog } from "./engine.js";
 
 export type RuntimeEvent =
@@ -22,12 +22,11 @@ export type RuntimeEvent =
     }
   /** Ankur read `agent_id`'s thread through `read_seq`, on any device. */
   | { type: "thread_read"; agent_id: string; read_seq: number; unread: number; at: string }
-  | { type: "lane_started"; agent_id: string; lane: Lane; at: string }
-  | { type: "lane_finished"; agent_id: string; lane: Lane; at: string }
+  | { type: "run_started"; agent_id: string; at: string }
+  | { type: "run_finished"; agent_id: string; at: string }
   | {
-      type: "lane_failed";
+      type: "run_failed";
       agent_id: string;
-      lane: Lane;
       message: string;
       at: string;
     }
@@ -39,7 +38,7 @@ export type RuntimeEvent =
       reason: { kind: WakeReasonKind; ref: string | null };
       at: string;
     }
-  /** A wake ended; `outcome` is `waiting` (the work lane watches a task or agent), `yielded`, or `failed`. */
+  /** A wake ended; `outcome` is `waiting` (the agent watches a task or agent), `yielded`, or `failed`. */
   | { type: "wake_ended"; agent_id: string; wake_id: string; outcome: "waiting" | "yielded" | "failed"; at: string }
   /** A running wake did more; sent at most once a second per wake, with its current counts. */
   | { type: "wake_activity"; agent_id: string; wake_id: string; counts: WakeCounts }

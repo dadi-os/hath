@@ -56,11 +56,10 @@ export const agentLogs = pgTable(
     id: uuid("id").primaryKey(),
     /** Null for the router, which shares the user's null identity. */
     agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
-    lane: text("lane").notNull(),
     event: text("event").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
     /**
-     * The wake this row belongs to (see runtime/wake.ts): its lanes' turns and tool results.
+     * The wake this row belongs to (see runtime/wake.ts): its turns and tool results.
      * Null for the router, rows from before wake ids,
      * and runtime reports written outside any wake (boot recovery).
      */
@@ -76,7 +75,6 @@ export const agentLogs = pgTable(
     index("agent_logs_tool_use_id_idx")
       .on(sql`(${table.payload}->>'tool_use_id')`)
       .where(sql`${table.event} = 'tool_result'`),
-    check("agent_logs_lane_check", sql`${table.lane} IN ('work', 'process', 'router')`),
     check(
       "agent_logs_event_check",
       sql`${table.event} IN ('response', 'tool_result')`,
@@ -85,7 +83,7 @@ export const agentLogs = pgTable(
 );
 
 /**
- * Durable chat / lane transcript. Survives restart. Null party = human.
+ * Durable chat transcript. Survives restart. Null party = human.
  * `seq` is stable across process restarts (identity column).
  */
 export const messages = pgTable(
@@ -99,7 +97,7 @@ export const messages = pgTable(
     /** What an agent's message to whoever gave it the job says about that job; null on every other message. */
     status: text("status").$type<MessageStatus>(),
     /**
-     * message, or notice: hath's own word that an agent's work stopped (a failed lane, a job
+     * message, or notice: hath's own word that an agent's work stopped (a failed run, a job
      * left unfinished, a restart), between the agent it is about and its requester. A notice
      * is never chat: no one wrote it, it opens no job and makes no one a requester.
      * utterance: what Ankur said to the router (from and to null), which is no one's message.
@@ -135,7 +133,7 @@ export const messages = pgTable(
 
 /**
  * One stretch of an agent's work (see runtime/wake.ts): written when the wake is created,
- * `ended_at` set when the last lane run releases, `error` set when a lane died or boot
+ * `ended_at` set when the last run releases, `error` set when a run died or boot
  * recovery cut it. `reason_ref` is the sender agent id for `message`, the schedule id for
  * `schedule`, else null. `opened_by_message_id` is a soft reference to `messages.id`.
  */
@@ -203,6 +201,8 @@ export const jobs = pgTable(
     closedSeq: bigint("closed_seq", { mode: "number" }),
     routineId: uuid("routine_id"),
     answerBy: timestamptz("answer_by"),
+    /** When hath told the agent that its answer time passed with the job still open; null until it does (see runtime/answer-by.ts). */
+    answerNoticedAt: timestamptz("answer_noticed_at"),
     stoppedAt: timestamptz("stopped_at"),
     stoppedBy: text("stopped_by"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
@@ -390,16 +390,14 @@ export const pendingAsync = pgTable(
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
     toolName: text("tool_name").notNull(),
-    /** The lane that made the call, and so the lane its result wakes. */
-    lane: text("lane").$type<"process" | "work">().notNull().default("work"),
     startedAt: timestamptz("started_at").notNull().defaultNow(),
   },
   (table) => [index("pending_async_agent_id_idx").on(table.agentId)],
 );
 
 /**
- * What an agent's work lane is waiting on: task addresses and agent ids. One row per agent.
- * It is dropped when the lane next runs, and a due one wakes the lane with facts.
+ * What an agent is waiting on: task addresses and agent ids. One row per agent.
+ * It is dropped when the agent next runs, and a due one wakes the agent with facts.
  */
 export const watches = pgTable("watches", {
   agentId: text("agent_id")

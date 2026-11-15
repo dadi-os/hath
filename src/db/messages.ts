@@ -148,6 +148,7 @@ export function messageToTranscriptEntry(
     status: row.status,
     kind: row.kind,
     ...(row.sentBy !== null ? { sentBy: row.sentBy } : {}),
+    jobId: row.jobId,
     createdAt: row.createdAt,
   };
 }

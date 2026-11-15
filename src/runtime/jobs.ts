@@ -43,7 +43,7 @@ export function hasRequester(job: Pick<JobRow, "requesterId" | "agentId">): bool
 
 /**
  * blockOpenJob closes `requester`'s open job with `agent` as blocked at `seq`, for a
- * runtime report that already told the requester the work stopped (a failed lane), so
+ * runtime report that already told the requester the work stopped (a failed run), so
  * the wake's end does not report the same job a second time as unfinished.
  */
 export async function blockOpenJob(db: Db, requester: string | null, agent: string, seq: number): Promise<void> {
@@ -76,7 +76,7 @@ export async function recordStatus(
 /**
  * settleWakeJobs closes, when an agent's wake ends, each job opened during that wake (by a
  * message among `lines`, the agent's transcript rows since its previous wake) that the wake
- * did nothing on: no work-lane step and no message back, so it was a message that needed
+ * did nothing on: no step and no message back, so it was a message that needed
  * no work (noop). Every other job stays open until the agent reports on it: hath
  * never decides from outside that a job stalled, since an agent that yielded may be
  * waiting on a reply that wakes it (health-specialist's Dr. Zubair job was closed as

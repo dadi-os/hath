@@ -14,9 +14,9 @@ import { executeTool } from "../src/runtime/tools.js";
 import { WAKE_RESULT_MAX_CHARS } from "../src/serialize.js";
 import type { NasClient } from "../src/nas/client.js";
 import type { HelperLogEntry, WakeEntry, WakeRecord } from "../src/types/domain.js";
-import { FLAGS_OFF, insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, withRuntime } from "./helpers.js";
+import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -57,14 +57,14 @@ test("GET /agents/:id/wakes pages newest first by keyset and derives outcome, us
     startedAt: minutesAgo(30),
     endedAt: minutesAgo(25),
   });
-  await insertWake(handle.db, { id: middle, agentId, origin: { kind: "schedule", ref: randomUUID(), openedByMessageId: null }, startedAt: minutesAgo(20), endedAt: minutesAgo(15), error: "work lane stopped" });
+  await insertWake(handle.db, { id: middle, agentId, origin: { kind: "schedule", ref: randomUUID(), openedByMessageId: null }, startedAt: minutesAgo(20), endedAt: minutesAgo(15), error: "run stopped" });
   await insertWake(handle.db, { id: newest, agentId, origin: { kind: "manual", ref: null, openedByMessageId: null }, startedAt: minutesAgo(5) });
   await stampMessageWake(handle.db, opener.id!, oldest);
   for (const out of [10, 20]) {
-    await writeAgentLog(handle.db, { agentId, lane: "work", event: "response", payload: { content: [], usage: usage(1, out) }, wakeId: oldest });
+    await writeAgentLog(handle.db, { agentId, event: "response", payload: { content: [], usage: usage(1, out) }, wakeId: oldest });
   }
-  await writeAgentLog(handle.db, { agentId, lane: "work", event: "tool_result", payload: { tool_use_id: "t", name: "read_file", content: "x", is_error: false }, wakeId: oldest });
-  await writeAgentLog(handle.db, { agentId, lane: "work", event: "response", payload: { content: [], usage: usage(1, 1) }, wakeId: middle });
+  await writeAgentLog(handle.db, { agentId, event: "tool_result", payload: { tool_use_id: "t", name: "read_file", content: "x", is_error: false }, wakeId: oldest });
+  await writeAgentLog(handle.db, { agentId, event: "response", payload: { content: [], usage: usage(1, 1) }, wakeId: middle });
 
   const { app } = await appWith();
   try {
@@ -73,7 +73,7 @@ test("GET /agents/:id/wakes pages newest first by keyset and derives outcome, us
     const page = first.json() as { wakes: WakeRecord[]; next_before: { started_at: string; id: string } | null };
     assert.deepEqual(page.wakes.map((wake) => [wake.id, wake.outcome]), [[newest, "running"], [middle, "failed"]]);
     assert.deepEqual(page.next_before, { started_at: page.wakes[1]!.started_at, id: middle });
-    assert.equal(page.wakes[1]!.error, "work lane stopped");
+    assert.equal(page.wakes[1]!.error, "run stopped");
     assert.equal(page.wakes[1]!.activity_trimmed, false);
 
     const second = await app.inject({
@@ -97,7 +97,7 @@ test("GET /agents/:id/wakes pages newest first by keyset and derives outcome, us
   }
 });
 
-test("a wake that ended while the work lane watched something is waiting", async () => {
+test("a wake that ended while the agent watched something is waiting", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "wake-watcher", systemPrompt: "waits" });
   const wakeId = randomUUID();
@@ -117,7 +117,7 @@ test("a wake with no activity rows, older than every row the agent still has, re
   const agentId = await insertAgent(handle.db, { id: "wake-trimmed", systemPrompt: "trimmed" });
   const wakeId = randomUUID();
   await insertWake(handle.db, { id: wakeId, agentId, origin: { kind: "manual", ref: null, openedByMessageId: null }, startedAt: minutesAgo(60), endedAt: minutesAgo(55) });
-  await writeAgentLog(handle.db, { agentId, lane: "work", event: "response", payload: { content: [], usage: usage(1, 1) }, wakeId: randomUUID() });
+  await writeAgentLog(handle.db, { agentId, event: "response", payload: { content: [], usage: usage(1, 1) }, wakeId: randomUUID() });
   const { app } = await appWith();
   try {
     const res = await app.inject({ method: "GET", url: `/agents/${agentId}/wakes` });
@@ -163,7 +163,6 @@ test("GET /agents/:id/wakes/:wake_id merges messages and turns in order, pairing
   await tick();
   await writeAgentLog(handle.db, {
     agentId,
-    lane: "process",
     event: "response",
     payload: {
       content: [
@@ -178,7 +177,6 @@ test("GET /agents/:id/wakes/:wake_id merges messages and turns in order, pairing
   await tick();
   await writeAgentLog(handle.db, {
     agentId,
-    lane: "process",
     event: "tool_result",
     payload: { tool_use_id: "big", name: "read_file", content: "y".repeat(WAKE_RESULT_MAX_CHARS + 5), is_error: false },
     wakeId,
@@ -202,7 +200,6 @@ test("GET /agents/:id/wakes/:wake_id merges messages and turns in order, pairing
     if (turn === undefined || turn.type !== "turn") {
       throw new Error("expected a turn");
     }
-    assert.equal(turn.lane, "process");
     assert.equal(turn.thinking, "reading");
     assert.equal(turn.text, null);
     const [big, pending] = turn.calls;
@@ -241,7 +238,7 @@ test("GET /agents/:id/logs/:log_id returns the raw row, and 404 log_not_found fo
   await resetRuntime(handle.sql, handle.db, config);
   const owner = await insertAgent(handle.db, { id: "log-owner", systemPrompt: "owns" });
   const other = await insertAgent(handle.db, { id: "log-other", systemPrompt: "other" });
-  await writeAgentLog(handle.db, { agentId: owner, lane: "work", event: "tool_result", payload: { tool_use_id: "t", name: "read_file", content: "whole", is_error: false } });
+  await writeAgentLog(handle.db, { agentId: owner, event: "tool_result", payload: { tool_use_id: "t", name: "read_file", content: "whole", is_error: false } });
   const [row] = await handle.db.select().from(agentLogs).where(eq(agentLogs.agentId, owner));
   const { app } = await appWith();
   try {
@@ -417,39 +414,39 @@ test("get_messages reads a conversation newest first, searches text, pages, and 
 
   const { app, runtime } = await appWith();
   t.after(() => app.close());
-  const read = async (callerId: string | null, lane: "work" | "router", input: Record<string, unknown>) => {
-    const result = await executeTool(runtime.toolContext(callerId, lane), { type: "tool_use", id: "gm", name: "get_messages", input });
+  const read = async (callerId: string | null, input: Record<string, unknown>) => {
+    const result = await executeTool(runtime.toolContext(callerId), { type: "tool_use", id: "gm", name: "get_messages", input });
     return { isError: result.isError, body: result.isError ? result.content : (JSON.parse(result.content) as { messages: Array<{ content: string; seq: number; content_chars: number }>; next_before: string | null }) };
   };
 
-  const all = await read(me, "work", {});
+  const all = await read(me, {});
   assert.ok(typeof all.body !== "string");
   assert.deepEqual(all.body.messages.map((m) => m.content), ["child report", "reply to ankur", "ankur here", "thanks, sending the batch", "the batch list is ready"]);
   assert.equal(all.body.next_before, null);
 
-  const peer = await read(me, "work", { with: "msg-peer" });
+  const peer = await read(me, { with: "msg-peer" });
   assert.deepEqual(typeof peer.body !== "string" && peer.body.messages.map((m) => m.content), ["thanks, sending the batch", "the batch list is ready"]);
 
-  const ankur = await read(me, "work", { with: "ankur" });
+  const ankur = await read(me, { with: "ankur" });
   assert.deepEqual(typeof ankur.body !== "string" && ankur.body.messages.map((m) => m.content), ["reply to ankur", "ankur here"]);
 
-  const found = await read(me, "work", { search: "BATCH" });
+  const found = await read(me, { search: "BATCH" });
   assert.equal(typeof found.body !== "string" && found.body.messages.length, 2);
 
-  const paged = await read(me, "work", { limit: 2 });
+  const paged = await read(me, { limit: 2 });
   assert.ok(typeof paged.body !== "string" && paged.body.next_before !== null);
-  const older = await read(me, "work", { limit: 2, before: (paged.body as { next_before: string }).next_before });
+  const older = await read(me, { limit: 2, before: (paged.body as { next_before: string }).next_before });
   assert.deepEqual(typeof older.body !== "string" && older.body.messages.map((m) => m.content), ["ankur here", "thanks, sending the batch"]);
 
-  const ofChild = await read(me, "work", { agent_id: child });
+  const ofChild = await read(me, { agent_id: child });
   assert.equal(typeof ofChild.body !== "string" && ofChild.body.messages.length, 1);
-  assert.equal((await read(child, "work", { agent_id: me })).isError, true);
+  assert.equal((await read(child, { agent_id: me })).isError, false, "reading is free across the org");
 
-  assert.equal((await read(me, "work", { include_utterances: true })).isError, true);
-  assert.equal((await read(null, "router", {})).isError, true);
-  const router = await read(null, "router", { agent_id: me, include_utterances: true });
+  assert.equal((await read(me, { include_utterances: true })).isError, true);
+  assert.equal((await read(null, {})).isError, true);
+  const router = await read(null, { agent_id: me, include_utterances: true });
   assert.ok(typeof router.body !== "string");
   assert.ok(router.body.messages.some((m) => m.content === "router heard this"));
-  const plain = await read(null, "router", { agent_id: me });
+  const plain = await read(null, { agent_id: me });
   assert.ok(typeof plain.body !== "string" && !plain.body.messages.some((m) => m.content === "router heard this"));
 });

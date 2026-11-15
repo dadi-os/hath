@@ -4,11 +4,10 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { agents } from "../db/schema.js";
 import { HathError } from "../errors.js";
-import type { Lane, WakeOrigin } from "../types/domain.js";
+import type { WakeOrigin } from "../types/domain.js";
 import type { WakeActivity } from "../runtime/wake-activity.js";
 import type { EventBus } from "../runtime/events.js";
-import type { LaneLocks } from "../runtime/locks.js";
-import type { SteerQueue } from "../runtime/steer.js";
+import type { RunLocks } from "../runtime/locks.js";
 import type { TranscriptStore } from "../runtime/transcript.js";
 import type { DwarClient } from "../dwar/client.js";
 import type { GharClient } from "../ghar/client.js";
@@ -40,14 +39,12 @@ export type ToolContext = {
   callerId: string | null;
   /** Which kind of caller this is; `router` when `callerId` is null. */
   callerKind: ToolCallerKind;
-  lane: Lane;
   yaad: YaadClient;
   ghar: GharClient;
   nas: NasClient;
   dwar: DwarClient;
   devices: DeviceGateway;
-  steer: SteerQueue;
-  locks: LaneLocks;
+  locks: RunLocks;
   transcript: TranscriptStore;
   events: EventBus;
   sessions: HostSessions;
@@ -58,24 +55,13 @@ export type ToolContext = {
   /** Keeps `work` running, and counted by waitUntilIdle, after the tool call that started it has returned. A failure is logged. */
   background: (work: Promise<void>) => void;
   toolDebounce: ToolDebounce;
-  enqueueProcess: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
-  enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  enqueue: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  /** Cancels the model call the agent's running loop has out, when its wake is on the job (see runtime/engine.ts). */
+  preempt: (agentId: string, jobId: string) => void;
   /** Told of each message that opens or joins a wake (see runtime/wake-activity.ts). */
   wakeActivity?: WakeActivity;
-  /** `runtime.ingest_result_wakes`: a successful ingest_memory result wakes the lane that saved it (see runtime/async.ts). */
-  ingestResultWakes: boolean;
-  /** `runtime.question_answer_minutes`: how long after Ankur's question a wait may last (see runtime/watches.ts). */
-  questionAnswerMinutes: number;
   /** The id of the caller's current wake, or null for the router. */
   wakeId: string | null;
-  /** `runtime.job_requester`: Ankur's question is the open job he opened under `questionAnswerMinutes` ago (see runtime/watches.ts). */
-  jobRequester: boolean;
-  /** `runtime.wait_target_guard`: wait refuses the caller's own id and tool call ids (see runtime/watches.ts). */
-  waitTargetGuard: boolean;
-  /** `runtime.tool_hygiene`: get_logs leaves out the current wake; the list tools leave out stopped tasks. */
-  toolHygiene: boolean;
-  /** `runtime.sync_ingest`: ingest_memory runs in the call and returns what Yaad stored (see runtime/tools.ts). */
-  syncIngest: boolean;
   /** The job the caller's wake is on (see runtime/job-of.ts), or null when the wake is no job's. */
   jobId: string | null;
   /** The box's IANA time zone, for weekdays in a message to Ankur. */

@@ -1,7 +1,7 @@
 /**
  * Attachments: files that travel with messages. Each is a file on the box (see files.ts)
- * with a row of metadata, so a message names it by path and read_file opens it, and no lane
- * ever retypes a file to pass it on: `send_message` and `queue_message` take attachment ids or file paths
+ * with a row of metadata, so a message names it by path and read_file opens it, and no agent
+ * ever retypes a file to pass it on: `send_message` takes attachment ids or file paths
  * (see resolveAttachments).
  */
 

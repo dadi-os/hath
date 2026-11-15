@@ -10,7 +10,7 @@ import { createRuntime } from "../src/runtime/engine.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
 import type { DwarChatResponse } from "../src/types/domain.js";
 import {
-  FLAGS_OFF,
+  
   insertAgent,
   mockDwar,
   mockGhar,
@@ -21,11 +21,10 @@ import {
   silentLog,
   testConfig,
   toolUse,
-  withRuntime,
   yieldTurn,
 } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -200,7 +199,7 @@ test("POST /router cannot modify agents", async () => {
   await app.close();
 });
 
-test("POST /router logs its turns on the router lane with a null agent_id", async () => {
+test("POST /router logs its turns with a null agent_id", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "finance-specialist", systemPrompt: "Owns money." });
   const dwar = scripted([
@@ -211,7 +210,7 @@ test("POST /router logs its turns on the router lane with a null agent_id", asyn
   const res = await app.inject({ method: "POST", url: "/router", payload: { content: "budget" } });
   assert.equal(res.statusCode, 201, res.body);
   const logs = await handle.db.select().from(agentLogs).where(isNull(agentLogs.agentId));
-  assert.ok(logs.every((row) => row.lane === "router"));
+  assert.ok(logs.length > 0);
   const events = logs.map((row) => `${row.event}:${String(row.payload.direction ?? row.payload.name ?? "")}`);
   assert.ok(events.includes("tool_result:send_message"), events.join(","));
   assert.ok(!events.some((entry) => entry.startsWith("message:")), events.join(","));
@@ -241,7 +240,6 @@ test("POST /router runs as long as the model keeps calling tools", async () => {
   const assistantTurns = dwar.completeCalls.at(-1)!.messages.filter((m) => m.role === "assistant");
   assert.equal(assistantTurns.length, 12);
   for (const turn of assistantTurns) {
-    assert.equal(turn.lane, undefined);
     assert.equal(turn.provider, undefined);
   }
 

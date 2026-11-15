@@ -5,9 +5,9 @@ import { migrate } from "../src/db/migrate.js";
 import { attachments, deliveredReports, watches } from "../src/db/schema.js";
 import type { HelperReport } from "../src/nas/client.js";
 import { createRuntime } from "../src/runtime/engine.js";
-import { FLAGS_OFF, insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, withRuntime, yieldTurn } from "./helpers.js";
+import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, yieldTurn } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -27,6 +27,7 @@ function report(overrides: Partial<HelperReport> = {}): HelperReport {
     agent_id: "reporter",
     state: "done",
     text: "Applied to 3 roles.",
+    detail: "",
     files: [],
     at: "2026-10-29T14:00:00.000000000Z",
     ...overrides,
@@ -51,7 +52,7 @@ function taskWith(last: HelperReport) {
 
 function harness() {
   const nas = mockNas({});
-  const dwar = mockDwar({ work: () => yieldTurn() });
+  const dwar = mockDwar({ agent: () => yieldTurn() });
   const runtime = createRuntime({ db: handle.db, dwar, yaad: mockYaad(), ghar: mockGhar(), nas, config, log: silentLog });
   return { nas, dwar, runtime };
 }
@@ -59,7 +60,7 @@ function harness() {
 const notices = (runtime: ReturnType<typeof harness>["runtime"]) =>
   runtime.transcript.transcriptFor("reporter").filter((row) => row.kind === "notice");
 
-test("a helper report reaches the owning agent as a notice and wakes its work lane, even though it was idle", async () => {
+test("a helper report reaches the owning agent as a notice and wakes it, even though it was idle", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
   const { dwar, runtime } = harness();
@@ -71,9 +72,8 @@ test("a helper report reaches the owning agent as a notice and wakes its work la
   assert.equal(arrived?.fromAgentId, "reporter");
   assert.equal(arrived?.toAgentId, "reporter");
   assert.equal(arrived?.content, "Helper finished (task/browser/1):\nApplied to 3 roles.");
-  assert.equal(dwar.workCalls.length, 1, "the work lane ran for it");
-  assert.equal(dwar.processCalls.length, 0, "the process lane did not");
-  const first = JSON.stringify(dwar.workCalls[0]!.messages);
+  assert.equal(dwar.agentCalls.length, 1, "the agent ran for it");
+  const first = JSON.stringify(dwar.agentCalls[0]!.messages);
   assert.match(first, /\[Wake\] helper result from task\/browser\/1/);
   assert.match(first, /Applied to 3 roles\./);
 });
@@ -142,6 +142,24 @@ test("a report's files arrive as attachments, and one that cannot be attached is
   assert.deepEqual(notice.attachments.map((file) => file.filename), ["receipt.pdf"]);
   assert.match(notice.content, /gone\.pdf could not be attached: /);
   assert.equal((await handle.db.select().from(attachments)).length, 1);
+});
+
+test("a report's detail file arrives as an attachment beside its files, and its text stays whole", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
+  const { nas, runtime } = harness();
+  const long = `${"Row of the gradebook. ".repeat(400)}\nNot read: d2l.msu.edu: sign-in timed out`;
+  nas.files.set("/var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt", Buffer.from("every row"));
+  nas.files.set("/var/home/dadi/Downloads/receipt.pdf", Buffer.from("%PDF-1.4"));
+
+  await runtime.helperReports.handle(
+    report({ text: long, detail: "/var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt", files: ["/var/home/dadi/Downloads/receipt.pdf"] }),
+  );
+  await runtime.waitUntilIdle();
+
+  const notice = notices(runtime)[0]!;
+  assert.deepEqual(notice.attachments.map((file) => file.filename), ["detail-1.txt", "receipt.pdf"]);
+  assert.ok(notice.content.includes(long), "the answer and its Not read line are never cut");
 });
 
 test("a needs_input report and a failure say so, and a report for a missing agent is dropped but marked", async () => {

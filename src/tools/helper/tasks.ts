@@ -7,6 +7,7 @@
 import { z } from "zod";
 import type { HelperTask, TaskKind } from "../../nas/client.js";
 import { defineTool } from "../types.js";
+import { recordActivity } from "../../runtime/activity.js";
 import { noteSteer } from "../../runtime/job-of.js";
 import { fail, failWithoutAgentIdentity, ok, type ToolContext } from "../shared.js";
 
@@ -40,7 +41,7 @@ const idProperty = (kind: TaskKind) => ({
 export const steerBrowser = defineTool({
   name: "steer_browser",
   description:
-    "Get work done in a real browser and carry on: it returns { id } at once, and when the browser's helper has finished, needs something from you, failed, or was stopped, its report arrives as a message that wakes you, with any files it downloaded. With no id it starts a new browser task on message. With an id it steers that task, waking it if it was asleep; its tabs, sign-ins and history are as they were. While Ankur has taken a task over (it shows paused) your steer is held until he hands it back. The helper signs in from the vault, clicks, fills and submits forms, downloads and uses as many tabs as it needs. Use it for anything behind a sign-in or that needs clicking, forms or several steps; web_search and web_fetch answer public pages at once. list_browsers shows what is open, so you can reuse a task instead of starting another.",
+    "Get work done in a real browser and carry on: it returns { id } at once, and when the browser's helper has finished, needs something from you, failed, or was stopped, its report arrives as a message that wakes you: the answer, a line for each source it could not read, and a detail file and any downloads as attachments. With no id it starts a new browser task on message. With an id it steers that task, waking it if it was asleep or stopped; its tabs, sign-ins and history are as they were. While Ankur has taken a task over (it shows paused) your steer is held until he hands it back. The helper signs in from the vault, clicks, fills and submits forms, downloads and uses as many tabs as it needs. Use it for anything behind a sign-in or that needs clicking, forms or several steps; web_search and web_fetch answer public pages at once. list_browsers shows what is open, so you can reuse a task instead of starting another.",
   input: steerInput,
   inputSchema: {
     type: "object",
@@ -50,7 +51,7 @@ export const steerBrowser = defineTool({
       id: idProperty("browser"),
       message: {
         type: "string",
-        description: "The site, the question and the date range, in at most 400 characters; or the next step, correction or answer for a task already running. The helper already knows how to sign in, that a question is read-only, and to answer first: never repeat those.",
+        description: "The site or repo, what to read or do, and what to bring back, in plain words; or the next step, correction or answer for a task already running. The helper already knows how to sign in, that a question is read-only, the shape of its report and which time zone a site shows: never repeat those.",
       },
     },
   },
@@ -66,7 +67,7 @@ export const steerBrowser = defineTool({
 export const steerTerminal = defineTool({
   name: "steer_terminal",
   description:
-    "Get work done on the box (Dadi's Linux host) in a shell and carry on: it returns { id } at once, and when the terminal's helper has finished, needs something from you, failed, or was stopped, its report arrives as a message that wakes you, with any files it handed back. With no id it starts a new terminal task on message, in workdir (default the dadi home). With an id it steers that task, waking it if it was asleep; while Ankur has taken it over (it shows paused) your steer is held until he hands it back. The helper runs commands, builds, tests, git and package managers, edits files and uses vault secrets without seeing them. For one file read, one edit or one search use read_file, edit_file and find, which answer at once. list_terminals shows what is open.",
+    "Get work done on the box (Dadi's Linux host) in a shell and carry on: it returns { id } at once, and when the terminal's helper has finished, needs something from you, failed, or was stopped, its report arrives as a message that wakes you: the answer, a line for each source it could not read, and a detail file and any files it handed back as attachments. With no id it starts a new terminal task on message, in workdir (default the dadi home). With an id it steers that task, waking it if it was asleep or stopped; while Ankur has taken it over (it shows paused) your steer is held until he hands it back. The helper runs commands, builds, tests, git and package managers, edits files and uses vault secrets without seeing them. For one file read, one edit or one search use read_file, edit_file and find, which answer at once. list_terminals shows what is open.",
   input: steerTerminalInput,
   inputSchema: {
     type: "object",
@@ -126,11 +127,11 @@ function minutesSince(at: string): number {
 function listTool(kind: TaskKind, current: string) {
   return defineTool({
     name: `list_${kind}s`,
-    description: `List every ${kind} task open on the box, whoever started it: id, status (working, paused while Ankur drives it, idle, asking for something, or asleep), owner, purpose, ${current} and minutes since it last did anything. Use it to find a task to steer with steer_${kind} instead of starting another.`,
+    description: `List every ${kind} task open on the box, whoever started it: id, status (working, paused while Ankur drives it, idle, asking for something, or asleep or stopped), owner, purpose, ${current} and minutes since it last did anything. Use it to find a task to steer with steer_${kind} instead of starting another.`,
     input: listInput,
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     async handler(ctx) {
-      const tasks = (await ctx.nas.listTasks()).filter((task) => task.kind === kind && !(ctx.toolHygiene && task.status === "stopped"));
+      const tasks = (await ctx.nas.listTasks()).filter((task) => task.kind === kind);
       return ok({
         [`${kind}s`]: tasks.map((task) => ({
           id: task.task,
@@ -150,3 +151,32 @@ export const listBrowsers = listTool("browser", "the page it is on");
 
 /** List terminal tasks. */
 export const listTerminals = listTool("terminal", "the directory and files it has touched");
+
+const stopTaskInput = z.object({ id: z.string().min(1) }).strict();
+
+/** Halt one helper task. */
+export const stopTask = defineTool({
+  name: "stop_task",
+  description:
+    "Stop one browser or terminal task: its helper ends where it is and its page or shell is closed. A later steer to the same id revives it with its history. Use it for a stop or an objection from a requester, then say what is halted.",
+  input: stopTaskInput,
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["id"],
+    properties: { id: { type: "string", description: "The task's id, such as task/browser/3" } },
+  },
+  async handler(ctx, parsed) {
+    if (ctx.callerId === null) {
+      return failWithoutAgentIdentity();
+    }
+    const address = parseTaskAddress(parsed.id);
+    if (address === null) {
+      return fail(`${parsed.id} is not a task id; they look like task/browser/3`);
+    }
+    const task = await ctx.nas.haltTask(address.kind, address.id);
+    await recordActivity(ctx.db, { agentId: ctx.callerId, jobId: ctx.jobId, kind: "stop", subject: task.task, digest: "stopped" });
+    ctx.events.emit({ type: "sessions_changed", at: new Date().toISOString() });
+    return ok({ stopped: task.task, status: task.status });
+  },
+});

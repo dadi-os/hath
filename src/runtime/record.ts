@@ -1,12 +1,12 @@
 /**
- * Action records: hath's own account of what a work lane did inside one wake, built
- * from its tool calls and their results. A lane's view trims its oldest steps at the
+ * Action records: hath's own account of what an agent did inside one wake, built
+ * from its tool calls and their results. The view trims its oldest steps at the
  * prompt ceiling, and the `[trimmed]` note that stands in for them lists the actions those
- * steps took (see wake.ts), so a trimmed lane never redoes a click or a send it can no
+ * steps took (see wake.ts), so a trimmed agent never redoes a click or a send it can no
  * longer see. Across wakes, the agent's tool log (get_logs) holds what it did.
  */
 
-import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock, Lane } from "../types/domain.js";
+import type { DwarContentBlock, DwarMessage, DwarToolResultBlock, DwarToolUseBlock } from "../types/domain.js";
 import { resultPath, savesResult } from "./files.js";
 import {
   CONTROL_DEVICE,
@@ -16,7 +16,6 @@ import {
   MODIFY_AGENT_PROMPT,
   SEND_MESSAGE,
   SPAWN_AGENT,
-  STEER_WORK,
   WAIT,
   YIELD,
 } from "../types/domain.js";
@@ -39,10 +38,9 @@ export const ACTION_TOOLS = new Set<string>([
   MANAGE_AGENT,
   MODIFY_AGENT_PROMPT,
   INGEST_MEMORY,
-  STEER_WORK,
 ]);
 
-/** How much of a step's own text a record keeps: what the lane said it was doing. */
+/** How much of a step's own text a record keeps: what the agent said it was doing. */
 const STEP_TEXT_CHARS = 240;
 
 /** How much of a call's input a record keeps: enough to name the target and typed text. */
@@ -121,11 +119,11 @@ function savedAt(call: DwarToolUseBlock, filesDir: string): string {
 }
 
 /**
- * formatActions lists, oldest first, every step of `lane` in `turns` that
+ * formatActions lists, oldest first, every step in `turns` that
  * called an action tool, with its actions only (see stepActions). Past RECORD_MAX_CHARS it keeps the newest
  * steps and says how many earlier ones get_logs holds. Null when no step acted.
  */
-export function formatActions(turns: DwarMessage[], filesDir: string, lane: Lane): string | null {
+export function formatActions(turns: DwarMessage[], filesDir: string): string | null {
   const results = new Map<string, ActionResult>();
   for (const turn of turns) {
     if (turn.role === "user" && typeof turn.content !== "string") {
@@ -139,7 +137,7 @@ export function formatActions(turns: DwarMessage[], filesDir: string, lane: Lane
 
   const steps: string[] = [];
   for (const turn of turns) {
-    if (turn.role !== "assistant" || turn.lane !== lane || typeof turn.content === "string") {
+    if (turn.role !== "assistant" || typeof turn.content === "string") {
       continue;
     }
     const step = stepActions(turn.content, results, filesDir, true);

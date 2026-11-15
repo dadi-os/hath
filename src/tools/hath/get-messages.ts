@@ -22,21 +22,21 @@ const MAX_CONTENT_CHARS = 3_000;
 const MAX_RESULT_CHARS = 16_000;
 
 /**
- * Read message history: what was said, to whom, and when, newest first. Agents read
- * themselves or a direct child. The router reads any agent, must name it, and alone may
- * add Ankur's own words to it (utterances), which belong to no agent.
+ * Read message history of any agent: what was said, to whom, and when, newest first. The
+ * router must name the agent and alone may add Ankur's own words to it (utterances), which
+ * belong to no agent.
  */
 export const getMessages = defineTool({
   name: "get_messages",
   description:
-    "Read message history for yourself or a direct child, newest first: every message sent or received, with who it was from and to, its time and its status. It is how you find what was said (a plan, a list, an approval, a link) after it left your transcript. with keeps one conversation (another agent's id, or ankur); search keeps messages whose text contains that text; since and before (ISO times) bound them, and next_before pages back. A long message is cut to its opening (content_chars is its length). get_logs is for what you did, not what was said. As the router, name the agent; include_utterances adds what Ankur said to you.",
+    "Read any agent's message history (yours by default), newest first: every message sent or received, with who it was from and to, its time and its status. It is how you find what was said (a plan, a list, an approval, a link) after it left your transcript. with keeps one conversation (another agent's id, or ankur); search keeps messages whose text contains that text; since and before (ISO times) bound them, and next_before pages back. A long message is cut to its opening (content_chars is its length). get_logs is for what you did, not what was said. As the router, name the agent; include_utterances adds what Ankur said to you.",
   input,
   inputSchema: {
     type: "object",
     properties: {
       agent_id: {
         type: "string",
-        description: "Self or a direct child (any agent for the router, which must pass one); defaults to yourself",
+        description: "Any agent; defaults to yourself (the router must pass one)",
       },
       with: { type: "string", description: "Only the conversation with this agent id, or ankur" },
       search: { type: "string", description: "Keep messages whose content contains this text, case-insensitive" },
@@ -52,10 +52,7 @@ export const getMessages = defineTool({
     if (targetId === null) {
       return fail("the router has no messages of its own; pass an agent_id");
     }
-    const target = await requireAgent(ctx.db, targetId);
-    if (ctx.callerId !== null && target.id !== ctx.callerId && target.parentAgentId !== ctx.callerId) {
-      return fail("get_messages is limited to self or direct children");
-    }
+    await requireAgent(ctx.db, targetId);
     if (parsed.include_utterances === true && ctx.callerId !== null) {
       return fail("only the router reads utterances");
     }

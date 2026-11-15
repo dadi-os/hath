@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { laneRegistryTool, toolsForLane } from "../src/runtime/lanes.js";
+import { agentRegistryTool, agentTools, routerRegistryTool, routerTools } from "../src/runtime/tool-set.js";
 import { allTools, findTool } from "../src/tools/registry.js";
 
 test("every tool has a description and a unique name", () => {
@@ -32,45 +32,55 @@ test("removed tools are not in the registry", () => {
   }
 });
 
-test("every agent's work lane holds every registry tool, whatever its id", () => {
+test("every agent holds every registry tool, whatever its id", () => {
   for (const agentId of ["career-manager", "browser-worker-1", "anyone"]) {
-    const held = new Set(toolsForLane(agentId, "work").map((tool) => tool.name));
+    const held = new Set(agentTools(agentId).map((tool) => tool.name));
     for (const tool of allTools()) {
       assert.ok(held.has(tool.name), `${agentId} lacks ${tool.name}`);
     }
   }
 });
 
-test("a worker's work lane has no ingest_memory and other agents' have it", () => {
-  const holds = (agentId: string) => toolsForLane(agentId, "work").some((tool) => tool.name === "ingest_memory");
+test("an agent's tool names are unique, and a worker has no ingest_memory while other agents have it", () => {
+  const names = agentTools("anyone").map((tool) => tool.name);
+  assert.equal(new Set(names).size, names.length);
+  const holds = (agentId: string) => agentTools(agentId).some((tool) => tool.name === "ingest_memory");
   assert.equal(holds("browser-worker-1"), false);
   assert.equal(holds("career-manager"), true);
 });
 
-test("the process and router lanes hold only the registry tools they name, and the router cannot find or search the web", () => {
-  assert.equal(laneRegistryTool("process", "steer_browser"), undefined);
-  assert.equal(laneRegistryTool("process", "web_search")?.name, "web_search");
-  assert.equal(laneRegistryTool("router", "spawn_agent")?.name, "spawn_agent");
-  assert.equal(laneRegistryTool("router", "find_files"), undefined);
-  assert.equal(laneRegistryTool("router", "web_search"), undefined);
-  assert.equal(laneRegistryTool("work", "web_search")?.name, "web_search");
+test("the router holds only the registry tools it names, and cannot find files or search the web", () => {
+  assert.equal(routerRegistryTool("spawn_agent")?.name, "spawn_agent");
+  assert.equal(routerRegistryTool("find_files"), undefined);
+  assert.equal(routerRegistryTool("web_search"), undefined);
+  assert.equal(agentRegistryTool("web_search")?.name, "web_search");
+  assert.equal(agentRegistryTool("does_not_exist"), undefined);
+  const held = new Set(routerTools().map((tool) => tool.name));
+  assert.equal(held.has("web_search"), false);
+  assert.equal(held.has("spawn_agent"), true);
+  assert.equal(held.has("yield"), true);
 });
 
-/** The tool names `system.md` lists after `from`, up to `until` (or the line's end). */
-function listedTools(line: string, from: string, until: string | null): Set<string> {
-  const start = line.indexOf(from) + from.length;
-  const end = until === null ? line.length : line.indexOf(until);
-  return new Set([...line.slice(start, end).matchAll(/`([a-z_*]+)`/g)].map((match) => match[1]!));
+/** Words in backticks or snake_case in the prompts that name an input, a status or a path, not a tool. */
+const NOT_TOOLS = new Set(["needs_input", "timeout_minutes"]);
+
+/** The tool-looking names a prompt mentions: backticked or snake_case words, and the bare tools `wait` and `yield`. */
+function mentionedTools(text: string, pattern: RegExp): string[] {
+  return [...new Set([...text.matchAll(pattern)].map((match) => match[1]!))].filter((name) => !NOT_TOOLS.has(name));
 }
 
-test("system.md lists exactly the tools each agent lane holds", () => {
-  const line = readFileSync(new URL("../prompts/system.md", import.meta.url), "utf8")
-    .split("\n")
-    .find((row) => row.startsWith("- Every agent holds the same tools"));
-  assert.ok(line, "the tools line is missing from system.md");
-  const expand = (names: Set<string>) =>
-    [...names].flatMap((name) => (name.endsWith("*") ? allTools().map((tool) => tool.name).filter((n) => n.startsWith(name.slice(0, -1))) : [name]));
-  const held = (lane: "work" | "process") => toolsForLane("anyone", lane).map((tool) => tool.name).sort();
-  assert.deepEqual(expand(listedTools(line, "Your work lane holds", "Your process lane holds")).sort(), held("work"));
-  assert.deepEqual(expand(listedTools(line, "Your process lane holds", null)).sort(), held("process"));
+test("every tool system.md names exists in an agent's tool set", () => {
+  const text = readFileSync(new URL("../prompts/system.md", import.meta.url), "utf8");
+  const names = mentionedTools(text, /`([a-z]+(?:_[a-z]+)+)`/g);
+  assert.ok(names.length > 10, "the scan found the prompt's tools");
+  const held = new Set(agentTools("anyone").map((tool) => tool.name));
+  assert.deepEqual(names.filter((name) => !held.has(name)), []);
+});
+
+test("every tool the dwar agent prompt names exists in an agent's tool set", () => {
+  const text = readFileSync(new URL("../../dwar/prompts/agent.txt", import.meta.url), "utf8");
+  const names = [...mentionedTools(text, /\b([a-z]+(?:_[a-z]+)+)\b/g), ...["wait", "yield"].filter((name) => new RegExp(`\\b${name}\\b`).test(text))];
+  assert.ok(names.includes("send_message") && names.includes("ingest_memory") && names.includes("yield"));
+  const held = new Set(agentTools("anyone").map((tool) => tool.name));
+  assert.deepEqual(names.filter((name) => !held.has(name)), []);
 });

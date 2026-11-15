@@ -7,9 +7,9 @@ import { deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { replyWithText } from "../src/runtime/send.js";
 import { executeTool } from "../src/runtime/tools.js";
-import { FLAGS_OFF, insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, withRuntime } from "./helpers.js";
+import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -26,7 +26,7 @@ function harness() {
 
 const send = (name: string, input: unknown) => ({ type: "tool_use" as const, id: "send-1", name, input });
 
-/** An agent with Ankur's open job, and a work-lane tool context standing in that job. */
+/** An agent with Ankur's open job, and a tool context standing in that job. */
 async function inAnkursJob(id: string) {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id, systemPrompt: "agent" });
@@ -34,7 +34,7 @@ async function inAnkursJob(id: string) {
   await deliverUserMessage(runtime.deliver, agentId, "what is due Nov 11?");
   await runtime.waitUntilIdle();
   const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, agentId));
-  return { agentId, runtime, job: job!, ctx: { ...runtime.toolContext(agentId, "work"), jobId: job!.id } };
+  return { agentId, runtime, job: job!, ctx: { ...runtime.toolContext(agentId), jobId: job!.id } };
 }
 
 test("requester addresses whoever gave the job; a status closes it; a date to Ankur gets its weekday; the send is recorded as activity", async () => {
@@ -62,7 +62,7 @@ test("running is not a status a message can carry", async () => {
 
 test("an address that cannot be delivered to is an error: no job for requester, itself, a retired agent", async () => {
   const { runtime, agentId, ctx } = await inAnkursJob("address-agent");
-  const outside = runtime.toolContext(agentId, "work");
+  const outside = runtime.toolContext(agentId);
   assert.match((await executeTool(outside, send("send_message", { to: "requester", content: "x" }))).content, /no job/);
   assert.match((await executeTool(ctx, send("send_message", { to: agentId, content: "x" }))).content, /yourself/);
   const retiredId = await insertAgent(handle.db, { id: "retired-peer", systemPrompt: "peer" });

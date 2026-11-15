@@ -1,5 +1,3 @@
-export type Lane = "work" | "process" | "router";
-
 /**
  * response: one model call's full output, blocks in provider order (thinking,
  * text, tool_use), logged before its tools run. tool_result: one tool's outcome,
@@ -24,37 +22,11 @@ export type AgentSessions = {
   tasks: AgentSession[];
 };
 
-/** What an agent's work lane is waiting on, and since when (see runtime/watches.ts). */
+/** What an agent is waiting on, and since when (see runtime/watches.ts). */
 export type AgentWaiting = {
   targets: string[];
   since: string;
   wakes_by: string;
-};
-
-/**
- * Where an agent's work stands, rendered by hath without a model call (see runtime/status.ts):
- * the process lane's last turn, and the UI's popover.
- */
-export type AgentStatus = {
-  /** The latest message from whoever gave the agent its job; null when none has. */
-  job: { from: string | null; at: string; content: string } | null;
-  work: {
-    state: "running" | "waiting" | "idle";
-    /** When it began waiting, or its last step while running; null while idle. */
-    since: string | null;
-    /** What it waits on, when waiting. */
-    waiting_on: string[];
-  };
-  /** The work lane's current step: its last tool call, with a short argument; null before it has acted. */
-  step: string | null;
-  /** The work lane's last five tool calls, oldest first; `ok` is null while a call has no result. */
-  recent: { name: string; arg: string; ok: boolean | null }[];
-  /** The Nas tasks the agent owns that are in flight. */
-  tasks: { id: string; status: string; current: string }[];
-  /** Why the tasks could not be read from Nas, or null. */
-  tasks_unreadable: string | null;
-  /** The open job as this agent has worked it so far (see runtime/ledger.ts); null when no job is open. */
-  ledger: JobLedger | null;
 };
 
 /** One job's record, read from the rows stamped with its id (see runtime/ledger.ts). */
@@ -89,8 +61,11 @@ export type AgentRecord = {
   description: string | null;
   parent_agent_id: string | null;
   active: boolean;
-  /** In-memory lane lock ownership (always false right after a process restart), and what the work lane is waiting on. */
-  running: { work: boolean; process: boolean; waiting_on: AgentWaiting | null; status: AgentStatus | null };
+  /**
+   * Whether the agent is running now (in memory: false right after a restart), what it is
+   * waiting on, and the job its current wake is on (see runtime/ledger.ts; null when it has none).
+   */
+  running: { working: boolean; waiting_on: AgentWaiting | null; job: JobLedger | null };
   /** The browser and terminal tasks the agent has in Nas. */
   sessions: AgentSessions;
   created_at: string;
@@ -128,7 +103,6 @@ export type LogRecord = {
   id: string;
   /** Null for the router. */
   agent_id: string | null;
-  lane: Lane;
   event: LogEvent;
   payload: Record<string, unknown>;
   /** The wake the row belongs to; null for the router, rows from before wake ids, and boot recovery's reports. */
@@ -212,10 +186,9 @@ export type DwarContentBlock = DwarResponseBlock | DwarToolResultBlock;
 export type DwarMessage = {
   role: "user" | "assistant";
   content: string | DwarContentBlock[];
-  /** Which provider and lane produced an assistant turn; Dwar replays its own
+  /** Which provider produced an assistant turn; Dwar replays its own
    * provider's turns verbatim and translates the other's. */
   provider?: DwarProvider;
-  lane?: Lane;
   /** Ends a prefix resent unchanged into the next wake (the frozen transcript);
    * Dwar keeps a long-lived provider cache entry there. At most one per request. */
   cache_breakpoint?: boolean;
@@ -353,17 +326,15 @@ export type WakeEntry =
       ord: number;
       at: string;
       type: "turn";
-      lane: "work" | "process";
       usage: { input_tokens: number; output_tokens: number; cache_write: number; cache_read: number };
       thinking: string | null;
       text: string | null;
       calls: WakeToolCall[];
     };
 
-/** The tool that sends a message: every lane's voice, and the router's. */
+/** The tool that sends a message: every agent's voice, and the router's. */
 export const SEND_MESSAGE = "send_message";
 export const FORWARD_ATTACHMENT = "forward_attachment";
-export const STEER_WORK = "steer_work";
 export const YIELD = "yield";
 export const WAIT = "wait";
 export const READ_FILE = "read_file";

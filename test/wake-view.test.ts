@@ -46,11 +46,10 @@ test("a tool result over the cap is cut and says so, with its full length", () =
   assert.deepEqual([cut.truncated, cut.chars, cut.is_error], [true, WAKE_RESULT_MAX_CHARS + 500, true]);
 });
 
-function responseRow(payload: Record<string, unknown>, lane = "work"): AgentLogRow {
+function responseRow(payload: Record<string, unknown>): AgentLogRow {
   return {
     id: "a1f0c0de-0000-4000-8000-000000000001",
     agentId: "agent-1",
-    lane,
     event: "response",
     payload,
     wakeId: "0b6f7d5e-6a0c-4b1e-9a43-2f1d7c3a1001",
@@ -82,8 +81,8 @@ test("a turn pairs each tool call with its result and null until one is logged",
 });
 
 test("a turn with no thinking or text reports null, and usage a provider omits counts as zero", () => {
-  const turn = toTurnEntry(responseRow({ content: [], usage: { input_tokens: 1, output_tokens: 2 } }, "process"), new Map());
-  assert.deepEqual([turn.thinking, turn.text, turn.lane, turn.usage.cache_read], [null, null, "process", 0]);
+  const turn = toTurnEntry(responseRow({ content: [], usage: { input_tokens: 1, output_tokens: 2 } }), new Map());
+  assert.deepEqual([turn.thinking, turn.text, turn.usage.cache_read], [null, null, 0]);
 });
 
 test("a row that is not a response payload is a 500 internal_error", () => {
@@ -101,7 +100,6 @@ test("entries are ordered by time with a message before a turn of the same milli
   const turn = (iso: string) => ({
     at: iso,
     type: "turn" as const,
-    lane: "work" as const,
     usage: { input_tokens: 0, output_tokens: 0, cache_write: 0, cache_read: 0 },
     thinking: null,
     text: null,

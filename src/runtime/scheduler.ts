@@ -1,6 +1,6 @@
 /**
- * The ticker: wakes the agents whose waits are due, fires due routines and reminders, sends
- * hath's pickups and sweeps the file caches. A routine firing opens a job of its own with no
+ * The ticker: wakes the agents whose waits are due, tells agents their answer time passed, fires due routines
+ * and reminders, sends hath's pickups and sweeps the file caches. A routine firing opens a job of its own with no
  * requester; a reminder fires into its job.
  */
 
@@ -13,10 +13,11 @@ import { deliverAgentMessage, type DeliverDeps } from "./deliver.js";
 import type { EventBus } from "./events.js";
 import { openJob, OPEN_STATES } from "./jobs.js";
 import { openRunJob } from "./job-of.js";
-import { nextRunAt, routineBlock } from "./routines.js";
+import { nextRunAt } from "./routines.js";
 import type { WakeActivity } from "./wake-activity.js";
 import { SWEEP_INTERVAL_MS } from "./retention.js";
 import type { TranscriptStore } from "./transcript.js";
+import { checkAnswerBy } from "./answer-by.js";
 import { checkDueWatches, type WatchDeps } from "./watches.js";
 
 type SchedulerLog = {
@@ -35,16 +36,17 @@ export type Scheduler = {
 type FiredRoutine = { row: RoutineRow; firedAt: Date };
 
 /**
- * Polls every `tickSeconds`: sweeps the file caches once a day, wakes the work lane of each
- * agent whose wait is due, fires due routines and reminders into their owners' jobs, and sends
- * hath's pickups when they are on.
+ * Polls every `tickSeconds`: sweeps the file caches once a day, wakes each agent
+ * whose wait is due, tells each whose Ankur job is past its answer time, fires due routines and
+ * reminders into their owners' jobs, and sends hath's pickups.
  */
 export function createScheduler(opts: {
   db: Db;
   transcript: TranscriptStore;
   events: EventBus;
-  enqueueProcess: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
-  enqueueWork: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  enqueue: (agentId: string, reason?: string, origin?: WakeOrigin) => string;
+  /** Cancels the model call of a running loop (see engine.ts). */
+  preempt: (agentId: string, jobId: string) => void;
   /** Told of each message a firing delivers, so the woken wake reports its count. */
   wakeActivity: WakeActivity;
   /** `runtime.answer_by_minutes`. */
@@ -55,8 +57,8 @@ export function createScheduler(opts: {
   watches: WatchDeps;
   /** The cache retention sweep (see retention.ts), run on the first tick and then daily. */
   sweep: (now: Date) => Promise<void>;
-  /** hath's pickups for Ankur's overdue jobs (see pickups.ts), run every tick; null when `runtime.hath_pickups` is off. */
-  pickups: ((now: Date) => Promise<void>) | null;
+  /** hath's pickups for Ankur's overdue jobs (see pickups.ts), run every tick. */
+  pickups: (now: Date) => Promise<void>;
 }): Scheduler {
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking = false;
@@ -65,8 +67,8 @@ export function createScheduler(opts: {
     db: opts.db,
     transcript: opts.transcript,
     events: opts.events,
-    enqueueProcess: opts.enqueueProcess,
-    enqueueWork: opts.enqueueWork,
+    enqueue: opts.enqueue,
+    preempt: opts.preempt,
     wakeActivity: opts.wakeActivity,
     answerByMinutes: opts.answerByMinutes,
   };
@@ -109,7 +111,7 @@ export function createScheduler(opts: {
 
   /**
    * fireRoutine opens a job for one firing of `row`: its previous run's job is done, the firing
-   * is a notice of the agent to itself that wakes its work lane, and the job has no requester.
+   * is a notice of the agent to itself that wakes it, and the job has no requester.
    * A routine set up for its owner by another agent says so the first time, then clears that.
    */
   async function fireRoutine({ row, firedAt }: FiredRoutine): Promise<void> {
@@ -132,7 +134,6 @@ export function createScheduler(opts: {
       toAgentId: row.agentId,
       content: `Your routine "${row.title}" fired at ${firedAt.toISOString()}.${setUp}`,
       notice: "routine",
-      wakeWork: true,
       wokenBy: `your routine "${row.title}"`,
       scheduleId: row.id,
       opens: async (message) => {
@@ -182,7 +183,6 @@ export function createScheduler(opts: {
       toAgentId: row.agentId,
       content: `[Reminder] ${row.note}`,
       notice: "reminder",
-      wakeWork: true,
       wokenBy: "your reminder",
       scheduleId: row.id,
       ...(target !== undefined
@@ -202,6 +202,7 @@ export function createScheduler(opts: {
     ticking = true;
     try {
       await checkDueWatches(opts.watches, now);
+      await checkAnswerBy({ deliver, nas: opts.watches.nas }, now);
       const firedRoutines = await advanceDueRoutines(now);
       const firedReminders = await fireDueReminders(now);
       if (firedRoutines.length + firedReminders.length > 0) {
@@ -216,12 +217,10 @@ export function createScheduler(opts: {
     } catch (err) {
       opts.log.error({ code: "schedule_tick_failed", err }, "schedule tick failed");
     }
-    if (opts.pickups !== null) {
-      try {
-        await opts.pickups(now);
-      } catch (err) {
-        opts.log.error({ code: "pickups_failed", err }, "pickup pass failed");
-      }
+    try {
+      await opts.pickups(now);
+    } catch (err) {
+      opts.log.error({ code: "pickups_failed", err }, "pickup pass failed");
     }
     try {
       if (lastSweep === undefined || now.getTime() - lastSweep.getTime() >= SWEEP_INTERVAL_MS) {

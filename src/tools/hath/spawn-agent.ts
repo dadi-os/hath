@@ -28,7 +28,7 @@ export const spawnAgent = defineTool({
       system_prompt: {
         type: "string",
         description:
-          "The child's charter, for both of its lanes: its purpose, what it owns, and who it works for and with.",
+          "The child's charter: its purpose, what it owns, and who it works for and with.",
       },
       description: {
         type: "string",

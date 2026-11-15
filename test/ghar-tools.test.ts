@@ -11,7 +11,7 @@ import { findTool } from "../src/tools/registry.js";
 import { HathError } from "../src/errors.js";
 import type { GharDevice } from "../src/ghar/client.js";
 import {
-  FLAGS_OFF,
+  
   insertAgent,
   mockDwar,
   mockGhar,
@@ -21,11 +21,10 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
-  withRuntime,
   yieldTurn,
 } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -76,7 +75,7 @@ test("get_device with no ids lists every device, capabilities and state together
   const workerId = await insertAgent(handle.db, { name: "thread", systemPrompt: "do the job" });
   const hall = device("Hall bulb", 40);
   const ghar = mockGhar({ listDevices: () => ({ devices: [hall] }) });
-  const result = await executeTool(runtimeWith(ghar).toolContext(workerId, "work"), call("gd1", "get_device", {}));
+  const result = await executeTool(runtimeWith(ghar).toolContext(workerId), call("gd1", "get_device", {}));
   assert.equal(result.isError, false);
   assert.deepEqual(ghar.listDevicesCalls, [undefined]);
   const body = JSON.parse(result.content);
@@ -91,7 +90,7 @@ test("get_device with ids reads exactly those devices and not the list", async (
   const a = device("A", 10);
   const b = device("B", 20);
   const ghar = mockGhar({ getDevice: (id) => (id === a.id ? a : b) });
-  const result = await executeTool(runtimeWith(ghar).toolContext(workerId, "process"), call("gd2", "get_device", { device_ids: [a.id, b.id] }));
+  const result = await executeTool(runtimeWith(ghar).toolContext(workerId), call("gd2", "get_device", { device_ids: [a.id, b.id] }));
   assert.equal(result.isError, false);
   assert.deepEqual(ghar.getDeviceCalls, [a.id, b.id]);
   assert.equal(ghar.listDevicesCalls.length, 0);
@@ -106,7 +105,7 @@ test("Ghar unreachable fails get_device with the ghar code, not an empty success
       throw new HathError(502, "ghar", "Ghar is unreachable");
     },
   });
-  const result = await executeTool(runtimeWith(ghar).toolContext(workerId, "work"), call("gd3", "get_device", {}));
+  const result = await executeTool(runtimeWith(ghar).toolContext(workerId), call("gd3", "get_device", {}));
   assert.equal(result.isError, true);
   assert.match(result.content, /^ghar:.*unreachable/i);
 });
@@ -116,7 +115,7 @@ test("control_device sends the request attributed to the calling agent, not its 
   const parentId = await insertAgent(handle.db, { name: "parent", systemPrompt: "parent" });
   const childId = await insertAgent(handle.db, { name: "house-thread", systemPrompt: "control lights", parentAgentId: parentId });
   const ghar = mockGhar({ control: () => ({ id: randomUUID(), status: "done", result: "Hall light is at 40%." }) });
-  const result = await executeTool(runtimeWith(ghar).toolContext(childId, "work"), call("cd1", "control_device", { request: "hall light to 40" }));
+  const result = await executeTool(runtimeWith(ghar).toolContext(childId), call("cd1", "control_device", { request: "hall light to 40" }));
   assert.equal(result.isError, false);
   assert.deepEqual(JSON.parse(result.content), { result: "Hall light is at 40%." });
   assert.deepEqual(ghar.controlCalls, [{ request: "hall light to 40", caller: childId, wait_ms: CONTROL_WAIT_MS }]);
@@ -128,12 +127,12 @@ test("a control run Ghar could not finish is a tool error carrying its type", as
   const ghar = mockGhar({
     control: () => ({ id: randomUUID(), status: "failed", error: { type: "control_failed", message: "no tool call" } }),
   });
-  const result = await executeTool(runtimeWith(ghar).toolContext(agentId, "process"), call("cd2", "control_device", { request: "x" }));
+  const result = await executeTool(runtimeWith(ghar).toolContext(agentId), call("cd2", "control_device", { request: "x" }));
   assert.equal(result.isError, true);
   assert.equal(result.content, "control_failed: no tool call");
 });
 
-test("a slow control run returns pending, then its answer wakes the lane that asked", async () => {
+test("a slow control run returns pending, then its answer wakes the agent that asked", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "house-asker", systemPrompt: "runs the house" });
   const runId = randomUUID();
@@ -141,38 +140,17 @@ test("a slow control run returns pending, then its answer wakes the lane that as
     control: () => ({ id: runId, status: "running" }),
     getControl: () => ({ id: runId, status: "done", result: "Garage door is closed." }),
   });
-  const dwar = mockDwar({ process: () => yieldTurn(), work: () => yieldTurn() });
+  const dwar = mockDwar({ agent: () => yieldTurn() });
   const runtime = runtimeWith(ghar, dwar);
-  const started = await executeTool(runtime.toolContext(agentId, "process"), call("cd3", "control_device", { request: "close the garage" }));
+  const started = await executeTool(runtime.toolContext(agentId), call("cd3", "control_device", { request: "close the garage" }));
   assert.equal(started.isError, false);
   assert.equal(JSON.parse(started.content).pending, "cd3");
   const [row] = await handle.db.select().from(pendingAsync).where(eq(pendingAsync.id, "cd3"));
-  assert.equal(row?.lane, "process");
+  assert.equal(row?.toolName, "control_device");
   await runtime.waitUntilIdle();
   assert.equal((await handle.db.select().from(pendingAsync)).length, 0);
   assert.match(runtime.transcript.transcriptFor(agentId).at(-1)!.content, /^Result of control_device \(cd3\), done:\n.*Garage door is closed\./);
-  assert.equal(dwar.workCalls.length, 0, "the work lane did not wake");
-  assert.equal(dwar.processCalls.length, 1, "the process lane woke for the answer");
-  assert.match(JSON.stringify(dwar.processCalls[0]!.messages), /\[Wake\] async tool result \(control_device cd3\)/);
+  assert.equal(dwar.agentCalls.length, 1, "the agent woke for the answer");
+  assert.match(JSON.stringify(dwar.agentCalls[0]!.messages), /\[Wake\] async tool result \(control_device cd3\)/);
 });
 
-test("a device change the process lane made reaches the work lane as a note, and a read does not", async () => {
-  await resetRuntime(handle.sql, handle.db, config);
-  const agentId = await insertAgent(handle.db, { id: "house-noter", systemPrompt: "runs the house" });
-  const hall = device("Hall bulb", 40);
-  const ghar = mockGhar({
-    getDevice: () => hall,
-    control: () => ({ id: randomUUID(), status: "done", result: "Hall light is off." }),
-  });
-  const dwar = mockDwar({ process: () => yieldTurn(), work: () => yieldTurn() });
-  const runtime = runtimeWith(ghar, dwar);
-  const context = runtime.toolContext(agentId, "process");
-  await executeTool(context, call("n1", "get_device", { device_ids: [hall.id] }));
-  assert.equal(runtime.transcript.transcriptFor(agentId).length, 0);
-  await executeTool(context, call("n2", "control_device", { request: "hall light off" }));
-  const note = runtime.transcript.transcriptFor(agentId).at(-1)!;
-  assert.equal(note.kind, "notice");
-  assert.match(note.content, /^Your process lane ran control_device hall light off: .*Hall light is off\./);
-  await runtime.waitUntilIdle();
-  assert.equal(dwar.processCalls.length + dwar.workCalls.length, 0, "the note woke no lane");
-});

@@ -1,4 +1,4 @@
-/** HTTP client for Dwar chat (the work lane / the process lane / complete) and image describe. */
+/** HTTP client for Dwar chat (the agent loop and one-shot complete) and image describe. */
 
 import axios, { type AxiosInstance } from "axios";
 import { z } from "zod";
@@ -58,13 +58,12 @@ export type DwarDescribeImageResponse = {
 };
 
 /**
- * Dwar surface used by Hath: lane chat, promptless complete, and image captioning.
+ * Dwar surface used by Hath: the agent loop's chat, promptless complete, and image captioning.
  * `caller` is sent as X-Dadi-Caller (`hath/<agent id>`, `hath/router`, …) so Dwar's
  * inference log attributes each call's tokens to whoever spent them.
  */
 export type DwarClient = {
-  work: (request: DwarChatRequest, caller: string, signal?: AbortSignal) => Promise<DwarChatResponse>;
-  process: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
+  agent: (request: DwarChatRequest, caller: string, signal?: AbortSignal) => Promise<DwarChatResponse>;
   complete: (request: DwarChatRequest, caller: string) => Promise<DwarChatResponse>;
   describeImage: (
     request: DwarDescribeImageRequest,
@@ -169,8 +168,7 @@ export function createDwarClient(config: Config): DwarClient {
   return {
     webSearch: (request, caller) => postWeb("/web/search", request, caller, webSearchResponseSchema),
     webFetch: (request, caller) => postWeb("/web/fetch", request, caller, webFetchResponseSchema),
-    work: (request, caller, signal) => postChat("/chat/work", request, caller, signal),
-    process: (request, caller) => postChat("/chat/process", request, caller),
+    agent: (request, caller, signal) => postChat("/chat/agent", request, caller, signal),
     complete: (request, caller) => postChat("/chat/complete", request, caller),
     describeImage,
   };

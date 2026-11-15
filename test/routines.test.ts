@@ -9,9 +9,9 @@ import { deliverUserMessage } from "../src/runtime/deliver.js";
 import { executeTool } from "../src/runtime/tools.js";
 import { setRoutine } from "../src/tools/hath/set-routine.js";
 import type { DwarChatRequest } from "../src/types/domain.js";
-import { FLAGS_OFF, insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, withRuntime } from "./helpers.js";
+import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -24,7 +24,7 @@ after(async () => {
 
 function harness(work?: (request: DwarChatRequest) => void) {
   const dwar = mockDwar({
-    work: (request) => {
+    agent: (request) => {
       work?.(request);
       return { provider: "anthropic", content: [{ type: "tool_use", id: "y", name: "yield", input: {} }], stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
     },
@@ -48,7 +48,7 @@ test("set_routine twice with one title leaves one row, changed; a bad time or we
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "routine-owner", systemPrompt: "owner" });
   const { runtime } = harness();
-  const ctx = runtime.toolContext(agentId, "work");
+  const ctx = runtime.toolContext(agentId);
 
   const first = await executeTool(ctx, call("set_routine", { title: "Morning due check", procedure: "Read D2L.", at: "07:00" }));
   assert.equal(first.isError, false, first.content);
@@ -78,16 +78,16 @@ test("any agent can read another's routines, and only its own are changed", asyn
   const ownerId = await insertAgent(handle.db, { id: "routine-owner", systemPrompt: "owner" });
   const readerId = await insertAgent(handle.db, { id: "routine-reader", systemPrompt: "reader" });
   const { runtime } = harness();
-  await executeTool(runtime.toolContext(ownerId, "work"), call("set_routine", { title: "Weekly", procedure: "Do it.", at: "13:00", days: ["sun"] }));
-  const read = await executeTool(runtime.toolContext(readerId, "work"), call("list_routines", { agent_id: ownerId }));
+  await executeTool(runtime.toolContext(ownerId), call("set_routine", { title: "Weekly", procedure: "Do it.", at: "13:00", days: ["sun"] }));
+  const read = await executeTool(runtime.toolContext(readerId), call("list_routines", { agent_id: ownerId }));
   assert.equal(read.isError, false, read.content);
   assert.deepEqual(JSON.parse(read.content).routines.map((row: { title: string }) => row.title), ["Weekly"]);
-  assert.deepEqual(JSON.parse((await executeTool(runtime.toolContext(readerId, "work"), call("list_routines", {}))).content).routines, []);
-  assert.equal((await executeTool(runtime.toolContext(readerId, "work"), call("end_routine", { title: "Weekly" }))).isError, true);
+  assert.deepEqual(JSON.parse((await executeTool(runtime.toolContext(readerId), call("list_routines", {}))).content).routines, []);
+  assert.equal((await executeTool(runtime.toolContext(readerId), call("end_routine", { title: "Weekly" }))).isError, true);
   await runtime.waitUntilIdle();
 });
 
-test("a due routine opens a job of its own with no requester, wakes the work lane with its procedure, and closes its previous run", async () => {
+test("a due routine opens a job of its own with no requester, wakes the agent with its procedure, and closes its previous run", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "routine-runner", systemPrompt: "runner" });
   const setUpById = await insertAgent(handle.db, { id: "routine-author", systemPrompt: "author" });
@@ -143,13 +143,13 @@ test("remind_me fires into its job and returns a done job to open; it needs a jo
   const requests: DwarChatRequest[] = [];
   const { runtime } = harness((request) => requests.push(structuredClone(request)));
 
-  const outside = await executeTool(runtime.toolContext(agentId, "work"), call("remind_me", { at: new Date(Date.now() + 3_600_000).toISOString(), note: "x" }));
+  const outside = await executeTool(runtime.toolContext(agentId), call("remind_me", { at: new Date(Date.now() + 3_600_000).toISOString(), note: "x" }));
   assert.equal(outside.isError, true, "no wake, so no job");
 
   await deliverUserMessage(runtime.deliver, agentId, "remind me Friday to call mom");
   await runtime.waitUntilIdle();
   const [job] = await handle.db.select().from(jobs).where(eq(jobs.agentId, agentId));
-  const ctx = { ...runtime.toolContext(agentId, "work"), jobId: job!.id };
+  const ctx = { ...runtime.toolContext(agentId), jobId: job!.id };
   assert.equal((await executeTool(ctx, call("remind_me", { at: new Date(Date.now() - 1_000).toISOString(), note: "past" }))).isError, true);
   const set = await executeTool(ctx, call("remind_me", { at: new Date(Date.now() + 3_600_000).toISOString(), note: "call mom" }));
   assert.equal(set.isError, false, set.content);

@@ -1,6 +1,6 @@
 /**
  * `POST /router` — Ankur speaks to the router, not to an agent. The router runs
- * its lane (see runtime/router.ts) until it yields and returns every message it
+ * its loop (see runtime/router.ts) until it yields and returns every message it
  * sent as him, in order. May be empty. `GET /router` lists the runs in flight.
  */
 

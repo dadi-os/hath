@@ -14,7 +14,7 @@ import {
   SEND_MESSAGE,
 } from "../src/types/domain.js";
 import {
-  FLAGS_OFF,
+  
   insertAgent,
   mockDwar,
   mockGhar,
@@ -24,11 +24,10 @@ import {
   resetRuntime,
   silentLog,
   testConfig,
-  wideWindows,
-  withRuntime,
+  wideWindow,
 } from "./helpers.js";
 
-const config = withRuntime(testConfig(), FLAGS_OFF);
+const config = testConfig();
 const handle = await openTestDb();
 
 before(async () => {
@@ -103,14 +102,14 @@ test("POST /messages stores attachments, the transcript shows stubs, and GET /at
   assert.equal(thread.messages.at(-1)?.attachments.length, 2);
 
   const context = await assembleContext({
-    windows: wideWindows,
+    window: wideWindow,
+    continuation: null,
     db: handle.db,
     agentId,
-    lane: "process",
     transcript: runtime.transcript,
     serviceRoot: config.serviceRoot,
   });
-  const seen = JSON.stringify(context.transcripts.process);
+  const seen = JSON.stringify(context.thread);
   assert.ok(seen.includes(sent.attachments[0]!.id));
   assert.match(seen, /Path: \/var\/home\/dadi\/\.dadi\/attachments\//, "the block shows the file's path");
   assert.ok(!seen.includes(report), "the contents never enter the transcript");
@@ -150,7 +149,7 @@ test("send with an attachment id copies the carried file's row to the recipient,
   });
   const originalId = (posted.json() as { attachments: Array<{ id: string }> }).attachments[0]!.id;
 
-  const forwarded = await executeTool(runtime.toolContext(senderId, "process"), {
+  const forwarded = await executeTool(runtime.toolContext(senderId), {
     type: "tool_use",
     id: "f1",
     name: SEND_MESSAGE,
@@ -168,7 +167,7 @@ test("send with an attachment id copies the carried file's row to the recipient,
   assert.equal(received?.content, "from Ankur");
   assert.equal(received?.attachments[0]?.id, copyId);
 
-  const page = await executeTool(runtime.toolContext(recipientId, "work"), {
+  const page = await executeTool(runtime.toolContext(recipientId), {
     type: "tool_use",
     id: "r1",
     name: READ_FILE,
@@ -195,7 +194,7 @@ test("send copies a host file path as it is now, and the send binds that same ro
     await app.close();
   });
 
-  const unknown = await executeTool(runtime.toolContext(workerId, "work"), {
+  const unknown = await executeTool(runtime.toolContext(workerId), {
     type: "tool_use",
     id: "s0",
     name: SEND_MESSAGE,
@@ -204,7 +203,7 @@ test("send copies a host file path as it is now, and the send binds that same ro
   assert.equal(unknown.isError, true);
   assert.match(unknown.content, /^not_found/);
 
-  const sent = await executeTool(runtime.toolContext(workerId, "process"), {
+  const sent = await executeTool(runtime.toolContext(workerId), {
     type: "tool_use",
     id: "f1",
     name: SEND_MESSAGE,
@@ -219,7 +218,7 @@ test("send copies a host file path as it is now, and the send binds that same ro
   assert.notEqual(row?.messageId, null);
 });
 
-test("a file the work lane sends, by path, reaches the message once", async (t) => {
+test("a file an agent sends, by path, reaches the message once", async (t) => {
   await resetRuntime(handle.sql, handle.db, config);
   const nas = mockNas({});
   nas.files.set("/var/home/dadi/answer.md", Buffer.from("the answer\n"));
@@ -231,7 +230,7 @@ test("a file the work lane sends, by path, reaches the message once", async (t) 
     await app.close();
   });
 
-  const sent = await executeTool(runtime.toolContext(workerId, "work"), {
+  const sent = await executeTool(runtime.toolContext(workerId), {
     type: "tool_use",
     id: "s1",
     name: SEND_MESSAGE,
@@ -269,7 +268,7 @@ test("send gives a Word document and an unlisted binary their media types and ke
   ];
   for (const [index, { path, mediaType }] of cases.entries()) {
     nas.files.set(path, zipBytes);
-    const sent = await executeTool(runtime.toolContext(workerId, "process"), {
+    const sent = await executeTool(runtime.toolContext(workerId), {
       type: "tool_use",
       id: `c${index}`,
       name: SEND_MESSAGE,

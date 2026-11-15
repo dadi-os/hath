@@ -1,26 +1,16 @@
 [runtime]
-# How long a POST /router request waits for the router lane before failing.
-# Agent lane runs never time out: a wake queued behind a busy lane waits its turn.
-lane_queue_timeout_ms = 30000
-# The work lane's transcript is a rolling window over the agent's thread: the
-# newest messages up to about work_transcript_window_chars (about 2.4 chars a token
-# on Haiku 5.5, measured), and never more than the prompt ceiling less trim tokens
-# leaves after the agent's own system and the lane's tools, so a long charter means a
-# shorter window and the wake keeps its trim headroom. The work lane holds about 42k
-# tokens, so its wake keeps about 40k.
-# The process lane is the front desk and carries a slim context: its system, a
-# recent-thread window that fills what process_context_tokens leaves after the system
-# and its tools, its own turns, and the status block hath renders (see runtime/status.ts).
-# It never sees the work lane's thinking, tool calls or results.
-# Older messages fall out of a window and are reached only through get_logs and memory.
-# A window's start moves in jumps of step chars instead of sliding with every message,
-# so the provider cache survives everything but the jump.
-process_context_tokens = 30000
-# The process lane's window never drops below this many chars, however long the charter:
-# a coordinator whose budget left it a few thousand chars lost track of its own asks.
-process_window_min_chars = 8000
-work_transcript_window_chars = 100000
-transcript_window_step_chars = 30000
+# How long a POST /router request waits for the router before failing.
+# An agent's run never times out: a wake queued behind a busy agent waits its turn.
+router_queue_timeout_ms = 30000
+# The thread an agent reads holds every message of its open jobs, whole, then the newest other
+# messages up to thread_window_share of prompt_ceiling_tokens (measured in characters at about
+# 2.3 characters a token on Haiku 5.5): a quarter of the ceiling is the window, three quarters
+# stay for the work. It never holds more than the prompt ceiling less trim tokens leaves after
+# the agent's own system and tools. Older messages are reached only through get_logs and memory.
+# The window's start of the other messages moves in jumps of thread_window_step_chars instead of
+# sliding with every message, so the provider cache survives everything but the jump.
+thread_window_share = 0.25
+thread_window_step_chars = 30000
 # Backoff after a failed tool call before the agent's next call; doubles per
 # consecutive failure and resets on the first success.
 tool_debounce_base_ms = 1200
@@ -42,58 +32,21 @@ wake_supersede_window_turns = 8
 # only when its last step is this recent; older ones are stale and dropped.
 # The report never wakes the requester.
 recovery_window_minutes = 10
-# A lane's prompt stays under ceiling tokens, below the 100k-token step where
+# The prompt stays under ceiling tokens, below the 100k-token step where
 # Haiku's price rises 5x. Each call's measured usage calibrates the next: when
-# the next call would pass the ceiling, the oldest steps of the wake leave that
-# lane's view until it sits trim tokens under, in one jump so the cached
+# the next call would pass the ceiling, the oldest steps of the wake leave the
+# view until it sits trim tokens under, in one jump so the cached
 # prefix holds until the next trim.
 prompt_ceiling_tokens = 96000
 prompt_trim_tokens = 16000
-# hath_pickups: when Ankur's latest message to an agent is 180 s old, the agent's work
-# lane has acted since it, and the agent has sent him nothing since, hath sends him
-# "Working on it." for the agent, once. Agents send no pickup lines of their own: there is no
-# progress status.
-hath_pickups = true
-# implicit_yield: a process turn of only successful send_message/steer_work calls, and a
-# work turn of only successful send_message calls, ends the run without another model
-# call to yield.
-implicit_yield = true
-# ingest_result_wakes: false lets a successful ingest_memory result join the thread without
-# waking the lane that saved it (a wake with nothing left to do re-reads and re-reports the
-# finished work); a failure always wakes. true wakes the lane on every result.
-ingest_result_wakes = false
-# pickup_delay_s: how long Ankur's message waits for an answer before hath_pickups sends the
-# pickup, a message marked sent_by hath with no status.
+# pickup_delay_s: how long Ankur's job waits for an answer before hath sends him the pickup
+# ("Working on it.", a message marked sent_by hath) for the agent, once per job, and only while the
+# agent is running or waiting on something pending. Agents send no pickup lines of their own.
 pickup_delay_s = 180
-# question_answer_minutes: a work lane whose job is Ankur's question may wait on others only
-# until this many minutes after his message; the timeout tells it to answer with what it has.
-question_answer_minutes = 5
-# job_requester: the work lane's job is Ankur's question only while its open job is his and
-# his opening message is under question_answer_minutes old; history no longer decides it, and
-# a routine has no deadline and no "Answer Ankur now".
-job_requester = true
-# wait_target_guard: wait refuses the caller's own id and a tool call id (toolu_...).
-wait_target_guard = true
-# pickup_live_work: the pickup also needs the work lane running now or waiting on something
-# other than the agent itself, so a lane that only yielded gets none.
-pickup_live_work = true
-# tool_hygiene: get_logs leaves out the caller's current wake, and list_browsers and
-# list_terminals leave out stopped tasks (which cannot be steered).
-tool_hygiene = true
-# sync_ingest: ingest_memory runs in the work lane's call and returns what Yaad stored,
-# instead of returning {pending} and a later message.
-sync_ingest = true
-# job_did_carry: a wake the agent's own notice opens inside a job (or routine) starts with a
-# [Did in this job] block of the job's earlier tool calls, so the lane does not redo them.
-job_did_carry = true
-# implicit_steer_end: a work turn of only successful steer_browser, steer_terminal,
-# send_message, ingest_memory, set_routine, end_routine, remind_me (and file saves) calls ends the run; each
-# steered task gets a watch of implicit_wait_minutes in code (30), as an awaited agent does.
-implicit_steer_end = true
-
 # answer_by_minutes: a job Ankur opens is due this many minutes after his message (jobs.answer_by).
-# The wake header shows the time. Five minutes is Ankur's policy for his questions; it depends on
-# the requester, never on the agent.
+# The wake header shows the time, and when it passes with the job still open hath wakes the agent
+# with what has and has not come in. Five minutes is Ankur's policy for his questions; it depends
+# on the requester, never on the agent.
 answer_by_minutes = 5
 # activity_hours: the wake header's [Your recent activity] lists what the agent did this many
 # hours back, newest first (see runtime/activity.ts).
@@ -108,7 +61,7 @@ retry_attempts = 3
 backoff_ms = [500, 1000, 2000]
 
 [yaad]
-# ingest triggers a work-lane call inside Yaad, which has its own 330s Dwar timeout.
+# ingest triggers a model call inside Yaad, which has its own 330s Dwar timeout.
 # This must exceed that or a slow-but-successful extraction gets killed by the caller.
 timeout_ms = 360000
 retry_attempts = 3

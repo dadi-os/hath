@@ -1,16 +1,18 @@
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { formatISO } from "date-fns";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { agents } from "../db/schema.js";
+import { agents, jobs } from "../db/schema.js";
 import { HathError } from "../errors.js";
-import type { DwarChatRequest, DwarMessage, Lane } from "../types/domain.js";
+import type { DwarChatRequest, DwarMessage } from "../types/domain.js";
 import { attachmentStub } from "./attachments.js";
 import { directoryBlock, ownDescriptionLine } from "./directory.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
-import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN } from "./wake.js";
-import { toolsForLane, WORKER_ID } from "./lanes.js";
+import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN, type WakeTurn } from "./wake.js";
+import { OPEN_STATES } from "./jobs.js";
+import { agentTools, routerTools, WORKER_ID } from "./tool-set.js";
+import { continuedTurns } from "./continuation.js";
 
 const promptCache = new Map<string, { mtimeMs: number; text: string }>();
 
@@ -32,8 +34,8 @@ function loadPrompt(serviceRoot: string, name: string): string {
 
 /**
  * lineageBlock states runtime facts the model cannot know on its own: who it is
- * and its parent. Lane roles, messaging discipline, and the rest of the standing
- * doctrine live in Dwar's per-lane block (cached, shared across agents) —
+ * and its parent. How the loop works, messaging discipline, and the rest of the standing
+ * doctrine live in Dwar's agent block (cached, shared across agents) —
  * deliberately not restated here, so there is one source of truth.
  */
 function lineageBlock(agentId: string | null, parentAgentId: string | null): string {
@@ -48,18 +50,16 @@ function lineageBlock(agentId: string | null, parentAgentId: string | null): str
 }
 
 /**
- * An assembled lane request: its system and tools, the transcript each lane
- * sends, and the newest transcript seq they include (0 when empty). Both agent
- * lanes' transcripts are cut from the same thread at once, so whichever lane
- * begins the wake freezes both through the same message.
+ * An assembled request: its system and tools, the thread the agent reads, and the newest
+ * thread seq it includes (0 when empty).
  */
 export type AssembledContext = Omit<DwarChatRequest, "tool_choice" | "messages"> & {
-  transcripts: Partial<Record<Lane, DwarMessage[]>>;
+  thread: DwarMessage[];
   throughSeq: number;
   /** The wake header (see header.ts), rendered when the wake begins. */
   header?: string;
-  /** The work lane's [Did in this job] block, when the wake continues a job (see carry.ts). */
-  carried?: string;
+  /** The steps the job's earlier wakes took, when the wake continues a job (see continuation.ts). */
+  continued?: WakeTurn[];
 };
 
 /**
@@ -115,39 +115,30 @@ async function composeSystem(
   ].join("\n\n");
 }
 
-/** How much of an agent's thread its transcript holds. */
-export type TranscriptWindow = {
-  /** The window holds the newest messages up to about this many characters. */
+/** How much of an agent's thread its window holds beside the messages of its open jobs. */
+export type ThreadWindow = {
+  /** The window holds the newest other messages up to about this many characters. */
   chars: number;
   /** The window's start moves in jumps of this many characters. */
   stepChars: number;
   /**
-   * The lane's system, tools and window together stay under about this many tokens:
-   * an agent whose charter and tools weigh more gets a shorter window, so its first
-   * call never starts over the prompt ceiling.
+   * The system, tools and window together stay under about this many tokens: an agent
+   * whose charter and tools weigh more gets a shorter window, so its first call never
+   * starts over the prompt ceiling.
    */
   budgetTokens: number;
-  /**
-   * The window never holds fewer than about this many characters, whatever the budget
-   * leaves (0 for none): a coordinator with a long charter must still see its own asks.
-   */
-  minChars: number;
 };
 
-/** Each agent lane's transcript window. */
-export type TranscriptWindows = Record<Exclude<Lane, "router">, TranscriptWindow>;
-
 /**
- * windowStart is the index of the first entry an agent's transcript shows: the
- * newest entries up to about `window.chars` characters. Character offsets are
- * measured from the start of the thread and cut into buckets of
- * `window.stepChars`; the window starts at the first entry of the earliest
- * bucket that keeps it under `window.chars`. Older entries never change, so the
+ * windowStart is the index of the first entry a window shows: the newest entries up to
+ * about `window.chars` characters. Character offsets are measured from the start of the
+ * thread and cut into buckets of `window.stepChars`; the window starts at the first entry of
+ * the earliest bucket that keeps it under `window.chars`. Older entries never change, so the
  * start stays put while messages are appended and only jumps when the thread
  * outgrows the window by another step, which keeps the provider's cached
  * prefix byte-stable between jumps. The newest entry is always shown.
  */
-export function windowStart(sizes: number[], window: Pick<TranscriptWindow, "chars" | "stepChars">): number {
+export function windowStart(sizes: number[], window: Pick<ThreadWindow, "chars" | "stepChars">): number {
   const total = sizes.reduce((sum, size) => sum + size, 0);
   if (total <= window.chars) {
     return 0;
@@ -164,46 +155,93 @@ export function windowStart(sizes: number[], window: Pick<TranscriptWindow, "cha
 }
 
 /**
- * An agent lane's request: its system, then each lane's rolling window of its
- * history (see historyFor, windowStart), no wider than the room the window's budget leaves
- * after the system and that lane's tools, and no narrower than its floor. The process lane's budget is the small
- * `process_context_tokens`, since it is the front desk and reads detail on demand;
- * the work lane's is the prompt ceiling less its trim. Messages that left a window are
- * reached through get_logs and memory. Dwar appends lane doctrine as a cached block.
+ * openJobEntries is the thread entries that belong to the agent's open jobs: those stamped with
+ * an open job, and what an agent it asked in one of them wrote back after the ask (a reply is
+ * stamped with the asker's own job, see job-of.ts).
+ */
+function openJobEntries(thread: TranscriptEntry[], agentId: string, openJobIds: ReadonlySet<string>): Set<number> {
+  const members = new Set<number>();
+  const asked = new Set<string | null>();
+  for (const row of thread) {
+    const stamped = row.jobId !== null && openJobIds.has(row.jobId);
+    if (row.fromAgentId === agentId && row.toAgentId !== agentId) {
+      if (stamped) {
+        asked.add(row.toAgentId);
+        members.add(row.seq);
+      }
+    } else if (stamped || (row.kind !== "notice" && asked.has(row.fromAgentId))) {
+      members.add(row.seq);
+    }
+  }
+  return members;
+}
+
+/**
+ * threadWindow is the thread entries an agent reads: every message of its open jobs, whole,
+ * then the newest of the others up to `window.chars`, all in thread order, and never more than
+ * `roomChars` (the room the prompt ceiling leaves), the oldest dropping first.
+ */
+export function threadWindow(
+  thread: TranscriptEntry[],
+  agentId: string,
+  openJobIds: ReadonlySet<string>,
+  window: Pick<ThreadWindow, "chars" | "stepChars">,
+  roomChars: number,
+): TranscriptEntry[] {
+  const open = openJobEntries(thread, agentId, openJobIds);
+  const others = thread.filter((row) => !open.has(row.seq));
+  const chars = Math.min(window.chars, roomChars);
+  const first = windowStart(
+    others.map((row) => transcriptText(row, agentId).length),
+    { chars, stepChars: Math.max(1, Math.min(window.stepChars, Math.floor(chars / 4))) },
+  );
+  const shown = new Set([...open, ...others.slice(first).map((row) => row.seq)]);
+  const picked = thread.filter((row) => shown.has(row.seq));
+  let total = picked.reduce((sum, row) => sum + transcriptText(row, agentId).length, 0);
+  let from = 0;
+  while (total > roomChars && from < picked.length - 1) {
+    total -= transcriptText(picked[from]!, agentId).length;
+    from += 1;
+  }
+  return picked.slice(from);
+}
+
+/**
+ * An agent's request: its system, then its thread window (see threadWindow), no wider than
+ * the room the budget leaves after the system and the tools. Messages that left the window
+ * are reached through get_logs and memory. Dwar prepends its agent block as a cached block.
+ * For a wake that continues a job, the job's earlier steps come with it (see continuation.ts).
  */
 export async function assembleContext(opts: {
   db: Db;
   agentId: string;
-  lane: keyof TranscriptWindows;
   transcript: TranscriptStore;
   serviceRoot: string;
-  windows: TranscriptWindows;
+  window: ThreadWindow;
+  /** The wake's id, job and files folder, when it is on a job that earlier wakes worked. */
+  continuation: { wakeId: string; jobId: string; filesDir: string } | null;
 }): Promise<AssembledContext> {
   const system = await composeSystem(opts.db, opts.serviceRoot, opts.agentId);
   const thread = opts.transcript.transcriptFor(opts.agentId);
-  const messages = historyFor(thread, opts.agentId);
-  const sizes = messages.map((message) => message.content.length);
-  const laneTools = {
-    process: toolsForLane(opts.agentId, "process"),
-    work: toolsForLane(opts.agentId, "work"),
-  };
-  const windowed = (lane: keyof TranscriptWindows) => {
-    const window = opts.windows[lane];
-    const fixedTokens =
-      Math.ceil(system.length / PROSE_CHARS_PER_TOKEN) +
-      Math.ceil(JSON.stringify(laneTools[lane]).length / DATA_CHARS_PER_TOKEN);
-    const chars = Math.min(
-      window.chars,
-      Math.max(window.minChars, Math.floor(Math.max(0, window.budgetTokens - fixedTokens) * PROSE_CHARS_PER_TOKEN)),
-    );
-    return messages.slice(windowStart(sizes, { chars, stepChars: Math.max(1, Math.min(window.stepChars, Math.floor(chars / 4))) }));
-  };
-
+  const tools = agentTools(opts.agentId);
+  const openJobIds = new Set(
+    (
+      await opts.db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(eq(jobs.agentId, opts.agentId), inArray(jobs.state, [...OPEN_STATES])))
+    ).map((row) => row.id),
+  );
+  const fixedTokens = Math.ceil(system.length / PROSE_CHARS_PER_TOKEN) + Math.ceil(JSON.stringify(tools).length / DATA_CHARS_PER_TOKEN);
+  const roomChars = Math.floor(Math.max(0, opts.window.budgetTokens - fixedTokens) * PROSE_CHARS_PER_TOKEN);
+  const shown = threadWindow(thread, opts.agentId, openJobIds, opts.window, roomChars);
+  const continued = opts.continuation === null ? [] : await continuedTurns(opts.db, { agentId: opts.agentId, ...opts.continuation });
   return {
     system,
-    transcripts: { process: windowed("process"), work: windowed("work") },
-    tools: laneTools[opts.lane],
+    thread: historyFor(shown, opts.agentId),
+    tools,
     throughSeq: thread.at(-1)?.seq ?? 0,
+    ...(continued.length > 0 ? { continued } : {}),
   };
 }
 
@@ -220,59 +258,46 @@ export async function assembleRouterContext(opts: {
 }): Promise<AssembledContext> {
   return {
     system: await composeSystem(opts.db, opts.serviceRoot, null),
-    transcripts: {
-      router: [{ role: "user", content: `[From: Ankur · ${formatISO(new Date())}]\n${opts.utterance}` }],
-    },
-    tools: toolsForLane(null, "router"),
+    thread: [{ role: "user", content: `[From: Ankur · ${formatISO(new Date())}]\n${opts.utterance}` }],
+    tools: routerTools(),
     throughSeq: 0,
   };
 }
 
-/** What arrived in an agent's thread since a seq, folded into the turns each lane is shown (see arrivalsSince). */
+/** What arrived in an agent's thread since a seq, folded into one turn (see arrivalsSince). */
 export type Arrivals = {
-  /** Messages to the agent, its own notes, and what hath sent for it; shown to both lanes. */
+  /** Messages to the agent, its own notes, and what hath sent for it; null when none. */
   turn: DwarMessage | null;
-  /** What its process lane sent; shown to the work lane only. */
-  sent: DwarMessage | null;
-  /** What its work lane sent directly; shown to the process lane only. */
-  sentByWork: DwarMessage | null;
   /** The newest seq seen, own messages included. */
   throughSeq: number;
 };
 
 /**
- * arrivalsSince folds transcript entries newer than `afterSeq` into user turns, so
- * messages that land mid-wake join the scratchpad at the point they arrived instead of
- * rewriting the history above it. The agent's messages to others reach only the lane that
- * did not send them: a lane already holds the call that sent each, and folding them in again
- * woke it to read its own words back. So the process lane's sends reach the work lane as
- * `sent`, the work lane's direct sends reach the process lane as `sentByWork`, and hath's
- * pickups for the agent reach both inside `turn`. Each is null when there is none.
+ * arrivalsSince folds thread entries newer than `afterSeq` into one user turn, so messages that
+ * land mid-wake join the scratchpad at the point they arrived instead of rewriting the history
+ * above it. Each is marked with its job. The agent's own sends are not folded back in: the
+ * step that made each already holds the call, and hath's pickups for the agent arrive as a
+ * separate line.
  */
 export function arrivalsSince(transcript: TranscriptStore, agentId: string, afterSeq: number): Arrivals {
   const fresh = transcript.transcriptFor(agentId).filter((row) => row.seq > afterSeq);
   if (fresh.length === 0) {
-    return { turn: null, sent: null, sentByWork: null, throughSeq: afterSeq };
+    return { turn: null, throughSeq: afterSeq };
   }
   const throughSeq = fresh.at(-1)!.seq;
   const arrived = fresh.filter((row) => row.fromAgentId !== agentId || row.toAgentId === agentId);
   const own = fresh.filter((row) => row.fromAgentId === agentId && row.toAgentId !== agentId);
   const text = (label: string, rows: TranscriptEntry[]): string[] =>
-    rows.length === 0 ? [] : [label, ...rows.map((row) => transcriptText(row, agentId))];
-  const fold = (parts: string[]): DwarMessage | null => (parts.length === 0 ? null : { role: "user", content: parts.join("\n\n") });
-  return {
-    turn: fold([
-      ...text("[Arrived during this wake]", arrived),
-      ...text("[Sent for you by hath]", own.filter((row) => row.sentBy === "hath")),
-    ]),
-    sent: fold(text("[Sent by your process lane]", own.filter((row) => row.sentBy === undefined))),
-    sentByWork: fold(text("[Sent by your work lane]", own.filter((row) => row.sentBy === "work"))),
-    throughSeq,
-  };
+    rows.length === 0 ? [] : [label, ...rows.map((row) => transcriptText(row, agentId, true))];
+  const parts = [
+    ...text("[Arrived during this wake]", arrived),
+    ...text("[Sent for you by hath]", own.filter((row) => row.sentBy === "hath")),
+  ];
+  return { turn: parts.length === 0 ? null : { role: "user", content: parts.join("\n\n") }, throughSeq };
 }
 
 /**
- * labelEntry gives a transcript row its turn role and `[From:]`/`[To:]`/`[Thought]`/`[Notice from hath]`
+ * labelEntry gives a thread row its turn role and `[From:]`/`[To:]`/`[Thought]`/`[Notice from hath]`
  * label from this agent's point of view, stamped with when the row was written (ISO 8601
  * in the box's `TZ` with its offset, `2026-10-02T13:14:48-04:00`) so the agent knows the
  * date and time it is acting at. A report's job status follows the time.
@@ -280,8 +305,10 @@ export function arrivalsSince(transcript: TranscriptStore, agentId: string, afte
 function labelEntry(
   row: TranscriptEntry,
   agentId: string,
+  withJob: boolean,
 ): { role: "user" | "assistant"; label: string } {
-  const at = row.status === null ? formatISO(row.createdAt) : `${formatISO(row.createdAt)} · ${row.status}`;
+  const stamp = row.status === null ? formatISO(row.createdAt) : `${formatISO(row.createdAt)} · ${row.status}`;
+  const at = withJob && row.jobNumber !== undefined ? `${stamp} · job #${row.jobNumber}` : stamp;
   if (row.kind === "notice") {
     return { role: "user", label: `[Notice from hath · ${at}]` };
   }
@@ -304,12 +331,12 @@ type TextMessage = DwarMessage & { content: string };
  * treats its own messages as true.
  */
 function historyFor(thread: TranscriptEntry[], agentId: string): TextMessage[] {
-  return thread.map((row) => ({ role: labelEntry(row, agentId).role, content: transcriptText(row, agentId) }));
+  return thread.map((row) => ({ role: labelEntry(row, agentId, false).role, content: transcriptText(row, agentId) }));
 }
 
 /** transcriptText is a transcript row as this agent reads it: its label, then its body. */
-export function transcriptText(row: TranscriptEntry, agentId: string): string {
-  return `${labelEntry(row, agentId).label}\n${entryBody(row)}`;
+export function transcriptText(row: TranscriptEntry, agentId: string, withJob = false): string {
+  return `${labelEntry(row, agentId, withJob).label}\n${entryBody(row)}`;
 }
 
 /** A transcript row's text followed by a stub per attachment it carries. */

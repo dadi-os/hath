@@ -11,6 +11,7 @@ const report = {
   agent_id: "career-manager",
   state: "done",
   text: "Applied.",
+  detail: "",
   files: ["/var/home/dadi/Downloads/receipt.pdf"],
   at: "2026-10-29T14:00:00.123456789Z",
 };

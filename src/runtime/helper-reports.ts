@@ -1,7 +1,7 @@
 /**
  * Helper reports: what a browser or terminal helper in Nas hands back (done, needs_input,
- * failed) reaches the agent whose steer it answers, as a message that wakes its work lane
- * (see rewake.ts), with the files it names as attachments.
+ * failed) reaches the agent whose steer it answers, as a message that wakes it
+ * (see rewake.ts), with its detail file and the files it names as attachments.
  *
  * Nas publishes each report once on its event stream and keeps the newest of each task as
  * `last_report`; the stream has no replay. So hath reconciles from `GET /tasks` after every
@@ -19,7 +19,7 @@ import { attachHostFile, type HostFileDeps } from "./attachments.js";
 import type { DeliverDeps } from "./deliver.js";
 import { recordActivity, siteReadRow } from "./activity.js";
 import { jobOfTask } from "./job-of.js";
-import { rewakeWork } from "./rewake.js";
+import { rewake } from "./rewake.js";
 import { takeWatch } from "./watches.js";
 
 type ReportLog = {
@@ -136,7 +136,7 @@ export class HelperReports {
   private async deliver(db: Db, report: HelperReport): Promise<void> {
     const attachmentIds: string[] = [];
     const notes: string[] = [];
-    for (const path of report.files) {
+    for (const path of report.detail === "" ? report.files : [report.detail, ...report.files]) {
       try {
         const meta = await attachHostFile({ db, nas: this.deps.nas, ...this.deps.files }, report.agent_id, path);
         attachmentIds.push(meta.id);
@@ -149,7 +149,7 @@ export class HelperReports {
       const [steer] = await db.select({ message: helperSteers.message }).from(helperSteers).where(eq(helperSteers.task, report.task));
       await recordActivity(db, { agentId: report.agent_id, jobId, ...siteReadRow(report, steer?.message ?? "") });
     }
-    await rewakeWork(this.deps.deliver, report.agent_id, {
+    await rewake(this.deps.deliver, report.agent_id, {
       jobId,
       content: [`${HEADLINES[report.state]}${stoppedBy(report)} (${report.task}):`, report.text, ...notes].join("\n"),
       notice: "helper",
