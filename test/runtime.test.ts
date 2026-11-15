@@ -573,6 +573,7 @@ test("spawn_agent requires system_prompt, and the child holds the whole registry
       "my_activity",
       "steer_browser",
       "steer_terminal",
+      "stop_task",
       "list_browsers",
       "list_terminals",
       "read_file",

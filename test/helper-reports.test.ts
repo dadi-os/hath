@@ -218,13 +218,13 @@ test("the stream is followed: a pushed report is delivered, and a dropped stream
   }
 });
 
-test("a report clears the watch the agent had on its task", async () => {
+test("a report clears the watch the agent had on its task, and a watch on another task stays", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
   const { runtime } = harness();
-  await handle.db.insert(watches).values({ agentId: "reporter", targets: ["task/browser/1"], dueAt: new Date(Date.now() + 60_000) });
+  await handle.db.insert(watches).values({ agentId: "reporter", targets: ["task/browser/7"], dueAt: new Date(Date.now() + 60_000) });
 
-  await runtime.helperReports.handle(report());
+  await runtime.helperReports.handle(report({ task: "task/browser/7", id: "7", at: "2026-10-30T09:00:00.000000000Z" }));
   await runtime.waitUntilIdle();
 
   assert.equal((await handle.db.select().from(watches)).length, 0);

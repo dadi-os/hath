@@ -64,6 +64,9 @@ test("the router holds only the registry tools it names, and cannot find files o
 /** Words in backticks or snake_case in the prompts that name an input, a status or a path, not a tool. */
 const NOT_TOOLS = new Set(["needs_input", "timeout_minutes"]);
 
+/** Backticked words in router.md that are tool inputs, not tools. */
+const ROUTER_PARAMETERS = new Set(["agent_id", "show_retired"]);
+
 /** The tool-looking names a prompt mentions: backticked or snake_case words, and the bare tools `wait` and `yield`. */
 function mentionedTools(text: string, pattern: RegExp): string[] {
   return [...new Set([...text.matchAll(pattern)].map((match) => match[1]!))].filter((name) => !NOT_TOOLS.has(name));
@@ -77,10 +80,10 @@ test("every tool system.md names exists in an agent's tool set", () => {
   assert.deepEqual(names.filter((name) => !held.has(name)), []);
 });
 
-test("every tool the dwar agent prompt names exists in an agent's tool set", () => {
-  const text = readFileSync(new URL("../../dwar/prompts/agent.txt", import.meta.url), "utf8");
-  const names = [...mentionedTools(text, /\b([a-z]+(?:_[a-z]+)+)\b/g), ...["wait", "yield"].filter((name) => new RegExp(`\\b${name}\\b`).test(text))];
-  assert.ok(names.includes("send_message") && names.includes("ingest_memory") && names.includes("yield"));
-  const held = new Set(agentTools("anyone").map((tool) => tool.name));
+test("every tool router.md names exists in the router's tool set", () => {
+  const text = readFileSync(new URL("../prompts/router.md", import.meta.url), "utf8");
+  const names = mentionedTools(text, /`([a-z]+(?:_[a-z]+)+)`/g).filter((name) => !ROUTER_PARAMETERS.has(name));
+  assert.ok(names.length >= 5, "the scan found the prompt's tools");
+  const held = new Set(routerTools().map((tool) => tool.name));
   assert.deepEqual(names.filter((name) => !held.has(name)), []);
 });
