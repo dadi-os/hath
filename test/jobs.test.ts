@@ -259,20 +259,25 @@ function wakeThatCalled(calls: string[], jobId: string | null = null): Wake {
   return wake;
 }
 
-test("a wake that only yielded closes the job it opened as noop; one that did anything else leaves it open", async () => {
+test("a wake that only yielded closes an agent's job as noop; Ankur's job, and one worked on, stay open", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const idleId = await insertAgent(handle.db, { id: "idle-agent", systemPrompt: "agent" });
   const busyId = await insertAgent(handle.db, { id: "busy-agent", systemPrompt: "agent" });
+  const askerId = await insertAgent(handle.db, { id: "asker-agent", systemPrompt: "agent" });
   const d = deps();
-  await deliverUserMessage(d, idleId, "ok thanks");
-  await deliverUserMessage(d, busyId, "ok thanks");
+  await deliverAgentMessage(d, { fromAgentId: askerId, toAgentId: idleId, content: "ok thanks" });
+  await deliverAgentMessage(d, { fromAgentId: askerId, toAgentId: busyId, content: "ok thanks" });
+  const ankursId = await insertAgent(handle.db, { id: "ankurs-agent", systemPrompt: "agent" });
+  await deliverUserMessage(d, ankursId, "what is due tonight?");
   const nas = mockNas({});
 
   await settleWakeJobs(handle.db, nas, d.transcript.transcriptFor(idleId), idleId, wakeThatCalled(["yield"]));
   await settleWakeJobs(handle.db, nas, d.transcript.transcriptFor(busyId), busyId, wakeThatCalled(["read_file", "yield"]));
+  await settleWakeJobs(handle.db, nas, d.transcript.transcriptFor(ankursId), ankursId, wakeThatCalled(["yield"]));
 
   assert.deepEqual((await jobsOf(idleId)).map((row) => row.state), ["noop"]);
   assert.deepEqual((await jobsOf(busyId)).map((row) => row.state), ["open"]);
+  assert.deepEqual((await jobsOf(ankursId)).map((row) => row.state), ["open"], "the answer-by timer is the backstop for an answer he is owed");
 });
 
 test("a routine's job closes when its run ends with nothing pending, and stays open while a helper it steered works", async () => {
