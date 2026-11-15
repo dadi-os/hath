@@ -81,7 +81,8 @@ export async function recordStatus(
  * settleWakeJobs closes, when an agent's wake ends, each job opened during that wake (by a
  * message among `lines`, the agent's transcript rows since its previous wake) that the wake
  * did nothing on: no step but a yield and no message back, so it was a message that needed
- * no work (noop). The wake's own job, when it has no requester (a routine's), closes as done
+ * no work (noop). A job with an answer-by time stays open through a yield: the timer is the
+ * backstop for an answer Ankur is owed. The wake's own job, when it has no requester (a routine's), closes as done
  * when the run ends with nothing pending. Every other job stays open until the agent reports
  * on it: hath never decides from outside that a job stalled, since an agent that yielded may be
  * waiting on a reply that wakes it (health-specialist's Dr. Zubair job was closed as
@@ -102,7 +103,7 @@ export async function settleWakeJobs(db: Db, nas: NasClient, lines: TranscriptEn
     return;
   }
   const open = await db.select().from(jobs).where(and(eq(jobs.agentId, agentId), eq(jobs.state, "open")));
-  for (const job of open.filter((row) => row.openedSeq >= firstSeq && hasRequester(row))) {
+  for (const job of open.filter((row) => row.openedSeq >= firstSeq && hasRequester(row) && !(wake.reasoned() && row.answerBy !== null))) {
     const onLine = lines.filter(
       (row) =>
         row.kind !== "notice" &&

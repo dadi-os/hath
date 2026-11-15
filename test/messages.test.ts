@@ -205,7 +205,7 @@ test("a continuation's thread stops at the job's last logged step, and what arri
   assert.match(before, /read D2L for the project dates/);
   assert.doesNotMatch(before, /Helper finished/);
   assert.equal(context.arrived?.role, "user");
-  assert.match(String(context.arrived?.content), /^\[Arrived since your last step\]\n\[Notice from hath[^\n]*\n[^\n]*Helper finished \(task\/browser\/1\):\nProject 2 is due Nov 20\./);
+  assert.match(String(context.arrived?.content), /^\[Arrived since your last step\]\n\n\[Notice from hath[^\n]*\n[^\n]*Helper finished \(task\/browser\/1\):\nProject 2 is due Nov 20\./);
 
   const fresh = await assembleContext({
     db: handle.db,
