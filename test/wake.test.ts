@@ -277,29 +277,6 @@ test("a turn of text and no tool call is the agent's answer when it is taken, an
   assert.equal(thoughts.length, 2, "text that is only thought continues the run");
 });
 
-test("text beside a lone yield is the answer when nothing is pending, and only thought when something is or the call is not a yield", async () => {
-  async function run(content: DwarChatResponse["content"], pending: boolean): Promise<{ taken: string[] }> {
-    const taken: string[] = [];
-    const requests: DwarChatRequest[] = [];
-    await runAgentLoop({
-      ...loopHooks(),
-      ...stepDeps(new Wake(roomyWakeLimits), () => turn("anthropic", content), requests),
-      replyWithText: async (text) => {
-        taken.push(text);
-        return true;
-      },
-      hasPending: async () => pending,
-    });
-    return { taken };
-  }
-  const answer: DwarChatResponse["content"] = [{ type: "text", text: "Stored: coffee is off." }, call("yield", "y1")];
-
-  assert.deepEqual((await run(answer, false)).taken, ["Stored: coffee is off."]);
-  assert.deepEqual((await run(answer, true)).taken, [], "an ask or helper is pending, so the text is narration");
-  assert.deepEqual((await run([{ type: "text", text: "looking" }, call("recall_memory", "r1"), call("yield", "y2")], false)).taken, [], "another tool in the turn");
-  assert.deepEqual((await run([call("yield", "y3")], false)).taken, [], "no text");
-});
-
 test("a wake lives while any run holds it and is dropped when the last releases", () => {
   const wakes = new WakeStore(roomyWakeLimits);
   const first = wakes.hold("agent-1");

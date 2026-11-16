@@ -37,12 +37,12 @@ async function inAnkursJob(id: string) {
   return { agentId, runtime, job: job!, ctx: { ...runtime.toolContext(agentId), jobId: job!.id } };
 }
 
-test("requester addresses whoever gave the job; a status closes it; a date to Ankur gets its weekday; the send is recorded as activity", async () => {
+test("requester addresses whoever gave the job; a status closes it; the send is recorded as activity", async () => {
   const { agentId, runtime, job, ctx } = await inAnkursJob("sender-agent");
   const result = await executeTool(ctx, send("send_message", { to: "requester", content: 'HW3 is due Nov 11. The task "Quiz Nov 14" is separate.', status: "done" }));
   assert.equal(result.isError, false, result.content);
   const [row] = await handle.db.select().from(messages).where(and(eq(messages.fromAgentId, agentId), eq(messages.kind, "message")));
-  assert.match(row!.content, /^HW3 is due (Mon|Tue|Wed|Thu|Fri|Sat|Sun) Nov 11\. The task "Quiz Nov 14" is separate\.$/);
+  assert.equal(row!.content, 'HW3 is due Nov 11. The task "Quiz Nov 14" is separate.');
   assert.equal(row?.toAgentId, null);
   assert.equal(row?.status, "done");
   assert.equal(row?.jobId, job.id);
@@ -79,7 +79,7 @@ test("a message to an agent is not refused for anything it says, and it is an as
   const body = JSON.parse(result.content) as { ask: boolean };
   assert.equal(body.ask, true);
   const [row] = await handle.db.select().from(messages).where(and(eq(messages.fromAgentId, agentId), eq(messages.toAgentId, peerId)));
-  assert.equal(row?.content, "Working on it. Due Mon Nov 11, what is open?", "agents get no weekday rewriting");
+  assert.equal(row?.content, "Working on it. Due Mon Nov 11, what is open?", "a message is delivered as written");
   const toRequester = JSON.parse((await executeTool(ctx, send("send_message", { to: "ankur", content: "Asked the class." }))).content) as { ask: boolean };
   assert.equal(toRequester.ask, false);
   await runtime.waitUntilIdle();

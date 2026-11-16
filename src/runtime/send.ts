@@ -1,9 +1,8 @@
 /**
  * `send_message`: every agent's way to speak. It delivers a message to Ankur, to the job's
  * requester or to an agent, stamps it with its job, snapshots any file path it is given into the
- * attachments store at send time, and puts the weekday beside every date in a message to Ankur.
- * Nothing about what is said is refused: the only errors are an address that cannot be
- * delivered to.
+ * attachments store at send time. Nothing about what is said is refused: the only errors are an
+ * address that cannot be delivered to.
  */
 
 import { z } from "zod";
@@ -16,7 +15,6 @@ import { MAX_ATTACHMENTS, resolveAttachments, textAttachment } from "./attachmen
 import { recordActivity, sendRow } from "./activity.js";
 import { deliverDeps } from "./async.js";
 import { deliverAgentMessage } from "./deliver.js";
-import { fillWeekdays } from "./weekdays.js";
 import { hasRequester, jobById } from "./jobs.js";
 import type { TranscriptEntry } from "./transcript.js";
 
@@ -33,7 +31,7 @@ const sendInput = z
 export const sendTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    'Send a message to Ankur (to: "ankur"), to whoever gave you this job (to: "requester"), or to another agent (to: its kebab-case id). It is delivered when the call returns and wakes the recipient; an agent\'s reply to something you asked comes back to this job. attachments are absolute file paths on the box (copied as they are now) or attachment ids; never paste a file into content. status records the job when the message goes to its requester: done (the whole result), blocked (a wall you tried to get past), or needs_input (the one question only they can answer). A date in a message to Ankur gets its weekday written beside it. A message over 4,000 characters to an agent arrives as its opening with the whole text attached. Does not end the turn: call yield when done.',
+    'Send a message to Ankur (to: "ankur"), to whoever gave you this job (to: "requester"), or to another agent (to: its kebab-case id). It is delivered when the call returns and wakes the recipient; an agent\'s reply to something you asked comes back to this job. attachments are absolute file paths on the box (copied as they are now) or attachment ids; never paste a file into content. status records the job when the message goes to its requester: done (the whole result), blocked (a wall you tried to get past), or needs_input (the one question only they can answer). A message over 4,000 characters to an agent arrives as its opening with the whole text attached. Does not end the turn: call yield when done.',
   input_schema: {
     type: "object",
     properties: {
@@ -131,15 +129,14 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   if (to !== null) {
     await requireActiveAgent(ctx.db, to);
   }
-  const content = to === null ? fillWeekdays(input.content, new Date(), ctx.timeZone) : input.content;
   const attachmentIds = await resolveAttachments(ctx, caller, input.attachments ?? []);
   const { row, oversized } = await deliverFrom(ctx, caller, to, {
-    content,
+    content: input.content,
     attachmentIds,
     jobId: ctx.jobId,
     ...(input.status !== undefined ? { status: input.status } : {}),
   });
-  await recordActivity(ctx.db, { agentId: caller, jobId: ctx.jobId, ...sendRow(to, content) });
+  await recordActivity(ctx.db, { agentId: caller, jobId: ctx.jobId, ...sendRow(to, input.content) });
   const attached = row.attachments.length > 0 ? { attachments: row.attachments.map(toAttachmentSummary) } : {};
   const job = ctx.jobId === null ? null : await jobById(ctx.db, ctx.jobId);
   return ok(

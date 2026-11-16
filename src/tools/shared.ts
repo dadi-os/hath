@@ -64,8 +64,6 @@ export type ToolContext = {
   wakeId: string | null;
   /** The job the caller's wake is on (see runtime/job-of.ts), or null when the wake is no job's. */
   jobId: string | null;
-  /** The box's IANA time zone, for weekdays in a message to Ankur. */
-  timeZone: string;
   /** `runtime.answer_by_minutes`. */
   answerByMinutes: number;
   /** `runtime.prompt_ceiling_tokens` and `runtime.activity_ceiling_share`: the room an activity list may take. */

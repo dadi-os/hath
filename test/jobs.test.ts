@@ -171,6 +171,7 @@ test("the wake header gives the job's asks with their answers, what was told, an
   const header = await render(true);
   assert.match(header, new RegExp(`^\\[Wake\\] message from Ankur · job #${opening.seq} \\(new\\)`));
   assert.match(header, /\[Job #\d+\] opened by Ankur, [A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{1,2}:\d{2} [AP]M: "What is due tonight\?" · answer by /);
+  assert.match(header, /\n\[Now\] [A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{1,2}:\d{2} [AP]M\n/);
   assert.match(header, new RegExp(`asked: cse-300-specialist #${toA.seq} \\(answered #${answer.seq}\\), cse-335-specialist #${toB.seq} \\(no answer yet\\)`));
   assert.match(header, /helpers: none · stored: none · told Ankur: nothing yet/);
   assert.match(header, /\[Your recent activity, last 24 h\] none$/);

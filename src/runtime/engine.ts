@@ -36,7 +36,6 @@ import { stopAgent, type StopResult } from "./stop.js";
 import { HostSessions } from "./sessions.js";
 import { HelperReports } from "./helper-reports.js";
 import type { FileStore } from "./files.js";
-import { pendingItems, pendingTargets } from "./pending.js";
 import { clearWatch, recordPendingWatch, watchOf } from "./watches.js";
 import { yieldReminder } from "./yield-reminder.js";
 import { ToolDebounce } from "./tool-debounce.js";
@@ -327,7 +326,6 @@ export function createRuntime(opts: {
       wakeActivity,
       wakeId: callerId === null ? null : wakes.idOf(callerId),
       jobId: callerId === null ? null : (wakes.peek(callerId)?.jobId ?? null),
-      timeZone: opts.config.env.timezone,
       answerByMinutes: opts.config.runtime.answer_by_minutes,
       promptCeilingTokens: opts.config.runtime.prompt_ceiling_tokens,
       activityCeilingShare: opts.config.runtime.activity_ceiling_share,
@@ -578,10 +576,6 @@ export function createRuntime(opts: {
       interrupts,
       woke: () => clearWatch(opts.db, agentId),
       replyWithText: (text: string) => replyWithText(toolContext(agentId), text),
-      hasPending: async () => {
-        const jobId = wakes.peek(agentId)?.jobId ?? null;
-        return jobId !== null && pendingTargets(await pendingItems(opts.db, opts.nas, jobId)).length > 0;
-      },
       yieldReminder: () => yieldReminder({ db: opts.db, nas: opts.nas }, agentId, wakes.peek(agentId)?.jobId ?? null),
       watchPending: (minutes: number) => recordPendingWatch(opts.db, opts.nas, agentId, wakes.peek(agentId)?.jobId ?? null, minutes),
       logAborted: helpers.logAborted,

@@ -1,7 +1,7 @@
 /**
  * The wake header: the top of every wake, rendered by hath with no model call. It says why the
  * agent woke and which job this is (who asked, their words, what the agent has done in it), then
- * lists what the agent did in the last day across jobs. A routine's job shows the routine and its
+ * shows the current time, then lists what the agent did in the last day across jobs. A routine's job shows the routine and its
  * procedure instead of a requester.
  */
 
@@ -59,7 +59,7 @@ function jobLines(ledger: JobLedger): string[] {
   ];
 }
 
-/** renderHeader is the wake's header turn: `[Wake]`, the job, and the recent activity. */
+/** renderHeader is the wake's header turn: `[Wake]`, the job, the current time and the recent activity. */
 export async function renderHeader(deps: HeaderDeps): Promise<string> {
   const reason = deps.reasons.length === 0 ? "no reason recorded" : deps.reasons.join("; ");
   const lines: string[] = [];
@@ -79,6 +79,7 @@ export async function renderHeader(deps: HeaderDeps): Promise<string> {
       lines.push(...jobLines(ledger));
     }
   }
+  lines.push(`[Now] ${localTime(deps.now)}`);
   const since = new Date(deps.now.getTime() - deps.activityHours * 3_600_000);
   const rows = await activityRows(deps.db, {
     agentId: deps.agentId,
