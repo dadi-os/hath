@@ -198,7 +198,7 @@ test("a wake with no job says so, and the ledger of a missing job is an error", 
     activityShare: 0.05,
     ceilingTokens: 96_000,
   });
-  assert.match(header, /^\[Wake\] run failure · no job\n\[Your recent activity/);
+  assert.match(header, /^\[Wake\] run failure · no job\n\[Now\] [^\n]+\n\[Your recent activity/);
   await assert.rejects(
     renderHeader({ db: handle.db, agentId, reasons: [], jobId: randomUUID(), jobIsNew: false, now: new Date(), activityHours: 24, activityShare: 0.05, ceilingTokens: 96_000 }),
     /does not exist/,
