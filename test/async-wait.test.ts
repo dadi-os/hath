@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
-import { agentLogs, jobs, pendingAsync, reminders, watches } from "../src/db/schema.js";
+import { agentLogs, jobs, pendingAsync, reminders, wakes, watches } from "../src/db/schema.js";
 import { reportLostAsync } from "../src/runtime/async.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { executeTool } from "../src/runtime/tools.js";
+import { pendingItems } from "../src/runtime/pending.js";
 import { recordPendingWatch } from "../src/runtime/watches.js";
 import { yieldReminder } from "../src/runtime/yield-reminder.js";
 import type { DwarChatRequest } from "../src/types/domain.js";
@@ -145,6 +146,23 @@ test("a run's end watches the job's unanswered asks and working helper tasks, an
   await deliverAgentMessage(quiet(runtime), { fromAgentId: "other", toAgentId: "waiter", content: "this much" });
   await recordPendingWatch(handle.db, nas, "waiter", job.id, 10);
   assert.deepEqual((await handle.db.select().from(watches).where(eq(watches.agentId, "waiter")))[0]?.targets, ["task/browser/1"], "an answered ask is no longer waited on");
+});
+
+test("an ask is no longer waited on once the agent asked has run since and is idle with nothing pending", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  await insertAgent(handle.db, { id: "waiter", systemPrompt: "waits" });
+  await insertAgent(handle.db, { id: "other", systemPrompt: "other" });
+  const { runtime, nas } = harness();
+  const { job } = await inJob(runtime, "waiter");
+  await deliverAgentMessage(quiet(runtime), { fromAgentId: "waiter", toAgentId: "other", content: "what do you know?", jobId: job.id });
+  assert.deepEqual((await pendingItems(handle.db, nas, job.id)).asks, ["other"], "it has not run since the ask");
+
+  const ran = { id: randomUUID(), agentId: "other", reasonKind: "message" as const, startedAt: new Date(Date.now() + 1_000), endedAt: new Date(Date.now() + 2_000) };
+  await handle.db.insert(wakes).values(ran);
+  assert.deepEqual((await pendingItems(handle.db, nas, job.id)).asks, [], "it ran and yielded without answering, so nothing is coming");
+
+  await handle.db.insert(watches).values({ agentId: "other", targets: ["task/browser/9"], dueAt: new Date(Date.now() + 60_000) });
+  assert.deepEqual((await pendingItems(handle.db, nas, job.id)).asks, ["other"], "it waits on something of its own, so it may still answer");
 });
 
 test("a due watch wakes the agent with facts about a task and an agent, and is dropped", async () => {
