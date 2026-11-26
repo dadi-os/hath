@@ -23,7 +23,8 @@ export function formatZod(error: ZodError): string {
     .join("; ");
 }
 
-const messageAttachment = z
+/** A file sent the old way, as base64; deprecated for links (see runtime/inbox.ts). */
+const messageUpload = z
   .object({
     media_type: z.string().min(1),
     data: z.string().min(1),
@@ -33,9 +34,10 @@ const messageAttachment = z
 
 export const postRouterBody = z
   .object({
-    /** May be empty when attachments are present; patched server-side. */
+    /** May be empty when `attachments` are present. */
     content: z.string(),
-    attachments: z.array(messageAttachment).max(8).optional(),
+    /** Deprecated: each file is written to the Inbox and appended to the content as a `box://` link. */
+    attachments: z.array(messageUpload).max(8).optional(),
   })
   .strict()
   .superRefine((body, ctx) => {
@@ -51,9 +53,10 @@ export const postRouterBody = z
 export const postMessageBody = z
   .object({
     to_agent_id: agentIdSchema,
-    /** May be empty when attachments are present; patched server-side. */
+    /** May be empty when `attachments` are present. */
     content: z.string(),
-    attachments: z.array(messageAttachment).max(8).optional(),
+    /** Deprecated: each file is written to the Inbox and appended to the content as a `box://` link. */
+    attachments: z.array(messageUpload).max(8).optional(),
   })
   .strict()
   .superRefine((body, ctx) => {
@@ -73,9 +76,6 @@ export const threadReadBody = z.object({ seq: z.number().int().positive() }).str
 
 /** Path params for one routine or reminder, addressed by its uuid. */
 export const scheduleIdParam = z.object({ id: z.string().uuid() }).strict();
-
-/** Path params for one attachment, addressed by its uuid. */
-export const attachmentIdParam = z.object({ id: z.string().uuid() }).strict();
 
 /** An agent's or every agent's logs: the newest `limit` rows, optionally of one event. */
 export const logsQuery = z

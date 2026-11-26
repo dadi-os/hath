@@ -4,7 +4,6 @@
  * transcript: the router is ephemeral and has none.
  */
 
-import type { AttachmentMeta } from "../db/attachments.js";
 import type { MessageKind, MessageStatus } from "../types/domain.js";
 
 export type TranscriptEntry = {
@@ -14,8 +13,6 @@ export type TranscriptEntry = {
   fromAgentId: string | null;
   toAgentId: string | null;
   content: string;
-  /** Files the message carries, in order; metadata only. */
-  attachments: AttachmentMeta[];
   /** What an agent's report to whoever gave it the job says about that job; null otherwise. */
   status: MessageStatus | null;
   /** A notice is hath's word that an agent's work stopped, never chat; absent means message. */
@@ -65,7 +62,6 @@ export class TranscriptStore {
       fromAgentId: entry.fromAgentId,
       toAgentId: entry.toAgentId,
       content: entry.content,
-      attachments: [],
       status: null,
       jobId: null,
       createdAt: new Date(),

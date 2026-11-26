@@ -2,15 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
-import {
-  attachmentsByMessage,
-  attachToMessage,
-  toAttachmentSummary,
-  type AttachmentMeta,
-  type NewAttachment,
-} from "./attachments.js";
-import type { AttachmentSummary, MessageKind, MessageRecord, MessageStatus } from "../types/domain.js";
-import { toMessageRecord } from "../serialize.js";
+import type { MessageKind, MessageStatus } from "../types/domain.js";
 import { HathError } from "../errors.js";
 import type { Db } from "./client.js";
 import { agents, messages, threadReads, wakes, type MessageRow } from "./schema.js";
@@ -67,22 +59,13 @@ export async function currentRequester(db: Db, agentId: string): Promise<string 
   return agent.parentAgentId;
 }
 
-export type MessageAttachments = {
-  uploads: NewAttachment[];
-  forward: string[];
-};
-
-/** A message that carries no files. */
-export const NO_ATTACHMENTS: MessageAttachments = { uploads: [], forward: [] };
-
-/** Insert one durable message and its attachments in one transaction; return it as a transcript entry (stable seq). */
+/** Insert one durable message; return it as a transcript entry (stable seq). */
 export async function insertMessage(
   db: Db,
   args: {
     fromAgentId: string | null;
     toAgentId: string | null;
     content: string;
-    attachments: MessageAttachments;
     /** The job status an agent's report carries; absent on every other message. */
     status?: MessageStatus;
     /** notice for hath's word that an agent's work stopped; message when left out. */
@@ -93,26 +76,23 @@ export async function insertMessage(
     sentBy?: "hath";
   },
 ): Promise<TranscriptEntry> {
-  return db.transaction(async (tx) => {
-    const [row] = await tx
-      .insert(messages)
-      .values({
-        id: randomUUID(),
-        fromAgentId: args.fromAgentId,
-        toAgentId: args.toAgentId,
-        content: args.content,
-        status: args.status ?? null,
-        kind: args.kind ?? "message",
-        jobId: args.jobId ?? null,
-        sentBy: args.sentBy ?? null,
-      })
-      .returning();
-    if (!row) {
-      throw new Error("insert message returned no row");
-    }
-    const attached = await attachToMessage(tx, row.id, args.fromAgentId, args.attachments);
-    return messageToTranscriptEntry(row, attached);
-  });
+  const [row] = await db
+    .insert(messages)
+    .values({
+      id: randomUUID(),
+      fromAgentId: args.fromAgentId,
+      toAgentId: args.toAgentId,
+      content: args.content,
+      status: args.status ?? null,
+      kind: args.kind ?? "message",
+      jobId: args.jobId ?? null,
+      sentBy: args.sentBy ?? null,
+    })
+    .returning();
+  if (!row) {
+    throw new Error("insert message returned no row");
+  }
+  return messageToTranscriptEntry(row);
 }
 
 /**
@@ -133,18 +113,14 @@ export async function stampMessageWake(db: Db, id: string, wakeId: string): Prom
   await db.update(messages).set({ wakeId }).where(eq(messages.id, id));
 }
 
-/** Map a DB message row and its attachments into a transcript entry. */
-export function messageToTranscriptEntry(
-  row: MessageRow,
-  attachments: AttachmentMeta[],
-): TranscriptEntry {
+/** Map a DB message row into a transcript entry. */
+export function messageToTranscriptEntry(row: MessageRow): TranscriptEntry {
   return {
     id: row.id,
     seq: row.seq,
     fromAgentId: row.fromAgentId,
     toAgentId: row.toAgentId,
     content: row.content,
-    attachments,
     status: row.status,
     kind: row.kind,
     ...(row.sentBy !== null ? { sentBy: row.sentBy } : {}),
@@ -154,15 +130,12 @@ export function messageToTranscriptEntry(
 }
 
 /**
- * Load all durable messages (not utterances) and their attachment metadata into the in-process
- * transcript cache (startup resume).
+ * Load all durable messages (not utterances) into the in-process transcript cache (startup resume).
  */
 export async function hydrateTranscript(db: Db, transcript: TranscriptStore): Promise<number> {
   const rows = await db.select().from(messages).where(ne(messages.kind, "utterance")).orderBy(asc(messages.seq));
-  const attached = await attachmentsByMessage(db);
   for (const row of rows) {
-    const entry = messageToTranscriptEntry(row, attached.get(row.id) ?? []);
-    transcript.ingest(entry);
+    transcript.ingest(messageToTranscriptEntry(row));
   }
   transcript.markHydrated();
   return rows.length;
@@ -295,7 +268,6 @@ export type HumanMessageRecord = {
   from_agent_id: string | null;
   to_agent_id: string | null;
   content: string;
-  attachments: AttachmentSummary[];
   /** notice: hath's word that the agent's work stopped, shown as a system line, never as its message. */
   kind: MessageKind;
   created_at: string;
@@ -329,29 +301,15 @@ export async function listHumanMessages(
             .orderBy(desc(messages.seq))
             .limit(opts.limit)
         ).reverse();
-  const attached = await attachmentsByMessage(
-    db,
-    rows.map((row) => row.id),
-  );
   return rows.map((row) => ({
     id: row.id,
     seq: row.seq,
     from_agent_id: row.fromAgentId,
     to_agent_id: row.toAgentId,
     content: row.content,
-    attachments: (attached.get(row.id) ?? []).map(toAttachmentSummary),
     kind: row.kind,
     created_at: row.createdAt.toISOString(),
   }));
-}
-
-/** Map message rows to API records with their attachments, keeping the rows' order. */
-export async function loadMessageRecords(db: Db, rows: MessageRow[]): Promise<MessageRecord[]> {
-  const attached = await attachmentsByMessage(
-    db,
-    rows.map((row) => row.id),
-  );
-  return rows.map((row) => toMessageRecord(row, attached.get(row.id) ?? []));
 }
 
 /** What {@link searchMessages} narrows by; every field but `agentId` is optional. */

@@ -1,7 +1,7 @@
 /**
  * Where hath keeps files on the box, and how it puts them there. Every file goes through
  * Nas's filesystem API, so an agent opens one with read_file like any other path:
- * incoming attachments, tool results too large for a prompt, and the text taken from a PDF.
+ * tool results too large for a prompt, and the text taken from a PDF.
  */
 
 import { createHash } from "node:crypto";
@@ -24,11 +24,6 @@ export function safeName(filename: string): string {
     .join("")
     .trim();
   return cleaned === "" || cleaned === "." || cleaned === ".." ? "file" : cleaned.slice(-150);
-}
-
-/** attachmentPath is where attachment `id` named `filename` is kept. Never rewritten. */
-export function attachmentPath(dir: string, id: string, filename: string): string {
-  return `${dir}/attachments/${id}/${safeName(filename)}`;
 }
 
 /** resultPath is where the whole of tool call `toolUseId`'s result is kept. */

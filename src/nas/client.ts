@@ -112,6 +112,15 @@ const writeResponseSchema = z
   })
   .passthrough();
 
+const uploadResponseSchema = z
+  .object({
+    /** The file's final absolute path: the name asked for, or `name (2).ext` when it was taken. */
+    path: z.string().min(1),
+    name: z.string().min(1),
+    size: z.number().int(),
+  })
+  .passthrough();
+
 const editResponseSchema = z
   .object({
     replaced: z.literal(true),
@@ -163,6 +172,8 @@ export type ReadFileRequest = {
 export type ReadFileBytesRequest = { path: string; max_bytes: number };
 /** A text file (`content`) or any bytes (`data`, base64), not both. */
 export type WriteFileRequest = { path: string } & ({ content: string } | { data: string });
+/** A file to upload into `folder` (an absolute path; parents are created) as `name`. */
+export type UploadFileRequest = { folder: string; name: string; data: Buffer };
 export type EditFileRequest = { path: string; old_string: string; new_string: string };
 export type GlobRequest = { pattern: string; cwd?: string; limit?: number };
 export type GrepRequest = {
@@ -203,6 +214,8 @@ export type NasClient = {
     body: ReadFileBytesRequest,
   ) => Promise<z.infer<typeof readBytesResponseSchema>>;
   writeFile: (body: WriteFileRequest) => Promise<z.infer<typeof writeResponseSchema>>;
+  /** Streams a file into a folder without overwriting: a taken name lands as `name (2).ext`. Returns the final path. */
+  uploadFile: (body: UploadFileRequest) => Promise<z.infer<typeof uploadResponseSchema>>;
   editFile: (body: EditFileRequest) => Promise<z.infer<typeof editResponseSchema>>;
   glob: (body: GlobRequest) => Promise<z.infer<typeof globResponseSchema>>;
   grep: (body: GrepRequest) => Promise<z.infer<typeof grepResponseSchema>>;
@@ -274,6 +287,12 @@ export function createNasClient(config: Config): NasClient {
     readFile: (body) => post("/fs/read", omitUndefined(body), readResponseSchema),
     readFileBytes: (body) => post("/fs/read_bytes", body, readBytesResponseSchema),
     writeFile: (body) => post("/fs/write", body, writeResponseSchema),
+    uploadFile: ({ folder, name, data }) => {
+      const form = new FormData();
+      form.append("path", folder);
+      form.append("file", new Blob([new Uint8Array(data)]), name);
+      return post("/fs/upload", form, uploadResponseSchema, { headers: { "content-type": "multipart/form-data" } });
+    },
     editFile: (body) => post("/fs/edit", body, editResponseSchema),
     glob: (body) => post("/fs/glob", omitUndefined(body), globResponseSchema),
     grep: (body) => post("/fs/grep", omitUndefined(body), grepResponseSchema),

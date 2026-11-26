@@ -46,7 +46,7 @@ import { TranscriptStore } from "./transcript.js";
 import { PROSE_CHARS_PER_TOKEN, Wake, WakeStore, type WakeLimits } from "./wake.js";
 import { ROUTER_KEY } from "./router.js";
 import { callModel, runStep, stepRequest, syncWake, type StepDeps } from "./step.js";
-import { FORWARD_ATTACHMENT, SEND_MESSAGE, type WakeOrigin } from "../types/domain.js";
+import { SEND_MESSAGE, type WakeOrigin } from "../types/domain.js";
 import { sweepCaches } from "./retention.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
 import { sendPickups } from "./pickups.js";
@@ -278,7 +278,6 @@ export function createRuntime(opts: {
   const helperReports = new HelperReports({
     nas: opts.nas,
     deliver: deliverDeps,
-    files: { dwar: opts.dwar, files },
     log: opts.log,
   });
 
@@ -544,7 +543,7 @@ export function createRuntime(opts: {
         call: (request: DwarChatRequest) => opts.dwar.complete(request, "hath/router"),
         executeTool: async (call: DwarToolUseBlock) => {
           const result = await helpers.exec(call);
-          if ((call.name === SEND_MESSAGE || call.name === FORWARD_ATTACHMENT) && !result.isError) {
+          if (call.name === SEND_MESSAGE && !result.isError) {
             sent.push(JSON.parse(result.content) as RoutedMessage);
           }
           return result;

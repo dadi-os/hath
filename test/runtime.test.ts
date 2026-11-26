@@ -9,7 +9,7 @@ import {
   MODIFY_AGENT_PROMPT,
   SEND_MESSAGE,
 } from "../src/types/domain.js";
-import { currentRequester, insertMessage, NO_ATTACHMENTS } from "../src/db/messages.js";
+import { currentRequester, insertMessage } from "../src/db/messages.js";
 import { assembleContext } from "../src/runtime/context.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
 import { createRuntime } from "../src/runtime/engine.js";
@@ -392,7 +392,7 @@ test("manage_agent retires without touching the prompt", async () => {
   );
 });
 
-test("an agent holds send_message and list_agents, and no hand_off or create_attachment", async () => {
+test("an agent holds send_message and list_agents, and no hand_off or forward_attachment", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const workerId = await insertAgent(handle.db, {
     name: "thread",
@@ -1421,7 +1421,7 @@ test("currentRequester is whoever most recently wrote after opening the line, ne
   const managerId = await insertAgent(handle.db, { id: "req-manager", systemPrompt: "manager" });
   const workerId = await insertAgent(handle.db, { id: "req-worker", systemPrompt: "worker", parentAgentId: managerId });
   const send = (fromAgentId: string | null, toAgentId: string | null, content: string, kind: "message" | "notice" = "message") =>
-    insertMessage(handle.db, { fromAgentId, toAgentId, content, attachments: NO_ATTACHMENTS, kind });
+    insertMessage(handle.db, { fromAgentId, toAgentId, content, kind });
 
   assert.equal(await currentRequester(handle.db, agentId), parentId);
   await send(null, agentId, "check my email");

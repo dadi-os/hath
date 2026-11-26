@@ -4,9 +4,7 @@ import {
   bigint,
   boolean,
   check,
-  customType,
   index,
-  integer,
   jsonb,
   pgTable,
   text,
@@ -19,11 +17,6 @@ import { sql } from "drizzle-orm";
 import type { ActivityKind, JobState, MessageStatus, MessageKind, WakeReasonKind } from "../types/domain.js";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
-
-/** Postgres `bytea`, read and written as a Node Buffer. */
-const bytea = customType<{ data: Buffer; driverData: Buffer }>({
-  dataType: () => "bytea",
-});
 
 export const agents = pgTable(
   "agents",
@@ -226,44 +219,6 @@ export const jobs = pgTable(
 );
 
 /**
- * A file sent with a message. Unbound (`message_id` null) from upload or
- * attachHostFile until a message carries it; a later forward copies the row,
- * so each message owns its attachments and deleting it deletes them. The file is on the
- * box at `path` (see runtime/files.ts), never rewritten, so a copied row shares it.
- *
- * - `description` is the image.describe text for images, null otherwise.
- * - `created_by_agent_id` is null for Ankur's uploads; an agent's unbound
- *   attachments go when the agent does.
- * - `text_content` and `data` are the bytes older rows kept here. Boot moves them to files
- *   and clears them (see runtime/attachments.ts moveLegacyAttachments); once none is
- *   left a migration drops both columns and makes `path` required.
- */
-export const attachments = pgTable(
-  "attachments",
-  {
-    id: uuid("id").primaryKey(),
-    messageId: uuid("message_id").references(() => messages.id, { onDelete: "cascade" }),
-    createdByAgentId: text("created_by_agent_id").references(() => agents.id, {
-      onDelete: "cascade",
-    }),
-    position: integer("position").notNull(),
-    filename: text("filename").notNull(),
-    mediaType: text("media_type").notNull(),
-    sizeBytes: integer("size_bytes").notNull(),
-    path: text("path"),
-    /** SHA-256 of the file's bytes, hex; null on rows from before it was kept. */
-    contentSha256: text("content_sha256"),
-    textContent: text("text_content"),
-    data: bytea("data"),
-    description: text("description"),
-    createdAt: timestamptz("created_at").notNull().defaultNow(),
-  },
-  (table) => [
-    index("attachments_message_id_position_idx").on(table.messageId, table.position),
-  ],
-);
-
-/**
  * An agent's own standing duty (see runtime/routines.ts). `at_local` is the wall-clock time
  * of day in the box's zone and `days` the weekdays it runs on (null is every day);
  * `next_run_at` is the ticker's cursor. A routine has an owner and no recipient: nobody sends
@@ -413,7 +368,6 @@ export const watches = pgTable("watches", {
 export type AgentRow = typeof agents.$inferSelect;
 export type AgentLogRow = typeof agentLogs.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
-export type AttachmentRow = typeof attachments.$inferSelect;
 export type RoutineRow = typeof routines.$inferSelect;
 export type ReminderRow = typeof reminders.$inferSelect;
 export type ActivityRow = typeof agentActivity.$inferSelect;

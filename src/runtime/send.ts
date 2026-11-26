@@ -1,19 +1,19 @@
 /**
  * `send_message`: every agent's way to speak. It delivers a message to Ankur, to the job's
- * requester or to an agent, stamps it with its job, snapshots any file path it is given into the
- * attachments store at send time. Nothing about what is said is refused: the only errors are an
- * address that cannot be delivered to.
+ * requester or to an agent, and stamps it with its job. A file travels as a link in its text.
+ * Nothing about what is said is refused: the only errors are an address that cannot be
+ * delivered to.
  */
 
+import { format } from "date-fns";
 import { z } from "zod";
 import { AGENT_ID_PATTERN, agentIdSchema } from "../agent-id.js";
-import { toAttachmentSummary } from "../db/attachments.js";
 import { fail, failWithoutAgentIdentity, ok, requireActiveAgent, AGENT_MESSAGE_MAX_CHARS, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarTool, MessageStatus } from "../types/domain.js";
 import { MESSAGE_STATUSES, SEND_MESSAGE } from "../types/domain.js";
-import { MAX_ATTACHMENTS, resolveAttachments, textAttachment } from "./attachments.js";
 import { recordActivity, sendRow } from "./activity.js";
 import { deliverDeps } from "./async.js";
+import { BOX_HOME, boxLink } from "./box-link.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { hasRequester, jobById } from "./jobs.js";
 import type { TranscriptEntry } from "./transcript.js";
@@ -22,7 +22,6 @@ const sendInput = z
   .object({
     to: z.string().min(1),
     content: z.string().min(1),
-    attachments: z.array(z.string().min(1)).max(MAX_ATTACHMENTS).optional(),
     status: z.enum(MESSAGE_STATUSES).optional(),
   })
   .strict();
@@ -31,17 +30,12 @@ const sendInput = z
 export const sendTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    'Send a message to Ankur (to: "ankur"), to whoever gave you this job (to: "requester"), or to another agent (to: its kebab-case id). It is delivered when the call returns and wakes the recipient; an agent\'s reply to something you asked comes back to this job. attachments are absolute file paths on the box (copied as they are now) or attachment ids; never paste a file into content. status records the job when the message goes to its requester: done (the whole result), blocked (a wall you tried to get past), or needs_input (the one question only they can answer). A message over 4,000 characters to an agent arrives as its opening with the whole text attached. Does not end the turn: call yield when done.',
+    'Send a message to Ankur (to: "ankur"), to whoever gave you this job (to: "requester"), or to another agent (to: its kebab-case id). It is delivered when the call returns and wakes the recipient; an agent\'s reply to something you asked comes back to this job. A file travels as a link in content, [name](box:///absolute/path), never pasted contents. status records the job when the message goes to its requester: done (the whole result), blocked (a wall you tried to get past), or needs_input (the one question only they can answer). A message over 4,000 characters to an agent arrives as its opening with the whole text in a file it links. Does not end the turn: call yield when done.',
   input_schema: {
     type: "object",
     properties: {
       to: { type: "string", description: '"ankur", "requester" (whoever gave you this job), or a kebab-case agent id' },
       content: { type: "string", description: "The message, exactly as the recipient reads it" },
-      attachments: {
-        type: "array",
-        items: { type: "string" },
-        description: `Absolute file paths or attachment ids (at most ${MAX_ATTACHMENTS})`,
-      },
       status: { type: "string", enum: [...MESSAGE_STATUSES], description: "The job's state when this goes to its requester: done, blocked or needs_input" },
     },
     required: ["to", "content"],
@@ -49,35 +43,43 @@ export const sendTool: DwarTool = {
   },
 };
 
-/** How much of an oversized agent message its recipient sees inline, ahead of the attached whole. */
+/** How much of an oversized agent message its recipient sees inline, ahead of the link to the whole. */
 const OVERSIZED_PREVIEW_CHARS = 1500;
 
-/** oversizedPreview is the inline part of an agent message too long to send whole: its opening and a pointer to the rest. */
-function oversizedPreview(content: string): string {
-  return `${content.slice(0, OVERSIZED_PREVIEW_CHARS)}…\n\n[The whole message, ${content.length} characters, is attached as message.md.]`;
+/** oversizedPreview is the inline part of an agent message too long to send whole: its opening and the link to the rest, in the file at `path`. */
+function oversizedPreview(content: string, path: string): string {
+  return `${content.slice(0, OVERSIZED_PREVIEW_CHARS)}…\n\n[The whole message, ${content.length} characters: ${boxLink(path)}]`;
+}
+
+/** writeOversized saves the whole of `caller`'s oversized message to `~/scratch/<caller>/message-<yyyymmdd-hhmmss>.md` through Nas and returns its path. */
+async function writeOversized(ctx: ToolContext, caller: string, content: string): Promise<string> {
+  const { path } = await ctx.nas.uploadFile({
+    folder: `${BOX_HOME}/scratch/${caller}`,
+    name: `message-${format(new Date(), "yyyyMMdd-HHmmss")}.md`,
+    data: Buffer.from(content, "utf8"),
+  });
+  return path;
 }
 
 /**
- * deliverFrom delivers one message as `caller`: an agent message past AGENT_MESSAGE_MAX_CHARS goes as its opening with the whole
- * text attached as message.md. It belongs to the caller's job `jobId`, or to the job its recipient
+ * deliverFrom delivers one message as `caller`: an agent message past AGENT_MESSAGE_MAX_CHARS goes as its opening with a
+ * link to the whole text, saved in the caller's scratch folder. It belongs to the caller's job `jobId`, or to the job its recipient
  * gave it. Returns the message and whether it was cut.
  */
 export async function deliverFrom(
   ctx: ToolContext,
   caller: string,
   to: string | null,
-  args: { content: string; attachmentIds: string[]; status?: MessageStatus; jobId: string | null },
+  args: { content: string; status?: MessageStatus; jobId: string | null },
 ): Promise<{ row: TranscriptEntry; oversized: boolean }> {
   const oversized = to !== null && args.content.length > AGENT_MESSAGE_MAX_CHARS;
-  const whole = oversized ? await textAttachment(ctx.files, "message.md", "text/markdown", args.content) : null;
+  const whole = oversized ? await writeOversized(ctx, caller, args.content) : null;
   const row = await deliverAgentMessage(
     deliverDeps(ctx),
     {
       fromAgentId: caller,
       toAgentId: to,
-      content: oversized ? oversizedPreview(args.content) : args.content,
-      attachmentIds: args.attachmentIds,
-      uploads: whole === null ? [] : [whole],
+      content: whole === null ? args.content : oversizedPreview(args.content, whole),
       jobId: args.jobId,
       ...(args.status !== undefined ? { status: args.status } : {}),
     },
@@ -85,9 +87,9 @@ export async function deliverFrom(
   return { row, oversized };
 }
 
-/** oversizedNote is what a sender is told when its agent message of `chars` characters went as an opening plus message.md. */
+/** oversizedNote is what a sender is told when its agent message of `chars` characters went as an opening plus a link to the whole text. */
 export function oversizedNote(chars: number): string {
-  return `Delivered, but at ${chars} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and the whole text as message.md. Keep agent messages to what was found, in a few lines.`;
+  return `Delivered, but at ${chars} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and a link to the whole text in your scratch folder. Keep agent messages to what was found, in a few lines.`;
 }
 
 /**
@@ -129,15 +131,12 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   if (to !== null) {
     await requireActiveAgent(ctx.db, to);
   }
-  const attachmentIds = await resolveAttachments(ctx, caller, input.attachments ?? []);
   const { row, oversized } = await deliverFrom(ctx, caller, to, {
     content: input.content,
-    attachmentIds,
     jobId: ctx.jobId,
     ...(input.status !== undefined ? { status: input.status } : {}),
   });
   await recordActivity(ctx.db, { agentId: caller, jobId: ctx.jobId, ...sendRow(to, input.content) });
-  const attached = row.attachments.length > 0 ? { attachments: row.attachments.map(toAttachmentSummary) } : {};
   const job = ctx.jobId === null ? null : await jobById(ctx.db, ctx.jobId);
   return ok(
     {
@@ -145,7 +144,6 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
       ...(oversized ? {} : { content: row.content }),
       seq: row.seq,
       ask: to !== null && job !== null && to !== job.requesterId,
-      ...attached,
       ...(oversized ? { note: oversizedNote(input.content.length) } : {}),
     },
     { message_id: row.id },

@@ -4,7 +4,7 @@ import { allTools, findTool } from "../tools/registry.js";
 import { asDwarTool, type ToolDefinition } from "../tools/types.js";
 import { ingestMemoryTool, recallMemoryTool } from "./memory.js";
 import { manageAgentTool, modifyAgentPromptTool } from "./modify.js";
-import { routerForwardAttachmentTool, routerSendMessageTool } from "./router.js";
+import { routerSendMessageTool } from "./router.js";
 import { sendTool } from "./send.js";
 import { listAgentsTool, yieldTool } from "./tools.js";
 
@@ -55,5 +55,5 @@ export function agentTools(agentId: string): DwarTool[] {
 
 /** routerTools is every tool the router holds. */
 export function routerTools(): DwarTool[] {
-  return [routerSendMessageTool, routerForwardAttachmentTool, listAgentsTool, recallMemoryTool, ...routerRegistryTools().map(asDwarTool), yieldTool];
+  return [routerSendMessageTool, listAgentsTool, recallMemoryTool, ...routerRegistryTools().map(asDwarTool), yieldTool];
 }

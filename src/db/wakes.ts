@@ -2,12 +2,12 @@
 
 import { and, asc, desc, eq, inArray, lt, min, or, sql } from "drizzle-orm";
 import type { Db } from "./client.js";
-import { loadMessageRecords } from "./messages.js";
 import { agentLogs, messages, wakes, watches, type WakeRow } from "./schema.js";
 import { HathError } from "../errors.js";
 import {
   isActivityTrimmed,
   orderEntries,
+  toMessageRecord,
   toTurnEntry,
   toWakeToolResult,
   wakeOutcome,
@@ -146,7 +146,7 @@ export async function loadWakeRecords(db: Db, agentId: string, rows: WakeRow[]):
     Promise.all(ids.map((id) => wakeCounts(db, id))),
     openerIds.length === 0
       ? Promise.resolve([])
-      : db.select().from(messages).where(inArray(messages.id, openerIds)).then((found) => loadMessageRecords(db, found)),
+      : db.select().from(messages).where(inArray(messages.id, openerIds)).then((found) => found.map(toMessageRecord)),
   ]);
   const byWake = new Map(activity.map((row) => [row.wakeId, row]));
   const opened = new Map<string, MessageRecord>(openers.map((message) => [message.id, message]));
@@ -225,7 +225,7 @@ export async function loadWakeEntries(db: Db, wake: WakeRow): Promise<WakeEntry[
       { logId: row.id, result: toWakeToolResult({ head: row.head, chars: row.chars, isError: row.is_error }) },
     ]),
   );
-  const records = await loadMessageRecords(db, messageRows);
+  const records = messageRows.map(toMessageRecord);
   return orderEntries(
     records.map((message, index) => ({
       at: message.created_at,

@@ -1,7 +1,8 @@
 /**
  * Helper reports: what a browser or terminal helper in Nas hands back (done, needs_input,
  * failed) reaches the agent whose steer it answers, as a message that wakes it
- * (see rewake.ts), with its detail file and the files it names as attachments.
+ * (see rewake.ts), with links to its detail file and to the files it names, which are already
+ * files on the box.
  *
  * Nas publishes each report once on its event stream and keeps the newest of each task as
  * `last_report`; the stream has no replay. So hath reconciles from `GET /tasks` after every
@@ -15,7 +16,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { agents, deliveredReports } from "../db/schema.js";
 import type { HelperReport, NasClient } from "../nas/client.js";
-import { attachHostFile, type HostFileDeps } from "./attachments.js";
+import { boxLink } from "./box-link.js";
 import type { DeliverDeps } from "./deliver.js";
 import { recordActivity, siteReadRow } from "./activity.js";
 import { jobOfTask } from "./job-of.js";
@@ -31,8 +32,6 @@ type ReportLog = {
 export type HelperReportsDeps = {
   nas: NasClient;
   deliver: DeliverDeps;
-  /** What turns the files a report names into attachments. */
-  files: Pick<HostFileDeps, "dwar" | "files">;
   log: ReportLog;
 };
 
@@ -134,26 +133,16 @@ export class HelperReports {
   }
 
   private async deliver(db: Db, report: HelperReport): Promise<void> {
-    const attachmentIds: string[] = [];
-    const notes: string[] = [];
-    for (const path of report.detail === "" ? report.files : [report.detail, ...report.files]) {
-      try {
-        const meta = await attachHostFile({ db, nas: this.deps.nas, ...this.deps.files }, report.agent_id, path);
-        attachmentIds.push(meta.id);
-      } catch (err) {
-        notes.push(`${path} could not be attached: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+    const links = (report.detail === "" ? report.files : [report.detail, ...report.files]).map(boxLink);
     const jobId = await jobOfTask(db, report.task);
     if (report.task.startsWith("task/browser/")) {
       await recordActivity(db, { agentId: report.agent_id, jobId, ...siteReadRow(report) });
     }
     await rewake(this.deps.deliver, report.agent_id, {
       jobId,
-      content: [`${HEADLINES[report.state]}${stoppedBy(report)} (${report.task}):`, report.text, ...notes].join("\n"),
+      content: [`${HEADLINES[report.state]}${stoppedBy(report)} (${report.task}):`, report.text, ...links].join("\n"),
       notice: "helper",
       wokenBy: `helper result from ${report.task}`,
-      attachmentIds,
     });
     await takeWatch(db, report.agent_id, report.task);
     this.deps.deliver.events.emit({ type: "sessions_changed", at: new Date().toISOString() });

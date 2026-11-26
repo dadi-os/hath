@@ -1,6 +1,5 @@
-import { toAttachmentSummary, type NewAttachment } from "../db/attachments.js";
 import type { Db } from "../db/client.js";
-import { insertMessage, NO_ATTACHMENTS, stampMessageJob, stampMessageWake, type MessageAttachments } from "../db/messages.js";
+import { insertMessage, stampMessageJob, stampMessageWake } from "../db/messages.js";
 import { jobById, recordStatus } from "./jobs.js";
 import { outgoingJob, resolveInbound } from "./job-of.js";
 import type { MessageStatus, WakeOrigin } from "../types/domain.js";
@@ -33,9 +32,8 @@ export type DeliverDeps = {
 };
 
 /**
- * Persist a human → agent message (from_agent_id null) and wake the recipient once, however
- * many files it carries. Shared by POST /messages and the router's send_message and
- * forward_attachment. The message is stamped with the wake it opened or joined, and with
+ * Persist a human → agent message (from_agent_id null) and wake the recipient once.
+ * Shared by POST /messages and the router's send_message. The message is stamped with the wake it opened or joined, and with
  * the job it belongs to; when that job is the one the recipient is running, the model call
  * in flight is cancelled so the loop reads the message first.
  */
@@ -43,13 +41,11 @@ export async function deliverUserMessage(
   deps: DeliverDeps,
   toAgentId: string,
   content: string,
-  attachments: MessageAttachments = NO_ATTACHMENTS,
 ): Promise<TranscriptEntry> {
   const row = await insertMessage(deps.db, {
     fromAgentId: null,
     toAgentId,
     content,
-    attachments,
   });
   deps.transcript.ingest(row);
   if (row.id === undefined) {
@@ -61,7 +57,6 @@ export async function deliverUserMessage(
     row.jobId = resolved.job.id;
     row.jobNumber = resolved.job.openedSeq;
   }
-  const attached = row.attachments.map(toAttachmentSummary);
   const origin: WakeOrigin = {
     kind: "message",
     ref: null,
@@ -80,7 +75,6 @@ export async function deliverUserMessage(
     from_agent_id: null,
     to_agent_id: row.toAgentId,
     content: row.content,
-    attachments: attached,
     seq: row.seq,
     at: row.createdAt.toISOString(),
   });
@@ -102,10 +96,6 @@ export async function deliverAgentMessage(
     fromAgentId: string;
     toAgentId: string | null;
     content: string;
-    /** Existing attachments the message carries, by id. */
-    attachmentIds?: string[];
-    /** New files the message carries, stored with it. */
-    uploads?: NewAttachment[];
     /** The routine or reminder that fired it, when one did; its id is the wake's reason. */
     scheduleId?: string;
     /** Set when hath sent it for the agent (see TranscriptEntry.sentBy). */
@@ -133,7 +123,6 @@ export async function deliverAgentMessage(
     fromAgentId: args.fromAgentId,
     toAgentId: args.toAgentId,
     content: args.content,
-    attachments: { uploads: args.uploads ?? [], forward: args.attachmentIds ?? [] },
     ...(args.status !== undefined ? { status: args.status } : {}),
     ...(args.notice !== undefined ? { kind: "notice" as const } : {}),
     ...(args.sentBy === "hath" ? { sentBy: "hath" as const } : {}),
@@ -163,7 +152,6 @@ export async function deliverAgentMessage(
       await recordStatus(deps.db, await jobById(deps.db, stamped), row);
     }
   }
-  const attached = row.attachments.map(toAttachmentSummary);
   if (row.toAgentId !== null && args.wake !== false) {
     const reason = args.wokenBy ?? `message from ${args.fromAgentId}`;
     const wakeJob = args.notice !== undefined ? (noticeJob ?? undefined) : resolved?.job.id;
@@ -187,7 +175,6 @@ export async function deliverAgentMessage(
     from_agent_id: args.fromAgentId,
     to_agent_id: row.toAgentId,
     content: row.content,
-    attachments: attached,
     seq: row.seq,
     ...(row.kind === "notice" ? { kind: "notice" as const } : {}),
     at: row.createdAt.toISOString(),

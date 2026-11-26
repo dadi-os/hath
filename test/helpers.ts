@@ -28,6 +28,7 @@ import type {
   ReadFileRequest,
   TaskKind,
   TaskRequest,
+  UploadFileRequest,
   WriteFileRequest,
 } from "../src/nas/client.js";
 import type {
@@ -292,6 +293,7 @@ export function mockNas(opts: {
   terminalsClosed: string[];
   readFileBytesCalls: ReadFileBytesRequest[];
   writeFileCalls: WriteFileRequest[];
+  uploadFileCalls: UploadFileRequest[];
   editFileCalls: EditFileRequest[];
   globCalls: GlobRequest[];
   grepCalls: GrepRequest[];
@@ -316,6 +318,7 @@ export function mockNas(opts: {
   const terminalsClosed: string[] = [];
   const readFileBytesCalls: ReadFileBytesRequest[] = [];
   const writeFileCalls: WriteFileRequest[] = [];
+  const uploadFileCalls: UploadFileRequest[] = [];
   const editFileCalls: EditFileRequest[] = [];
   const globCalls: GlobRequest[] = [];
   const grepCalls: GrepRequest[] = [];
@@ -354,6 +357,7 @@ export function mockNas(opts: {
     terminalsClosed,
     readFileBytesCalls,
     writeFileCalls,
+    uploadFileCalls,
     editFileCalls,
     globCalls,
     grepCalls,
@@ -489,6 +493,16 @@ export function mockNas(opts: {
       const bytes = "data" in body ? Buffer.from(body.data, "base64") : Buffer.from(body.content, "utf8");
       files.set(body.path, bytes);
       return { bytes: bytes.length };
+    },
+    async uploadFile({ folder, name, data }) {
+      uploadFileCalls.push({ folder, name, data });
+      let path = `${folder}/${name}`;
+      for (let n = 2; files.has(path); n++) {
+        const dot = name.lastIndexOf(".");
+        path = `${folder}/${dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`}`;
+      }
+      files.set(path, data);
+      return { path, name: path.slice(path.lastIndexOf("/") + 1), size: data.length };
     },
     async editFile(body) {
       editFileCalls.push(body);

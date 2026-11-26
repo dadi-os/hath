@@ -1,6 +1,6 @@
 /**
  * Instant file tools through Nas's filesystem API: read_file, find, write_file, edit_file.
- * Attachments and tool results too large for a prompt are files on the box too (see
+ * Tool results too large for a prompt are files on the box too (see
  * runtime/files.ts), so read_file opens them like any other.
  */
 
@@ -52,7 +52,7 @@ const readInput = z
 /** Open a file on the box. */
 export const readFile = defineTool({
   name: READ_FILE,
-  description: `Read a file on the box by its absolute path: text, a PDF as text, or an image as a description. It opens everything that is a file here: files you find, files helpers wrote, attachments (their message shows the path) and a tool result that was too large for the prompt (its receipt shows the path). Returns ${DEFAULT_PAGE_CHARS} characters from offset (or limit, up to ${MAX_PAGE_CHARS}), the file's total length and next_offset while more remains. With pattern (a case-insensitive regular expression) it returns instead the matching lines with their line numbers. Read what you need, not the whole file. Files over 10 MB and binary files other than PDFs and images are refused; find searches inside large text files. To change a file use edit_file or write_file.`,
+  description: `Read a file on the box by its absolute path: text, a PDF as text, or an image as a description. It opens everything that is a file here: files you find, files helpers wrote, files a message links (box:///path is the path) and a tool result that was too large for the prompt (its receipt shows the path). Returns ${DEFAULT_PAGE_CHARS} characters from offset (or limit, up to ${MAX_PAGE_CHARS}), the file's total length and next_offset while more remains. With pattern (a case-insensitive regular expression) it returns instead the matching lines with their line numbers. Read what you need, not the whole file. Files over 10 MB and binary files other than PDFs and images are refused; find searches inside large text files. To change a file use edit_file or write_file.`,
   input: readInput,
   inputSchema: {
     type: "object",

@@ -6,7 +6,6 @@ import type { Db } from "../db/client.js";
 import { agents, jobs } from "../db/schema.js";
 import { HathError } from "../errors.js";
 import type { DwarChatRequest, DwarMessage } from "../types/domain.js";
-import { attachmentStub } from "./attachments.js";
 import { directoryBlock, ownDescriptionLine } from "./directory.js";
 import type { TranscriptEntry, TranscriptStore } from "./transcript.js";
 import { DATA_CHARS_PER_TOKEN, PROSE_CHARS_PER_TOKEN, type WakeTurn } from "./wake.js";
@@ -359,12 +358,5 @@ function historyFor(thread: TranscriptEntry[], agentId: string): TextMessage[] {
 
 /** transcriptText is a transcript row as this agent reads it: its label, then its body. */
 export function transcriptText(row: TranscriptEntry, agentId: string, withJob = false): string {
-  return `${labelEntry(row, agentId, withJob).label}\n${entryBody(row)}`;
-}
-
-/** A transcript row's text followed by a stub per attachment it carries. */
-function entryBody(row: TranscriptEntry): string {
-  return [row.content, ...row.attachments.map(attachmentStub)]
-    .filter((part) => part.length > 0)
-    .join("\n\n");
+  return `${labelEntry(row, agentId, withJob).label}\n${row.content}`;
 }

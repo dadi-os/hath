@@ -4,7 +4,7 @@
  */
 
 import type { WakeCounts } from "../db/wakes.js";
-import type { AttachmentSummary, MessageKind, WakeReasonKind } from "../types/domain.js";
+import type { MessageKind, WakeReasonKind } from "../types/domain.js";
 import type { RuntimeLog } from "./engine.js";
 
 export type RuntimeEvent =
@@ -14,7 +14,6 @@ export type RuntimeEvent =
       from_agent_id: string | null;
       to_agent_id: string | null;
       content: string;
-      attachments: AttachmentSummary[];
       seq: number;
       /** notice for hath's word that an agent's work stopped; left out on a message someone wrote. */
       kind?: MessageKind;

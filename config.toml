@@ -82,13 +82,13 @@ backoff_ms = [500, 1000, 2000]
 timeout_ms = 30000
 
 [files]
-# The box folder agents' files live in, made by writing to it through Nas: incoming
-# attachments under attachments/, tool results too large for a prompt under results/,
-# and text taken from PDFs under pdf/. It is dadi's own folder, so agents' terminals and
-# read_file reach it like any other file.
+# The box folder hath keeps its caches in, made by writing to it through Nas: tool results
+# too large for a prompt under results/ and text taken from PDFs under pdf/. It is dadi's
+# own folder, so agents' terminals and read_file reach it like any other file. Ankur's
+# uploads are not here: they land in ~/Inbox/<yyyy-mm>/, and long agent messages in
+# ~/scratch/<agent-id>/.
 dir = "/var/home/dadi/.dadi"
 # How many days a cache file under results/ or pdf/ is kept before the daily sweep deletes it.
-# Attachments are never swept.
 cache_retention_days = 30
 
 [schedule]

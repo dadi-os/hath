@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { migrate } from "../src/db/migrate.js";
-import { agentActivity, attachments, deliveredReports, watches } from "../src/db/schema.js";
+import { agentActivity, deliveredReports, watches } from "../src/db/schema.js";
 import type { HelperReport } from "../src/nas/client.js";
 import { createRuntime } from "../src/runtime/engine.js";
 import { insertAgent, mockDwar, mockGhar, mockNas, mockYaad, openTestDb, resetRuntime, silentLog, testConfig, yieldTurn } from "./helpers.js";
@@ -140,7 +140,7 @@ test("reconcile after boot delivers the last report of every task that has none 
   );
 });
 
-test("a report's files arrive as attachments, and one that cannot be attached is named in the message", async () => {
+test("a report's files arrive as links in its text, and none is copied", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
   const { nas, runtime } = harness();
@@ -152,12 +152,12 @@ test("a report's files arrive as attachments, and one that cannot be attached is
   await runtime.waitUntilIdle();
 
   const notice = notices(runtime)[0]!;
-  assert.deepEqual(notice.attachments.map((file) => file.filename), ["receipt.pdf"]);
-  assert.match(notice.content, /gone\.pdf could not be attached: /);
-  assert.equal((await handle.db.select().from(attachments)).length, 1);
+  assert.ok(notice.content.endsWith("\n[receipt.pdf](box:///var/home/dadi/Downloads/receipt.pdf)\n[gone.pdf](box:///var/home/dadi/Downloads/gone.pdf)"));
+  assert.equal(nas.readFileBytesCalls.length, 0);
+  assert.equal(nas.writeFileCalls.length, 0);
 });
 
-test("a report's detail file arrives as an attachment beside its files, and its text stays whole", async () => {
+test("a report's detail file is linked ahead of its files, and its text stays whole", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
   const { nas, runtime } = harness();
@@ -171,8 +171,12 @@ test("a report's detail file arrives as an attachment beside its files, and its 
   await runtime.waitUntilIdle();
 
   const notice = notices(runtime)[0]!;
-  assert.deepEqual(notice.attachments.map((file) => file.filename), ["detail-1.txt", "receipt.pdf"]);
   assert.ok(notice.content.includes(long), "the answer and its Not read line are never cut");
+  assert.ok(
+    notice.content.endsWith(
+      "\n[detail-1.txt](box:///var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt)\n[receipt.pdf](box:///var/home/dadi/Downloads/receipt.pdf)",
+    ),
+  );
 });
 
 test("a needs_input report and a failure say so, and a report for a missing agent is dropped but marked", async () => {

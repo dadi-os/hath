@@ -76,7 +76,6 @@ export type AgentRecord = {
 export type RoutedMessage = {
   to_agent_id: string;
   content: string;
-  attachments: AttachmentSummary[];
   seq: number;
   created_at: string;
 };
@@ -89,15 +88,6 @@ export type RouterRun = {
   at: string;
 };
 
-/** Attachment metadata on HTTP responses and runtime events; bytes come from GET /attachments/:id. */
-export type AttachmentSummary = {
-  id: string;
-  filename: string;
-  media_type: string;
-  size_bytes: number;
-  /** image.describe text for images, null otherwise. */
-  description: string | null;
-};
 
 export type LogRecord = {
   id: string;
@@ -266,7 +256,7 @@ export type WakeOrigin = {
 };
 
 
-/** A message as the wake routes return it: speech with its attachments (see `messages` in db/schema.ts). */
+/** A message as the wake routes return it: speech, with any file as a link in its content (see `messages` in db/schema.ts). */
 export type MessageRecord = {
   id: string;
   seq: number;
@@ -276,7 +266,6 @@ export type MessageRecord = {
   to_agent_id: string | null;
   content: string;
   created_at: string;
-  attachments: AttachmentSummary[];
 };
 
 /** Where a wake stands, derived and never stored (see `wakeOutcome` in serialize.ts). */
@@ -334,7 +323,6 @@ export type WakeEntry =
 
 /** The tool that sends a message: every agent's voice, and the router's. */
 export const SEND_MESSAGE = "send_message";
-export const FORWARD_ATTACHMENT = "forward_attachment";
 export const YIELD = "yield";
 export const READ_FILE = "read_file";
 export const FIND_FILES = "find_files";

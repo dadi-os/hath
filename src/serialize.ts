@@ -1,8 +1,6 @@
 /** Map Drizzle agent/log/routine rows to API snake_case records. */
 
 import { z } from "zod";
-import type { AttachmentMeta } from "./db/attachments.js";
-import { toAttachmentSummary } from "./db/attachments.js";
 import type { AgentLogRow, AgentRow, MessageRow, ReminderRow, RoutineRow } from "./db/schema.js";
 import type {
   AgentRecord,
@@ -75,8 +73,8 @@ export function toReminderRecord(row: ReminderRow): ReminderRecord {
 /** The most characters of one tool result a wake detail carries; the whole row is `GET /agents/:id/logs/:log_id`. */
 export const WAKE_RESULT_MAX_CHARS = 8_000;
 
-/** Map a message row and its attachments to the API record shared by wake routes and tools. */
-export function toMessageRecord(row: MessageRow, attachments: AttachmentMeta[]): MessageRecord {
+/** Map a message row to the API record shared by wake routes and tools. */
+export function toMessageRecord(row: MessageRow): MessageRecord {
   return {
     id: row.id,
     seq: row.seq,
@@ -86,7 +84,6 @@ export function toMessageRecord(row: MessageRow, attachments: AttachmentMeta[]):
     to_agent_id: row.toAgentId,
     content: row.content,
     created_at: row.createdAt.toISOString(),
-    attachments: attachments.map(toAttachmentSummary),
   };
 }
 

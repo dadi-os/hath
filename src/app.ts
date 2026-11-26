@@ -9,7 +9,6 @@ import { HathError } from "./errors.js";
 import { registerRequestLogging } from "./logging.js";
 import { createRuntime, type Runtime } from "./runtime/engine.js";
 import { hydrateTranscript } from "./db/messages.js";
-import { moveLegacyAttachments } from "./runtime/attachments.js";
 import { reportLostAsync } from "./runtime/async.js";
 import { recoverInterruptedWakes } from "./runtime/recovery.js";
 import { registerV1 } from "./routers/index.js";
@@ -67,7 +66,6 @@ export async function buildApp(
       log: app.log,
     });
   if (!deps.runtime) {
-    await moveLegacyAttachments(deps.db, runtime.files);
     await hydrateTranscript(deps.db, runtime.transcript);
     await recoverInterruptedWakes({
       ...runtime.deliver,

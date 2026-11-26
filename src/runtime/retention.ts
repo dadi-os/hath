@@ -1,8 +1,7 @@
 /**
  * The retention sweep: the two cache folders under `[files].dir` are rebuilt on demand, so
- * a file in them older than the limit is deleted. `attachments/` is never listed or touched.
- * Nas's filesystem API has no stat or delete, so the sweep lists and removes through a
- * terminal there.
+ * a file in them older than the limit is deleted. Nas's filesystem API has no stat or
+ * delete, so the sweep lists and removes through a terminal there.
  */
 
 import type { FileStore } from "./files.js";

@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { writeAgentLog } from "../src/db/logs.js";
-import { insertMessage, insertUtterance, NO_ATTACHMENTS, stampMessageWake } from "../src/db/messages.js";
+import { insertMessage, insertUtterance, stampMessageWake } from "../src/db/messages.js";
 import { migrate } from "../src/db/migrate.js";
 import { agentLogs, watches } from "../src/db/schema.js";
 import { insertWake } from "../src/db/wakes.js";
@@ -48,7 +48,7 @@ test("GET /agents/:id/wakes pages newest first by keyset and derives outcome, us
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { id: "wake-lister", systemPrompt: "lists" });
   await insertAgent(handle.db, { id: "wake-sender", systemPrompt: "sends" });
-  const opener = await insertMessage(handle.db, { fromAgentId: "wake-sender", toAgentId: agentId, content: "do the thing", attachments: NO_ATTACHMENTS });
+  const opener = await insertMessage(handle.db, { fromAgentId: "wake-sender", toAgentId: agentId, content: "do the thing" });
   const [oldest, middle, newest] = [randomUUID(), randomUUID(), randomUUID()];
   await insertWake(handle.db, {
     id: oldest,
@@ -90,7 +90,6 @@ test("GET /agents/:id/wakes pages newest first by keyset and derives outcome, us
     assert.deepEqual(wake!.usage, { calls: 2, input_tokens: 2, output_tokens: 30, cache_write: 20, cache_read: 200 });
     assert.deepEqual(wake!.counts, { tool_calls: 1, messages_sent: 0, messages_received: 1 });
     assert.equal(wake!.opened_by?.seq, opener.seq);
-    assert.deepEqual(wake!.opened_by?.attachments, []);
     assert.equal(wake!.activity_trimmed, false);
   } finally {
     await app.close();
@@ -158,7 +157,7 @@ test("GET /agents/:id/wakes/:wake_id merges messages and turns in order, pairing
   const wakeId = randomUUID();
   await insertWake(handle.db, { id: wakeId, agentId, origin: { kind: "message", ref: "wake-peer", openedByMessageId: null }, startedAt: minutesAgo(1) });
   await tick();
-  const received = await insertMessage(handle.db, { fromAgentId: "wake-peer", toAgentId: agentId, content: "please look", attachments: NO_ATTACHMENTS });
+  const received = await insertMessage(handle.db, { fromAgentId: "wake-peer", toAgentId: agentId, content: "please look" });
   await stampMessageWake(handle.db, received.id!, wakeId);
   await tick();
   await writeAgentLog(handle.db, {
@@ -182,9 +181,9 @@ test("GET /agents/:id/wakes/:wake_id merges messages and turns in order, pairing
     wakeId,
   });
   await tick();
-  const sent = await insertMessage(handle.db, { fromAgentId: agentId, toAgentId: "wake-peer", content: "found it", attachments: NO_ATTACHMENTS });
+  const sent = await insertMessage(handle.db, { fromAgentId: agentId, toAgentId: "wake-peer", content: "found it" });
   await tick();
-  const unrelated = await insertMessage(handle.db, { fromAgentId: "wake-peer", toAgentId: "wake-peer", content: "elsewhere", attachments: NO_ATTACHMENTS });
+  const unrelated = await insertMessage(handle.db, { fromAgentId: "wake-peer", toAgentId: "wake-peer", content: "elsewhere" });
 
   const { app } = await appWith();
   try {
@@ -402,7 +401,7 @@ test("get_messages reads a conversation newest first, searches text, pages, and 
   const child = await insertAgent(handle.db, { id: "msg-child", systemPrompt: "child", parentAgentId: me });
   await insertAgent(handle.db, { id: "msg-peer", systemPrompt: "peer" });
   const say = async (from: string | null, to: string | null, content: string) => {
-    await insertMessage(handle.db, { fromAgentId: from, toAgentId: to, content, attachments: NO_ATTACHMENTS });
+    await insertMessage(handle.db, { fromAgentId: from, toAgentId: to, content });
     await tick();
   };
   await say("msg-peer", me, "the batch list is ready");

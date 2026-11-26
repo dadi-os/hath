@@ -37,13 +37,13 @@ after(async () => {
 });
 
 /** Build an isolated Fastify app plus runtime against the shared test db. */
-async function appWith(dwar = mockDwar({})) {
+async function appWith(dwar = mockDwar({}), nas = mockNas()) {
   const runtime = createRuntime({
     db: handle.db,
     dwar,
     yaad: mockYaad(),
     ghar: mockGhar(),
-    nas: mockNas(),
+    nas,
     config,
     log: silentLog,
   });
@@ -53,10 +53,10 @@ async function appWith(dwar = mockDwar({})) {
     dwar,
     yaad: mockYaad(),
     ghar: mockGhar(),
-    nas: mockNas(),
+    nas,
     runtime,
   });
-  return { app, runtime, dwar };
+  return { app, runtime, dwar, nas };
 }
 
 /** A mock Dwar whose `complete` plays back `turns` in order, then yields. */
@@ -137,7 +137,6 @@ test("POST /router composes system doctrine, charter, identity, and roots; offer
 
   const names = (request.tools ?? []).map((tool) => tool.name).sort();
   assert.deepEqual(names, [
-    "forward_attachment",
     "get_agent",
     "get_logs",
     "get_messages",
@@ -243,6 +242,27 @@ test("POST /router runs as long as the model keeps calling tools", async () => {
     assert.equal(turn.provider, undefined);
   }
 
+  await runtime.waitUntilIdle();
+  await app.close();
+});
+
+test("POST /router uploads the deprecated attachments to the Inbox and shows the router their links", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const { app, runtime, dwar, nas } = await appWith();
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/router",
+    payload: { content: "file this", attachments: [{ media_type: "text/plain", filename: "notes (1).txt", data: Buffer.from("hello").toString("base64") }] },
+  });
+
+  assert.equal(res.statusCode, 201, res.body);
+  const [path] = [...nas.files.keys()];
+  assert.match(path!, /^\/var\/home\/dadi\/Inbox\/\d{4}-\d{2}\/notes \(1\)\.txt$/);
+  assert.match(
+    String(dwar.completeCalls[0]!.messages.at(-1)?.content),
+    /\nfile this\n\n\[notes \(1\)\.txt\]\(box:\/\/\/var\/home\/dadi\/Inbox\/\d{4}-\d{2}\/notes%20%281%29\.txt\)$/,
+  );
   await runtime.waitUntilIdle();
   await app.close();
 });

@@ -10,9 +10,7 @@ import { z } from "zod";
 import { agentIdSchema } from "../agent-id.js";
 import { fail, ok, requireActiveAgent, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarTool, DwarToolUseBlock, RoutedMessage } from "../types/domain.js";
-import { FORWARD_ATTACHMENT, RECALL_MEMORY, SEND_MESSAGE } from "../types/domain.js";
-import { toAttachmentSummary } from "../db/attachments.js";
-import { MAX_ATTACHMENTS } from "./attachments.js";
+import { RECALL_MEMORY, SEND_MESSAGE } from "../types/domain.js";
 import { deliverUserMessage } from "./deliver.js";
 import { runRecallMemory } from "./memory.js";
 import { deliverDeps } from "./async.js";
@@ -32,48 +30,15 @@ const routerSendInput = z
 export const routerSendMessageTool: DwarTool = {
   name: SEND_MESSAGE,
   description:
-    "Send a message to an agent as Ankur. It lands in that agent's thread from him and wakes it; a retired agent cannot be messaged. Write it in his first person. Does not end your turn — call yield when you are done.",
+    "Send a message to an agent as Ankur. It lands in that agent's thread from him and wakes it; a retired agent cannot be messaged. Write it in his first person. A file Ankur sent arrives as a [name](box://path) link in his message: put that link in the content to hand it on, never its contents. Does not end your turn — call yield when you are done.",
   input_schema: {
     type: "object",
     additionalProperties: false,
     properties: {
       to_agent_id: { type: "string", description: "Exact kebab-case agent id" },
-      content: { type: "string", description: "The message, exactly as it should arrive" },
+      content: { type: "string", description: "The message, exactly as it should arrive, with any file as its link" },
     },
     required: ["to_agent_id", "content"],
-  },
-};
-
-const routerForwardInput = z
-  .object({
-    to_agent_id: agentIdSchema,
-    attachment_ids: z
-      .array(z.string().uuid())
-      .min(1)
-      .max(MAX_ATTACHMENTS)
-      .refine((ids) => new Set(ids).size === ids.length, "attachment_ids must not repeat"),
-    content: z.string().min(1),
-  })
-  .strict();
-
-/** The router's forward: deliver attachments as Ankur, with the message they arrive with. */
-export const routerForwardAttachmentTool: DwarTool = {
-  name: FORWARD_ATTACHMENT,
-  description:
-    "Send attachments (by id, from an [Attachment …] block in Ankur's message) to an agent as Ankur, with the message they arrive with. The agent gets the files themselves, so never paste their contents into send_message. Write the message in his first person. Does not end your turn — call yield when you are done.",
-  input_schema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      to_agent_id: { type: "string", description: "Exact kebab-case agent id" },
-      attachment_ids: {
-        type: "array",
-        items: { type: "string" },
-        description: `Attachment ids to send, in order (at most ${MAX_ATTACHMENTS})`,
-      },
-      content: { type: "string", description: "The message, exactly as it should arrive" },
-    },
-    required: ["to_agent_id", "attachment_ids", "content"],
   },
 };
 
@@ -84,9 +49,6 @@ export async function runRouterTool(
 ): Promise<ToolExecResult> {
   if (call.name === SEND_MESSAGE) {
     return runRouterSend(ctx, call.input);
-  }
-  if (call.name === FORWARD_ATTACHMENT) {
-    return runRouterForward(ctx, call.input);
   }
   if (call.name === RECALL_MEMORY) {
     return runRecallMemory(ctx, call.input);
@@ -101,33 +63,11 @@ export async function runRouterTool(
 /** runRouterSend delivers one message as Ankur; a retired recipient is a `retired` error. */
 async function runRouterSend(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
   const input = routerSendInput.parse(raw);
-  return deliverAsAnkur(ctx, input.to_agent_id, input.content, []);
-}
-
-/** runRouterForward delivers a message carrying the given attachments as Ankur. */
-async function runRouterForward(ctx: ToolContext, raw: unknown): Promise<ToolExecResult> {
-  const input = routerForwardInput.parse(raw);
-  return deliverAsAnkur(ctx, input.to_agent_id, input.content, input.attachment_ids);
-}
-
-/** Deliver one message, with any attachments by id, as Ankur and report it as a RoutedMessage. */
-async function deliverAsAnkur(
-  ctx: ToolContext,
-  toAgentId: string,
-  content: string,
-  attachmentIds: string[],
-): Promise<ToolExecResult> {
-  const target = await requireActiveAgent(ctx.db, toAgentId);
-  const row = await deliverUserMessage(
-    deliverDeps(ctx),
-    target.id,
-    content,
-    { uploads: [], forward: attachmentIds },
-  );
+  const target = await requireActiveAgent(ctx.db, input.to_agent_id);
+  const row = await deliverUserMessage(deliverDeps(ctx), target.id, input.content);
   const sent: RoutedMessage = {
     to_agent_id: target.id,
     content: row.content,
-    attachments: row.attachments.map(toAttachmentSummary),
     seq: row.seq,
     created_at: row.createdAt.toISOString(),
   };

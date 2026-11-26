@@ -4,8 +4,8 @@ import { after, before, test } from "node:test";
 import { eq } from "drizzle-orm";
 import { buildApp } from "../src/app.js";
 import { migrate } from "../src/db/migrate.js";
-import { hydrateTranscript, insertMessage, insertUtterance, listHumanMessages, listThreads, NO_ATTACHMENTS } from "../src/db/messages.js";
-import { agentLogs, agents, attachments, jobs, messages } from "../src/db/schema.js";
+import { hydrateTranscript, insertMessage, insertUtterance, listHumanMessages, listThreads } from "../src/db/messages.js";
+import { agentLogs, agents, jobs, messages } from "../src/db/schema.js";
 import { writeAgentLog } from "../src/db/logs.js";
 import { arrivalsSince, assembleContext, type ThreadWindow, windowStart } from "../src/runtime/context.js";
 import { deliverAgentMessage, deliverUserMessage } from "../src/runtime/deliver.js";
@@ -35,6 +35,12 @@ import {
 
 const config = testConfig();
 const handle = await openTestDb();
+
+/** The Inbox month folder name for now, `<yyyy-mm>`, in the box's local time. */
+function inboxMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
 
 before(async () => {
   await migrate(config);
@@ -588,13 +594,17 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
     input: { to: peerId, content: dump },
   });
   assert.equal(toPeer.isError, false);
-  assert.match(toPeer.content, /message\.md/);
+  assert.match(toPeer.content, /scratch folder/);
   const stored = await handle.db.select().from(messages).where(eq(messages.toAgentId, peerId));
   assert.equal(stored.length, 1);
   assert.ok(stored[0]!.content.length < AGENT_MESSAGE_MAX_CHARS, "the recipient sees only the opening inline");
-  const files = await handle.db.select().from(attachments).where(eq(attachments.messageId, stored[0]!.id));
-  assert.equal(files.length, 1);
-  assert.equal(nas.files.get(files[0]!.path!)?.toString(), dump, "the whole message travels as the attachment");
+  assert.ok(stored[0]!.content.startsWith("grep hit\n"), "the opening is the message's own");
+  assert.equal(nas.uploadFileCalls.length, 1);
+  const [upload] = nas.uploadFileCalls;
+  assert.equal(upload!.folder, `/var/home/dadi/scratch/${senderId}`);
+  assert.match(upload!.name, /^message-\d{8}-\d{6}\.md$/);
+  assert.equal(upload!.data.toString(), dump, "the whole message is in the file, never cut");
+  assert.ok(stored[0]!.content.endsWith(`: [${upload!.name}](box://${upload!.folder}/${upload!.name})]`), "the message links it");
 
   const toAnkur = await executeTool(runtime.toolContext(senderId), {
     type: "tool_use",
@@ -663,6 +673,37 @@ test("messaging a retired agent is a retired error on every path and stores noth
 });
 
 
+test("POST /messages writes the deprecated attachments to the Inbox and appends their links to the content", async () => {
+  await resetRuntime(handle.sql, handle.db, config);
+  const agentId = await insertAgent(handle.db, { name: "uploads", systemPrompt: "system" });
+  const nas = mockNas();
+  nas.files.set(`/var/home/dadi/Inbox/${inboxMonth()}/cv.pdf`, Buffer.from("old"));
+  const runtime = createRuntime({ db: handle.db, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas, config, log: silentLog });
+  const app = await buildApp(config, { db: handle.db, sql: handle.sql, dwar: mockDwar({}), yaad: mockYaad(), ghar: mockGhar(), nas, runtime });
+  const file = (filename: string, text: string) => ({ media_type: "application/pdf", filename, data: Buffer.from(text).toString("base64") });
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/messages",
+    payload: { to_agent_id: agentId, content: "my cv", attachments: [file("cv.pdf", "new"), file("pic one.png", "png")] },
+  });
+
+  assert.equal(res.statusCode, 201, res.body);
+  const folder = `/var/home/dadi/Inbox/${inboxMonth()}`;
+  const body = res.json() as { content: string; attachments?: unknown };
+  assert.equal(body.content, `my cv\n\n[cv (2).pdf](box://${folder}/cv%20%282%29.pdf)\n[pic one.png](box://${folder}/pic%20one.png)`);
+  assert.equal(body.attachments, undefined, "a message record has no attachments field");
+  assert.equal(nas.files.get(`${folder}/cv.pdf`)?.toString(), "old", "an existing file is never overwritten");
+  assert.equal(nas.files.get(`${folder}/cv (2).pdf`)?.toString(), "new");
+  const [stored] = await handle.db.select().from(messages).where(eq(messages.toAgentId, agentId));
+  assert.equal(stored!.content, body.content);
+
+  const empty = await app.inject({ method: "POST", url: "/messages", payload: { to_agent_id: agentId, content: " " } });
+  assert.equal(empty.statusCode, 422);
+  await runtime.waitUntilIdle();
+  await app.close();
+});
+
 test("POST /agents/:id/read marks a thread read across devices and /threads counts what is left", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const agentId = await insertAgent(handle.db, { name: "reader", systemPrompt: "system" });
@@ -699,7 +740,6 @@ test("POST /agents/:id/read marks a thread read across devices and /threads coun
     fromAgentId: agentId,
     toAgentId: null,
     content: "run failed",
-    attachments: NO_ATTACHMENTS,
     kind: "notice",
   });
 

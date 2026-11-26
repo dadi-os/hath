@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { agentIdSchema } from "../../agent-id.js";
-import { loadMessageRecords, searchMessages } from "../../db/messages.js";
+import { searchMessages } from "../../db/messages.js";
+import { toMessageRecord } from "../../serialize.js";
 import { defineTool } from "../types.js";
 import { ok, fail, requireAgent } from "../shared.js";
 
@@ -66,15 +67,13 @@ export const getMessages = defineTool({
       ...(parsed.include_utterances === true ? { includeUtterances: true } : {}),
       limit,
     });
-    const records = await loadMessageRecords(ctx.db, rows);
-    const out: Array<Omit<(typeof records)[number], "attachments"> & { content_chars: number; attachments: number }> = [];
+    const out: Array<ReturnType<typeof toMessageRecord> & { content_chars: number }> = [];
     let size = 0;
-    for (const { attachments, ...record } of records) {
+    for (const record of rows.map(toMessageRecord)) {
       const shown = {
         ...record,
         content: record.content.slice(0, MAX_CONTENT_CHARS),
         content_chars: record.content.length,
-        attachments: attachments.length,
       };
       size += JSON.stringify(shown).length;
       if (size > MAX_RESULT_CHARS && out.length > 0) {

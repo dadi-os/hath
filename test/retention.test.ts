@@ -48,10 +48,10 @@ test("the sweep deletes cache files older than the limit and keeps newer ones", 
   assert.deepEqual(nas.terminalsClosed, ["t1"], "the terminal it opened is closed");
 });
 
-test("the sweep never touches attachments, however old", async () => {
+test("the sweep touches only the two cache folders, however old the rest", async () => {
   const files = new Map<string, number>([
-    [`${DIR}/attachments/abc/cv.pdf`, secondsAgo(900)],
-    [`${DIR}/attachments/abc/results/x.txt`, secondsAgo(900)],
+    [`${DIR}/keep/cv.pdf`, secondsAgo(900)],
+    [`${DIR}/keep/results/x.txt`, secondsAgo(900)],
     [`${DIR}/notes.txt`, secondsAgo(900)],
     [`${DIR}/results/old.txt`, secondsAgo(900)],
   ]);
@@ -59,9 +59,9 @@ test("the sweep never touches attachments, however old", async () => {
 
   await sweepCaches({ nas, dir: DIR }, 30, NOW);
 
-  assert.deepEqual([...files.keys()].sort(), [`${DIR}/attachments/abc/cv.pdf`, `${DIR}/attachments/abc/results/x.txt`, `${DIR}/notes.txt`]);
+  assert.deepEqual([...files.keys()].sort(), [`${DIR}/keep/cv.pdf`, `${DIR}/keep/results/x.txt`, `${DIR}/notes.txt`]);
   for (const call of nas.execCalls) {
-    assert.doesNotMatch(call.body.command, /attachments/);
+    assert.doesNotMatch(call.body.command, /keep/);
   }
 });
 

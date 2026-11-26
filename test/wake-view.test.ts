@@ -95,7 +95,7 @@ test("entries are ordered by time with a message before a turn of the same milli
       at: iso,
       type: "message" as const,
       direction: "received" as const,
-      message: { id: String(seq), seq, kind: "message" as const, status: null, from_agent_id: null, to_agent_id: "a", content: "", created_at: iso, attachments: [] },
+      message: { id: String(seq), seq, kind: "message" as const, status: null, from_agent_id: null, to_agent_id: "a", content: "", created_at: iso },
     });
   const turn = (iso: string) => ({
     at: iso,
