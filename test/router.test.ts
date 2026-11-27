@@ -246,23 +246,19 @@ test("POST /router runs as long as the model keeps calling tools", async () => {
   await app.close();
 });
 
-test("POST /router uploads the deprecated attachments to the Inbox and shows the router their links", async () => {
+test("POST /router refuses the removed attachments field with 422 invalid_request", async () => {
   await resetRuntime(handle.sql, handle.db, config);
-  const { app, runtime, dwar, nas } = await appWith();
+  const { app, runtime, dwar } = await appWith();
 
   const res = await app.inject({
     method: "POST",
     url: "/router",
-    payload: { content: "file this", attachments: [{ media_type: "text/plain", filename: "notes (1).txt", data: Buffer.from("hello").toString("base64") }] },
+    payload: { content: "file this", attachments: [{ media_type: "text/plain", data: Buffer.from("hello").toString("base64") }] },
   });
 
-  assert.equal(res.statusCode, 201, res.body);
-  const [path] = [...nas.files.keys()];
-  assert.match(path!, /^\/var\/home\/dadi\/Inbox\/\d{4}-\d{2}\/notes \(1\)\.txt$/);
-  assert.match(
-    String(dwar.completeCalls[0]!.messages.at(-1)?.content),
-    /\nfile this\n\n\[notes \(1\)\.txt\]\(box:\/\/\/var\/home\/dadi\/Inbox\/\d{4}-\d{2}\/notes%20%281%29\.txt\)$/,
-  );
+  assert.equal(res.statusCode, 422, res.body);
+  assert.equal((res.json() as { error: { type: string } }).error.type, "invalid_request");
+  assert.equal(dwar.completeCalls.length, 0);
   await runtime.waitUntilIdle();
   await app.close();
 });

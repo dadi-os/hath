@@ -12,7 +12,7 @@ after(async () => {
   await handle.close();
 });
 
-type Row = { message: string; position: number; filename: string; path: string | null };
+type Row = { message: string | null; position: number; filename: string; path: string | null };
 
 /**
  * migrate runs 0032 against throwaway `messages` and `attachments` tables in their own schema, in one
@@ -49,26 +49,25 @@ async function migrate(contents: Record<string, string>, rows: Row[]): Promise<R
 
 test("a message's files become links in position order, after a blank line when it has text", async () => {
   const result = await migrate({ m1: "see these", m2: "" }, [
-    { message: "m1", position: 1, filename: "b.pdf", path: "/var/home/dadi/.dadi/attachments/2/b.pdf" },
-    { message: "m1", position: 0, filename: "a.txt", path: "/var/home/dadi/.dadi/attachments/1/a.txt" },
-    { message: "m2", position: 0, filename: "c.png", path: "/var/home/dadi/.dadi/attachments/3/c.png" },
+    { message: "m1", position: 1, filename: "b.pdf", path: "/var/home/dadi/Inbox/2026-10/b.pdf" },
+    { message: "m1", position: 0, filename: "a.txt", path: "/var/home/dadi/Inbox/2026-10/a.txt" },
+    { message: "m2", position: 0, filename: "c.png", path: "/var/home/dadi/Inbox/2026-10/c.png" },
   ]);
   assert.equal(
     result.m1,
-    "see these\n\n[a.txt](box:///var/home/dadi/.dadi/attachments/1/a.txt)\n[b.pdf](box:///var/home/dadi/.dadi/attachments/2/b.pdf)",
+    "see these\n\n[a.txt](box:///var/home/dadi/Inbox/2026-10/a.txt)\n[b.pdf](box:///var/home/dadi/Inbox/2026-10/b.pdf)",
   );
-  assert.equal(result.m2, "[c.png](box:///var/home/dadi/.dadi/attachments/3/c.png)");
+  assert.equal(result.m2, "[c.png](box:///var/home/dadi/Inbox/2026-10/c.png)");
 });
 
-test("a file two rows share is linked once, and rows with no message or no path add nothing", async () => {
-  const shared = "/var/home/dadi/.dadi/attachments/1/a.txt";
+test("a file two rows share is linked once, and an unbound row adds nothing", async () => {
+  const shared = "/var/home/dadi/Inbox/2026-10/a.txt";
   const result = await migrate({ m1: "x", m2: "y" }, [
     { message: "m1", position: 0, filename: "a.txt", path: shared },
     { message: "m1", position: 1, filename: "a.txt", path: shared },
-    { message: "m2", position: 0, filename: "lost", path: null },
-    { message: "ghost", position: 0, filename: "orphan.txt", path: "/var/home/dadi/.dadi/attachments/9/orphan.txt" },
+    { message: null, position: 0, filename: "unbound.txt", path: "/var/home/dadi/.dadi/attachments/8/unbound.txt" },
   ]);
-  assert.equal(result.m1, "x\n\n[a.txt](box:///var/home/dadi/.dadi/attachments/1/a.txt)");
+  assert.equal(result.m1, "x\n\n[a.txt](box:///var/home/dadi/Inbox/2026-10/a.txt)");
   assert.equal(result.m2, "y");
 });
 
@@ -77,4 +76,13 @@ test("the SQL encoding is the one the runtime and the clients write", async () =
   const filename = "Résumé (final) [v2] 100%.pdf";
   const result = await migrate({ m1: "" }, [{ message: "m1", position: 0, filename, path }]);
   assert.equal(result.m1, boxLink(path));
+});
+
+test("a message's file that is not in the Inbox yet stops the migration before anything changes", async () => {
+  for (const path of [null, "/var/home/dadi/.dadi/attachments/1/a.txt"]) {
+    await assert.rejects(
+      migrate({ m1: "x" }, [{ message: "m1", position: 0, filename: "a.txt", path }]),
+      /run scripts\/move-attachments-to-inbox\.ts first/,
+    );
+  }
 });

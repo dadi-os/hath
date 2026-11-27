@@ -23,51 +23,9 @@ export function formatZod(error: ZodError): string {
     .join("; ");
 }
 
-/** A file sent the old way, as base64; deprecated for links (see runtime/inbox.ts). */
-const messageUpload = z
-  .object({
-    media_type: z.string().min(1),
-    data: z.string().min(1),
-    filename: z.string().min(1).optional(),
-  })
-  .strict();
+export const postRouterBody = z.object({ content: z.string().trim().min(1) }).strict();
 
-export const postRouterBody = z
-  .object({
-    /** May be empty when `attachments` are present. */
-    content: z.string(),
-    /** Deprecated: each file is written to the Inbox and appended to the content as a `box://` link. */
-    attachments: z.array(messageUpload).max(8).optional(),
-  })
-  .strict()
-  .superRefine((body, ctx) => {
-    if (body.content.trim().length === 0 && (body.attachments?.length ?? 0) === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "content or attachments required",
-        path: ["content"],
-      });
-    }
-  });
-
-export const postMessageBody = z
-  .object({
-    to_agent_id: agentIdSchema,
-    /** May be empty when `attachments` are present. */
-    content: z.string(),
-    /** Deprecated: each file is written to the Inbox and appended to the content as a `box://` link. */
-    attachments: z.array(messageUpload).max(8).optional(),
-  })
-  .strict()
-  .superRefine((body, ctx) => {
-    if (body.content.trim().length === 0 && (body.attachments?.length ?? 0) === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "content or attachments required",
-        path: ["content"],
-      });
-    }
-  });
+export const postMessageBody = z.object({ to_agent_id: agentIdSchema, content: z.string().trim().min(1) }).strict();
 
 export const idParam = z.object({ id: agentIdSchema }).strict();
 

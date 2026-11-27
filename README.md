@@ -71,7 +71,7 @@ Every `agents` row is an agent. The router is not a row — it is `POST /router`
 
 `POST /router` is Dadi's translator: Ankur says what he wants, and the router picks the owner, writes the message he would send, and sends it as him; his app opens that thread when the agent answers. It is not an agent and not a conversation. The router is the null identity — the same as the user — so every message it sends lands in an agent's thread as `from_agent_id` null, written as Ankur. The router is ephemeral: it has no transcript and carries nothing between runs. Each request:
 
-1. Writes any deprecated `attachments` to the Inbox and appends their `box://` links to the utterance (see Files), then stores it as a `messages` row of kind `utterance` (from and to null), which belongs to no conversation: it is never in a thread, a transcript or a job.
+1. Stores the utterance as a `messages` row of kind `utterance` (from and to null), which belongs to no conversation: it is never in a thread, a transcript or a job.
 2. Runs the router: the same step machinery as an agent, calling Dwar `POST /chat/complete` (context-free on Dwar's side). System is `prompts/system.md` + `prompts/router.md` + identity + the active root agents; messages are exactly one turn, this utterance (headed `[From: Ankur]`) — no earlier run, nothing sent as Ankur, no reply to him, and nothing that arrives mid-run. What is underway it finds with its tools. Nothing in code caps the loop; it ends when the model calls `yield`.
 3. Returns `201 { messages: [{ to_agent_id, content, seq, created_at }] }` — every message it sent, in order (may be empty).
 
@@ -114,13 +114,12 @@ Every system prompt starts with the shared system doctrine (`prompts/system.md`)
 
 There are no attachments: a file is a plain file on the box, and a message that mentions one carries a Markdown link to it in its text, `[name](box://<absolute path>)`, each path segment percent-encoded (`src/runtime/box-link.ts`, the same encoding as Thaali's `boxLink.ts`). A link is a place, not a version, and not a read: an agent opens it with `read_file` only for what it needs. Transcripts, wake views, message records and events hold only the text, so history windows never carry file contents.
 
-- **Ankur's uploads** go to `~/Inbox/<yyyy-mm>/` through Nas `POST /fs/upload` (which never overwrites: a clash lands as `name (2).ext`). Thaali does this itself and sends the links. The Inbox is never swept; whoever acts on a file files it into its real home and mentions the new link.
-- **Deprecated `attachments` input.** `POST /messages` and `POST /router` still accept `attachments: [{ media_type, data (base64), filename? }]` for Khisso, which has not moved to links. Each file (at most 8, 10 MB each; text must be UTF-8) is uploaded to `~/Inbox/<yyyy-mm>/` and its link appended to the content after a blank line (`src/runtime/inbox.ts`); nothing else is kept. Responses and events carry no `attachments` field. Images are not described at ingest: `read_file` describes them on demand.
+- **Ankur's uploads** go to `~/Inbox/<yyyy-mm>/` through Nas `POST /fs/upload` (which never overwrites: a clash lands as `name (2).ext`). Clients upload through Nas themselves and send the links in `content`; `POST /messages` and `POST /router` take only `content` and refuse any other field (including the removed `attachments`) with `422 invalid_request`. The Inbox is never swept; whoever acts on a file files it into its real home and mentions the new link.
 - **Long agent messages.** An agent-to-agent message past 4,000 characters (`AGENT_MESSAGE_MAX_CHARS` in `src/tools/shared.ts`) is written whole to `~/scratch/<agent-id>/message-<yyyymmdd-hhmmss>.md` and arrives as its opening plus the link; messages to Ankur are not capped. Scratch is swept after 14 days.
 - **Helper reports** link the helper's `detail` file and the files it names, which are already on the box; nothing is copied.
 - **Tool results** too large for a prompt are saved under `[files].dir/results/` (see below).
 
-Migration `0032_drop_attachments` appended a link per distinct file to every message that had bound attachments (in position order) and dropped the `attachments` table, keeping `attachments_backup_20261126` and `messages_content_backup_20261126` until the links are checked.
+Migration `0032_drop_attachments` appends a link per distinct file to every message that had bound attachments (in position order) and drops the `attachments` table, keeping `attachments_backup_20261126` and `messages_content_backup_20261126` until the links are checked. It refuses to run (and the boot migration fails) while any bound attachment is not yet a file under `~/Inbox/`. `scripts/move-attachments-to-inbox.ts` (`npx tsx scripts/move-attachments-to-inbox.ts`, with `DATABASE_URL` and the Nas config) is the one-off that gets it there: for each bound attachment it reads the file (or, for a row that still holds bytes, those bytes), uploads a copy to `~/Inbox/<yyyy-mm>/` for the month of its message through Nas (never overwriting), checks the copy's SHA-256, and only then points the row's `path` at it; rows already in the Inbox are skipped, so a rerun finishes what a crash left. Old files under `.dadi/attachments/` are left in place. Run it after Nas has `/fs/upload` and before the hath image carrying 0032 starts.
 
 ## Tools
 
@@ -222,7 +221,7 @@ Migration `0031` made every agent one loop: `agent_logs` and `pending_async` los
 | `GET` | `/health` | `{ "status": "ok", "started_at": "<iso>" }` — process identity only; not a chat epoch |
 | `POST` | `/router` | Ankur → router: runs the router until it yields; returns the messages it sent |
 | `GET` | `/router` | `{ "running": [{ "run_id", "at" }] }`: the router runs in flight, from the moment `POST /router` accepts one (one waiting its turn included) until it finishes or fails; empty when the router is idle |
-| `POST` | `/messages` | user → agent; a file goes in `content` as a `box://` link. Deprecated: `attachments` (base64) are written to `~/Inbox/<yyyy-mm>/` and their links appended to `content` (see Files) |
+| `POST` | `/messages` | user → agent; a file goes in `content` as a `box://` link |
 | `GET` | `/threads` | human↔agent conversation summaries (active agents only), each with `unread` (the agent's messages to Ankur after `read_seq`, notices left out) and `read_seq` (null until read) |
 | `GET` | `/agents/:id/messages` | durable human-thread messages (`since_seq`, `limit`) |
 | `POST` | `/agents/:id/read` | `{ seq }`: Ankur has read the thread through `seq`; the mark only moves forward, `seq` past the newest message is `422`; returns `{ agent_id, read_seq, unread }` and emits SSE `thread_read` so every device clears it |

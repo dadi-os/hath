@@ -126,7 +126,6 @@ Browsers and terminals are tasks that helpers run, not agents. A helper has no m
   - `~/Inbox/<yyyy-mm>/`: Ankur's uploads, never swept. Whoever acts on a file files it into its real home in the same job.
   - `~/scratch/<your-id>/`: throwaway output. `~/backups/<area>/`: pre-edit copies. Both are swept after 14 days.
 - Never write at `~` itself or in `/tmp`, and never make another top-level folder.
-- A file is on Ankur's device only after a tool sent it there.
 
 ## Writes and money
 

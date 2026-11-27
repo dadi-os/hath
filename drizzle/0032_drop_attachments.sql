@@ -3,7 +3,21 @@
 -- per distinct file appended to its content, in position order, after a blank line when it already
 -- has text, so history reads as it did. Unbound rows and rows with no path (none were left) are
 -- dropped without a link. The attachments table and the changed messages' old content are kept in
--- backup tables until the links are checked; the table itself is then dropped.
+-- backup tables until the links are checked; the table itself is then dropped. The files must
+-- already be in the Inbox (scripts/move-attachments-to-inbox.ts copies them there first); a bound
+-- row that is not stops the migration before anything changes.
+
+DO $$
+BEGIN
+	IF EXISTS (
+		SELECT 1 FROM "attachments"
+		WHERE "message_id" IS NOT NULL AND ("path" IS NULL OR "path" NOT LIKE '/var/home/dadi/Inbox/%')
+	) THEN
+		RAISE EXCEPTION 'attachments not in the Inbox yet: run scripts/move-attachments-to-inbox.ts first';
+	END IF;
+END
+$$;
+--> statement-breakpoint
 
 CREATE TABLE "attachments_backup_20261126" AS
 SELECT * FROM "attachments";
