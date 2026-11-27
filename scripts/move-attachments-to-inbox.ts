@@ -21,7 +21,7 @@ type Row = {
   path: string | null;
   text_content: string | null;
   data: Buffer | null;
-  message_created_at: Date;
+  message_created_at: Date | string;
 };
 
 /**
@@ -57,7 +57,7 @@ export async function moveAttachmentsToInbox(
       continue;
     }
     const bytes = await readBytes(nas, row);
-    const { path } = await nas.uploadFile({ folder: inboxFolder(row.message_created_at), name: safeName(row.filename), data: bytes });
+    const { path } = await nas.uploadFile({ folder: inboxFolder(new Date(row.message_created_at)), name: safeName(row.filename), data: bytes });
     const back = Buffer.from((await nas.readFileBytes({ path, max_bytes: MAX_FILE_BYTES })).data, "base64");
     if (sha256(back) !== sha256(bytes)) {
       throw new Error(`attachment ${row.id}: ${path} does not match the original (${back.length} bytes, expected ${bytes.length})`);

@@ -30,7 +30,7 @@ async function withAttachments(messages: Record<string, Date>, seeds: Seed[], bo
           `CREATE TABLE attachments (id text PRIMARY KEY, message_id text, position int NOT NULL, filename text NOT NULL, path text, text_content text, data bytea)`,
         );
         for (const [id, at] of Object.entries(messages)) {
-          await tx`INSERT INTO messages (id, created_at) VALUES (${id}, ${at})`;
+          await tx`INSERT INTO messages (id, created_at) VALUES (${id}, ${at.toISOString()})`;
         }
         for (const [index, seed] of seeds.entries()) {
           await tx`INSERT INTO attachments (id, message_id, position, filename, path, text_content, data)
