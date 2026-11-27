@@ -4,7 +4,7 @@
  * parentheses included, which would end a Markdown link early.
  */
 
-/** The dadi home on the box, where uploads and scratch files live. */
+/** The dadi home on the box, where uploads live. */
 export const BOX_HOME = "/var/home/dadi";
 
 /** The Inbox folder for uploads made in the month `now` falls in (local time), as `<home>/Inbox/<yyyy-mm>`. */

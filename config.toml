@@ -86,7 +86,7 @@ timeout_ms = 30000
 # too large for a prompt under results/ and text taken from PDFs under pdf/. It is dadi's
 # own folder, so agents' terminals and read_file reach it like any other file. Ankur's
 # uploads are not here: they land in ~/Inbox/<yyyy-mm>/, browser downloads in
-# ~/Inbox/Downloads/, and long agent messages in ~/.scratch/<agent-id>/.
+# ~/Inbox/Downloads/.
 dir = "/var/home/dadi/.dadi"
 # How many days a cache file under results/ or pdf/ is kept before the daily sweep deletes it.
 cache_retention_days = 30

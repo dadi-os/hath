@@ -1,19 +1,17 @@
 /**
  * `send_message`: every agent's way to speak. It delivers a message to Ankur, to the job's
  * requester or to an agent, and stamps it with its job. A file travels as a link in its text.
- * Nothing about what is said is refused: the only errors are an address that cannot be
- * delivered to.
+ * Nothing about what is said is refused except an agent message past AGENT_MESSAGE_MAX_CHARS;
+ * the other errors are an address that cannot be delivered to.
  */
 
-import { format } from "date-fns";
 import { z } from "zod";
 import { AGENT_ID_PATTERN, agentIdSchema } from "../agent-id.js";
-import { fail, failWithoutAgentIdentity, ok, requireActiveAgent, AGENT_MESSAGE_MAX_CHARS, type ToolContext, type ToolExecResult } from "../tools/shared.js";
+import { fail, failWithoutAgentIdentity, ok, requireActiveAgent, requireWithinAgentMessageLimit, type ToolContext, type ToolExecResult } from "../tools/shared.js";
 import type { DwarTool, MessageStatus } from "../types/domain.js";
 import { MESSAGE_STATUSES, SEND_MESSAGE } from "../types/domain.js";
 import { recordActivity, sendRow } from "./activity.js";
 import { deliverDeps } from "./async.js";
-import { BOX_HOME, boxLink } from "./box-link.js";
 import { deliverAgentMessage } from "./deliver.js";
 import { hasRequester, jobById } from "./jobs.js";
 import type { TranscriptEntry } from "./transcript.js";
@@ -43,53 +41,20 @@ export const sendTool: DwarTool = {
   },
 };
 
-/** How much of an oversized agent message its recipient sees inline, ahead of the link to the whole. */
-const OVERSIZED_PREVIEW_CHARS = 1500;
-
-/** oversizedPreview is the inline part of an agent message too long to send whole: its opening and the link to the rest, in the file at `path`. */
-function oversizedPreview(content: string, path: string): string {
-  return `${content.slice(0, OVERSIZED_PREVIEW_CHARS)}…\n\n[The whole message, ${content.length} characters: ${boxLink(path)}]`;
-}
-
-/** writeOversized saves the whole of `caller`'s oversized message to `~/.scratch/<caller>/message-<yyyymmdd-hhmmss>.md` through Nas and returns its path. */
-async function writeOversized(ctx: ToolContext, caller: string, content: string): Promise<string> {
-  const { path } = await ctx.nas.uploadFile({
-    folder: `${BOX_HOME}/.scratch/${caller}`,
-    name: `message-${format(new Date(), "yyyyMMdd-HHmmss")}.md`,
-    data: Buffer.from(content, "utf8"),
-  });
-  return path;
-}
-
-/**
- * deliverFrom delivers one message as `caller`: an agent message past AGENT_MESSAGE_MAX_CHARS goes as its opening with a
- * link to the whole text, saved in the caller's scratch folder. It belongs to the caller's job `jobId`, or to the job its recipient
- * gave it. Returns the message and whether it was cut.
- */
+/** deliverFrom delivers one message as `caller`, belonging to the caller's job `jobId` or to the job its recipient gave it. */
 export async function deliverFrom(
   ctx: ToolContext,
   caller: string,
   to: string | null,
   args: { content: string; status?: MessageStatus; jobId: string | null },
-): Promise<{ row: TranscriptEntry; oversized: boolean }> {
-  const oversized = to !== null && args.content.length > AGENT_MESSAGE_MAX_CHARS;
-  const whole = oversized ? await writeOversized(ctx, caller, args.content) : null;
-  const row = await deliverAgentMessage(
-    deliverDeps(ctx),
-    {
-      fromAgentId: caller,
-      toAgentId: to,
-      content: whole === null ? args.content : oversizedPreview(args.content, whole),
-      jobId: args.jobId,
-      ...(args.status !== undefined ? { status: args.status } : {}),
-    },
-  );
-  return { row, oversized };
-}
-
-/** oversizedNote is what a sender is told when its agent message of `chars` characters went as an opening plus a link to the whole text. */
-export function oversizedNote(chars: number): string {
-  return `Delivered, but at ${chars} characters it passed the ${AGENT_MESSAGE_MAX_CHARS}-character limit, so the recipient got its opening and a link to the whole text in your scratch folder. Keep agent messages to what was found, in a few lines.`;
+): Promise<TranscriptEntry> {
+  return deliverAgentMessage(deliverDeps(ctx), {
+    fromAgentId: caller,
+    toAgentId: to,
+    content: args.content,
+    jobId: args.jobId,
+    ...(args.status !== undefined ? { status: args.status } : {}),
+  });
 }
 
 /**
@@ -131,7 +96,8 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   if (to !== null) {
     await requireActiveAgent(ctx.db, to);
   }
-  const { row, oversized } = await deliverFrom(ctx, caller, to, {
+  requireWithinAgentMessageLimit(to, input.content);
+  const row = await deliverFrom(ctx, caller, to, {
     content: input.content,
     jobId: ctx.jobId,
     ...(input.status !== undefined ? { status: input.status } : {}),
@@ -141,10 +107,9 @@ export async function runSend(ctx: ToolContext, raw: unknown): Promise<ToolExecR
   return ok(
     {
       to_agent_id: row.toAgentId,
-      ...(oversized ? {} : { content: row.content }),
+      content: row.content,
       seq: row.seq,
       ask: to !== null && job !== null && to !== job.requesterId,
-      ...(oversized ? { note: oversizedNote(input.content.length) } : {}),
     },
     { message_id: row.id },
   );

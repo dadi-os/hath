@@ -78,16 +78,17 @@ export type ToolContext = {
 export const AGENT_MESSAGE_MAX_CHARS = 4000;
 
 /**
- * failOversizedAgentMessage refuses `content` to another agent when it passes
- * AGENT_MESSAGE_MAX_CHARS, telling the sender how to send it instead; null when it
- * may go (any length to Ankur, `toAgentId` null).
+ * requireWithinAgentMessageLimit rejects `content` to another agent with `message_too_long` when it
+ * passes AGENT_MESSAGE_MAX_CHARS; any length may go to Ankur (`toAgentId` null).
  */
-export function failOversizedAgentMessage(toAgentId: string | null, content: string): ToolExecResult | null {
+export function requireWithinAgentMessageLimit(toAgentId: string | null, content: string): void {
   if (toAgentId === null || content.length <= AGENT_MESSAGE_MAX_CHARS) {
-    return null;
+    return;
   }
-  return fail(
-    `This message to ${toAgentId} is ${content.length} characters; agent-to-agent messages stop at ${AGENT_MESSAGE_MAX_CHARS}. Send what you found in a few lines, and put raw output, logs, or long text in a file in ~/.scratch/<your-id>/ and send its link, [name](box:///absolute/path).`,
+  throw new HathError(
+    422,
+    "message_too_long",
+    `Not sent: this message to ${toAgentId} is ${content.length} characters; agent-to-agent messages stop at ${AGENT_MESSAGE_MAX_CHARS}. Save the long detail as a file in the folder it is about and send a short message with its link, [name](box:///absolute/path).`,
   );
 }
 

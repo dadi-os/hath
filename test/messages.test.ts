@@ -565,7 +565,7 @@ test("child may still message and send to the user", async () => {
   await runtime.waitUntilIdle();
 });
 
-test("an agent-to-agent message past the cap goes as its opening with the whole text attached; the same text to Ankur goes whole", async () => {
+test("an agent-to-agent message past the cap is rejected and stores nothing; the same text to Ankur goes whole", async () => {
   await resetRuntime(handle.sql, handle.db, config);
   const senderId = await insertAgent(handle.db, { id: "cap-sender", systemPrompt: "sender" });
   const peerId = await insertAgent(handle.db, { id: "cap-peer", systemPrompt: "peer" });
@@ -587,18 +587,11 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
     name: "send_message",
     input: { to: peerId, content: dump },
   });
-  assert.equal(toPeer.isError, false);
-  assert.match(toPeer.content, /scratch folder/);
+  assert.equal(toPeer.isError, true);
+  assert.match(toPeer.content, /^message_too_long: .*file in the folder it is about/);
   const stored = await handle.db.select().from(messages).where(eq(messages.toAgentId, peerId));
-  assert.equal(stored.length, 1);
-  assert.ok(stored[0]!.content.length < AGENT_MESSAGE_MAX_CHARS, "the recipient sees only the opening inline");
-  assert.ok(stored[0]!.content.startsWith("grep hit\n"), "the opening is the message's own");
-  assert.equal(nas.uploadFileCalls.length, 1);
-  const [upload] = nas.uploadFileCalls;
-  assert.equal(upload!.folder, `/var/home/dadi/.scratch/${senderId}`);
-  assert.match(upload!.name, /^message-\d{8}-\d{6}\.md$/);
-  assert.equal(upload!.data.toString(), dump, "the whole message is in the file, never cut");
-  assert.ok(stored[0]!.content.endsWith(`: [${upload!.name}](box://${upload!.folder}/${upload!.name})]`), "the message links it");
+  assert.equal(stored.length, 0);
+  assert.equal(nas.uploadFileCalls.length, 0);
 
   const toAnkur = await executeTool(runtime.toolContext(senderId), {
     type: "tool_use",
