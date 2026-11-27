@@ -87,7 +87,7 @@ export function failOversizedAgentMessage(toAgentId: string | null, content: str
     return null;
   }
   return fail(
-    `This message to ${toAgentId} is ${content.length} characters; agent-to-agent messages stop at ${AGENT_MESSAGE_MAX_CHARS}. Send what you found in a few lines, and put raw output, logs, or long text in a file in ~/scratch/<your-id>/ and send its link, [name](box:///absolute/path).`,
+    `This message to ${toAgentId} is ${content.length} characters; agent-to-agent messages stop at ${AGENT_MESSAGE_MAX_CHARS}. Send what you found in a few lines, and put raw output, logs, or long text in a file in ~/.scratch/<your-id>/ and send its link, [name](box:///absolute/path).`,
   );
 }
 

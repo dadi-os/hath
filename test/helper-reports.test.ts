@@ -144,15 +144,15 @@ test("a report's files arrive as links in its text, and none is copied", async (
   await resetRuntime(handle.sql, handle.db, config);
   await insertAgent(handle.db, { id: "reporter", systemPrompt: "reports" });
   const { nas, runtime } = harness();
-  nas.files.set("/var/home/dadi/Downloads/receipt.pdf", Buffer.from("%PDF-1.4"));
+  nas.files.set("/var/home/dadi/Inbox/Downloads/receipt.pdf", Buffer.from("%PDF-1.4"));
 
   await runtime.helperReports.handle(
-    report({ files: ["/var/home/dadi/Downloads/receipt.pdf", "/var/home/dadi/Downloads/gone.pdf"] }),
+    report({ files: ["/var/home/dadi/Inbox/Downloads/receipt.pdf", "/var/home/dadi/Inbox/Downloads/gone.pdf"] }),
   );
   await runtime.waitUntilIdle();
 
   const notice = notices(runtime)[0]!;
-  assert.ok(notice.content.endsWith("\n[receipt.pdf](box:///var/home/dadi/Downloads/receipt.pdf)\n[gone.pdf](box:///var/home/dadi/Downloads/gone.pdf)"));
+  assert.ok(notice.content.endsWith("\n[receipt.pdf](box:///var/home/dadi/Inbox/Downloads/receipt.pdf)\n[gone.pdf](box:///var/home/dadi/Inbox/Downloads/gone.pdf)"));
   assert.equal(nas.readFileBytesCalls.length, 0);
   assert.equal(nas.writeFileCalls.length, 0);
 });
@@ -163,10 +163,10 @@ test("a report's detail file is linked ahead of its files, and its text stays wh
   const { nas, runtime } = harness();
   const long = `${"Row of the gradebook. ".repeat(400)}\nNot read: d2l.msu.edu: sign-in timed out`;
   nas.files.set("/var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt", Buffer.from("every row"));
-  nas.files.set("/var/home/dadi/Downloads/receipt.pdf", Buffer.from("%PDF-1.4"));
+  nas.files.set("/var/home/dadi/Inbox/Downloads/receipt.pdf", Buffer.from("%PDF-1.4"));
 
   await runtime.helperReports.handle(
-    report({ text: long, detail: "/var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt", files: ["/var/home/dadi/Downloads/receipt.pdf"] }),
+    report({ text: long, detail: "/var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt", files: ["/var/home/dadi/Inbox/Downloads/receipt.pdf"] }),
   );
   await runtime.waitUntilIdle();
 
@@ -174,7 +174,7 @@ test("a report's detail file is linked ahead of its files, and its text stays wh
   assert.ok(notice.content.includes(long), "the answer and its Not read line are never cut");
   assert.ok(
     notice.content.endsWith(
-      "\n[detail-1.txt](box:///var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt)\n[receipt.pdf](box:///var/home/dadi/Downloads/receipt.pdf)",
+      "\n[detail-1.txt](box:///var/lib/dadi/.cache/dadi-helpers/task-browser-1/detail-1.txt)\n[receipt.pdf](box:///var/home/dadi/Inbox/Downloads/receipt.pdf)",
     ),
   );
 });

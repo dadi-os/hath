@@ -51,10 +51,10 @@ function oversizedPreview(content: string, path: string): string {
   return `${content.slice(0, OVERSIZED_PREVIEW_CHARS)}…\n\n[The whole message, ${content.length} characters: ${boxLink(path)}]`;
 }
 
-/** writeOversized saves the whole of `caller`'s oversized message to `~/scratch/<caller>/message-<yyyymmdd-hhmmss>.md` through Nas and returns its path. */
+/** writeOversized saves the whole of `caller`'s oversized message to `~/.scratch/<caller>/message-<yyyymmdd-hhmmss>.md` through Nas and returns its path. */
 async function writeOversized(ctx: ToolContext, caller: string, content: string): Promise<string> {
   const { path } = await ctx.nas.uploadFile({
-    folder: `${BOX_HOME}/scratch/${caller}`,
+    folder: `${BOX_HOME}/.scratch/${caller}`,
     name: `message-${format(new Date(), "yyyyMMdd-HHmmss")}.md`,
     data: Buffer.from(content, "utf8"),
   });

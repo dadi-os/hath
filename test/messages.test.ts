@@ -595,7 +595,7 @@ test("an agent-to-agent message past the cap goes as its opening with the whole 
   assert.ok(stored[0]!.content.startsWith("grep hit\n"), "the opening is the message's own");
   assert.equal(nas.uploadFileCalls.length, 1);
   const [upload] = nas.uploadFileCalls;
-  assert.equal(upload!.folder, `/var/home/dadi/scratch/${senderId}`);
+  assert.equal(upload!.folder, `/var/home/dadi/.scratch/${senderId}`);
   assert.match(upload!.name, /^message-\d{8}-\d{6}\.md$/);
   assert.equal(upload!.data.toString(), dump, "the whole message is in the file, never cut");
   assert.ok(stored[0]!.content.endsWith(`: [${upload!.name}](box://${upload!.folder}/${upload!.name})]`), "the message links it");
